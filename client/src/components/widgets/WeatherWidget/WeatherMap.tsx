@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import { useWeather } from '../../../hooks/useWeather'
 import { useAirQuality } from '../../../hooks/useAirQuality'
 import { useForecast, nearestSlot } from '../../../hooks/useForecast'
-import type { ForecastSlot } from '../../../hooks/useForecast'
 
 declare const L: any
 
