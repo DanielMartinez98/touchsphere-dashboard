@@ -3,6 +3,17 @@ import axios from 'axios'
 
 const router = Router()
 
+// ── Server-side cache (10 minutes) ──────────────────────────────────────────
+// Prevents hammering OWM on every page load / container restart
+const CACHE_TTL_MS = 10 * 60 * 1000
+interface WeatherCache { data: object; ts: number }
+interface ForecastCache { data: object[]; ts: number }
+const weatherCache = new Map<string, WeatherCache>()
+const forecastCache = new Map<string, ForecastCache>()
+
+function cacheKey(lat: number, lon: number) {
+  return `${lat.toFixed(2)},${lon.toFixed(2)}`
+}
 router.get('/', async (req: Request, res: Response) => {
   const { lat, lon } = req.query
 
@@ -17,6 +28,14 @@ router.get('/', async (req: Request, res: Response) => {
   const apiKey = process.env['OPENWEATHER_API_KEY']
   if (!apiKey) {
     res.status(500).json({ error: 'Weather API key not configured' })
+    return
+  }
+
+  const key = cacheKey(latNum, lonNum)
+  const cached = weatherCache.get(key)
+  if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
+    console.log(`[weather] cache hit for ${key}`)
+    res.json(cached.data)
     return
   }
 
@@ -35,7 +54,7 @@ router.get('/', async (req: Request, res: Response) => {
     const d = currentRes.data
     const pop = forecastRes.data.list?.[0]?.pop ?? 0
 
-    res.json({
+    const result = {
       temp: d.main.temp,
       feels_like: d.main.feels_like,
       description: d.weather[0].description,
@@ -50,9 +69,12 @@ router.get('/', async (req: Request, res: Response) => {
       clouds: d.clouds.all,
       rain_1h: d.rain?.['1h'] ?? 0,
       rain_chance: pop,
-    })
+    }
+    weatherCache.set(key, { data: result, ts: Date.now() })
+    console.log(`[weather] fetched fresh data for ${key}`)
+    res.json(result)
   } catch (err) {
-    console.error('Weather API error:', err)
+    console.error('Weather API error:', (err as any)?.response?.data ?? err)
     res.status(502).json({ error: 'Failed to fetch weather data' })
   }
 })
@@ -73,6 +95,14 @@ router.get('/forecast', async (req: Request, res: Response) => {
   const apiKey = process.env['OPENWEATHER_API_KEY']
   if (!apiKey) {
     res.status(500).json({ error: 'Weather API key not configured' })
+    return
+  }
+
+  const key = cacheKey(latNum, lonNum)
+  const cached = forecastCache.get(key)
+  if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
+    console.log(`[forecast] cache hit for ${key}`)
+    res.json(cached.data)
     return
   }
 
@@ -103,9 +133,11 @@ router.get('/forecast', async (req: Request, res: Response) => {
       visibility: typeof item.visibility === 'number' ? item.visibility : null,
     }))
 
+    forecastCache.set(key, { data: slots, ts: Date.now() })
+    console.log(`[forecast] fetched fresh data for ${key} (${slots.length} slots)`)
     res.json(slots)
   } catch (err) {
-    console.error('Forecast API error:', err)
+    console.error('Forecast API error:', (err as any)?.response?.data ?? err)
     res.status(502).json({ error: 'Failed to fetch forecast data' })
   }
 })
