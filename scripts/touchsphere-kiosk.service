@@ -1,0 +1,35 @@
+# /etc/systemd/system/touchsphere-kiosk.service
+#
+# Installs the TouchSphere kiosk: starts Docker container + Chromium,
+# and shuts down Chromium cleanly when the user presses "Close App".
+#
+# Install:
+#   sudo cp touchsphere-kiosk.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable touchsphere-kiosk.service
+#   sudo systemctl start  touchsphere-kiosk.service
+#
+# The service uses Restart=on-failure so a clean exit (code 0, i.e. user
+# pressed Close) keeps the kiosk stopped, while a crash auto-restarts it.
+
+[Unit]
+Description=TouchSphere Kiosk
+After=network-online.target docker.service graphical-session.target
+Wants=network-online.target
+
+[Service]
+# Run as the desktop user so DISPLAY / Wayland env vars are inherited
+User=loklo
+# Adjust if using Wayland (replace with WAYLAND_DISPLAY=wayland-0)
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/loklo/.Xauthority
+
+ExecStart=/home/loklo/touchsphere-dashboard/scripts/kiosk.sh
+
+# exit 0 (user pressed Close App) → stay stopped
+# non-zero exit (crash)           → restart after 5 s
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
