@@ -1,7 +1,7 @@
 services:
   # ── TouchSphere dashboard ──────────────────────────────────────────────────
   app:
-    image: ghcr.io/YOUR_GITHUB_USERNAME/touchsphere-dashboard:latest
+    image: ghcr.io/mmdan/touchsphere-dashboard:latest
     container_name: touchsphere
     restart: unless-stopped
     ports:
