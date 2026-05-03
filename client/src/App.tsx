@@ -10,6 +10,10 @@ import WeatherMap from './components/widgets/WeatherWidget/WeatherMap'
 import { MediaCollapsed } from './components/widgets/MediaListWidget/MediaListWidget'
 import MediaListExpanded from './components/widgets/MediaListWidget/MediaListExpanded'
 import { useMediaList } from './hooks/useMediaList'
+import { useAppMode } from './hooks/useAppMode'
+import { StatusBar } from './components/StatusBar'
+import { LockScreen } from './components/LockScreen'
+import { SettingsPanel } from './components/SettingsPanel'
 
 type OpenWidget = 'calendar' | 'clock' | 'weather' | 'media' | null
 
@@ -17,6 +21,7 @@ function App() {
   const [open, setOpen] = useState<OpenWidget>(null)
   const toggle = (w: OpenWidget) => setOpen(prev => prev === w ? null : w)
   const { items, nextItem, addItem, removeItem, markDone } = useMediaList()
+  const { mode, hasCred, setMode, createPassword, verifyPassword, unlock } = useAppMode()
 
   return (
     <div className="relative w-screen h-screen bg-black overflow-hidden">
@@ -61,6 +66,22 @@ function App() {
         collapsed={<ClockCollapsed />}
         expanded={<WorldClock />}
       />
+
+      {/* Top-Center — Status / Mode selector */}
+      <StatusBar
+        mode={mode}
+        hasCred={hasCred}
+        setMode={setMode}
+        createPassword={createPassword}
+      />
+
+      {/* Bottom-Center — Settings */}
+      <SettingsPanel />
+
+      {/* Lock screen — covers everything when mode is 'locked' */}
+      {mode === 'locked' && (
+        <LockScreen verifyPassword={verifyPassword} unlock={unlock} />
+      )}
     </div>
   )
 }
