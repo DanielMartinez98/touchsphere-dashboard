@@ -30,19 +30,24 @@ export default function MediaListExpanded({ items, addItem, removeItem, markDone
       <div className="flex gap-2">
         <input
           type="text"
+          inputMode="text"
           value={title}
           onChange={e => setTitle(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleAdd()}
           placeholder="Add title..."
           className="flex-1 bg-white/10 text-white placeholder-white/30 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-cyan-500"
         />
-        <div className="flex rounded-xl overflow-hidden border border-white/10">
+        <div className="flex rounded-xl overflow-hidden border border-white/20">
           {TYPES.map(t => (
             <button
               key={t}
               onClick={() => setType(t)}
               aria-label={t}
-              className={`px-3 py-2 text-lg transition-colors ${type === t ? 'bg-cyan-500' : 'bg-white/5 hover:bg-white/10'}`}
+              className={`px-5 py-3 text-xl transition-colors ${
+                type === t
+                  ? 'bg-cyan-500 text-black'
+                  : 'bg-white/15 text-white hover:bg-white/25'
+              }`}
             >
               <MediaTypeIcon type={t} />
             </button>
