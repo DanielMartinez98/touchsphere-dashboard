@@ -438,8 +438,13 @@ function NewEventSheet({ defaultDate, onClose, onSave }: NewEventSheetProps) {
 
 // ── CalendarExpanded ──────────────────────────────────────────────────────────
 
+type ZoomLevel = 'years' | 'months' | 'days' | 'hours'
+
+const MONTH_NAMES_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+
 export default function CalendarExpanded() {
   const now = new Date()
+  const [zoom,        setZoom]       = useState<ZoomLevel>('days')
   const [viewYear,    setViewYear]    = useState(now.getFullYear())
   const [viewMonth,   setViewMonth]   = useState(now.getMonth())
   const [selectedDay, setSelectedDay] = useState(now.getDate())
@@ -453,6 +458,8 @@ export default function CalendarExpanded() {
   const [showNewEvent,  setShowNewEvent]  = useState(false)
 
   const timelineRef = useRef<HTMLDivElement>(null)
+
+  const decadeStart = Math.floor(viewYear / 10) * 10
 
   // ── Fetch month events ────────────────────────────────────────────────────
   useEffect(() => {
@@ -561,13 +568,38 @@ export default function CalendarExpanded() {
   }, [selectedKey])
 
   // ── Navigation ────────────────────────────────────────────────────────────
-  const prevMonth = () => {
-    if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1) }
-    else setViewMonth(m => m - 1)
+  function prevUnit() {
+    if (zoom === 'hours') {
+      const d = new Date(viewYear, viewMonth, selectedDay - 1)
+      setViewYear(d.getFullYear()); setViewMonth(d.getMonth()); setSelectedDay(d.getDate())
+    } else if (zoom === 'days') {
+      if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1) } else setViewMonth(m => m - 1)
+    } else if (zoom === 'months') {
+      setViewYear(y => y - 1)
+    } else {
+      setViewYear(y => y - 10)
+    }
   }
-  const nextMonth = () => {
-    if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1) }
-    else setViewMonth(m => m + 1)
+  function nextUnit() {
+    if (zoom === 'hours') {
+      const d = new Date(viewYear, viewMonth, selectedDay + 1)
+      setViewYear(d.getFullYear()); setViewMonth(d.getMonth()); setSelectedDay(d.getDate())
+    } else if (zoom === 'days') {
+      if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1) } else setViewMonth(m => m + 1)
+    } else if (zoom === 'months') {
+      setViewYear(y => y + 1)
+    } else {
+      setViewYear(y => y + 10)
+    }
+  }
+  function zoomOut() {
+    if      (zoom === 'hours')  setZoom('days')
+    else if (zoom === 'days')   setZoom('months')
+    else if (zoom === 'months') setZoom('years')
+  }
+  function selectDay(day: number) {
+    setSelectedDay(day)
+    setZoom('hours')
   }
 
   // ── Handlers ─────────────────────────────────────────────────────────────
@@ -589,6 +621,18 @@ export default function CalendarExpanded() {
 
   const nowMinute = now.getHours() * 60 + now.getMinutes()
 
+  // Derived header values
+  const headerTitle =
+    zoom === 'years'  ? `${decadeStart} – ${decadeStart + 11}` :
+    zoom === 'months' ? String(viewYear) :
+    zoom === 'days'   ? `${monthName} ${viewYear}` :
+    new Date(viewYear, viewMonth, selectedDay).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+
+  const zoomOutLabel =
+    zoom === 'hours'  ? `${monthName} ${viewYear}` :
+    zoom === 'days'   ? String(viewYear) :
+    zoom === 'months' ? `${decadeStart}s` : ''
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <>
@@ -596,202 +640,248 @@ export default function CalendarExpanded() {
 
       <div className="flex flex-col h-full pt-16 relative">
 
-        {/* ══ Month strip ════════════════════════════════════════════════════ */}
+        {/* ══ Header ═════════════════════════════════════════════════════════ */}
         <div className="flex-shrink-0 px-3 pb-2">
+
+          {/* Zoom-out breadcrumb */}
+          {zoom !== 'years' && (
+            <div className="flex mb-2">
+              <button onClick={zoomOut}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 text-xs text-white/55 active:bg-white/15 transition-colors">
+                <span className="text-[10px]">▲</span>
+                {zoomOutLabel}
+              </button>
+            </div>
+          )}
 
           {/* Nav row */}
           <div className="flex items-center justify-between mb-2">
-            <button onClick={prevMonth} aria-label="Previous month"
+            <button onClick={prevUnit} aria-label="Previous"
               className="w-9 h-9 rounded-full bg-white/10 text-white text-xl flex items-center justify-center active:scale-90">
               ‹
             </button>
-            <span className="text-base font-bold text-white tracking-wide">{monthName} {viewYear}</span>
-            <button onClick={nextMonth} aria-label="Next month"
+            <span className="text-base font-bold text-white tracking-wide">{headerTitle}</span>
+            <button onClick={nextUnit} aria-label="Next"
               className="w-9 h-9 rounded-full bg-white/10 text-white text-xl flex items-center justify-center active:scale-90">
               ›
             </button>
           </div>
 
-          {/* Weekday headers */}
-          <div className="grid grid-cols-7 text-center mb-1">
-            {['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => (
-              <span key={d} className="text-[10px] text-white/25 select-none">{d}</span>
-            ))}
-          </div>
-
-          {/* Grid */}
-          {loadingMonth ? (
-            <div className="flex items-center justify-center h-28">
-              <span className="w-5 h-5 rounded-full border-2 border-white/20 border-t-cyan-400 animate-spin" />
-            </div>
-          ) : (
-            <div className="grid grid-cols-7 gap-0.5">
-              {Array.from({ length: firstDay }).map((_, i) => <div key={`pad-${i}`} />)}
-              {Array.from({ length: daysInMonth }).map((_, i) => {
-                const day   = i + 1
-                const isT   = day === now.getDate() && viewMonth === now.getMonth() && viewYear === now.getFullYear()
-                const isSel = day === selectedDay
-                const dKey  = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-                const evs   = eventsByDay.get(dKey) ?? []
-                const dots  = evs.slice(0, 3)
-                const extra = evs.length - 3
-                return (
-                  <button key={day} onClick={() => setSelectedDay(day)}
-                    className={`flex flex-col items-center justify-start pt-1 pb-0.5 rounded-lg min-h-[46px] transition-colors
-                      ${isSel ? 'bg-cyan-500 text-black' : isT ? 'bg-white/20 text-white' : 'text-white/70 hover:bg-white/10 active:bg-white/20'}`}>
-                    <span className="text-xs font-semibold leading-none">{day}</span>
-                    {evs.length > 0 && (
-                      <div className="flex gap-[2px] mt-1 items-center justify-center flex-wrap px-0.5">
-                        {dots.map((dotEv, idx) => (
-                          <span key={idx} className={`w-[5px] h-[5px] rounded-full flex-shrink-0
-                            ${dotEv.allDay
-                              ? (isSel ? 'bg-black/50' : 'bg-purple-400')
-                              : (isSel ? 'bg-black/50' : 'bg-cyan-400')}`} />
-                        ))}
-                        {extra > 0 && (
-                          <span className={`text-[8px] leading-none ${isSel ? 'text-black/60' : 'text-white/35'}`}>
-                            +{extra}
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </button>
-                )
-              })}
+          {/* Weekday headers — days view only */}
+          {zoom === 'days' && (
+            <div className="grid grid-cols-7 text-center mb-1">
+              {['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => (
+                <span key={d} className="text-[10px] text-white/25 select-none">{d}</span>
+              ))}
             </div>
           )}
         </div>
 
-        {/* ══ Divider ════════════════════════════════════════════════════════ */}
-        <div className="flex-shrink-0 border-t border-white/10 mx-3" />
-
-        {/* ══ Day detail ═════════════════════════════════════════════════════ */}
-        <div className="flex-1 min-h-0 flex flex-col">
-
-          {/* Heading */}
-          <div className="flex-shrink-0 px-4 pt-2 pb-1 flex items-baseline gap-2">
-            <span className="text-sm font-bold text-white">
-              {new Date(viewYear, viewMonth, selectedDay).toLocaleDateString([], {
-                weekday: 'long', month: 'long', day: 'numeric',
+        {/* ══ Years view ═════════════════════════════════════════════════════ */}
+        {zoom === 'years' && (
+          <div className="flex-1 min-h-0 overflow-y-auto px-3 pb-6">
+            <div className="grid grid-cols-4 gap-2">
+              {Array.from({ length: 12 }, (_, i) => decadeStart + i).map(year => {
+                const isCur = year === now.getFullYear()
+                const isSel = year === viewYear
+                return (
+                  <button key={year}
+                    onClick={() => { setViewYear(year); setZoom('months') }}
+                    className={`h-14 rounded-xl text-sm font-semibold flex items-center justify-center transition-colors
+                      ${isSel ? 'bg-cyan-500 text-black' : isCur ? 'bg-white/20 text-white' : 'text-white/70 active:bg-white/15'}`}>
+                    {year}
+                  </button>
+                )
               })}
-            </span>
-            {dayEvents.length > 0 && (
-              <span className="text-xs text-cyan-400">
-                {dayEvents.length} event{dayEvents.length !== 1 ? 's' : ''}
-              </span>
+            </div>
+          </div>
+        )}
+
+        {/* ══ Months view ════════════════════════════════════════════════════ */}
+        {zoom === 'months' && (
+          <div className="flex-1 min-h-0 overflow-y-auto px-3 pb-6">
+            <div className="grid grid-cols-3 gap-2">
+              {MONTH_NAMES_SHORT.map((name, idx) => {
+                const isCur = idx === now.getMonth() && viewYear === now.getFullYear()
+                const isSel = idx === viewMonth
+                return (
+                  <button key={idx}
+                    onClick={() => { setViewMonth(idx); setZoom('days') }}
+                    className={`h-16 rounded-xl text-sm font-semibold flex items-center justify-center transition-colors
+                      ${isSel ? 'bg-cyan-500 text-black' : isCur ? 'bg-white/20 text-white' : 'text-white/70 active:bg-white/15'}`}>
+                    {name}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* ══ Days view ══════════════════════════════════════════════════════ */}
+        {zoom === 'days' && (
+          <div className="flex-1 min-h-0 overflow-y-auto px-3 pb-20">
+            {loadingMonth ? (
+              <div className="flex items-center justify-center h-28">
+                <span className="w-5 h-5 rounded-full border-2 border-white/20 border-t-cyan-400 animate-spin" />
+              </div>
+            ) : (
+              <div className="grid grid-cols-7 gap-0.5">
+                {Array.from({ length: firstDay }).map((_, i) => <div key={`pad-${i}`} />)}
+                {Array.from({ length: daysInMonth }).map((_, i) => {
+                  const day   = i + 1
+                  const isT   = day === now.getDate() && viewMonth === now.getMonth() && viewYear === now.getFullYear()
+                  const dKey  = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+                  const evs   = eventsByDay.get(dKey) ?? []
+                  const dots  = evs.slice(0, 3)
+                  const extra = evs.length - 3
+                  return (
+                    <button key={day} onClick={() => selectDay(day)}
+                      className={`flex flex-col items-center justify-start pt-1 pb-0.5 rounded-lg min-h-[46px] transition-colors
+                        ${isT ? 'bg-white/20 text-white' : 'text-white/70 hover:bg-white/10 active:bg-white/20'}`}>
+                      <span className="text-xs font-semibold leading-none">{day}</span>
+                      {evs.length > 0 && (
+                        <div className="flex gap-[2px] mt-1 items-center justify-center flex-wrap px-0.5">
+                          {dots.map((dotEv, idx) => (
+                            <span key={idx} className={`w-[5px] h-[5px] rounded-full flex-shrink-0
+                              ${dotEv.allDay ? 'bg-purple-400' : 'bg-cyan-400'}`} />
+                          ))}
+                          {extra > 0 && (
+                            <span className="text-[8px] leading-none text-white/35">+{extra}</span>
+                          )}
+                        </div>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
             )}
           </div>
+        )}
 
-          {/* All-day events — tappable */}
-          {allDayEvs.length > 0 && (
-            <div className="flex-shrink-0 px-4 pb-1.5 flex flex-col gap-1">
-              {allDayEvs.map(ev => {
-                const s = statuses[ev.id]
-                return (
-                  <button key={ev.id} onClick={() => setSelectedEvent(ev)}
-                    className={`flex items-center gap-2 rounded-lg px-3 py-2 w-full text-left transition-colors active:scale-[0.98]
-                      ${s?.status === 'accepted' ? 'bg-green-500/15 border border-green-400/30'
-                      : s?.status === 'declined' ? 'bg-white/5 border border-white/10 opacity-50'
-                      : 'bg-purple-500/15 border border-purple-400/30'}`}>
-                    <span className={`w-2 h-2 rounded-full flex-shrink-0
-                      ${s?.status === 'accepted' ? 'bg-green-400'
-                      : s?.status === 'declined' ? 'bg-white/30' : 'bg-purple-400'}`} />
-                    <span className={`text-xs font-medium flex-1 truncate
-                      ${s?.status === 'declined' ? 'line-through text-white/40'
-                      : s?.status === 'accepted' ? 'text-green-200' : 'text-purple-200'}`}>
-                      {ev.title}
+        {/* ══ Hours view ═════════════════════════════════════════════════════ */}
+        {zoom === 'hours' && (
+          <div className="flex-1 min-h-0 flex flex-col">
+
+            {/* Event count & all-day strip */}
+            {dayEvents.length > 0 && (
+              <div className="flex-shrink-0 px-4 pt-1 pb-0.5">
+                <span className="text-xs text-cyan-400">
+                  {dayEvents.length} event{dayEvents.length !== 1 ? 's' : ''}
+                </span>
+              </div>
+            )}
+
+            {/* All-day events — tappable */}
+            {allDayEvs.length > 0 && (
+              <div className="flex-shrink-0 px-4 pb-1.5 flex flex-col gap-1">
+                {allDayEvs.map(ev => {
+                  const s = statuses[ev.id]
+                  return (
+                    <button key={ev.id} onClick={() => setSelectedEvent(ev)}
+                      className={`flex items-center gap-2 rounded-lg px-3 py-2 w-full text-left transition-colors active:scale-[0.98]
+                        ${s?.status === 'accepted' ? 'bg-green-500/15 border border-green-400/30'
+                        : s?.status === 'declined' ? 'bg-white/5 border border-white/10 opacity-50'
+                        : 'bg-purple-500/15 border border-purple-400/30'}`}>
+                      <span className={`w-2 h-2 rounded-full flex-shrink-0
+                        ${s?.status === 'accepted' ? 'bg-green-400'
+                        : s?.status === 'declined' ? 'bg-white/30' : 'bg-purple-400'}`} />
+                      <span className={`text-xs font-medium flex-1 truncate
+                        ${s?.status === 'declined' ? 'line-through text-white/40'
+                        : s?.status === 'accepted' ? 'text-green-200' : 'text-purple-200'}`}>
+                        {ev.title}
+                      </span>
+                      <span className={`text-[10px] flex-shrink-0
+                        ${s?.status === 'accepted' ? 'text-green-400'
+                        : s?.status === 'declined' ? 'text-white/20' : 'text-purple-400/50'}`}>
+                        {s?.status === 'accepted' ? '✓' : s?.status === 'declined' ? '✗' : 'All day'}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+
+            {/* Hour-by-hour timeline */}
+            <div ref={timelineRef} className="flex-1 min-h-0 overflow-y-auto px-4 pb-20">
+              <div className="relative" style={{ height: 24 * HOUR_H }}>
+
+                {/* Hour rows */}
+                {HOURS.map(h => (
+                  <div key={h} className="absolute left-0 right-0 border-t border-white/[0.06]"
+                    style={{ top: h * HOUR_H, height: HOUR_H }}>
+                    <span className="absolute left-0 top-0.5 text-[10px] text-white/20 select-none w-9 text-right pr-1.5 leading-none">
+                      {String(h).padStart(2, '0')}
                     </span>
-                    <span className={`text-[10px] flex-shrink-0
-                      ${s?.status === 'accepted' ? 'text-green-400'
-                      : s?.status === 'declined' ? 'text-white/20' : 'text-purple-400/50'}`}>
-                      {s?.status === 'accepted' ? '✓' : s?.status === 'declined' ? '✗' : 'All day'}
+                  </div>
+                ))}
+
+                {/* Current-time needle */}
+                {selectedIsToday && (
+                  <div className="absolute left-0 right-0 z-20 flex items-center pointer-events-none"
+                    style={{ top: (nowMinute / 60) * HOUR_H - 1 }}>
+                    <span className="w-9 text-right pr-1 text-[9px] text-red-400 leading-none select-none flex-shrink-0">
+                      {String(now.getHours()).padStart(2,'0')}:{String(now.getMinutes()).padStart(2,'0')}
                     </span>
-                  </button>
-                )
-              })}
-            </div>
-          )}
+                    <div className="w-2 h-2 rounded-full bg-red-400 -mx-1 flex-shrink-0" />
+                    <div className="flex-1 h-px bg-red-400/60" />
+                  </div>
+                )}
 
-          {/* Hour-by-hour timeline */}
-          <div ref={timelineRef} className="flex-1 min-h-0 overflow-y-auto px-4 pb-6">
-            <div className="relative" style={{ height: 24 * HOUR_H }}>
-
-              {/* Hour rows */}
-              {HOURS.map(h => (
-                <div key={h} className="absolute left-0 right-0 border-t border-white/[0.06]"
-                  style={{ top: h * HOUR_H, height: HOUR_H }}>
-                  <span className="absolute left-0 top-0.5 text-[10px] text-white/20 select-none w-9 text-right pr-1.5 leading-none">
-                    {String(h).padStart(2, '0')}
-                  </span>
-                </div>
-              ))}
-
-              {/* Current-time needle */}
-              {selectedIsToday && (
-                <div className="absolute left-0 right-0 z-20 flex items-center pointer-events-none"
-                  style={{ top: (nowMinute / 60) * HOUR_H - 1 }}>
-                  <span className="w-9 text-right pr-1 text-[9px] text-red-400 leading-none select-none flex-shrink-0">
-                    {String(now.getHours()).padStart(2,'0')}:{String(now.getMinutes()).padStart(2,'0')}
-                  </span>
-                  <div className="w-2 h-2 rounded-full bg-red-400 -mx-1 flex-shrink-0" />
-                  <div className="flex-1 h-px bg-red-400/60" />
-                </div>
-              )}
-
-              {/* Timed event blocks — tappable */}
-              {timedEvs.map(ev => {
-                const s        = statuses[ev.id]
-                const startM   = minuteOfDay(ev.start)
-                const endM     = endMinuteOfDay(ev)
-                const top      = (startM / 60) * HOUR_H
-                const height   = Math.max(((Math.max(endM - startM, 30)) / 60) * HOUR_H, 28)
-                const declined = s?.status === 'declined'
-                const accepted = s?.status === 'accepted'
-                return (
-                  <button key={ev.id} onClick={() => setSelectedEvent(ev)}
-                    className={`absolute left-10 right-0 rounded-r-xl px-2.5 py-1 overflow-hidden text-left
-                                transition-colors active:brightness-125
-                      ${declined ? 'bg-white/5 border-l-[3px] border-white/20 opacity-50'
-                      : accepted ? 'bg-green-500/15 border-l-[3px] border-green-400'
-                      :            'bg-cyan-500/15 border-l-[3px] border-cyan-400'}`}
-                    style={{ top, height }}>
-                    <p className={`text-xs font-semibold leading-tight truncate
-                      ${declined ? 'line-through text-white/40'
-                      : accepted ? 'text-green-100' : 'text-cyan-100'}`}>
-                      {ev.title}
-                    </p>
-                    {height > 30 && (
-                      <p className={`text-[10px] leading-tight mt-0.5
-                        ${declined ? 'text-white/20' : accepted ? 'text-green-400/70' : 'text-cyan-400/70'}`}>
-                        {fmtTime(ev.start)}{ev.end.length !== 10 ? ` – ${fmtTime(ev.end)}` : ''}
-                        {accepted && ' ✓'}{s?.status === 'rescheduled' && ' ↩'}
+                {/* Timed event blocks — tappable */}
+                {timedEvs.map(ev => {
+                  const s        = statuses[ev.id]
+                  const startM   = minuteOfDay(ev.start)
+                  const endM     = endMinuteOfDay(ev)
+                  const top      = (startM / 60) * HOUR_H
+                  const height   = Math.max(((Math.max(endM - startM, 30)) / 60) * HOUR_H, 28)
+                  const declined = s?.status === 'declined'
+                  const accepted = s?.status === 'accepted'
+                  return (
+                    <button key={ev.id} onClick={() => setSelectedEvent(ev)}
+                      className={`absolute left-10 right-0 rounded-r-xl px-2.5 py-1 overflow-hidden text-left
+                                  transition-colors active:brightness-125
+                        ${declined ? 'bg-white/5 border-l-[3px] border-white/20 opacity-50'
+                        : accepted ? 'bg-green-500/15 border-l-[3px] border-green-400'
+                        :            'bg-cyan-500/15 border-l-[3px] border-cyan-400'}`}
+                      style={{ top, height }}>
+                      <p className={`text-xs font-semibold leading-tight truncate
+                        ${declined ? 'line-through text-white/40'
+                        : accepted ? 'text-green-100' : 'text-cyan-100'}`}>
+                        {ev.title}
                       </p>
-                    )}
-                  </button>
-                )
-              })}
+                      {height > 30 && (
+                        <p className={`text-[10px] leading-tight mt-0.5
+                          ${declined ? 'text-white/20' : accepted ? 'text-green-400/70' : 'text-cyan-400/70'}`}>
+                          {fmtTime(ev.start)}{ev.end.length !== 10 ? ` – ${fmtTime(ev.end)}` : ''}
+                          {accepted && ' ✓'}{s?.status === 'rescheduled' && ' ↩'}
+                        </p>
+                      )}
+                    </button>
+                  )
+                })}
 
-              {timedEvs.length === 0 && allDayEvs.length === 0 && (
-                <p className="absolute left-10 text-white/20 text-xs" style={{ top: 8 * HOUR_H + 4 }}>
-                  No events
-                </p>
-              )}
+                {timedEvs.length === 0 && allDayEvs.length === 0 && (
+                  <p className="absolute left-10 text-white/20 text-xs" style={{ top: 8 * HOUR_H + 4 }}>
+                    No events
+                  </p>
+                )}
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
         {/* ══ Add event button ═══════════════════════════════════════════════ */}
-        <button onClick={() => setShowNewEvent(true)} aria-label="Add event"
-          className="absolute bottom-5 right-5 w-14 h-14 rounded-full bg-cyan-500 text-black
-                     flex items-center justify-center text-3xl font-light shadow-lg shadow-cyan-500/30
-                     active:scale-90 transition-transform z-[5]">
-          +
-        </button>
+        {(zoom === 'days' || zoom === 'hours') && (
+          <button onClick={() => setShowNewEvent(true)} aria-label="Add event"
+            className="absolute bottom-5 right-5 w-14 h-14 rounded-full bg-cyan-500 text-black
+                       flex items-center justify-center text-3xl font-light shadow-lg shadow-cyan-500/30
+                       active:scale-90 transition-transform z-[5]">
+            +
+          </button>
+        )}
 
         {/* ══ Sheets ════════════════════════════════════════════════════════ */}
         {selectedEvent && (() => {
-          // Recurring occurrences have IDs like "base-occ-YYYY-MM-DD" — strip the suffix
-          // so status lookups and delete/accept/decline target the original event
           const baseId = occBaseId(selectedEvent.id)
           return (
             <EventDetailSheet

@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useWeather } from '../../../hooks/useWeather'
 import { useAirQuality } from '../../../hooks/useAirQuality'
 import { useForecast, nearestSlot } from '../../../hooks/useForecast'
 import { useCloudLayers, nearestCloudSlot } from '../../../hooks/useCloudLayers'
+import { useRainviewer, nearestRvFrame } from '../../../hooks/useRainviewer'
 
 declare const L: any
 
@@ -10,13 +11,16 @@ declare const L: any
 const MIN_OFFSET = -360
 const MAX_OFFSET = 2160
 
-// Apple Weather aesthetic: satellite base + white clouds with soft glow.
-// The OWM clouds_new tile is RGBA — cloud pixels are white/grey, clear sky is transparent.
-// On a dark satellite base the white stands out naturally.
-// contrast(1.6): sharpens faint cloud edges without over-saturating.
-// brightness(1.3): lifts thin cirrus into visible range.
-// drop-shadow: gives clouds a soft luminous halo (Apple-style inner glow).
+// Apple Weather aesthetic: satellite base + soft white cloud overlay.
+// OWM tiles are RGBA — cloud pixels are white/grey, clear sky is transparent.
+// contrast(1.6) sharpens thin cirrus edges; drop-shadow gives the soft halo Apple uses.
 const CLOUD_FILTER = 'contrast(1.6) brightness(1.3) drop-shadow(0 0 6px rgba(255,255,255,0.5))'
+
+// RainViewer radar: color scheme 2 (Universal Blue), smooth+snow options
+// max native tile zoom for RainViewer is 7; Leaflet scales up for higher map zooms
+const RV_COLOR = 2
+const RV_OPTIONS = '1_1'
+const RV_MAX_NATIVE_ZOOM = 7
 
 function windDir(deg: number): string {
   const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
@@ -56,15 +60,22 @@ export default function WeatherMap() {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<any>(null)
   const markerRef = useRef<any>(null)
-  const cloudLayerRef = useRef<any>(null)
+  const cloudLayerRef = useRef<any>(null)    // currently visible layer on the map
+  const rvLayerCacheRef = useRef<Map<string, any>>(new Map())  // cached RainViewer layers keyed by path
+  const activeKeyRef = useRef<string>('')       // path of visible layer ('owm' or RainViewer path)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sliderRef = useRef<HTMLInputElement>(null)
   const { weather } = useWeather()
   const { aqi } = useAirQuality()
   const { forecasts } = useForecast()
   const { cloudLayers } = useCloudLayers()
-  // rawOffset drives the slider visuals and stats bar; the tile layer is always "now"
+  const { frames: rvFrames, nowcast: rvNowcast } = useRainviewer()
+  // Combine past + nowcast frames for frame lookup
+  const allRvFrames = useMemo(() => [...rvFrames, ...rvNowcast], [rvFrames, rvNowcast])
+  // rawOffset: instant — drives slider + stats bar + timeline
+  // committedOffset: debounced — drives tile layer switching (avoids mid-scrub loads)
   const [rawOffset, setRawOffset] = useState(0)
+  const [committedOffset, setCommittedOffset] = useState(0)
   const [mapReady, setMapReady] = useState(false)
 
   // Initialize map once — tiles go through server proxy, no OWM key needed client-side
@@ -92,63 +103,90 @@ export default function WeatherMap() {
       maxZoom: 19,
     }).addTo(map)
 
-    // Inject cloud CSS filter + crossfade transition once
+    // Inject CSS for OWM cloud tiles (filter) and RainViewer tiles (no filter)
+    // both share the crossfade transition class
     if (!document.getElementById('owm-cloud-style')) {
       const s = document.createElement('style')
       s.id = 'owm-cloud-style'
       s.textContent = [
         `.owm-clouds img { filter: ${CLOUD_FILTER} !important; }`,
-        `.owm-clouds { transition: opacity 0.5s ease-in-out; }`,
+        `.owm-clouds, .rv-radar { transition: opacity 0.5s ease-in-out; }`,
       ].join('\n')
       document.head.appendChild(s)
     }
-
-    // Load the cloud layer once — Maps 1.0 free tier has no date param so one
-    // layer covers all time positions. Refresh every 60 min.
-    function loadCloudLayer() {
-      const prev = cloudLayerRef.current
-      const layer = L.tileLayer('/api/tiles/clouds/{z}/{x}/{y}?offset=0', {
-        opacity: 0,
-        className: 'owm-clouds',
-        attribution: '© OpenWeatherMap',
-        updateWhenZooming: false,
-        keepBuffer: 4,
-      }).addTo(map)
-      layer.once('load', () => {
-        layer.setOpacity(CLOUD_OPACITY)
-        cloudLayerRef.current = layer
-        if (prev) {
-          prev.setOpacity(0)
-          setTimeout(() => { if (map.hasLayer(prev)) map.removeLayer(prev) }, 600)
-        }
-      })
-      // Fallback: activate even if some tiles 404
-      setTimeout(() => {
-        if (layer.options.opacity === 0) {
-          layer.setOpacity(CLOUD_OPACITY)
-          cloudLayerRef.current = layer
-          if (prev && map.hasLayer(prev)) map.removeLayer(prev)
-        }
-      }, 5000)
-    }
-    loadCloudLayer()
-    const cloudRefreshId = setInterval(loadCloudLayer, 60 * 60 * 1000)
-    // Signal that the map exists — triggers the cloud layer effect to run properly
     setMapReady(true)
-    console.log('[WeatherMap] mapReady = true')
 
     return () => {
-      clearInterval(cloudRefreshId)
       if (debounceRef.current) clearTimeout(debounceRef.current)
       map.remove()
       mapInstanceRef.current = null
       markerRef.current = null
       cloudLayerRef.current = null
+      rvLayerCacheRef.current.clear()
+      activeKeyRef.current = ''
       setMapReady(false)
     }
   }, [])
 
-  // (cloud layer is managed inside the map init effect above — no extra effects needed)
+  // Layer switching: loads the correct tile layer whenever committedOffset changes.
+  //  • Past ≤ 0 min, within last 2h  → real RainViewer radar frame for that exact timestamp
+  //  • Future or older than 2h       → OWM live cloud tile (always current snapshot)
+  // RainViewer frames are cached by path (immutable hashes); OWM is always fresh.
+  useEffect(() => {
+    const map = mapInstanceRef.current
+    if (!map || !mapReady || typeof L === 'undefined') return
+
+    const nowSec   = Math.floor(Date.now() / 1000)
+    const targetSec = nowSec + committedOffset * 60
+
+    // Pick a RainViewer frame only for past offsets
+    const rvFrame  = committedOffset <= 0 ? nearestRvFrame(allRvFrames, targetSec) : null
+    const targetKey = rvFrame ? rvFrame.path : 'owm'
+
+    if (targetKey === activeKeyRef.current) return
+    activeKeyRef.current = targetKey
+
+    const prev = cloudLayerRef.current
+
+    // Get or create the target Leaflet layer
+    let next: any
+    if (rvFrame && rvLayerCacheRef.current.has(rvFrame.path)) {
+      next = rvLayerCacheRef.current.get(rvFrame.path)
+    } else {
+      const url = rvFrame
+        ? `${rvFrame.host}${rvFrame.path}/256/{z}/{x}/{y}/${RV_COLOR}/${RV_OPTIONS}.png`
+        : '/api/tiles/clouds/{z}/{x}/{y}?offset=0'
+      next = L.tileLayer(url, {
+        opacity: 0,
+        className: rvFrame ? 'rv-radar' : 'owm-clouds',
+        attribution: rvFrame ? '© RainViewer' : '© OpenWeatherMap',
+        updateWhenZooming: false,
+        keepBuffer: 4,
+        ...(rvFrame ? { maxNativeZoom: RV_MAX_NATIVE_ZOOM } : {}),
+      })
+      if (rvFrame) rvLayerCacheRef.current.set(rvFrame.path, next)
+    }
+
+    if (!map.hasLayer(next)) next.addTo(map)
+    next.setOpacity(0)
+
+    let committed = false
+    function activate() {
+      if (committed) return
+      committed = true
+      next.setOpacity(CLOUD_OPACITY)
+      cloudLayerRef.current = next
+      if (prev && prev !== next) {
+        prev.setOpacity(0)
+        setTimeout(() => {
+          if (cloudLayerRef.current !== prev && map.hasLayer(prev)) map.removeLayer(prev)
+        }, 600)
+      }
+    }
+    const fallback = setTimeout(activate, 4000)
+    next.once('load', () => { clearTimeout(fallback); activate() })
+    return () => clearTimeout(fallback)
+  }, [committedOffset, mapReady, allRvFrames])
 
   // Keep slider green-fill in sync via CSS custom property (avoids inline style)
   useEffect(() => {
@@ -158,9 +196,9 @@ export default function WeatherMap() {
   }, [rawOffset])
 
   function handleScrub(val: number) {
-    setRawOffset(val) // drives stats bar; tile layer is always "now" (Maps 1.0 limitation)
+    setRawOffset(val)  // instant: slider, stats bar, timeline, badge
     if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(() => setRawOffset(val), 120)
+    debounceRef.current = setTimeout(() => setCommittedOffset(val), 250)  // debounced tile swap
   }
 
   // Fly to real location
@@ -223,11 +261,20 @@ export default function WeatherMap() {
       <div className="relative flex-1 min-h-0">
         {/* touch-none passes pinch gestures to Leaflet */}
         <div ref={mapRef} className="absolute inset-0 bg-[#111] touch-none" />
-        {/* LIVE badge — reminds user the cloud overlay is always current (Maps 1.0 limitation) */}
-        <div className="absolute top-2 right-2 z-[1000] flex items-center gap-1 bg-black/60 backdrop-blur-sm border border-white/15 rounded-full px-2 py-0.5 pointer-events-none">
-          <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-          <span className="text-[10px] text-white/70 font-medium tracking-wide">LIVE CLOUDS</span>
-        </div>
+        {/* Layer source badge — RADAR (RainViewer, past 2h) or LIVE CLOUDS (OWM) */}
+        {(() => {
+          const nowSec  = Math.floor(Date.now() / 1000)
+          const rvF     = rawOffset <= 0 ? nearestRvFrame(allRvFrames, nowSec + rawOffset * 60) : null
+          const label   = rvF
+            ? `RADAR · ${new Date(rvF.time * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`
+            : 'LIVE CLOUDS'
+          return (
+            <div className="absolute top-2 right-2 z-[1000] flex items-center gap-1 bg-black/60 backdrop-blur-sm border border-white/15 rounded-full px-2 py-0.5 pointer-events-none">
+              <span className={`w-1.5 h-1.5 rounded-full ${rvF ? 'bg-amber-400' : 'bg-green-400 animate-pulse'}`} />
+              <span className="text-[10px] text-white/70 font-medium tracking-wide">{label}</span>
+            </div>
+          )
+        })()}
       </div>
 
       {/* Scrollable info strip — weather + air quality */}
@@ -316,8 +363,8 @@ export default function WeatherMap() {
         </div>
       </div>
 
-      {/* Time scrubber */}
-      <div className="flex-shrink-0 bg-black/90 border-t border-white/10 px-4 py-3 select-none">
+      {/* Time scrubber — hidden for now */}
+      <div className="hidden">
 
         {/* Cloud layer timeline — 3 altitude bands plotted across the 42 h window */}
         {cloudLayers.length > 0 && (() => {
