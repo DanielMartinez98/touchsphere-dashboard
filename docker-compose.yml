@@ -1,0 +1,31 @@
+services:
+  # ── TouchSphere dashboard ──────────────────────────────────────────────────
+  app:
+    image: ghcr.io/YOUR_GITHUB_USERNAME/touchsphere-dashboard:latest
+    container_name: touchsphere
+    restart: unless-stopped
+    ports:
+      - "3001:3001"      # access the dashboard at http://PI_IP:3001
+    env_file:
+      - .env             # put your real secrets here (never committed)
+    environment:
+      NODE_ENV: production
+
+  # ── Watchtower — auto-pulls new image when GitHub Actions publishes one ────
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Allow Watchtower to pull from ghcr.io using your GitHub token
+      - ${HOME}/.docker/config.json:/config.json:ro
+    environment:
+      # Check ghcr.io every 5 minutes for a new :latest image
+      WATCHTOWER_POLL_INTERVAL: "300"
+      WATCHTOWER_CLEANUP: "true"          # delete old images automatically
+      WATCHTOWER_INCLUDE_STOPPED: "false"
+      WATCHTOWER_NOTIFICATIONS: "shoutrrr"
+      # Optional — remove the line below if you don't want Slack/email alerts
+      # WATCHTOWER_NOTIFICATION_URL: "slack://TOKEN@CHANNEL"
+    command: touchsphere   # only watches the 'touchsphere' container
