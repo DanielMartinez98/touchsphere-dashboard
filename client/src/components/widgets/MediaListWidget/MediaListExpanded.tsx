@@ -18,15 +18,19 @@ export default function MediaListExpanded({ items, addItem, removeItem, markDone
   const [showKeyboard, setShowKeyboard] = useState(false)
 
   const handleAdd = (e?: React.PointerEvent) => {
+    console.log('[MediaList] handleAdd fired', { title, type, eventType: e?.type })
     e?.preventDefault()
     const trimmed = title.trim()
     if (!trimmed) {
+      console.log('[MediaList] title is empty — opening keyboard')
       setShowKeyboard(true)
       return
     }
+    console.log('[MediaList] adding item', { trimmed, type })
     addItem(trimmed, type)
     setTitle('')
     setShowKeyboard(false)
+    console.log('[MediaList] item added, keyboard closed')
   }
 
   return (

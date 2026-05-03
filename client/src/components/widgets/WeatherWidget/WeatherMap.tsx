@@ -10,12 +10,13 @@ declare const L: any
 const MIN_OFFSET = -360
 const MAX_OFFSET = 2160
 
-// contrast(2.5): amplifies faint cloud pixels without destroying gradients
-// brightness(1.25): modest lift so thin cirrus registers without blowing out dense clouds
-// saturate(2): preserves the blue-gray OWM cloud hue (brightness alone turns them white)
-// drop-shadow: adds a subtle cyan halo for legibility against bright map tiles
-const CLOUD_FILTER =
-  'contrast(2.5) brightness(1.25) saturate(2) drop-shadow(0 0 3px rgba(0,180,220,0.6))'
+// Apple Weather aesthetic: satellite base + white clouds with soft glow.
+// The OWM clouds_new tile is RGBA — cloud pixels are white/grey, clear sky is transparent.
+// On a dark satellite base the white stands out naturally.
+// contrast(1.6): sharpens faint cloud edges without over-saturating.
+// brightness(1.3): lifts thin cirrus into visible range.
+// drop-shadow: gives clouds a soft luminous halo (Apple-style inner glow).
+const CLOUD_FILTER = 'contrast(1.6) brightness(1.3) drop-shadow(0 0 6px rgba(255,255,255,0.5))'
 
 function windDir(deg: number): string {
   const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
@@ -37,21 +38,11 @@ function absTime(min: number): string {
   )
 }
 
-function buildCloudUrl(offsetMin: number): string {
-  // All tiles now go through our server proxy which caches responses in memory.
-  // The OWM key is kept server-side; the client never needs it.
-  return `/api/tiles/clouds/{z}/{x}/{y}?offset=${offsetMin}`
-}
 
-// Full opacity after crossfade; CSS filter handles visual punch
-const CLOUD_OPACITY = 1
-// One slot per hour across the full 42-hour window (-6h → +36h) = 43 entries
-const LAYER_CACHE_MAX = 50
-// All hourly offsets in the timeline, built once at module level
-const HOUR_OFFSETS: readonly number[] = Array.from(
-  { length: (MAX_OFFSET - MIN_OFFSET) / 60 + 1 },
-  (_, i) => MIN_OFFSET + i * 60
-)
+// OWM Maps 1.0 (free tier) has no date param — it always returns current clouds.
+// We load a single cloud layer once and refresh it hourly. The scrubber only
+// drives the stats bar below the map (which uses the forecast API), not the tiles.
+const CLOUD_OPACITY = 0.85
 
 const AQI_COLORS: Record<number, string> = {
   1: 'text-green-400 border-green-500/40 bg-green-500/10',
@@ -67,30 +58,14 @@ export default function WeatherMap() {
   const markerRef = useRef<any>(null)
   const cloudLayerRef = useRef<any>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const loadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sliderRef = useRef<HTMLInputElement>(null)
-  // Client-side layer cache: keeps Leaflet layer objects for visited offsets so
-  // scrubbing back is instant (zero network, zero re-render flash)
-  const layerCacheRef = useRef<Map<number, any>>(new Map())
-  // Tracks the in-flight layer currently loading so we can cancel it if the user
-  // scrubs again before it finishes
-  const pendingLayerRef = useRef<any>(null)
   const { weather } = useWeather()
   const { aqi } = useAirQuality()
   const { forecasts } = useForecast()
   const { cloudLayers } = useCloudLayers()
-  // rawOffset drives the slider visuals instantly; committedOffset drives tile swaps (debounced)
+  // rawOffset drives the slider visuals and stats bar; the tile layer is always "now"
   const [rawOffset, setRawOffset] = useState(0)
-  const [committedOffset, setCommittedOffset] = useState(0)
-  // mapReady bridges the gap between the map-init effect (which writes to a ref)
-  // and the cloud-layer effect (which needs the map to exist). Setting state here
-  // causes a React re-render so the cloud effect re-fires with the map available.
   const [mapReady, setMapReady] = useState(false)
-  // prefetchTick increments every hour — triggers a full cache clear + re-prefetch
-  const [prefetchTick, setPrefetchTick] = useState(0)
-  // Ref mirror of committedOffset so the async prefetch loop sees the latest value
-  // without needing to be included in the effect's dependency array
-  const committedOffsetRef = useRef(0)
 
   // Initialize map once — tiles go through server proxy, no OWM key needed client-side
   useEffect(() => {
@@ -99,17 +74,22 @@ export default function WeatherMap() {
 
     const map = L.map(mapRef.current, {
       center: [20, 0],
-      zoom: 2,
+      zoom: 3,
+      minZoom: 3,
       zoomControl: true,
+      scrollWheelZoom: true,
       // Touch gestures — pinch-to-zoom and drag-to-pan on touchscreens
       touchZoom: true,
       dragging: true,
-      tap: true,
+      tap: false,   // tap:true causes ghost clicks on some touch devices
     })
+    console.log('[WeatherMap] Leaflet map initialised')
     mapInstanceRef.current = map
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '© OpenStreetMap',
+    // ESRI World Imagery — free satellite tiles, no key required
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics',
+      maxZoom: 19,
     }).addTo(map)
 
     // Inject cloud CSS filter + crossfade transition once
@@ -118,214 +98,57 @@ export default function WeatherMap() {
       s.id = 'owm-cloud-style'
       s.textContent = [
         `.owm-clouds img { filter: ${CLOUD_FILTER} !important; }`,
-        `.owm-clouds { transition: opacity 0.35s ease-in-out; }`,
+        `.owm-clouds { transition: opacity 0.5s ease-in-out; }`,
       ].join('\n')
       document.head.appendChild(s)
     }
+
+    // Load the cloud layer once — Maps 1.0 free tier has no date param so one
+    // layer covers all time positions. Refresh every 60 min.
+    function loadCloudLayer() {
+      const prev = cloudLayerRef.current
+      const layer = L.tileLayer('/api/tiles/clouds/{z}/{x}/{y}?offset=0', {
+        opacity: 0,
+        className: 'owm-clouds',
+        attribution: '© OpenWeatherMap',
+        updateWhenZooming: false,
+        keepBuffer: 4,
+      }).addTo(map)
+      layer.once('load', () => {
+        layer.setOpacity(CLOUD_OPACITY)
+        cloudLayerRef.current = layer
+        if (prev) {
+          prev.setOpacity(0)
+          setTimeout(() => { if (map.hasLayer(prev)) map.removeLayer(prev) }, 600)
+        }
+      })
+      // Fallback: activate even if some tiles 404
+      setTimeout(() => {
+        if (layer.options.opacity === 0) {
+          layer.setOpacity(CLOUD_OPACITY)
+          cloudLayerRef.current = layer
+          if (prev && map.hasLayer(prev)) map.removeLayer(prev)
+        }
+      }, 5000)
+    }
+    loadCloudLayer()
+    const cloudRefreshId = setInterval(loadCloudLayer, 60 * 60 * 1000)
     // Signal that the map exists — triggers the cloud layer effect to run properly
     setMapReady(true)
+    console.log('[WeatherMap] mapReady = true')
 
     return () => {
+      clearInterval(cloudRefreshId)
       if (debounceRef.current) clearTimeout(debounceRef.current)
-      if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current)
       map.remove()
       mapInstanceRef.current = null
       markerRef.current = null
       cloudLayerRef.current = null
-      pendingLayerRef.current = null
-      layerCacheRef.current.clear()
       setMapReady(false)
     }
   }, [])
 
-  // Sync committedOffsetRef so the prefetch loop can read the current offset
-  // without a stale closure
-  useEffect(() => {
-    committedOffsetRef.current = committedOffset
-  }, [committedOffset])
-
-  // Hourly refresh: clear all non-active cached layers from the map and from cache,
-  // then increment prefetchTick to trigger a full re-prefetch of all 43 offsets.
-  useEffect(() => {
-    const id = setInterval(() => {
-      const map = mapInstanceRef.current
-      if (map) {
-        const active = cloudLayerRef.current
-        for (const [, layer] of layerCacheRef.current) {
-          if (layer !== active && map.hasLayer(layer)) map.removeLayer(layer)
-        }
-        // Clear entire cache (active layer will crossfade to a fresh one via cloud effect)
-        layerCacheRef.current.clear()
-      }
-      setPrefetchTick(t => t + 1)
-    }, 60 * 60 * 1000)
-    return () => clearInterval(id)
-  }, [])
-
-  // Load-gated crossfade with single-layer-on-map guarantee.
-  //
-  // KEY INVARIANT: only the active cloud layer (cloudLayerRef) is ever on the map.
-  // All other cached layers are removed from the map after the crossfade completes
-  // so that zoom events only trigger tile requests for one layer, not up to 8.
-  // Server-side tile cache means re-adding a cached layer is fast (<100 ms).
-  //
-  // updateWhenZooming:false keeps existing tiles visible (scaled) during the zoom
-  // animation instead of immediately discarding them — eliminates the flash.
-  useEffect(() => {
-    const map = mapInstanceRef.current
-    if (!map || !mapReady || typeof L === 'undefined') return
-
-    const offset = committedOffset
-    const cache = layerCacheRef.current
-
-    // Cancel any in-flight layer (user scrubbed again before it finished)
-    if (pendingLayerRef.current) {
-      map.removeLayer(pendingLayerRef.current)
-      pendingLayerRef.current = null
-    }
-    if (loadTimeoutRef.current) {
-      clearTimeout(loadTimeoutRef.current)
-      loadTimeoutRef.current = null
-    }
-
-    const prev = cloudLayerRef.current
-
-    // Shared commit: make `next` the active layer and remove `prev` from the map
-    // after the CSS crossfade has finished (0.4 s covers the 0.35 s transition).
-    function activateLayer(next: any) {
-      if (next === prev) return
-      next.setOpacity(CLOUD_OPACITY)
-      cloudLayerRef.current = next
-      if (prev) {
-        prev.setOpacity(0)
-        // Remove prev from the map after the fade so it stops requesting tiles
-        // on zoom events. cloudLayerRef guard prevents removing a layer that was
-        // just re-activated before the timeout fires.
-        setTimeout(() => {
-          if (cloudLayerRef.current !== prev && map.hasLayer(prev)) {
-            map.removeLayer(prev)
-          }
-        }, 400)
-      }
-    }
-
-    // Helper: wait for a layer that is already on the map to finish loading
-    // (or fall through after a timeout), then activate it.
-    function waitAndActivate(next: any, timeoutMs: number) {
-      pendingLayerRef.current = next
-      function commit() {
-        if (pendingLayerRef.current !== next) return
-        pendingLayerRef.current = null
-        activateLayer(next)
-      }
-      loadTimeoutRef.current = setTimeout(commit, timeoutMs)
-      next.once('load', () => {
-        if (loadTimeoutRef.current) {
-          clearTimeout(loadTimeoutRef.current)
-          loadTimeoutRef.current = null
-        }
-        commit()
-      })
-    }
-
-    // Cache hit — re-add layer to map if it was removed, then crossfade.
-    // Server-side tile cache means tiles arrive in <100 ms typically.
-    if (cache.has(offset)) {
-      const next = cache.get(offset)
-      if (next === prev) return
-      next.setOpacity(0)
-      if (!map.hasLayer(next)) map.addLayer(next)
-      waitAndActivate(next, 2000)
-      return
-    }
-
-    // Cache miss — create new layer with zoom-stable options
-    const newLayer = L.tileLayer(buildCloudUrl(offset), {
-      opacity: 0,
-      className: 'owm-clouds',
-      attribution: '© OpenWeatherMap',
-      // Keep scaled tiles visible during zoom animation — no flash
-      updateWhenZooming: false,
-      // Pre-load an extra ring of tiles around the viewport
-      keepBuffer: 4,
-    }).addTo(map)
-
-    // Evict oldest from cache when at limit (also removes it from map if still there)
-    if (cache.size >= LAYER_CACHE_MAX) {
-      const firstEntry = cache.entries().next().value as [number, any] | undefined
-      if (firstEntry) {
-        const [oldOffset, oldLayer] = firstEntry
-        if (map.hasLayer(oldLayer)) map.removeLayer(oldLayer)
-        cache.delete(oldOffset)
-      }
-    }
-    cache.set(offset, newLayer)
-
-    waitAndActivate(newLayer, 3000)
-  }, [committedOffset, mapReady, prefetchTick])
-
-  // Background prefetch: load all 43 hourly offsets sequentially so every hour
-  // is ready in the browser tile cache before the user scrubs to it.
-  // Runs once on map-ready, then again every hour (prefetchTick).
-  // Each layer is added at opacity 0, waits for the Leaflet `load` event
-  // (which fires once all tiles in the current viewport have loaded into the
-  // browser's HTTP cache), then is removed from the map but kept in layerCacheRef
-  // so the cloud effect can re-add it instantly.
-  useEffect(() => {
-    const map = mapInstanceRef.current
-    if (!map || !mapReady || typeof L === 'undefined') return
-
-    let cancelled = false
-
-    ;(async () => {
-      for (const offset of HOUR_OFFSETS) {
-        if (cancelled) break
-        // Skip the currently active offset — the cloud effect manages it
-        if (offset === committedOffsetRef.current) continue
-        // Skip offsets already cached from this prefetch cycle
-        if (layerCacheRef.current.has(offset)) continue
-
-        await new Promise<void>(resolve => {
-          const layer = L.tileLayer(buildCloudUrl(offset), {
-            opacity: 0,
-            className: 'owm-clouds',
-            attribution: '© OpenWeatherMap',
-            updateWhenZooming: false,
-            keepBuffer: 2,
-          }).addTo(map)
-
-          function done() {
-            if (map.hasLayer(layer)) map.removeLayer(layer)
-            if (!cancelled) {
-              // Only cache if not already set by the cloud effect
-              if (!layerCacheRef.current.has(offset)) {
-                if (layerCacheRef.current.size >= LAYER_CACHE_MAX) {
-                  // Evict oldest non-active entry
-                  for (const [k, v] of layerCacheRef.current) {
-                    if (v !== cloudLayerRef.current) {
-                      if (map.hasLayer(v)) map.removeLayer(v)
-                      layerCacheRef.current.delete(k)
-                      break
-                    }
-                  }
-                }
-                layerCacheRef.current.set(offset, layer)
-              }
-            }
-            resolve()
-          }
-
-          const timer = setTimeout(done, 5000)
-          layer.once('load', () => { clearTimeout(timer); done() })
-        })
-
-        // 150 ms gap between layers — avoids saturating the connection
-        if (!cancelled) await new Promise<void>(r => setTimeout(r, 150))
-      }
-    })()
-
-    return () => { cancelled = true }
-  }, [mapReady, prefetchTick])
+  // (cloud layer is managed inside the map init effect above — no extra effects needed)
 
   // Keep slider green-fill in sync via CSS custom property (avoids inline style)
   useEffect(() => {
@@ -335,9 +158,9 @@ export default function WeatherMap() {
   }, [rawOffset])
 
   function handleScrub(val: number) {
-    setRawOffset(val) // instant visual feedback
+    setRawOffset(val) // drives stats bar; tile layer is always "now" (Maps 1.0 limitation)
     if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(() => setCommittedOffset(val), 120)
+    debounceRef.current = setTimeout(() => setRawOffset(val), 120)
   }
 
   // Fly to real location
@@ -357,9 +180,9 @@ export default function WeatherMap() {
   }, [weather])
 
 
-  // Pick the data source for the stats bar:
-  //   rawOffset > 0 and we have forecast slots → use nearest forecast slot (real OWM data)
-  //   otherwise → use current weather
+  // Pick the data source for the stats bar. The cloud tile on the map is always
+  // "now" (OWM Maps 1.0 free tier has no date parameter). The stats bar and the
+  // cloud-layer timeline DO update with the scrubber via the forecast API.
   const fcastSlot = rawOffset > 0 ? nearestSlot(forecasts, rawOffset) : null
   const isForecast = fcastSlot !== null
 
@@ -397,8 +220,15 @@ export default function WeatherMap() {
   return (
     <div className="flex flex-col h-full pt-16">
       {/* Map */}
-      {/* Map — touch-none passes pinch gestures to Leaflet instead of the browser */}
-      <div ref={mapRef} className="flex-1 min-h-0 bg-[#111] touch-none" />
+      <div className="relative flex-1 min-h-0">
+        {/* touch-none passes pinch gestures to Leaflet */}
+        <div ref={mapRef} className="absolute inset-0 bg-[#111] touch-none" />
+        {/* LIVE badge — reminds user the cloud overlay is always current (Maps 1.0 limitation) */}
+        <div className="absolute top-2 right-2 z-[1000] flex items-center gap-1 bg-black/60 backdrop-blur-sm border border-white/15 rounded-full px-2 py-0.5 pointer-events-none">
+          <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+          <span className="text-[10px] text-white/70 font-medium tracking-wide">LIVE CLOUDS</span>
+        </div>
+      </div>
 
       {/* Scrollable info strip — weather + air quality */}
       <div className="flex-shrink-0 bg-black/80 border-t border-white/10 px-2 py-2 overflow-x-auto">

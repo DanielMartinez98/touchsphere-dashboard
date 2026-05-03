@@ -51,9 +51,9 @@ router.get('/clouds/:z/:x/:y', async (req: Request, res: Response) => {
     return
   }
 
-  // Round to nearest hour (3600 s) for cache key stability
-  const roundedUnix = Math.round((Date.now() + offsetMin * 60_000) / 3_600_000) * 3600
-  const cacheKey = `${z}/${x}/${y}/${roundedUnix}`
+  // Cache key: z/x/y + hour bucket (Maps 1.0 tiles update ~hourly)
+  const hourBucket = Math.floor(Date.now() / 3_600_000)
+  const cacheKey = `${z}/${x}/${y}/${hourBucket}`
 
   const cached = tileCache.get(cacheKey)
   if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
@@ -64,8 +64,12 @@ router.get('/clouds/:z/:x/:y', async (req: Request, res: Response) => {
     return
   }
 
-  // Use Maps 2.0 for all offsets (consistent rendering, opacity=1 for full detail)
-  const tileUrl = `https://maps.openweathermap.org/maps/2.0/weather/CL/${z}/${x}/${y}?appid=${apiKey}&date=${roundedUnix}&opacity=1&fill_bound=true`
+  // Maps 1.0 endpoint — available on the free tier.
+  // Maps 2.0 (maps.openweathermap.org/maps/2.0/) returns 401 on free-tier keys.
+  // Maps 1.0 doesn't accept a date param so all time offsets show current clouds;
+  // the scrubber still works visually but the tile itself is always "now".
+  const tileUrl = `https://tile.openweathermap.org/map/clouds_new/${z}/${x}/${y}.png?appid=${apiKey}`
+  console.log(`[tiles] MISS z=${z} x=${x} y=${y} offset=${offsetMin}min → tile.openweathermap.org/map/clouds_new/${z}/${x}/${y}.png`)
 
   try {
     const { data, headers } = await axios.get<ArrayBuffer>(tileUrl, {
@@ -74,6 +78,7 @@ router.get('/clouds/:z/:x/:y', async (req: Request, res: Response) => {
     })
     const buffer = Buffer.from(data)
     const contentType: string = (headers['content-type'] as string) || 'image/png'
+    console.log(`[tiles] upstream OK z=${z} x=${x} y=${y} bytes=${buffer.length} type=${contentType} status=${headers['x-cache'] ?? 'n/a'}`)
 
     evict()
     tileCache.set(cacheKey, { data: buffer, contentType, cachedAt: Date.now() })
@@ -82,7 +87,10 @@ router.get('/clouds/:z/:x/:y', async (req: Request, res: Response) => {
     res.setHeader('X-Cache', 'MISS')
     res.setHeader('Cache-Control', 'public, max-age=1800')
     res.send(buffer)
-  } catch {
+  } catch (err: any) {
+    const status = err?.response?.status ?? 'no-response'
+    const body   = err?.response?.data ? Buffer.from(err.response.data).toString('utf8').slice(0, 200) : String(err)
+    console.error(`[tiles] UPSTREAM ERROR z=${z} x=${x} y=${y} status=${status} body=${body}`)
     res.setHeader('Content-Type', 'image/png')
     res.status(200).send(TRANSPARENT_TILE)
   }
