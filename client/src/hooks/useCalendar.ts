@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import type { CalendarEvent } from '../types'
 
 export function useCalendar() {
@@ -6,25 +6,32 @@ export function useCalendar() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  const fetchToday = useCallback(async () => {
-    try {
-      const res = await fetch('/api/calendar/today')
-      if (!res.ok) throw new Error('Calendar fetch failed')
-      const data = await res.json()
-      setEvents(data.events ?? [])
-      setError(null)
-    } catch {
-      setError('Could not load calendar')
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
   useEffect(() => {
+    let cancelled = false
+
+    async function fetchToday() {
+      try {
+        const res = await fetch('/api/calendar/today')
+        if (!res.ok) throw new Error('Calendar fetch failed')
+        const data = await res.json()
+        if (!cancelled) {
+          setEvents(data.events ?? [])
+          setError(null)
+        }
+      } catch {
+        if (!cancelled) setError('Could not load calendar')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
     fetchToday()
     const id = setInterval(fetchToday, 5 * 60 * 1000)
-    return () => clearInterval(id)
-  }, [fetchToday])
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [])
 
   return { events, loading, error }
 }

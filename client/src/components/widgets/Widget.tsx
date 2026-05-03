@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { createPortal } from 'react-dom'
 import type { WidgetPosition } from '../../types'
@@ -25,6 +26,16 @@ const expandOrigin: Record<WidgetPosition, string> = {
 }
 
 export default function Widget({ position, collapsed, expanded, isOpen, onToggle }: WidgetProps) {
+  // Close on Escape key
+  useEffect(() => {
+    if (!isOpen) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onToggle()
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [isOpen, onToggle])
+
   return (
     <div className={`absolute ${positionClasses[position]} z-10`}>
       {/* Collapsed pill — always visible */}
@@ -50,6 +61,8 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
         <AnimatePresence>
           {isOpen && (
             <motion.div
+              role="dialog"
+              aria-modal="true"
               className={`fixed inset-0 z-[9000] bg-black/95 backdrop-blur-xl flex flex-col ${expandOrigin[position]}`}
               initial={{ opacity: 0, scale: 0.85 }}
               animate={{ opacity: 1, scale: 1 }}

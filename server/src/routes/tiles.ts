@@ -21,11 +21,18 @@ const TRANSPARENT_TILE = Buffer.from(
 )
 
 function evict() {
-  if (tileCache.size < MAX_ENTRIES) return
+  // First pass: remove all expired entries regardless of cache size
   const cutoff = Date.now() - CACHE_TTL_MS
   for (const [key, entry] of tileCache) {
     if (entry.cachedAt < cutoff) tileCache.delete(key)
-    if (tileCache.size < MAX_ENTRIES * 0.75) break
+  }
+  // Second pass: if still over the hard limit, evict oldest entries
+  if (tileCache.size >= MAX_ENTRIES) {
+    const target = Math.floor(MAX_ENTRIES * 0.75)
+    for (const key of tileCache.keys()) {
+      if (tileCache.size <= target) break
+      tileCache.delete(key)
+    }
   }
 }
 
@@ -34,11 +41,13 @@ function evict() {
 // tiles within the same hour share one cache entry.
 router.get('/clouds/:z/:x/:y', async (req: Request, res: Response) => {
   const { z, x, y } = req.params
-  const offsetMin = parseInt(req.query['offset'] as string) || 0
+  // Clamp offset to the same 42-hour window the client uses (-6h to +36h)
+  const rawOffset = parseInt(req.query['offset'] as string)
+  const offsetMin = isNaN(rawOffset) ? 0 : Math.max(-360, Math.min(2160, rawOffset))
   const apiKey = process.env['OPENWEATHER_API_KEY']
 
   if (!apiKey) {
-    res.status(500).send('API key not configured')
+    res.status(500).json({ error: 'API key not configured' })
     return
   }
 
@@ -55,9 +64,8 @@ router.get('/clouds/:z/:x/:y', async (req: Request, res: Response) => {
     return
   }
 
-  const tileUrl = offsetMin === 0
-    ? `https://tile.openweathermap.org/map/clouds_new/${z}/${x}/${y}.png?appid=${apiKey}`
-    : `https://maps.openweathermap.org/maps/2.0/weather/CL/${z}/${x}/${y}?appid=${apiKey}&date=${roundedUnix}&opacity=0.75&fill_bound=true`
+  // Use Maps 2.0 for all offsets (consistent rendering, opacity=1 for full detail)
+  const tileUrl = `https://maps.openweathermap.org/maps/2.0/weather/CL/${z}/${x}/${y}?appid=${apiKey}&date=${roundedUnix}&opacity=1&fill_bound=true`
 
   try {
     const { data, headers } = await axios.get<ArrayBuffer>(tileUrl, {

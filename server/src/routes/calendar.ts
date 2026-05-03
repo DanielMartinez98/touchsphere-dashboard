@@ -41,13 +41,24 @@ function toEvent(key: string, event: VEvent): CalendarEvent {
   }
 }
 
+const ICAL_TIMEOUT_MS = 10_000
+
+function fetchIcal(url: string) {
+  return Promise.race([
+    ical.async.fromURL(url),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('iCal fetch timed out')), ICAL_TIMEOUT_MS)
+    ),
+  ])
+}
+
 // GET /api/calendar/today
 router.get('/today', async (_req: Request, res: Response) => {
   const icalUrl = process.env['CALENDAR_ICAL_URL']
   if (!icalUrl) { res.status(500).json({ error: 'Calendar URL not configured' }); return }
 
   try {
-    const data = await ical.async.fromURL(icalUrl)
+    const data = await fetchIcal(icalUrl)
     const today = new Date()
     const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate())
     const todayEnd = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1)
@@ -62,7 +73,8 @@ router.get('/today', async (_req: Request, res: Response) => {
       const startTime = event.start instanceof Date ? event.start : new Date(event.start)
       const endTime = event.end instanceof Date ? event.end : new Date(event.end ?? event.start)
 
-      if (!(startTime < todayEnd && endTime > todayStart)) continue
+      // Inclusive end boundary: an event starting exactly at midnight (todayEnd) still belongs to today
+      if (!(startTime <= todayEnd && endTime > todayStart)) continue
 
       events.push(toEvent(key, event))
     }
@@ -88,7 +100,7 @@ router.get('/month', async (req: Request, res: Response) => {
   const monthEnd = new Date(year, safeMonth + 1, 1)
 
   try {
-    const data = await ical.async.fromURL(icalUrl)
+    const data = await fetchIcal(icalUrl)
     const events: CalendarEvent[] = []
 
     for (const key in data) {

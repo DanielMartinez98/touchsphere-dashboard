@@ -13,8 +13,11 @@ const AQI_LABELS: Record<number, string> = {
 
 router.get('/', async (req: Request, res: Response) => {
   const { lat, lon } = req.query
-  if (!lat || !lon) {
-    res.status(400).json({ error: 'lat and lon are required' })
+  const latNum = parseFloat(lat as string)
+  const lonNum = parseFloat(lon as string)
+
+  if (!lat || !lon || isNaN(latNum) || isNaN(lonNum) || latNum < -90 || latNum > 90 || lonNum < -180 || lonNum > 180) {
+    res.status(400).json({ error: 'Valid lat (-90–90) and lon (-180–180) are required' })
     return
   }
 
@@ -27,7 +30,7 @@ router.get('/', async (req: Request, res: Response) => {
   try {
     const { data } = await axios.get(
       'https://api.openweathermap.org/data/2.5/air_pollution',
-      { params: { lat, lon, appid: apiKey }, timeout: 8000 }
+      { params: { lat: latNum, lon: lonNum, appid: apiKey }, timeout: 8000 }
     )
 
     const item = data.list[0]

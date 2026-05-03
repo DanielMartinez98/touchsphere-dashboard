@@ -96,15 +96,22 @@ export default function ParticleSphere() {
     torus.rotation.x = Math.PI / 2
     scene.add(torus)
 
-    // Mouse/touch proximity effect
+    // Mouse/touch proximity effect (throttled via requestAnimationFrame)
     let mouseX = 0
     let mouseY = 0
+    let pendingClientX = 0
+    let pendingClientY = 0
+    let pointerRafId: number | null = null
     const handlePointer = (e: MouseEvent | TouchEvent) => {
-      const bounds = mount.getBoundingClientRect()
-      const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX
-      const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY
-      mouseX = ((clientX - bounds.left) / bounds.width - 0.5) * 2
-      mouseY = -((clientY - bounds.top) / bounds.height - 0.5) * 2
+      pendingClientX = 'touches' in e ? e.touches[0].clientX : e.clientX
+      pendingClientY = 'touches' in e ? e.touches[0].clientY : e.clientY
+      if (pointerRafId !== null) return
+      pointerRafId = requestAnimationFrame(() => {
+        pointerRafId = null
+        const bounds = mount.getBoundingClientRect()
+        mouseX = ((pendingClientX - bounds.left) / bounds.width - 0.5) * 2
+        mouseY = -((pendingClientY - bounds.top) / bounds.height - 0.5) * 2
+      })
     }
     window.addEventListener('mousemove', handlePointer)
     window.addEventListener('touchmove', handlePointer, { passive: true })
@@ -139,12 +146,18 @@ export default function ParticleSphere() {
     window.addEventListener('resize', handleResize)
 
     return () => {
+      if (pointerRafId !== null) cancelAnimationFrame(pointerRafId)
       cancelAnimationFrame(frameId)
       window.removeEventListener('mousemove', handlePointer)
       window.removeEventListener('touchmove', handlePointer)
       window.removeEventListener('resize', handleResize)
+      geometry.dispose()
+      material.dispose()
+      texture.dispose()
+      torusGeo.dispose()
+      torusMat.dispose()
       renderer.dispose()
-      mount.removeChild(renderer.domElement)
+      if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement)
     }
   }, [])
 

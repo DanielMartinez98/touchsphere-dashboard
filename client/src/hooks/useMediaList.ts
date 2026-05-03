@@ -13,7 +13,11 @@ function loadList(): MediaItem[] {
 }
 
 function saveList(items: MediaItem[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(items))
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(items))
+  } catch {
+    console.warn('TouchSphere: failed to persist media list (storage quota exceeded?)')
+  }
 }
 
 export function useMediaList() {

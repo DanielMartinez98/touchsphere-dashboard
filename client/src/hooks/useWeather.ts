@@ -1,32 +1,76 @@
 import { useState, useEffect } from 'react'
 import type { WeatherData } from '../types'
 
+// ── Module-level singleton ──────────────────────────────────────────────────
+// Fetching starts the moment this module is first imported — before any
+// component mounts. All hook instances share the same data with no duplicate
+// network requests.
+
+type Listener = () => void
+
+let _weather: WeatherData | null = null
+let _error: string | null = null
+const _listeners = new Set<Listener>()
+
+function _notify() {
+  _listeners.forEach(fn => fn())
+}
+
+async function _getLocation(): Promise<{ lat: number; lon: number }> {
+  if (navigator.geolocation) {
+    try {
+      const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          timeout: 10_000,
+          maximumAge: 5 * 60 * 1000,
+        })
+      )
+      return { lat: pos.coords.latitude, lon: pos.coords.longitude }
+    } catch {
+      // fall through to IP-based lookup
+    }
+  }
+  const res = await fetch('https://ipapi.co/json/')
+  if (!res.ok) throw new Error('IP geolocation failed')
+  const geo = await res.json()
+  if (typeof geo.latitude !== 'number' || typeof geo.longitude !== 'number') {
+    throw new Error('Invalid geolocation response')
+  }
+  return { lat: geo.latitude, lon: geo.longitude }
+}
+
+async function _fetchWeather() {
+  try {
+    const { lat, lon } = await _getLocation()
+    const res = await fetch(`/api/weather?lat=${lat}&lon=${lon}`)
+    if (!res.ok) throw new Error('Weather fetch failed')
+    const data: WeatherData = await res.json()
+    _weather = { ...data, lat, lon }
+    _error = null
+  } catch {
+    _error = 'Unable to load weather'
+  }
+  _notify()
+}
+
+// Start immediately on module load, refresh every 10 minutes
+_fetchWeather()
+setInterval(_fetchWeather, 10 * 60 * 1000)
+
+// ── Hook ───────────────────────────────────────────────────────────────────
 export function useWeather() {
-  const [weather, setWeather] = useState<WeatherData | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [, rerender] = useState(0)
 
   useEffect(() => {
-    async function fetchWeather() {
-      try {
-        // Step 1: get location from IP (no key required)
-        const geoRes = await fetch('http://ip-api.com/json/?fields=lat,lon,city,country')
-        const geo = await geoRes.json()
-
-        // Step 2: fetch weather via our backend proxy
-        const weatherRes = await fetch(
-          `/api/weather?lat=${geo.lat}&lon=${geo.lon}`
-        )
-        if (!weatherRes.ok) throw new Error('Weather fetch failed')
-        const data: WeatherData = await weatherRes.json()
-        setWeather({ ...data, city: geo.city, country: geo.country, lat: geo.lat, lon: geo.lon })
-      } catch (e) {
-        setError('Unable to load weather')
-      }
-    }
-    fetchWeather()
-    const id = setInterval(fetchWeather, 10 * 60 * 1000) // refresh every 10 min
-    return () => clearInterval(id)
+    const listener: Listener = () => rerender(n => n + 1)
+    _listeners.add(listener)
+    return () => { _listeners.delete(listener) }
   }, [])
 
-  return { weather, error }
+  return { weather: _weather, error: _error }
+}
+
+// Expose for other singleton modules that need lat/lon
+export function getWeatherSnapshot() {
+  return _weather
 }
