@@ -9,12 +9,9 @@ export function SettingsPanel() {
       setConfirmClose(true)
       return
     }
-    // Attempt graceful server shutdown, then close the browser window.
-    // On Chromium kiosk the window may not close via JS — in that case the
-    // server will have stopped and the page will show a network error, which
-    // effectively ends the session.
+    // Server broadcasts a shutdown SSE event to all connected clients before
+    // exiting, so the kiosk display blanks immediately regardless of where it runs.
     fetch('/api/system/shutdown', { method: 'POST' }).catch(() => {})
-    setTimeout(() => window.close(), 300)
   }
 
   function closePanel() {
