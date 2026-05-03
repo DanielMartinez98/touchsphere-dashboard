@@ -3,6 +3,16 @@ import axios from 'axios'
 
 const router = Router()
 
+// ── Server-side cache (30 min) ───────────────────────────────────────────────
+// Matches the client's 30-min refresh rate; prevents extra OWM calls on page refresh.
+const AQI_TTL_MS = 30 * 60 * 1000
+interface AqiCache { data: object; ts: number }
+const aqiCache = new Map<string, AqiCache>()
+
+function cacheKey(lat: number, lon: number) {
+  return `${lat.toFixed(2)},${lon.toFixed(2)}`
+}
+
 const AQI_LABELS: Record<number, string> = {
   1: 'Good',
   2: 'Fair',
@@ -27,6 +37,14 @@ router.get('/', async (req: Request, res: Response) => {
     return
   }
 
+  const key = cacheKey(latNum, lonNum)
+  const cached = aqiCache.get(key)
+  if (cached && Date.now() - cached.ts < AQI_TTL_MS) {
+    console.log(`[airquality] cache hit for ${key}`)
+    res.json(cached.data)
+    return
+  }
+
   try {
     const { data } = await axios.get(
       'https://api.openweathermap.org/data/2.5/air_pollution',
@@ -37,7 +55,7 @@ router.get('/', async (req: Request, res: Response) => {
     const aqi: number = item.main.aqi
     const c = item.components
 
-    res.json({
+    const result = {
       aqi,
       aqi_label: AQI_LABELS[aqi] ?? 'Unknown',
       co: c.co,
@@ -46,7 +64,10 @@ router.get('/', async (req: Request, res: Response) => {
       so2: c.so2,
       pm2_5: c.pm2_5,
       pm10: c.pm10,
-    })
+    }
+    aqiCache.set(key, { data: result, ts: Date.now() })
+    console.log(`[airquality] fetched fresh for ${key}`)
+    res.json(result)
   } catch (err) {
     console.error('Air quality API error:', err)
     res.status(502).json({ error: 'Failed to fetch air quality data' })
