@@ -30,13 +30,14 @@ async function _getLocation(): Promise<{ lat: number; lon: number }> {
       // fall through to IP-based lookup
     }
   }
-  const res = await fetch('https://ipapi.co/json/')
+  // Fall back to server-side IP lookup (works over plain HTTP unlike navigator.geolocation)
+  const res = await fetch('/api/geoip')
   if (!res.ok) throw new Error('IP geolocation failed')
   const geo = await res.json()
-  if (typeof geo.latitude !== 'number' || typeof geo.longitude !== 'number') {
+  if (typeof geo.lat !== 'number' || typeof geo.lon !== 'number') {
     throw new Error('Invalid geolocation response')
   }
-  return { lat: geo.latitude, lon: geo.longitude }
+  return { lat: geo.lat, lon: geo.lon }
 }
 
 async function _fetchWeather() {

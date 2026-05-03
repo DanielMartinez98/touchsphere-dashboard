@@ -8,6 +8,7 @@ import weatherRouter from './routes/weather'
 import calendarRouter from './routes/calendar'
 import airQualityRouter from './routes/airquality'
 import tilesRouter from './routes/tiles'
+import geoipRouter from './routes/geoip'
 
 dotenv.config()
 
@@ -50,6 +51,7 @@ app.use('/api/weather', dataLimiter, weatherRouter)
 app.use('/api/calendar', dataLimiter, calendarRouter)
 app.use('/api/airquality', dataLimiter, airQualityRouter)
 app.use('/api/tiles', tileLimiter, tilesRouter)
+app.use('/api/geoip', dataLimiter, geoipRouter)
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true })
