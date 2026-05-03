@@ -2,7 +2,7 @@ import type { MediaType } from '../../../types'
 
 // Inline SVG icons for each media type — avoids dependency on colour-emoji fonts
 // which are often absent on Raspberry Pi OS / Chromium.
-const PATHS: Record<MediaType, JSX.Element> = {
+const PATHS: Record<MediaType, React.ReactElement> = {
   game: (
     <svg viewBox="0 0 24 24" width="1em" height="1em" fill="none"
       stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
