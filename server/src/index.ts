@@ -18,6 +18,10 @@ if (!process.env['OPENWEATHER_API_KEY']) {
   process.exit(1)
 }
 
+console.log('[startup] NODE_ENV:', process.env['NODE_ENV'])
+console.log('[startup] OPENWEATHER_API_KEY set:', !!process.env['OPENWEATHER_API_KEY'])
+console.log('[startup] CALENDAR_ICAL_URL set:', !!process.env['CALENDAR_ICAL_URL'])
+
 const app = express()
 const PORT = process.env['PORT'] ?? 3001
 const isProd = process.env['NODE_ENV'] === 'production'
@@ -29,6 +33,12 @@ app.use(helmet({ contentSecurityPolicy: false }))
 // In dev the Vite proxy handles CORS; in prod everything is same-origin
 app.use(cors({ origin: isProd ? false : '*' }))
 app.use(express.json())
+
+// Request logger
+app.use((req, _res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} — ip: ${req.headers['x-forwarded-for'] ?? req.ip}`)
+  next()
+})
 
 // Rate limiting — prevents API-quota exhaustion and simple DoS
 // Tile requests get a higher limit because Leaflet can load many tiles at once

@@ -22,15 +22,17 @@ router.get('/', async (req: Request, res: Response) => {
       : `https://ipapi.co/${encodeURIComponent(clientIp)}/json/`
 
     const { data } = await axios.get(url, { timeout: 8000 })
+    console.log(`[geoip] clientIp=${clientIp} isLoopback=${isLoopback} → lat=${data.latitude} lon=${data.longitude} error=${data.error ?? 'none'}`)
 
     if (typeof data.latitude !== 'number' || typeof data.longitude !== 'number') {
+      console.error('[geoip] unexpected response:', JSON.stringify(data))
       res.status(502).json({ error: 'Geolocation lookup failed' })
       return
     }
 
     res.json({ lat: data.latitude, lon: data.longitude })
   } catch (err) {
-    console.error('GeoIP error:', err)
+    console.error('[geoip] error:', err)
     res.status(502).json({ error: 'Geolocation lookup failed' })
   }
 })
