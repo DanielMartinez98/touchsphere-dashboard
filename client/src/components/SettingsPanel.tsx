@@ -1,10 +1,6 @@
 import { useState } from 'react'
 
-interface Props {
-  onClose?: () => void
-}
-
-export function SettingsPanel({ onClose }: Props) {
+export function SettingsPanel() {
   const [open, setOpen] = useState(false)
   const [confirmClose, setConfirmClose] = useState(false)
 

@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import type { AppMode } from '../../hooks/useAppMode'
-import { TouchKeyboard } from '../widgets/MediaListWidget/TouchKeyboard'
+import type { AppMode } from '../hooks/useAppMode'
+import { TouchKeyboard } from './widgets/MediaListWidget/TouchKeyboard'
 
 interface Props {
   mode: AppMode
@@ -59,7 +59,6 @@ export function StatusBar({ mode, hasCred, setMode, createPassword }: Props) {
   const [step, setStep] = useState<Step>('idle')
   const [pw, setPw] = useState('')
   const [pwConfirm, setPwConfirm] = useState('')
-  const [pwFocus, setPwFocus] = useState<'first' | 'second'>('first')
   const [error, setError] = useState('')
 
   function closePicker() {
@@ -88,7 +87,6 @@ export function StatusBar({ mode, hasCred, setMode, createPassword }: Props) {
     if (pw.length < 4) { setError('Password must be at least 4 characters'); return }
     if (step === 'create-pw') {
       setStep('confirm-pw')
-      setPwFocus('second')
       setError('')
       return
     }
@@ -155,7 +153,6 @@ export function StatusBar({ mode, hasCred, setMode, createPassword }: Props) {
             {/* Read-only display that shows stars — keyboard fills it */}
             <div
               className="bg-white/10 rounded-xl px-4 py-3 text-white text-sm tracking-widest cursor-pointer focus:outline-none border border-white/20 min-h-[44px]"
-              onClick={() => setPwFocus(step === 'confirm-pw' ? 'second' : 'first')}
             >
               {activeInput ? '•'.repeat(activeInput.length) : <span className="text-white/30">tap keyboard below…</span>}
             </div>
