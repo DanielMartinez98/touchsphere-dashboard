@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { MediaItem, MediaType } from '../../../types'
+import { MediaTypeIcon } from './MediaTypeIcon'
 
-const TYPE_ICON = { game: '🎮', show: '📺', movie: '🎬' } as const
 const TYPES: MediaType[] = ['game', 'show', 'movie']
 
 interface Props {
@@ -41,9 +41,10 @@ export default function MediaListExpanded({ items, addItem, removeItem, markDone
             <button
               key={t}
               onClick={() => setType(t)}
+              aria-label={t}
               className={`px-3 py-2 text-lg transition-colors ${type === t ? 'bg-cyan-500' : 'bg-white/5 hover:bg-white/10'}`}
             >
-              {TYPE_ICON[t]}
+              <MediaTypeIcon type={t} />
             </button>
           ))}
         </div>
@@ -65,7 +66,7 @@ export default function MediaListExpanded({ items, addItem, removeItem, markDone
             key={item.id}
             className={`flex items-center gap-3 bg-white/5 rounded-xl p-3 ${item.done ? 'opacity-40' : ''}`}
           >
-            <span className="text-xl">{TYPE_ICON[item.type]}</span>
+            <MediaTypeIcon type={item.type} className="text-xl text-white/80" />
             <span
               className={`flex-1 text-sm font-medium ${item.done ? 'line-through text-white/40' : 'text-white'}`}
             >
