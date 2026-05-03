@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { MediaItem, MediaType } from '../../../types'
 import { MediaTypeIcon } from './MediaTypeIcon'
+import { TouchKeyboard } from './TouchKeyboard'
 
 const TYPES: MediaType[] = ['game', 'show', 'movie']
 
@@ -14,12 +15,14 @@ interface Props {
 export default function MediaListExpanded({ items, addItem, removeItem, markDone }: Props) {
   const [title, setTitle] = useState('')
   const [type, setType] = useState<MediaType>('show')
+  const [showKeyboard, setShowKeyboard] = useState(false)
 
   const handleAdd = () => {
     const trimmed = title.trim()
     if (!trimmed) return
     addItem(trimmed, type)
     setTitle('')
+    setShowKeyboard(false)
   }
 
   return (
@@ -30,12 +33,12 @@ export default function MediaListExpanded({ items, addItem, removeItem, markDone
       <div className="flex gap-2">
         <input
           type="text"
-          inputMode="text"
+          inputMode="none"
           value={title}
-          onChange={e => setTitle(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleAdd()}
+          readOnly
+          onPointerDown={() => setShowKeyboard(true)}
           placeholder="Add title..."
-          className="flex-1 bg-white/10 text-white placeholder-white/30 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-cyan-500"
+          className="flex-1 bg-white/10 text-white placeholder-white/30 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-cyan-500 cursor-pointer"
         />
         <div className="flex rounded-xl overflow-hidden border border-white/20">
           {TYPES.map(t => (
@@ -61,8 +64,8 @@ export default function MediaListExpanded({ items, addItem, removeItem, markDone
         </button>
       </div>
 
-      {/* List */}
-      <div className="flex-1 overflow-auto flex flex-col gap-2">
+      {/* List — extra bottom padding when keyboard is open so items aren't hidden */}
+      <div className={`flex-1 overflow-auto flex flex-col gap-2 ${showKeyboard ? 'pb-64' : ''}`}>
         {items.length === 0 && (
           <p className="text-white/30 text-sm text-center mt-8">Nothing added yet</p>
         )}
@@ -92,6 +95,14 @@ export default function MediaListExpanded({ items, addItem, removeItem, markDone
           </div>
         ))}
       </div>
+
+      {showKeyboard && (
+        <TouchKeyboard
+          value={title}
+          onChange={setTitle}
+          onDone={() => setShowKeyboard(false)}
+        />
+      )}
     </div>
   )
 }
