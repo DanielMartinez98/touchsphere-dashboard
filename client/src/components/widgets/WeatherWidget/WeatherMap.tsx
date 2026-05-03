@@ -95,7 +95,15 @@ export default function WeatherMap() {
     if (!mapRef.current || typeof L === 'undefined') return
     if (mapInstanceRef.current) return
 
-    const map = L.map(mapRef.current, { center: [20, 0], zoom: 2, zoomControl: true })
+    const map = L.map(mapRef.current, {
+      center: [20, 0],
+      zoom: 2,
+      zoomControl: true,
+      // Touch gestures — pinch-to-zoom and drag-to-pan on touchscreens
+      touchZoom: true,
+      dragging: true,
+      tap: true,
+    })
     mapInstanceRef.current = map
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -386,7 +394,8 @@ export default function WeatherMap() {
   return (
     <div className="flex flex-col h-full pt-16">
       {/* Map */}
-      <div ref={mapRef} className="flex-1 min-h-0 bg-[#111]" />
+      {/* Map — touch-none passes pinch gestures to Leaflet instead of the browser */}
+      <div ref={mapRef} className="flex-1 min-h-0 bg-[#111] touch-none" />
 
       {/* Scrollable info strip — weather + air quality */}
       <div className="flex-shrink-0 bg-black/80 border-t border-white/10 px-2 py-2 overflow-x-auto">
