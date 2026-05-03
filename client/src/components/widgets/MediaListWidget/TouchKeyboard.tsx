@@ -49,7 +49,7 @@ export function TouchKeyboard({ value, onChange, onDone }: Props) {
           {ri === 2 && mode === 'alpha' && (
             <button
               onPointerDown={e => tap(e, () => setUpper(u => !u))}
-              className={`${keyBase} flex-none w-12 ${upper ? 'bg-cyan-500 text-black' : 'bg-white/20'}`}
+              className={`${keyBase} flex-none w-12 ${upper ? 'bg-[var(--accent,#06b6d4)] text-black' : 'bg-white/20'}`}
             >
               ⇧
             </button>
@@ -95,7 +95,7 @@ export function TouchKeyboard({ value, onChange, onDone }: Props) {
 
         <button
           onPointerDown={e => tap(e, onDone)}
-          className="h-12 w-20 flex-none rounded-lg bg-cyan-500 text-black text-sm font-bold flex items-center justify-center active:bg-cyan-400 select-none"
+          className="h-12 w-20 flex-none rounded-lg bg-[var(--accent,#06b6d4)] text-black text-sm font-bold flex items-center justify-center active:opacity-80 select-none"
         >
           Done
         </button>

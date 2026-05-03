@@ -3,7 +3,7 @@ services:
   app:
     image: ghcr.io/mmdan/touchsphere-dashboard:latest
     container_name: touchsphere
-    restart: unless-stopped
+    restart: on-failure
     ports:
       - "3001:3001"      # access the dashboard at http://PI_IP:3001
     env_file:

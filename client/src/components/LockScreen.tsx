@@ -72,7 +72,7 @@ export function LockScreen({ verifyPassword, unlock }: Props) {
       <button
         onClick={handleSubmit}
         disabled={!input || checking}
-        className="w-72 py-3 rounded-xl bg-cyan-500 text-black font-bold text-base disabled:opacity-40 active:scale-95 transition-transform mb-4"
+        className="w-72 py-3 rounded-xl bg-[var(--accent,#06b6d4)] text-black font-bold text-base disabled:opacity-40 active:scale-95 transition-transform mb-4"
       >
         {checking ? 'Checking…' : 'Unlock'}
       </button>

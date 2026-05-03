@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { AppMode } from '../hooks/useAppMode'
 import { TouchKeyboard } from './widgets/MediaListWidget/TouchKeyboard'
 
@@ -122,7 +123,7 @@ export function StatusBar({ mode, hasCred, setMode, createPassword }: Props) {
             {(['work', 'rest', 'locked'] as AppMode[]).map(m => (
               <button
                 key={m}
-                onClick={() => handleModeSelect(m)}
+                onClick={(e) => { e.stopPropagation(); handleModeSelect(m) }}
                 className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors ${
                   mode === m ? MODE_COLORS[m] + ' border' : 'text-white/70 hover:bg-white/10'
                 }`}
@@ -135,9 +136,9 @@ export function StatusBar({ mode, hasCred, setMode, createPassword }: Props) {
         </>
       )}
 
-      {/* Password creation modal */}
-      {(step === 'create-pw' || step === 'confirm-pw') && (
-        <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      {/* Password creation modal — portalled to body so it sits above widgets (z-9000) */}
+      {(step === 'create-pw' || step === 'confirm-pw') && createPortal(
+        <div className="fixed inset-0 z-[9500] flex items-center justify-center bg-black/70 backdrop-blur-sm">
           <div className="bg-[#111] border border-white/15 rounded-2xl p-6 w-80 flex flex-col gap-4 shadow-2xl">
             <div>
               <h2 className="text-white font-bold text-lg">
@@ -163,7 +164,7 @@ export function StatusBar({ mode, hasCred, setMode, createPassword }: Props) {
               <button onClick={closePicker} className="flex-1 py-2.5 rounded-xl bg-white/10 text-white/70 text-sm">
                 Cancel
               </button>
-              <button onClick={handleCreateSubmit} className="flex-1 py-2.5 rounded-xl bg-cyan-500 text-black font-bold text-sm">
+              <button onClick={handleCreateSubmit} className="flex-1 py-2.5 rounded-xl bg-[var(--accent,#06b6d4)] text-black font-bold text-sm">
                 {step === 'create-pw' ? 'Next' : 'Lock'}
               </button>
             </div>
@@ -175,7 +176,8 @@ export function StatusBar({ mode, hasCred, setMode, createPassword }: Props) {
             onChange={setActiveInput}
             onDone={handleCreateSubmit}
           />
-        </div>
+        </div>,
+        document.body
       )}
     </>
   )

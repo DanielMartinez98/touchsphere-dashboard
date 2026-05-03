@@ -23,13 +23,21 @@ function App() {
   const { items, nextItem, addItem, removeItem, markDone } = useMediaList()
   const { mode, hasCred, setMode, createPassword, verifyPassword, unlock } = useAppMode()
 
+  const isRest = mode === 'rest' || mode === 'locked'
+
   return (
-    <div className="relative w-screen h-screen bg-black overflow-hidden">
-      {/* Background gradient */}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_#0a0f2e_0%,_#000000_70%)]" />
+    <div className={`relative w-screen h-screen bg-black overflow-hidden ${isRest ? '[--accent:#8b5cf6]' : '[--accent:#06b6d4]'}`}>
+      {/* Background gradient — blue tint for work, purple tint for rest/locked */}
+      <div
+        className={`absolute inset-0 ${
+          isRest
+            ? 'bg-[radial-gradient(ellipse_at_center,#16082e_0%,#000000_70%)]'
+            : 'bg-[radial-gradient(ellipse_at_center,#0a0f2e_0%,#000000_70%)]'
+        }`}
+      />
 
       {/* Particle Sphere */}
-      <ParticleSphere />
+      <ParticleSphere mode={mode} />
 
       {/* Top-Left — Weather */}
       <Widget

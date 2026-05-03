@@ -36,9 +36,10 @@ export default function MediaListExpanded({ items, addItem, removeItem, markDone
           inputMode="none"
           value={title}
           readOnly
+          onClick={() => setShowKeyboard(true)}
           onPointerDown={() => setShowKeyboard(true)}
           placeholder="Add title..."
-          className="flex-1 bg-white/10 text-white placeholder-white/30 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-cyan-500 cursor-pointer"
+          className="flex-1 bg-white/10 text-white placeholder-white/30 rounded-xl px-4 py-3 text-sm outline-none cursor-pointer"
         />
         <div className="flex rounded-xl overflow-hidden border border-white/20">
           {TYPES.map(t => (
@@ -48,7 +49,7 @@ export default function MediaListExpanded({ items, addItem, removeItem, markDone
               aria-label={t}
               className={`px-5 py-3 text-xl transition-colors ${
                 type === t
-                  ? 'bg-cyan-500 text-black'
+                  ? 'bg-[var(--accent,#06b6d4)] text-black'
                   : 'bg-white/15 text-white hover:bg-white/25'
               }`}
             >
@@ -58,7 +59,7 @@ export default function MediaListExpanded({ items, addItem, removeItem, markDone
         </div>
         <button
           onClick={handleAdd}
-          className="px-4 py-2 bg-cyan-500 text-black font-bold rounded-xl active:scale-95"
+          className="px-4 py-2 bg-[var(--accent,#06b6d4)] text-black font-bold rounded-xl active:scale-95"
         >
           +
         </button>
@@ -100,7 +101,7 @@ export default function MediaListExpanded({ items, addItem, removeItem, markDone
         <TouchKeyboard
           value={title}
           onChange={setTitle}
-          onDone={() => setShowKeyboard(false)}
+          onDone={handleAdd}
         />
       )}
     </div>
