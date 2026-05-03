@@ -24,7 +24,19 @@ export interface ForecastSlot {
 
 type Listener = () => void
 
-let _forecasts: ForecastSlot[] = []
+// ── localStorage cache ──────────────────────────────────────────────────────
+const LS_KEY = 'ts_forecast'
+function _loadCache(): ForecastSlot[] {
+  try {
+    const raw = localStorage.getItem(LS_KEY)
+    return raw ? (JSON.parse(raw) as ForecastSlot[]) : []
+  } catch { return [] }
+}
+function _saveCache(slots: ForecastSlot[]) {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(slots)) } catch {}
+}
+
+let _forecasts: ForecastSlot[] = _loadCache()
 const _listeners = new Set<Listener>()
 let _lat: number | null = null
 let _lon: number | null = null
@@ -40,6 +52,7 @@ async function _fetchForecast() {
     if (!res.ok) return
     const slots: ForecastSlot[] = await res.json()
     _forecasts = slots
+    _saveCache(slots)
     _notify()
   } catch {
     // silently ignore

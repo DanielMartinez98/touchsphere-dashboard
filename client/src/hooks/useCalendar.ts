@@ -1,8 +1,22 @@
 import { useState, useEffect } from 'react'
 import type { CalendarEvent } from '../types'
 
+// ── localStorage cache for today’s events ───────────────────────────────────
+const LS_TODAY_KEY = 'ts_calendar_today'
+function _loadTodayCache(): CalendarEvent[] {
+  try {
+    const raw = localStorage.getItem(LS_TODAY_KEY)
+    return raw ? (JSON.parse(raw) as CalendarEvent[]) : []
+  } catch { return [] }
+}
+function _saveTodayCache(events: CalendarEvent[]) {
+  try { localStorage.setItem(LS_TODAY_KEY, JSON.stringify(events)) } catch {}
+}
+
 export function useCalendar() {
-  const [events, setEvents] = useState<CalendarEvent[]>([])
+  // Initialise from localStorage so the widget renders immediately without a
+  // loading flash on page reload, then the server fetch updates in the background.
+  const [events, setEvents] = useState<CalendarEvent[]>(_loadTodayCache)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -15,7 +29,9 @@ export function useCalendar() {
         if (!res.ok) throw new Error('Calendar fetch failed')
         const data = await res.json()
         if (!cancelled) {
-          setEvents(data.events ?? [])
+          const fetched: CalendarEvent[] = data.events ?? []
+          setEvents(fetched)
+          _saveTodayCache(fetched)
           setError(null)
         }
       } catch {

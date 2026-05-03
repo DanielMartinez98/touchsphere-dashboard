@@ -8,7 +8,19 @@ import { getWeatherSnapshot } from './useWeather'
 
 type Listener = () => void
 
-let _aqi: AirQualityData | null = null
+// ── localStorage cache ──────────────────────────────────────────────────────
+const LS_KEY = 'ts_aqi'
+function _loadCache(): AirQualityData | null {
+  try {
+    const raw = localStorage.getItem(LS_KEY)
+    return raw ? (JSON.parse(raw) as AirQualityData) : null
+  } catch { return null }
+}
+function _saveCache(data: AirQualityData) {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(data)) } catch {}
+}
+
+let _aqi: AirQualityData | null = _loadCache()
 const _listeners = new Set<Listener>()
 let _lat: number | null = null
 let _lon: number | null = null
@@ -24,6 +36,7 @@ async function _fetchAqi() {
     if (!res.ok) return
     const data: AirQualityData = await res.json()
     _aqi = data
+    _saveCache(data)
     _notify()
   } catch {
     // silently ignore

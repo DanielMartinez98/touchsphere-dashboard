@@ -1,7 +1,62 @@
 import { Router, Request, Response } from 'express'
 import ical, { VEvent } from 'node-ical'
+import fs from 'fs'
+import path from 'path'
 
 const router = Router()
+
+// ── Disk + memory calendar cache ─────────────────────────────────────────────
+// Calendar data barely changes — fetching Google iCal on every request wastes
+// network and risks Google rate-limiting. Strategy:
+//   1. In-memory cache (fast path) — 15 min TTL
+//   2. Disk cache (survives container restart) — same files, read on cold miss
+//   3. Live fetch — updates both caches
+//
+// CACHE_DIR defaults to /tmp/touchsphere-cache (set via env for a Docker volume).
+const CALENDAR_TTL_MS = 15 * 60 * 1000
+
+interface CacheEntry { events: CalendarEvent[]; ts: number }
+const memCache = new Map<string, CacheEntry>()
+
+function cacheDir(): string {
+  return process.env['CACHE_DIR'] ?? path.join(process.cwd(), '.cache')
+}
+function diskPath(key: string): string {
+  // Sanitise key so it's safe as a filename
+  return path.join(cacheDir(), `calendar-${key.replace(/[^a-z0-9-]/gi, '_')}.json`)
+}
+function readDisk(key: string): CacheEntry | null {
+  try {
+    const raw = fs.readFileSync(diskPath(key), 'utf8')
+    return JSON.parse(raw) as CacheEntry
+  } catch { return null }
+}
+function writeDisk(key: string, entry: CacheEntry): void {
+  try {
+    fs.mkdirSync(cacheDir(), { recursive: true })
+    fs.writeFileSync(diskPath(key), JSON.stringify(entry), 'utf8')
+  } catch (e) { console.warn('[calendar] disk write failed:', e) }
+}
+// Returns fresh-enough events from memory → disk → null (must fetch)
+function getCached(key: string): CalendarEvent[] | null {
+  const mem = memCache.get(key)
+  if (mem && Date.now() - mem.ts < CALENDAR_TTL_MS) return mem.events
+  const disk = readDisk(key)
+  if (disk && Date.now() - disk.ts < CALENDAR_TTL_MS) {
+    memCache.set(key, disk)   // warm memory cache from disk
+    return disk.events
+  }
+  return null
+}
+function setCached(key: string, events: CalendarEvent[]): void {
+  const entry: CacheEntry = { events, ts: Date.now() }
+  memCache.set(key, entry)
+  writeDisk(key, entry)
+}
+// Returns stale disk data to serve while a live fetch fails (offline fallback)
+function getStaleFallback(key: string): CalendarEvent[] | null {
+  try { return (readDisk(key) ?? memCache.get(key))?.events ?? null } catch { return null }
+}
 
 interface CalendarEvent {
   id: string
@@ -57,6 +112,14 @@ router.get('/today', async (_req: Request, res: Response) => {
   const icalUrl = process.env['CALENDAR_ICAL_URL']
   if (!icalUrl) { res.status(500).json({ error: 'Calendar URL not configured' }); return }
 
+  const key = 'today'
+  const cached = getCached(key)
+  if (cached) {
+    console.log('[calendar] cache hit for today')
+    res.json({ events: cached })
+    return
+  }
+
   try {
     const data = await fetchIcal(icalUrl)
     const today = new Date()
@@ -80,10 +143,18 @@ router.get('/today', async (_req: Request, res: Response) => {
     }
 
     events.sort((a, b) => a.start.localeCompare(b.start))
+    setCached('today', events)
+    console.log(`[calendar] fetched fresh today (${events.length} events)`)
     res.json({ events })
   } catch (err) {
     console.error('Calendar /today error:', err)
-    res.status(502).json({ error: 'Failed to fetch calendar' })
+    const fallback = getStaleFallback('today')
+    if (fallback) {
+      console.warn('[calendar] serving stale fallback for today')
+      res.json({ events: fallback })
+    } else {
+      res.status(502).json({ error: 'Failed to fetch calendar' })
+    }
   }
 })
 
@@ -95,6 +166,14 @@ router.get('/month', async (req: Request, res: Response) => {
   const year = parseInt(req.query['year'] as string) || new Date().getFullYear()
   const month = parseInt(req.query['month'] as string)
   const safeMonth = isNaN(month) ? new Date().getMonth() : month
+
+  const cacheKey = `month-${year}-${safeMonth}`
+  const cached = getCached(cacheKey)
+  if (cached) {
+    console.log(`[calendar] cache hit for ${cacheKey}`)
+    res.json({ events: cached })
+    return
+  }
 
   const monthStart = new Date(year, safeMonth, 1)
   const monthEnd = new Date(year, safeMonth + 1, 1)
@@ -117,10 +196,18 @@ router.get('/month', async (req: Request, res: Response) => {
     }
 
     events.sort((a, b) => a.start.localeCompare(b.start))
+    setCached(cacheKey, events)
+    console.log(`[calendar] fetched fresh ${cacheKey} (${events.length} events)`)
     res.json({ events })
   } catch (err) {
     console.error('Calendar /month error:', err)
-    res.status(502).json({ error: 'Failed to fetch calendar' })
+    const fallback = getStaleFallback(cacheKey)
+    if (fallback) {
+      console.warn(`[calendar] serving stale fallback for ${cacheKey}`)
+      res.json({ events: fallback })
+    } else {
+      res.status(502).json({ error: 'Failed to fetch calendar' })
+    }
   }
 })
 

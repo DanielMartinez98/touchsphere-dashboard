@@ -8,7 +8,21 @@ import type { WeatherData } from '../types'
 
 type Listener = () => void
 
-let _weather: WeatherData | null = null
+// ── localStorage cache ──────────────────────────────────────────────────────
+// Initialise from cache so components render real data on first paint, before
+// the first async fetch completes (eliminates the loading-state flash on RPi).
+const LS_KEY = 'ts_weather'
+function _loadCache(): WeatherData | null {
+  try {
+    const raw = localStorage.getItem(LS_KEY)
+    return raw ? (JSON.parse(raw) as WeatherData) : null
+  } catch { return null }
+}
+function _saveCache(data: WeatherData) {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(data)) } catch {}
+}
+
+let _weather: WeatherData | null = _loadCache()
 let _error: string | null = null
 const _listeners = new Set<Listener>()
 
@@ -47,6 +61,7 @@ async function _fetchWeather() {
     if (!res.ok) throw new Error('Weather fetch failed')
     const data: WeatherData = await res.json()
     _weather = { ...data, lat, lon }
+    _saveCache(_weather)
     _error = null
   } catch {
     _error = 'Unable to load weather'
