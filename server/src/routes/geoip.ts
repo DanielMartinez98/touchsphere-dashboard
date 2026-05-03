@@ -3,36 +3,47 @@ import axios from 'axios'
 
 const router = Router()
 
-// Returns lat/lon for the requesting client's IP via ipapi.co
-// This is called by the browser as a fallback when navigator.geolocation
-// is unavailable (e.g. over plain HTTP).
-router.get('/', async (req: Request, res: Response) => {
+// Cache result for 1 hour so external APIs aren't hammered on every page load
+let _cache: { lat: number; lon: number; ts: number } | null = null
+const CACHE_TTL_MS = 60 * 60 * 1000
+
+// Returns lat/lon — priority order:
+//   1. DEFAULT_LAT / DEFAULT_LON env vars (no external call)
+//   2. Cached result
+//   3. ip-api.com (free, no key, 45 req/min, auto-detects server's public IP)
+router.get('/', async (_req: Request, res: Response) => {
+  // 1. Static env-var location (best for a personal kiosk — set once, always works)
+  const defLat = parseFloat(process.env['DEFAULT_LAT'] ?? '')
+  const defLon = parseFloat(process.env['DEFAULT_LON'] ?? '')
+  if (!isNaN(defLat) && !isNaN(defLon)) {
+    console.log(`[geoip] using DEFAULT_LAT/LON: ${defLat}, ${defLon}`)
+    res.json({ lat: defLat, lon: defLon })
+    return
+  }
+
+  // 2. Return cache if still fresh
+  if (_cache && Date.now() - _cache.ts < CACHE_TTL_MS) {
+    console.log(`[geoip] cache hit: ${_cache.lat}, ${_cache.lon}`)
+    res.json({ lat: _cache.lat, lon: _cache.lon })
+    return
+  }
+
+  // 3. Call ip-api.com with no IP → auto-detects the server's public IP
+  //    Free tier: 45 req/min, no API key required
   try {
-    // Trust the real client IP (X-Forwarded-For if behind a proxy, else req.ip)
-    const forwarded = req.headers['x-forwarded-for']
-    const clientIp =
-      (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : null) ??
-      req.ip ??
-      ''
+    const { data } = await axios.get('http://ip-api.com/json/?fields=lat,lon,status,message', { timeout: 8000 })
+    console.log(`[geoip] ip-api.com → status=${data.status} lat=${data.lat} lon=${data.lon}`)
 
-    // ipapi.co returns location for the given IP; blank/loopback → auto-detects
-    const isLoopback = clientIp === '127.0.0.1' || clientIp === '::1' || clientIp === ''
-    const url = isLoopback
-      ? 'https://ipapi.co/json/'
-      : `https://ipapi.co/${encodeURIComponent(clientIp)}/json/`
-
-    const { data } = await axios.get(url, { timeout: 8000 })
-    console.log(`[geoip] clientIp=${clientIp} isLoopback=${isLoopback} → lat=${data.latitude} lon=${data.longitude} error=${data.error ?? 'none'}`)
-
-    if (typeof data.latitude !== 'number' || typeof data.longitude !== 'number') {
-      console.error('[geoip] unexpected response:', JSON.stringify(data))
+    if (data.status !== 'success' || typeof data.lat !== 'number' || typeof data.lon !== 'number') {
+      console.error('[geoip] bad response from ip-api.com:', JSON.stringify(data))
       res.status(502).json({ error: 'Geolocation lookup failed' })
       return
     }
 
-    res.json({ lat: data.latitude, lon: data.longitude })
+    _cache = { lat: data.lat, lon: data.lon, ts: Date.now() }
+    res.json({ lat: data.lat, lon: data.lon })
   } catch (err) {
-    console.error('[geoip] error:', err)
+    console.error('[geoip] ip-api.com error:', err)
     res.status(502).json({ error: 'Geolocation lookup failed' })
   }
 })
