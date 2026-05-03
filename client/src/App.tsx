@@ -22,27 +22,13 @@ function App() {
   const toggle = (w: OpenWidget) => setOpen(prev => prev === w ? null : w)
   const { items, nextItem, addItem, removeItem, markDone } = useMediaList()
   const { mode, hasCred, setMode, createPassword, verifyPassword, unlock } = useAppMode()
-  const [offline, setOffline] = useState(false)
 
-  // Listen for server-sent shutdown event
+  // Listen for server-sent reload event and refresh the page
   useEffect(() => {
     const es = new EventSource('/api/system/events')
-    es.addEventListener('shutdown', () => setOffline(true))
+    es.addEventListener('reload', () => window.location.reload())
     return () => es.close()
   }, [])
-
-  if (offline) {
-    return (
-      <div className="fixed inset-0 bg-black flex flex-col items-center justify-center gap-4 select-none">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" className="opacity-30">
-          <circle cx="12" cy="12" r="10" />
-          <line x1="12" y1="8" x2="12" y2="12" />
-          <line x1="12" y1="16" x2="12.01" y2="16" />
-        </svg>
-        <p className="text-white/25 text-sm tracking-widest uppercase">System offline</p>
-      </div>
-    )
-  }
 
   const isRest = mode === 'rest' || mode === 'locked'
 

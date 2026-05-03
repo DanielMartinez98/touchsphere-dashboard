@@ -9,9 +9,8 @@ export function SettingsPanel() {
       setConfirmClose(true)
       return
     }
-    // Server broadcasts a shutdown SSE event to all connected clients before
-    // exiting, so the kiosk display blanks immediately regardless of where it runs.
-    fetch('/api/system/shutdown', { method: 'POST' }).catch(() => {})
+    // Server broadcasts a reload SSE event to all connected clients.
+    fetch('/api/system/restart', { method: 'POST' }).catch(() => {})
   }
 
   function closePanel() {
@@ -60,11 +59,11 @@ export function SettingsPanel() {
                     <polyline points="16 17 21 12 16 7" />
                     <line x1="21" y1="12" x2="9" y2="12" />
                   </svg>
-                  Close Application
+                  Restart App
                 </button>
               ) : (
                 <div className="px-4 py-4 flex flex-col gap-3">
-                  <p className="text-white/70 text-sm">Stop the server and close the app?</p>
+                  <p className="text-white/70 text-sm">Reload the app on all connected screens?</p>
                   <div className="flex gap-2">
                     <button
                       onClick={() => setConfirmClose(false)}
@@ -76,7 +75,7 @@ export function SettingsPanel() {
                       onClick={handleCloseApp}
                       className="flex-1 py-2.5 rounded-xl bg-red-500 text-white font-bold text-sm"
                     >
-                      Close
+                      Restart
                     </button>
                   </div>
                 </div>

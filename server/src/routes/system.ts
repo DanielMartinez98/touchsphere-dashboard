@@ -23,20 +23,15 @@ router.get('/events', (req: Request, res: Response) => {
   })
 })
 
-// POST /api/system/shutdown  — broadcast shutdown event then exit.
-router.post('/shutdown', (_req: Request, res: Response) => {
+// POST /api/system/restart  — broadcast reload event to all connected clients.
+// The server itself keeps running; each browser tab reloads itself.
+router.post('/restart', (_req: Request, res: Response) => {
   res.json({ ok: true })
-
-  // Give the response 100 ms to flush, then broadcast to all SSE clients
-  // and exit after another 500 ms (enough for the browser to receive it).
   setTimeout(() => {
+    console.log('[system] restart requested via API — broadcasting reload to clients')
     for (const client of sseClients) {
-      client.write('event: shutdown\ndata: {}\n\n')
+      client.write('event: reload\ndata: {}\n\n')
     }
-    setTimeout(() => {
-      console.log('[system] shutdown requested via API — exiting process')
-      process.exit(0)
-    }, 500)
   }, 100)
 })
 
