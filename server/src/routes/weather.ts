@@ -9,14 +9,17 @@ const router = Router()
 // and allows the weather route to reuse cached forecast data for `pop`,
 // eliminating the redundant `forecast?cnt=1` OWM call that previously fired
 // on every weather refresh (was 2 OWM calls → now 1 when forecast cache is warm).
-const WEATHER_TTL_MS  = 10 * 60 * 1000   // 10 min
-const FORECAST_TTL_MS = 60 * 60 * 1000   // 60 min
+const WEATHER_TTL_MS     = 10 * 60 * 1000   // 10 min
+const FORECAST_TTL_MS    = 60 * 60 * 1000   // 60 min
+const CLOUD_LAYER_TTL_MS = 60 * 60 * 1000   // 60 min — cloud-layer data is hourly resolution
 
-interface WeatherCache  { data: object;   ts: number }
-interface ForecastCache { data: object[]; ts: number }
+interface WeatherCache     { data: object;   ts: number }
+interface ForecastCache    { data: object[]; ts: number }
+interface CloudLayerCache  { data: object[]; ts: number }
 
-const weatherCache  = new Map<string, WeatherCache>()
-const forecastCache = new Map<string, ForecastCache>()
+const weatherCache    = new Map<string, WeatherCache>()
+const forecastCache   = new Map<string, ForecastCache>()
+const cloudLayerCache = new Map<string, CloudLayerCache>()
 
 function cacheKey(lat: number, lon: number) {
   return `${lat.toFixed(2)},${lon.toFixed(2)}`
@@ -171,6 +174,67 @@ router.get('/forecast', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('Forecast API error:', (err as any)?.response?.data ?? err)
     res.status(502).json({ error: 'Failed to fetch forecast data' })
+  }
+})
+
+// ── GET /api/weather/cloud-layers — hourly low/mid/high cloud breakdown ──────
+// Uses Open-Meteo (free, no API key). Returns 72 hourly slots (3 days).
+// Cached 60 min — matches forecast TTL so scrubbing stays cheap.
+// Open-Meteo is the only source that provides altitude-separated cloud cover
+// without a paid tier: cloud_cover_low (0–3 km), mid (3–8 km), high (> 8 km).
+router.get('/cloud-layers', async (req: Request, res: Response) => {
+  const { lat, lon } = req.query
+  const latNum = parseFloat(lat as string)
+  const lonNum = parseFloat(lon as string)
+
+  if (!lat || !lon || isNaN(latNum) || isNaN(lonNum) || latNum < -90 || latNum > 90 || lonNum < -180 || lonNum > 180) {
+    res.status(400).json({ error: 'Valid lat (-90–90) and lon (-180–180) are required' })
+    return
+  }
+
+  const key = cacheKey(latNum, lonNum)
+  const cached = cloudLayerCache.get(key)
+  if (cached && Date.now() - cached.ts < CLOUD_LAYER_TTL_MS) {
+    console.log(`[cloud-layers] cache hit for ${key}`)
+    res.json(cached.data)
+    return
+  }
+
+  try {
+    const response = await axios.get('https://api.open-meteo.com/v1/forecast', {
+      params: {
+        latitude: latNum,
+        longitude: lonNum,
+        // Only request what we display — keeps payload small (~7 KB for 72 slots)
+        hourly: 'cloud_cover_low,cloud_cover_mid,cloud_cover_high,weather_code,precipitation_probability',
+        forecast_days: 3,
+        timezone: 'auto',
+      },
+      timeout: 8000,
+    })
+
+    const now = Date.now()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const h = response.data.hourly as Record<string, any[]>
+    const slots = h.time.map((t: string, i: number) => {
+      const dt = new Date(t).getTime()
+      return {
+        dt,
+        offset_min: Math.round((dt - now) / 60_000),
+        cloud_low:  h.cloud_cover_low[i]            ?? 0,
+        cloud_mid:  h.cloud_cover_mid[i]            ?? 0,
+        cloud_high: h.cloud_cover_high[i]           ?? 0,
+        weather_code: h.weather_code[i]             ?? 0,
+        precip_prob:  h.precipitation_probability[i] ?? 0,
+      }
+    })
+
+    cloudLayerCache.set(key, { data: slots, ts: now })
+    console.log(`[cloud-layers] fetched fresh for ${key} (${slots.length} slots)`)
+    res.json(slots)
+  } catch (err) {
+    console.error('Cloud-layers API error:', (err as any)?.response?.data ?? err)
+    res.status(502).json({ error: 'Failed to fetch cloud layer data' })
   }
 })
 

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useWeather } from '../../../hooks/useWeather'
 import { useAirQuality } from '../../../hooks/useAirQuality'
 import { useForecast, nearestSlot } from '../../../hooks/useForecast'
+import { useCloudLayers, nearestCloudSlot } from '../../../hooks/useCloudLayers'
 
 declare const L: any
 
@@ -77,6 +78,7 @@ export default function WeatherMap() {
   const { weather } = useWeather()
   const { aqi } = useAirQuality()
   const { forecasts } = useForecast()
+  const { cloudLayers } = useCloudLayers()
   // rawOffset drives the slider visuals instantly; committedOffset drives tile swaps (debounced)
   const [rawOffset, setRawOffset] = useState(0)
   const [committedOffset, setCommittedOffset] = useState(0)
@@ -361,6 +363,9 @@ export default function WeatherMap() {
   const fcastSlot = rawOffset > 0 ? nearestSlot(forecasts, rawOffset) : null
   const isForecast = fcastSlot !== null
 
+  // Cloud-layer breakdown (Open-Meteo): always pick the slot nearest to rawOffset
+  const cloudSlot = nearestCloudSlot(cloudLayers, rawOffset)
+
   const stats: { label: string; value: string }[] = isForecast
     ? [
         { label: 'Temp', value: `${Math.round(fcastSlot!.temp)}°C` },
@@ -373,7 +378,6 @@ export default function WeatherMap() {
         ...(fcastSlot!.visibility !== null
           ? [{ label: 'Visibility', value: `${(fcastSlot!.visibility / 1000).toFixed(1)} km` }]
           : []),
-        { label: 'Cloud Cover', value: `${fcastSlot!.clouds}%` },
         { label: 'Sky', value: fcastSlot!.description },
       ]
     : weather
@@ -386,7 +390,6 @@ export default function WeatherMap() {
         { label: 'Wind', value: `${Math.round(weather.wind_speed * 3.6)} km/h ${windDir(weather.wind_deg)}` },
         { label: 'Pressure', value: `${weather.pressure} hPa` },
         { label: 'Visibility', value: `${(weather.visibility / 1000).toFixed(1)} km` },
-        { label: 'Cloud Cover', value: `${weather.clouds}%` },
         { label: 'Sky', value: weather.description },
       ]
     : []
@@ -421,6 +424,33 @@ export default function WeatherMap() {
               <span className="text-white font-semibold text-sm mt-0.5 text-center">{s.value}</span>
             </div>
           ))}
+
+          {/* Cloud altitude breakdown — uses Open-Meteo data */}
+          {cloudSlot && (
+            <>
+              <div className="w-px self-stretch bg-white/15 mx-1" />
+              {/* Three stacked bars in one compact card */}
+              <div className="flex flex-col justify-center bg-white/5 border border-white/10 rounded-xl px-3 py-2 min-w-[100px] gap-1">
+                <span className="text-white/40 text-[10px] leading-none mb-0.5">Cloud Layers</span>
+                {[
+                  { label: 'High', value: cloudSlot.cloud_high, color: 'bg-sky-300' },
+                  { label: 'Mid',  value: cloudSlot.cloud_mid,  color: 'bg-blue-400' },
+                  { label: 'Low',  value: cloudSlot.cloud_low,  color: 'bg-slate-300' },
+                ].map(({ label, value, color }) => (
+                  <div key={label} className="flex items-center gap-1.5">
+                    <span className="text-white/40 text-[9px] w-6 shrink-0">{label}</span>
+                    <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${color} transition-all duration-300`}
+                        style={{ width: `${value}%` }}
+                      />
+                    </div>
+                    <span className="text-white/60 text-[9px] w-6 text-right shrink-0">{value}%</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
 
           {/* Divider */}
           {aqi && (
@@ -458,6 +488,53 @@ export default function WeatherMap() {
 
       {/* Time scrubber */}
       <div className="flex-shrink-0 bg-black/90 border-t border-white/10 px-4 py-3 select-none">
+
+        {/* Cloud layer timeline — 3 altitude bands plotted across the 42 h window */}
+        {cloudLayers.length > 0 && (() => {
+          // Only render slots that fall inside the scrubber's [-6h, +36h] window
+          const visible = cloudLayers.filter(
+            s => s.offset_min >= MIN_OFFSET && s.offset_min <= MAX_OFFSET
+          )
+          const range = MAX_OFFSET - MIN_OFFSET
+          return (
+            <div className="mb-2 flex flex-col gap-px">
+              {[
+                { key: 'high', label: 'High', color: '#7dd3fc', getter: (s: typeof visible[0]) => s.cloud_high },
+                { key: 'mid',  label: 'Mid',  color: '#60a5fa', getter: (s: typeof visible[0]) => s.cloud_mid  },
+                { key: 'low',  label: 'Low',  color: '#cbd5e1', getter: (s: typeof visible[0]) => s.cloud_low  },
+              ].map(band => (
+                <div key={band.key} className="flex items-center gap-1.5 h-4">
+                  <span className="text-[9px] text-white/30 w-6 shrink-0 text-right">{band.label}</span>
+                  <div className="relative flex-1 h-3 rounded-sm overflow-hidden bg-white/5">
+                    {visible.map((s, i) => {
+                      const pct = ((s.offset_min - MIN_OFFSET) / range) * 100
+                      const nextOffset = visible[i + 1]?.offset_min ?? MAX_OFFSET
+                      const width = ((nextOffset - s.offset_min) / range) * 100
+                      const opacity = band.getter(s) / 100
+                      return (
+                        <div
+                          key={s.dt}
+                          className="absolute top-0 h-full"
+                          style={{
+                            left: `${pct.toFixed(2)}%`,
+                            width: `${width.toFixed(2)}%`,
+                            backgroundColor: band.color,
+                            opacity: Math.max(0.05, opacity),
+                          }}
+                        />
+                      )
+                    })}
+                    {/* "Now" tick */}
+                    <div
+                      className="absolute top-0 h-full w-px bg-white/50"
+                      style={{ left: `${((-MIN_OFFSET) / range * 100).toFixed(2)}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
+        })()}
         <div className="flex items-center justify-between mb-2">
           <span className="text-white/35 text-[11px]">−6h</span>
           <div className="flex items-baseline gap-2">

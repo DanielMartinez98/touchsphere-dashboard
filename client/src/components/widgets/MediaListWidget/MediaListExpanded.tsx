@@ -17,9 +17,13 @@ export default function MediaListExpanded({ items, addItem, removeItem, markDone
   const [type, setType] = useState<MediaType>('show')
   const [showKeyboard, setShowKeyboard] = useState(false)
 
-  const handleAdd = () => {
+  const handleAdd = (e?: React.PointerEvent) => {
+    e?.preventDefault()
     const trimmed = title.trim()
-    if (!trimmed) return
+    if (!trimmed) {
+      setShowKeyboard(true)
+      return
+    }
     addItem(trimmed, type)
     setTitle('')
     setShowKeyboard(false)
@@ -58,8 +62,8 @@ export default function MediaListExpanded({ items, addItem, removeItem, markDone
           ))}
         </div>
         <button
-          onClick={handleAdd}
-          className="px-4 py-2 bg-[var(--accent,#06b6d4)] text-black font-bold rounded-xl active:scale-95"
+          onPointerDown={handleAdd}
+          className="px-4 py-2 bg-[var(--accent,#06b6d4)] text-black font-bold rounded-xl active:scale-95 touch-manipulation"
         >
           +
         </button>
