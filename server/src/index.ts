@@ -12,6 +12,7 @@ import geoipRouter from './routes/geoip'
 import systemRouter from './routes/system'
 import stateRouter from './routes/state'
 import deviceRouter from './routes/device'
+import audioRouter from './routes/audio'
 
 dotenv.config()
 
@@ -44,8 +45,10 @@ const isProd = process.env['NODE_ENV'] === 'production'
 // uses dynamic imports that a strict default-src would block)
 app.use(helmet({ contentSecurityPolicy: false }))
 
-// In dev the Vite proxy handles CORS; in prod everything is same-origin
-app.use(cors({ origin: isProd ? false : '*' }))
+// LAN kiosks live on a different origin (the Pi) and POST audio here, so allow it.
+// Tighten by setting AUDIO_ALLOWED_ORIGIN=http://192.168.1.42 if you want to lock down.
+const allowed = process.env['AUDIO_ALLOWED_ORIGIN']
+app.use(cors({ origin: allowed ?? '*' }))
 app.use(express.json())
 
 // Request logger — logs method, path, status code, and response time
@@ -85,6 +88,7 @@ app.use('/api/geoip', dataLimiter, geoipRouter)
 app.use('/api/system', systemRouter)
 app.use('/api/state', dataLimiter, stateRouter)
 app.use('/api/device', dataLimiter, deviceRouter)
+app.use('/api/audio', audioRouter)
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true })
