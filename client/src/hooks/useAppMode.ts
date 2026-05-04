@@ -39,6 +39,7 @@ export function useAppMode() {
   })
 
   const setMode = useCallback((m: AppMode) => {
+    console.log(`[AppMode] mode change → ${m}`)
     if (m !== 'locked') setPrevUnlocked(m as 'work' | 'rest')
     setModeState(m)
     try { localStorage.setItem(LS_MODE, m) } catch {}
@@ -46,10 +47,16 @@ export function useAppMode() {
 
   // Hash password with a fresh random salt and persist credentials.
   const createPassword = useCallback(async (password: string) => {
+    console.log('[AppMode] CREATE lock password — hashing with new random salt')
     const salt = crypto.getRandomValues(new Uint8Array(16))
     const hash = await digest(password, salt)
     const cred: Credential = { hash, salt: btoa(String.fromCharCode(...salt)) }
-    try { localStorage.setItem(LS_CRED, JSON.stringify(cred)) } catch {}
+    try {
+      localStorage.setItem(LS_CRED, JSON.stringify(cred))
+      console.log('[AppMode] lock credential saved to localStorage')
+    } catch (e) {
+      console.warn('[AppMode] failed to save lock credential:', e)
+    }
     setHasCred(true)
   }, [])
 

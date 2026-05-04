@@ -35,7 +35,8 @@ function writeDisk(key: string, entry: CacheEntry): void {
   try {
     fs.mkdirSync(cacheDir(), { recursive: true })
     fs.writeFileSync(diskPath(key), JSON.stringify(entry), 'utf8')
-  } catch (e) { console.warn('[calendar] disk write failed:', e) }
+    console.log(`[calendar] disk cache WRITE — key: ${key} events: ${entry.events.length} path: ${diskPath(key)}`)
+  } catch (e) { console.warn('[calendar] disk cache WRITE failed:', e) }
 }
 // Returns fresh-enough events from memory → disk → null (must fetch)
 function getCached(key: string): CalendarEvent[] | null {

@@ -24,26 +24,31 @@ export function useMediaList() {
   const [items, setItems] = useState<MediaItem[]>(loadList)
 
   const addItem = useCallback((title: string, type: MediaType) => {
-    console.log('[useMediaList] addItem called', { title, type })
+    console.log(`[MediaList] CREATE item — title: "${title}" type: ${type}`)
     const next: MediaItem = { id: crypto.randomUUID(), title, type, done: false }
     setItems(prev => {
       const updated = [...prev, next]
       saveList(updated)
-      console.log('[useMediaList] state updated, total items:', updated.length)
+      console.log(`[MediaList] item saved to localStorage — total: ${updated.length}`)
       return updated
     })
   }, [])
 
   const removeItem = useCallback((id: string) => {
+    console.log(`[MediaList] DELETE item — id: ${id}`)
     setItems(prev => {
       const updated = prev.filter(i => i.id !== id)
       saveList(updated)
+      console.log(`[MediaList] item removed — remaining: ${updated.length}`)
       return updated
     })
   }, [])
 
   const markDone = useCallback((id: string) => {
     setItems(prev => {
+      const item = prev.find(i => i.id === id)
+      const nextDone = item ? !item.done : undefined
+      if (item) console.log(`[MediaList] UPDATE item done=${nextDone} — "${item.title}"`)
       const updated = prev.map(i => i.id === id ? { ...i, done: !i.done } : i)
       saveList(updated)
       return updated
