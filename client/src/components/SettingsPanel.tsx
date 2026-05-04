@@ -1,9 +1,21 @@
 import { useState } from 'react'
 import { useAudioDevices } from '../hooks/useAudioDevices'
+import { useDevice } from '../hooks/useDevice'
+
+function formatUptime(seconds: number): string {
+  const d = Math.floor(seconds / 86400)
+  const h = Math.floor((seconds % 86400) / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  if (d > 0) return `${d}d ${h}h ${m}m`
+  if (h > 0) return `${h}h ${m}m`
+  return `${m}m`
+}
 
 export function SettingsPanel() {
   const [open, setOpen] = useState(false)
   const [confirmClose, setConfirmClose] = useState(false)
+
+  const { metrics: device } = useDevice()
 
   const {
     inputDevices,
@@ -147,6 +159,54 @@ export function SettingsPanel() {
                         ))}
                       </select>
                     )}
+                  </div>
+                </div>
+              </div>
+
+              {/* ── Hardware Metrics ── */}
+              <div>
+                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest mb-2 px-1 block">Hardware</span>
+                <div className="bg-white/5 rounded-xl overflow-hidden divide-y divide-white/5">
+                  {/* CPU Temp */}
+                  <div className="px-4 py-3 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-rose-400 flex-shrink-0">
+                        <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z" />
+                      </svg>
+                      <span className="text-white/50 text-xs">CPU Temp</span>
+                    </div>
+                    <span className="text-white/80 text-xs font-mono">
+                      {device ? (device.cpuTempC !== null ? `${device.cpuTempC}°C` : 'N/A') : '—'}
+                    </span>
+                  </div>
+                  {/* Memory */}
+                  <div className="px-4 py-3 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-sky-400 flex-shrink-0">
+                        <rect x="2" y="6" width="20" height="12" rx="2" />
+                        <line x1="6" y1="10" x2="6" y2="14" />
+                        <line x1="10" y1="10" x2="10" y2="14" />
+                        <line x1="14" y1="10" x2="14" y2="14" />
+                        <line x1="18" y1="10" x2="18" y2="14" />
+                      </svg>
+                      <span className="text-white/50 text-xs">Memory</span>
+                    </div>
+                    <span className="text-white/80 text-xs font-mono">
+                      {device ? `${device.memUsedPct}% · ${device.memAvailableMB} MB free` : '—'}
+                    </span>
+                  </div>
+                  {/* Uptime */}
+                  <div className="px-4 py-3 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-400 flex-shrink-0">
+                        <circle cx="12" cy="12" r="10" />
+                        <polyline points="12 6 12 12 16 14" />
+                      </svg>
+                      <span className="text-white/50 text-xs">Uptime</span>
+                    </div>
+                    <span className="text-white/80 text-xs font-mono">
+                      {device ? formatUptime(device.uptimeSeconds) : '—'}
+                    </span>
                   </div>
                 </div>
               </div>
