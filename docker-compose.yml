@@ -1,20 +1,45 @@
 services:
-  # ── TouchSphere dashboard ──────────────────────────────────────────────────
+  # ── TouchSphere dashboard (internal only — Caddy proxies it) ──────────────
   app:
     image: ghcr.io/mmdan/touchsphere-dashboard:latest
     container_name: touchsphere
     restart: on-failure
-    ports:
-      - "3001:3001"      # access the dashboard at http://PI_IP:3001
+    # Port 3001 is NOT exposed to the host anymore — Caddy reaches it over the
+    # internal Docker network.  If you need direct access for debugging, add:
+    #   ports:
+    #     - "3001:3001"
     env_file:
       - .env             # put your real secrets here (never committed)
     environment:
       NODE_ENV: production
     volumes:
-      - touchsphere-cache:/data/cache   # persist calendar/weather cache across restarts
+      - touchsphere-cache:/data/cache   # persist cache across restarts
     dns:
-      - 8.8.8.8          # use Google DNS to avoid EAI_AGAIN on first boot
+      - 8.8.8.8
       - 8.8.4.4
+
+  # ── Caddy — HTTPS reverse proxy ───────────────────────────────────────────
+  # Caddy uses its own internal CA to issue a self-signed TLS certificate.
+  # This makes the app a "secure context" so mediaDevices / SpeechRecognition
+  # work when accessed from a Pi over the LAN.
+  #
+  # First-time setup on the Pi (one-off, run after first `docker compose up`):
+  #   scp user@SERVER_IP:/data/caddy-data/caddy/pki/authorities/local/root.crt /tmp/ts-root.crt
+  #   sudo cp /tmp/ts-root.crt /usr/local/share/ca-certificates/touchsphere-caddy.crt
+  #   sudo update-ca-certificates
+  caddy:
+    image: caddy:2-alpine
+    container_name: touchsphere-caddy
+    restart: unless-stopped
+    ports:
+      - "443:443"   # HTTPS — use https://SERVER_IP from TouchKio on the Pi
+      - "80:80"     # HTTP → HTTPS redirect
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
 
   # ── Watchtower — auto-pulls new image when GitHub Actions publishes one ────
   watchtower:
@@ -23,17 +48,16 @@ services:
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      # Allow Watchtower to pull from ghcr.io using your GitHub token
       - ${HOME}/.docker/config.json:/config.json:ro
     environment:
-      # Check ghcr.io every 5 minutes for a new :latest image
       WATCHTOWER_POLL_INTERVAL: "300"
-      WATCHTOWER_CLEANUP: "true"          # delete old images automatically
+      WATCHTOWER_CLEANUP: "true"
       WATCHTOWER_INCLUDE_STOPPED: "false"
       WATCHTOWER_NOTIFICATIONS: "shoutrrr"
-      # Optional — remove the line below if you don't want Slack/email alerts
       # WATCHTOWER_NOTIFICATION_URL: "slack://TOKEN@CHANNEL"
-    command: touchsphere   # only watches the 'touchsphere' container
+    command: touchsphere
 
 volumes:
-  touchsphere-cache:     # named volume — survives container rebuilds/restarts
+  touchsphere-cache:
+  caddy-data:     # Caddy stores its CA and certs here — persist across restarts
+  caddy-config:

@@ -1,30 +1,7 @@
 #!/usr/bin/env bash
-# ─────────────────────────────────────────────────────────────────────────────
-# kiosk.sh  —  TouchSphere host-side kiosk launcher (TouchKio edition)
-#
-# What it does:
-#   1. Brings the touchsphere Docker container up (idempotent).
-#   2. Waits until the server is accepting connections (up to 60 s).
-#   3. Launches TouchKio (Electron-based kiosk) pointing at the server URL.
-#      TouchKio handles its own Chromium permissions — no --use-fake-ui flags
-#      needed.  SpeechRecognition + getUserMedia work on localhost origins in
-#      Electron without extra permission dialogs.
-#   4. Blocks on "docker wait touchsphere" — the moment the container exits
-#      (because the user pressed Close App → server does process.exit(0)),
-#      this script kills TouchKio and exits with 0.
-#
-# The matching systemd unit (touchsphere-kiosk.service) sets Restart=on-failure
-# so a clean exit (code 0) keeps everything stopped, while a crash restarts it.
-#
-# Prerequisites on the Pi:
-#   bash <(wget -qO- https://raw.githubusercontent.com/leukipp/touchkio/main/install.sh)
-#   sudo apt install speech-dispatcher espeak-ng
-#   sudo systemctl enable --now speech-dispatcher
-#
-# Usage: install the systemd unit or run manually as the desktop user.
-# ─────────────────────────────────────────────────────────────────────────────
+# kiosk.sh — not used. TouchKio is configured separately on the Pi.
+# The server stack (Caddy + app) is managed via docker-compose.yml.
 
-set -euo pipefail
 
 COMPOSE_FILE="$(cd "$(dirname "$0")/.." && pwd)/docker-compose.yml"
 URL="http://localhost:3001"

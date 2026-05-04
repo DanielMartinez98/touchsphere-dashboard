@@ -1,0 +1,42 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Caddyfile  —  HTTPS reverse proxy for TouchSphere
+#
+# Caddy uses its internal CA to generate a self-signed TLS certificate.
+# This makes the app a "secure context" so the browser allows:
+#   • navigator.mediaDevices (audio device enumeration)
+#   • SpeechRecognition / getUserMedia (microphone)
+#   • SpeechSynthesis (TTS)
+#
+# To trust the cert on the Pi (one-time):
+#   1. On the server: docker exec touchsphere-caddy cat /data/caddy/pki/authorities/local/root.crt > /tmp/ts-root.crt
+#   2. On the Pi:
+#        sudo cp /tmp/ts-root.crt /usr/local/share/ca-certificates/touchsphere-caddy.crt
+#        sudo update-ca-certificates
+# ─────────────────────────────────────────────────────────────────────────────
+
+{
+    # Disable Caddy's automatic HTTPS for public domains (we manage it ourselves)
+    auto_https off
+    admin off
+}
+
+# Respond to any hostname / IP on port 443 with HTTPS
+:443 {
+    tls internal {
+        # Caddy's local CA — cert lives in the caddy-data Docker volume
+    }
+
+    # Proxy everything to the Node.js app container
+    reverse_proxy app:3001
+
+    log {
+        output stdout
+        level  INFO
+        format console
+    }
+}
+
+# Redirect plain HTTP to HTTPS
+:80 {
+    redir https://{host}{uri} permanent
+}

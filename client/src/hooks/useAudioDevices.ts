@@ -34,12 +34,11 @@ export function useAudioDevices(): UseAudioDevicesReturn {
   const [error, setError]     = useState<string | null>(null)
 
   const enumerate = useCallback(async () => {
-    // navigator.mediaDevices is only available in secure contexts:
-    // https:// OR http://localhost. Accessing via LAN IP (http://192.168.x.x)
-    // causes mediaDevices to be undefined — this is a browser security policy.
+    // navigator.mediaDevices is only available in secure contexts (https://).
+    // When the app is served over plain http:// from a LAN IP, browsers block it.
+    // The fix: use the Caddy HTTPS proxy — access the app via https://SERVER_IP
     if (!window.isSecureContext) {
-      const msg = `Audio devices unavailable: page loaded over an insecure context (${window.location.origin}). ` +
-        'Use http://localhost:3001 or add HTTPS.'
+      const msg = `Requires HTTPS. Open the app via https:// instead of http:// (current: ${window.location.origin})`
       console.warn('[AudioDevices]', msg)
       setError(msg)
       setLoading(false)
