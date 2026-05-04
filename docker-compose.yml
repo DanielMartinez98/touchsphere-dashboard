@@ -10,6 +10,11 @@ services:
       - .env             # put your real secrets here (never committed)
     environment:
       NODE_ENV: production
+    volumes:
+      - touchsphere-cache:/data/cache   # persist calendar/weather cache across restarts
+    dns:
+      - 8.8.8.8          # use Google DNS to avoid EAI_AGAIN on first boot
+      - 8.8.4.4
 
   # ── Watchtower — auto-pulls new image when GitHub Actions publishes one ────
   watchtower:
@@ -29,3 +34,6 @@ services:
       # Optional — remove the line below if you don't want Slack/email alerts
       # WATCHTOWER_NOTIFICATION_URL: "slack://TOKEN@CHANNEL"
     command: touchsphere   # only watches the 'touchsphere' container
+
+volumes:
+  touchsphere-cache:     # named volume — survives container rebuilds/restarts
