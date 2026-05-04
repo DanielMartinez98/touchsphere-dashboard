@@ -7,21 +7,34 @@ const SPHERE_RADIUS = 120
 
 // Work = cyan/blue tint on vertex colours; rest/locked = violet tint.
 // THREE.Color is used as a per-channel multiplier on the vertex colours.
-const WORK_TINT   = new THREE.Color(1.0, 1.0, 1.0)   // neutral â†’ shows full cyan
-const REST_TINT   = new THREE.Color(0.85, 0.2, 1.0)  // cuts green â†’ shifts to violet
-const WORK_TORUS  = new THREE.Color(0x00cfff)          // cyan ring
-const REST_TORUS  = new THREE.Color(0x8b5cf6)          // violet ring
+const WORK_TINT    = new THREE.Color(1.0, 1.0, 1.0)   // neutral → shows full cyan
+const REST_TINT    = new THREE.Color(0.85, 0.2, 1.0)  // cuts green → shifts to violet
+const WORK_TORUS   = new THREE.Color(0x00cfff)          // cyan ring
+const REST_TORUS   = new THREE.Color(0x8b5cf6)          // violet ring
+const LISTEN_TINT  = new THREE.Color(0.0, 1.0, 0.55)   // green → listening
+const LISTEN_TORUS = new THREE.Color(0x00ff88)          // green ring
+const SPEAK_TINT   = new THREE.Color(1.0, 0.65, 0.0)   // amber → speaking
+const SPEAK_TORUS  = new THREE.Color(0xf59e0b)          // amber ring
 
 interface Props {
   mode: AppMode
+  voiceListening: boolean
+  voiceSpeaking: boolean
+  voiceVolume: number
 }
 
-export default function ParticleSphere({ mode }: Props) {
-  const mountRef = useRef<HTMLDivElement>(null)
-  const modeRef  = useRef(mode)
+export default function ParticleSphere({ mode, voiceListening, voiceSpeaking, voiceVolume }: Props) {
+  const mountRef       = useRef<HTMLDivElement>(null)
+  const modeRef        = useRef(mode)
+  const voiceListenRef = useRef(voiceListening)
+  const voiceSpeakRef  = useRef(voiceSpeaking)
+  const voiceVolRef    = useRef(voiceVolume)
 
-  // Keep mode ref up-to-date without recreating the Three.js scene.
-  useEffect(() => { modeRef.current = mode }, [mode])
+  // Keep refs up-to-date without recreating the Three.js scene.
+  useEffect(() => { modeRef.current       = mode           }, [mode])
+  useEffect(() => { voiceListenRef.current = voiceListening }, [voiceListening])
+  useEffect(() => { voiceSpeakRef.current  = voiceSpeaking  }, [voiceSpeaking])
+  useEffect(() => { voiceVolRef.current    = voiceVolume    }, [voiceVolume])
 
   useEffect(() => {
     const mount = mountRef.current
@@ -138,23 +151,42 @@ export default function ParticleSphere({ mode }: Props) {
     // Animation loop â€” smoothly lerps material tints when mode changes.
     let frameId: number
     let time = 0
+    const scaleVec = new THREE.Vector3(1, 1, 1)
     const animate = () => {
       frameId = requestAnimationFrame(animate)
       time += 0.004
 
-      points.rotation.y = time * 0.4
-      points.rotation.x = time * 0.12
-      torus.rotation.z  = time * 0.25
+      const listening = voiceListenRef.current
+      const speaking  = voiceSpeakRef.current
+      const vol       = voiceVolRef.current
+
+      // Faster rotation while voice is active
+      const rotSpeed = (listening || speaking) ? 2.5 : 1.0
+      points.rotation.y = time * 0.4  * rotSpeed
+      points.rotation.x = time * 0.12 * rotSpeed
+      torus.rotation.z  = time * 0.25 * rotSpeed
+
+      // Scale: mic volume drives pulse when listening; gentle wave when speaking; idle otherwise
+      const targetScale = listening
+        ? 1.0 + vol * 0.45
+        : speaking
+          ? 1.0 + Math.sin(time * 8) * 0.06
+          : 1.0 + Math.sin(time * 2.5) * 0.012
+      scaleVec.set(targetScale, targetScale, targetScale)
+      points.scale.lerp(scaleVec, 0.14)
+      torus.scale.lerp(scaleVec, 0.14)
 
       // Smooth camera lean toward pointer
       camera.position.x += (mouseX * 20 - camera.position.x) * 0.04
       camera.position.y += (mouseY * 20 - camera.position.y) * 0.04
       camera.lookAt(scene.position)
 
-      // Lerp colours toward current mode target (0.025 â‰ˆ ~1 s transition)
-      const isRest = modeRef.current !== 'work'
-      material.color.lerp(isRest ? REST_TINT  : WORK_TINT,  0.025)
-      torusMat.color.lerp(isRest ? REST_TORUS : WORK_TORUS, 0.025)
+      // Lerp colours toward voice or mode target
+      const isRest      = modeRef.current !== 'work'
+      const tintTarget  = listening ? LISTEN_TINT  : speaking ? SPEAK_TINT  : (isRest ? REST_TINT  : WORK_TINT)
+      const torusTarget = listening ? LISTEN_TORUS : speaking ? SPEAK_TORUS : (isRest ? REST_TORUS : WORK_TORUS)
+      material.color.lerp(tintTarget,  0.04)
+      torusMat.color.lerp(torusTarget, 0.04)
 
       renderer.render(scene, camera)
     }

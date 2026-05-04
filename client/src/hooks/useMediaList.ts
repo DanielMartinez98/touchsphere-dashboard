@@ -24,7 +24,7 @@ export function useMediaList() {
   const [items, setItems] = useState<MediaItem[]>(loadList)
 
   const addItem = useCallback((title: string, type: MediaType) => {
-    console.log(`[MediaList] CREATE item — title: "${title}" type: ${type}`)
+    console.log(`[MediaList] ATTEMPT create item — title: "${title}" type: ${type}`)
     const next: MediaItem = { id: crypto.randomUUID(), title, type, done: false }
     setItems(prev => {
       const updated = [...prev, next]

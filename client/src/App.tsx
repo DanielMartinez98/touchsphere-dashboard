@@ -11,9 +11,11 @@ import { MediaCollapsed } from './components/widgets/MediaListWidget/MediaListWi
 import MediaListExpanded from './components/widgets/MediaListWidget/MediaListExpanded'
 import { useMediaList } from './hooks/useMediaList'
 import { useAppMode } from './hooks/useAppMode'
+import { useVoice } from './hooks/useVoice'
 import { StatusBar } from './components/StatusBar'
 import { LockScreen } from './components/LockScreen'
 import { SettingsPanel } from './components/SettingsPanel'
+import { VoiceInterface } from './components/VoiceInterface'
 
 type OpenWidget = 'calendar' | 'clock' | 'weather' | 'media' | null
 
@@ -22,6 +24,7 @@ function App() {
   const toggle = (w: OpenWidget) => setOpen(prev => prev === w ? null : w)
   const { items, nextItem, addItem, removeItem, markDone } = useMediaList()
   const { mode, hasCred, setMode, createPassword, verifyPassword, unlock } = useAppMode()
+  const voice = useVoice()
 
   // Listen for server-sent reload event and refresh the page
   useEffect(() => {
@@ -44,7 +47,12 @@ function App() {
       />
 
       {/* Particle Sphere */}
-      <ParticleSphere mode={mode} />
+      <ParticleSphere
+        mode={mode}
+        voiceListening={voice.isListening}
+        voiceSpeaking={voice.isSpeaking}
+        voiceVolume={voice.volume}
+      />
 
       {/* Top-Left — Weather */}
       <Widget
@@ -92,6 +100,9 @@ function App() {
 
       {/* Bottom-Center — Settings */}
       <SettingsPanel />
+
+      {/* Voice interface — mic button, transcript, reply */}
+      <VoiceInterface voice={voice} />
 
       {/* Lock screen — covers everything when mode is 'locked' */}
       {mode === 'locked' && (
