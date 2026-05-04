@@ -39,12 +39,17 @@ COPY --from=client-builder /build/client/dist ./client/dist
 # Create the cache directory the app user can write to
 RUN mkdir -p /data/cache && chown -R app:app /data
 
+# Startup script — fixes volume permissions then drops to app user
+RUN printf '#!/bin/sh\nchown -R app:app /data\nexec su-exec app node server/dist/index.js\n' > /entrypoint.sh \
+    && chmod +x /entrypoint.sh
+
+# su-exec is the Alpine equivalent of gosu for dropping privileges
+RUN apk add --no-cache su-exec
+
 # Expose the server port (override via PORT env var if needed)
 EXPOSE 3001
 
 ENV NODE_ENV=production
 ENV CACHE_DIR=/data/cache
 
-USER app
-
-CMD ["node", "server/dist/index.js"]
+CMD ["/entrypoint.sh"]
