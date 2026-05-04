@@ -10,18 +10,31 @@ import airQualityRouter from './routes/airquality'
 import tilesRouter from './routes/tiles'
 import geoipRouter from './routes/geoip'
 import systemRouter from './routes/system'
+import stateRouter from './routes/state'
+import deviceRouter from './routes/device'
 
 dotenv.config()
 
+// ── Startup diagnostics ───────────────────────────────────────────────────────
+console.log('[startup] ============================================')
+console.log('[startup] TouchSphere server starting')
+console.log('[startup] NODE_ENV              :', process.env['NODE_ENV'] ?? 'not set')
+console.log('[startup] PORT                  :', process.env['PORT'] ?? '3001 (default)')
+console.log('[startup] CACHE_DIR             :', process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache (default)')
+console.log('[startup] LOG_LEVEL             :', process.env['LOG_LEVEL'] ?? 'info (default)')
+console.log('[startup] OPENWEATHER_API_KEY   :', process.env['OPENWEATHER_API_KEY'] ? '✓ set' : '✗ MISSING')
+console.log('[startup] CALENDAR_ICAL_URL     :', process.env['CALENDAR_ICAL_URL']   ? '✓ set' : '— not set (calendar disabled)')
+console.log('[startup] DEFAULT_LAT/LON       :',
+  (process.env['DEFAULT_LAT'] && process.env['DEFAULT_LON'])
+    ? `${process.env['DEFAULT_LAT']}, ${process.env['DEFAULT_LON']}`
+    : '— not set (will use ip-api.com)')
+console.log('[startup] ============================================')
+
 // Fail fast if the required API key is missing
 if (!process.env['OPENWEATHER_API_KEY']) {
-  console.error('FATAL: OPENWEATHER_API_KEY is not set. Exiting.')
+  console.error('[startup] FATAL: OPENWEATHER_API_KEY is not set. Exiting.')
   process.exit(1)
 }
-
-console.log('[startup] NODE_ENV:', process.env['NODE_ENV'])
-console.log('[startup] OPENWEATHER_API_KEY set:', !!process.env['OPENWEATHER_API_KEY'])
-console.log('[startup] CALENDAR_ICAL_URL set:', !!process.env['CALENDAR_ICAL_URL'])
 
 const app = express()
 const PORT = process.env['PORT'] ?? 3001
@@ -35,9 +48,15 @@ app.use(helmet({ contentSecurityPolicy: false }))
 app.use(cors({ origin: isProd ? false : '*' }))
 app.use(express.json())
 
-// Request logger
-app.use((req, _res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} — ip: ${req.headers['x-forwarded-for'] ?? req.ip}`)
+// Request logger — logs method, path, status code, and response time
+app.use((req, res, next) => {
+  const start = Date.now()
+  const ip = req.headers['x-forwarded-for'] ?? req.ip ?? 'unknown'
+  res.on('finish', () => {
+    const ms = Date.now() - start
+    const level = res.statusCode >= 500 ? 'ERROR' : res.statusCode >= 400 ? 'WARN' : 'INFO'
+    console.log(`[request][${level}] ${req.method} ${req.url} status=${res.statusCode} time=${ms}ms ip=${ip}`)
+  })
   next()
 })
 
@@ -64,6 +83,8 @@ app.use('/api/airquality', dataLimiter, airQualityRouter)
 app.use('/api/tiles', tileLimiter, tilesRouter)
 app.use('/api/geoip', dataLimiter, geoipRouter)
 app.use('/api/system', systemRouter)
+app.use('/api/state', dataLimiter, stateRouter)
+app.use('/api/device', dataLimiter, deviceRouter)
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true })
@@ -83,5 +104,6 @@ if (isProd) {
 }
 
 app.listen(PORT, () => {
-  console.log(`TouchSphere server running on http://localhost:${PORT}`)
+  console.log(`[startup] server listening on http://localhost:${PORT}`)
+  console.log('[startup] routes: /api/weather /api/calendar /api/airquality /api/tiles /api/geoip /api/system /api/state /api/device /api/health')
 })

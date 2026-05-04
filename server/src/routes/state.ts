@@ -1,0 +1,234 @@
+import { Router, Request, Response } from 'express'
+import fs from 'fs'
+import path from 'path'
+import crypto from 'crypto'
+
+const router = Router()
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function stateDir(): string {
+  const dir = process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache'
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true })
+    console.log(`[state] created state directory: ${dir}`)
+  }
+  return dir
+}
+
+function statePath(file: string): string {
+  return path.join(stateDir(), file)
+}
+
+function readJSON<T>(file: string, fallback: T): T {
+  const p = statePath(file)
+  try {
+    if (!fs.existsSync(p)) {
+      console.log(`[state] ${file} not found — using default`)
+      return fallback
+    }
+    const raw = fs.readFileSync(p, 'utf8')
+    const parsed = JSON.parse(raw) as T
+    console.log(`[state] read ${file} OK`)
+    return parsed
+  } catch (err) {
+    console.error(`[state] failed to read ${file}:`, err)
+    return fallback
+  }
+}
+
+function writeJSON(file: string, data: unknown): void {
+  const p = statePath(file)
+  try {
+    fs.writeFileSync(p, JSON.stringify(data, null, 2), 'utf8')
+    console.log(`[state] wrote ${file}`)
+  } catch (err) {
+    console.error(`[state] failed to write ${file}:`, err)
+    throw err
+  }
+}
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+type AppMode = 'work' | 'rest' | 'locked'
+
+interface Credential {
+  hash: string
+  salt: string
+}
+
+interface MediaItem {
+  id: string
+  title: string
+  type: 'game' | 'show'
+  done: boolean
+}
+
+// ── App Mode ─────────────────────────────────────────────────────────────────
+// GET /api/state/mode
+router.get('/mode', (_req: Request, res: Response) => {
+  const mode = readJSON<{ mode: AppMode }>('mode.json', { mode: 'work' })
+  console.log(`[state] GET mode → ${mode.mode}`)
+  res.json(mode)
+})
+
+// POST /api/state/mode  { mode: 'work' | 'rest' | 'locked' }
+router.post('/mode', (req: Request, res: Response) => {
+  const { mode } = req.body as { mode?: string }
+  if (!mode || !['work', 'rest', 'locked'].includes(mode)) {
+    console.warn(`[state] POST mode — invalid value: ${JSON.stringify(mode)}`)
+    res.status(400).json({ error: 'mode must be work | rest | locked' })
+    return
+  }
+  console.log(`[state] POST mode → ${mode}`)
+  try {
+    writeJSON('mode.json', { mode })
+    res.json({ mode })
+  } catch {
+    res.status(500).json({ error: 'Failed to persist mode' })
+  }
+})
+
+// ── Lock Credential ───────────────────────────────────────────────────────────
+// GET /api/state/cred  — check if a credential exists
+router.get('/cred', (_req: Request, res: Response) => {
+  const cred = readJSON<Credential | null>('cred.json', null)
+  const exists = cred !== null && typeof cred.hash === 'string'
+  console.log(`[state] GET cred — exists: ${exists}`)
+  res.json({ exists })
+})
+
+// POST /api/state/cred  — save { hash, salt } (hashing done client-side)
+router.post('/cred', (req: Request, res: Response) => {
+  const { hash, salt } = req.body as { hash?: string; salt?: string }
+  if (!hash || !salt || typeof hash !== 'string' || typeof salt !== 'string') {
+    console.warn('[state] POST cred — missing or invalid hash/salt')
+    res.status(400).json({ error: 'hash and salt are required strings' })
+    return
+  }
+  console.log('[state] POST cred — saving new credential')
+  try {
+    writeJSON('cred.json', { hash, salt })
+    res.json({ ok: true })
+  } catch {
+    res.status(500).json({ error: 'Failed to persist credential' })
+  }
+})
+
+// POST /api/state/cred/verify  — { password } → { valid: boolean }
+// The server re-derives the hash using the stored salt (matching client digest() algorithm).
+// This way the salt is never exposed to the client and the plaintext stays on localhost.
+router.post('/cred/verify', (req: Request, res: Response) => {
+  const { password } = req.body as { password?: string }
+  if (!password || typeof password !== 'string') {
+    console.warn('[state] POST cred/verify — missing password')
+    res.status(400).json({ error: 'password is required' })
+    return
+  }
+  const cred = readJSON<Credential | null>('cred.json', null)
+  if (!cred) {
+    console.warn('[state] POST cred/verify — no credential stored')
+    res.status(404).json({ error: 'No credential stored' })
+    return
+  }
+  // Re-derive hash matching the client's digest():
+  //   input = password + base64(salt)
+  //   hash  = base64( SHA-256(input) )
+  // cred.salt is already base64-encoded, so we use it directly as the salt portion.
+  const input = password + cred.salt
+  const hashBuf = crypto.createHash('sha256').update(input, 'utf8').digest()
+  const computed = hashBuf.toString('base64')
+  // Constant-time comparison to resist timing attacks
+  const stored = Buffer.from(cred.hash)
+  const provided = Buffer.from(computed)
+  const valid = stored.length === provided.length &&
+    crypto.timingSafeEqual(stored, provided)
+  console.log(`[state] POST cred/verify — result: ${valid}`)
+  res.json({ valid })
+})
+
+// ── Media List ────────────────────────────────────────────────────────────────
+function readMediaList(): MediaItem[] {
+  return readJSON<MediaItem[]>('media.json', [])
+}
+
+function saveMediaList(items: MediaItem[]): void {
+  writeJSON('media.json', items)
+}
+
+// GET /api/state/media
+router.get('/media', (_req: Request, res: Response) => {
+  const items = readMediaList()
+  console.log(`[state] GET media — ${items.length} items`)
+  res.json(items)
+})
+
+// POST /api/state/media  { title, type }
+router.post('/media', (req: Request, res: Response) => {
+  const { title, type } = req.body as { title?: string; type?: string }
+  if (!title || typeof title !== 'string' || title.trim() === '') {
+    console.warn('[state] POST media — missing title')
+    res.status(400).json({ error: 'title is required' })
+    return
+  }
+  if (!type || !['game', 'show'].includes(type)) {
+    console.warn(`[state] POST media — invalid type: ${JSON.stringify(type)}`)
+    res.status(400).json({ error: 'type must be game | show' })
+    return
+  }
+  const item: MediaItem = {
+    id: crypto.randomUUID(),
+    title: title.trim(),
+    type: type as 'game' | 'show',
+    done: false,
+  }
+  const items = readMediaList()
+  items.push(item)
+  try {
+    saveMediaList(items)
+    console.log(`[state] POST media — added "${item.title}" (${item.type}) id=${item.id} total=${items.length}`)
+    res.status(201).json(item)
+  } catch {
+    res.status(500).json({ error: 'Failed to persist media list' })
+  }
+})
+
+// PATCH /api/state/media/:id  — toggle done
+router.patch('/media/:id', (req: Request, res: Response) => {
+  const { id } = req.params
+  const items = readMediaList()
+  const idx = items.findIndex(i => i.id === id)
+  if (idx === -1) {
+    console.warn(`[state] PATCH media/${id} — not found`)
+    res.status(404).json({ error: 'Item not found' })
+    return
+  }
+  items[idx] = { ...items[idx], done: !items[idx].done }
+  try {
+    saveMediaList(items)
+    console.log(`[state] PATCH media/${id} — done toggled to ${items[idx].done} ("${items[idx].title}")`)
+    res.json(items[idx])
+  } catch {
+    res.status(500).json({ error: 'Failed to persist media list' })
+  }
+})
+
+// DELETE /api/state/media/:id
+router.delete('/media/:id', (req: Request, res: Response) => {
+  const { id } = req.params
+  const items = readMediaList()
+  const before = items.length
+  const filtered = items.filter(i => i.id !== id)
+  if (filtered.length === before) {
+    console.warn(`[state] DELETE media/${id} — not found`)
+    res.status(404).json({ error: 'Item not found' })
+    return
+  }
+  try {
+    saveMediaList(filtered)
+    console.log(`[state] DELETE media/${id} — removed, remaining: ${filtered.length}`)
+    res.json({ ok: true })
+  } catch {
+    res.status(500).json({ error: 'Failed to persist media list' })
+  }
+})
+
+export default router

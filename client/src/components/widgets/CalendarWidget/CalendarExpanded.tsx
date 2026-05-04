@@ -587,6 +587,22 @@ export default function CalendarExpanded() {
     saveLocalEvents(next)
   }
 
+  // ── Speaker test ─────────────────────────────────────────────────────────
+  function playTestSound() {
+    const ctx = new AudioContext()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    osc.type = 'sine'
+    osc.frequency.setValueAtTime(880, ctx.currentTime)
+    gain.gain.setValueAtTime(0.4, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.8)
+    osc.start(ctx.currentTime)
+    osc.stop(ctx.currentTime + 0.8)
+    osc.onended = () => ctx.close()
+  }
+
   const nowMinute = now.getHours() * 60 + now.getMinutes()
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -779,6 +795,14 @@ export default function CalendarExpanded() {
             </div>
           </div>
         </div>
+
+        {/* ══ Speaker test button ════════════════════════════════════════════ */}
+        <button onClick={playTestSound} aria-label="Test speakers"
+          className="absolute bottom-5 left-5 w-14 h-14 rounded-full bg-white/10 text-white
+                     flex items-center justify-center text-2xl shadow-lg
+                     active:scale-90 transition-transform z-[5]">
+          🔊
+        </button>
 
         {/* ══ Add event button ═══════════════════════════════════════════════ */}
         <button onClick={() => setShowNewEvent(true)} aria-label="Add event"

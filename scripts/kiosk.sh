@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# kiosk.sh  —  TouchSphere host-side kiosk launcher
+# kiosk.sh  —  TouchSphere host-side kiosk launcher (TouchKio edition)
 #
 # What it does:
 #   1. Brings the touchsphere Docker container up (idempotent).
-#   2. Waits until the server is accepting connections.
-#   3. Launches Chromium in kiosk mode.
+#   2. Waits until the server is accepting connections (up to 60 s).
+#   3. Launches TouchKio (Electron-based kiosk) pointing at the server URL.
+#      TouchKio handles its own Chromium permissions — no --use-fake-ui flags
+#      needed.  SpeechRecognition + getUserMedia work on localhost origins in
+#      Electron without extra permission dialogs.
 #   4. Blocks on "docker wait touchsphere" — the moment the container exits
 #      (because the user pressed Close App → server does process.exit(0)),
-#      this script kills Chromium and exits with 0.
+#      this script kills TouchKio and exits with 0.
 #
 # The matching systemd unit (touchsphere-kiosk.service) sets Restart=on-failure
 # so a clean exit (code 0) keeps everything stopped, while a crash restarts it.
+#
+# Prerequisites on the Pi:
+#   bash <(wget -qO- https://raw.githubusercontent.com/leukipp/touchkio/main/install.sh)
+#   sudo apt install speech-dispatcher espeak-ng
+#   sudo systemctl enable --now speech-dispatcher
 #
 # Usage: install the systemd unit or run manually as the desktop user.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -21,67 +29,69 @@ set -euo pipefail
 COMPOSE_FILE="$(cd "$(dirname "$0")/.." && pwd)/docker-compose.yml"
 URL="http://localhost:3001"
 
-# ── 0. Pre-create a Chromium profile that grants mic + speech permissions ─────
-# Without this (and the flags below) the kiosk has no way to click "Allow" on
-# the browser permission dialog, so SpeechRecognition and getUserMedia silently
-# fail in kiosk mode.
-CHROME_PROFILE="/tmp/touchsphere-kiosk-profile"
-mkdir -p "$CHROME_PROFILE/Default"
-cat > "$CHROME_PROFILE/Default/Preferences" << 'PREFS'
-{
-  "profile": {
-    "content_settings": {
-      "exceptions": {
-        "media_stream_mic": {
-          "http://localhost:3001,*": { "last_modified": "0", "setting": 1 }
-        }
-      }
-    }
-  }
-}
-PREFS
+echo "[kiosk] =========================================="
+echo "[kiosk] TouchSphere + TouchKio launcher starting"
+echo "[kiosk] compose file : $COMPOSE_FILE"
+echo "[kiosk] target URL   : $URL"
+echo "[kiosk] =========================================="
 
 # ── 1. Start the container ────────────────────────────────────────────────────
-echo "[kiosk] starting touchsphere container…"
+echo "[kiosk] starting touchsphere Docker container…"
 docker compose -f "$COMPOSE_FILE" up -d touchsphere
+echo "[kiosk] container start requested"
 
 # ── 2. Wait for the server to respond (up to 60 s) ───────────────────────────
 echo "[kiosk] waiting for server at $URL …"
+READY=0
 for i in $(seq 1 60); do
-  if curl -sf "$URL" -o /dev/null 2>/dev/null; then
+  if curl -sf "$URL/api/health" -o /dev/null 2>/dev/null; then
     echo "[kiosk] server ready after ${i}s"
+    READY=1
     break
   fi
+  echo "[kiosk] attempt $i/60 — not ready yet"
   sleep 1
 done
 
-# ── 3. Launch Chromium in kiosk mode ─────────────────────────────────────────
-# Kill any leftover Chromium session first
-pkill -f "chromium.*$URL" 2>/dev/null || true
+if [ "$READY" -eq 0 ]; then
+  echo "[kiosk] ERROR: server did not respond within 60 s — check docker logs"
+  docker logs touchsphere --tail 50 2>&1 | sed 's/^/[kiosk][docker] /'
+  exit 1
+fi
 
-echo "[kiosk] launching Chromium…"
-chromium-browser \
-  --kiosk \
-  --noerrdialogs \
-  --disable-infobars \
-  --no-first-run \
-  --disable-session-crashed-bubble \
-  --disable-restore-session-state \
-  --user-data-dir="$CHROME_PROFILE" \
-  --use-fake-ui-for-media-stream \
-  --enable-speech-dispatcher \
-  --enable-features=WebSpeechAPI,SpeechSynthesis \
-  "$URL" &
-CHROMIUM_PID=$!
+# ── 3. Launch TouchKio ───────────────────────────────────────────────────────
+# TouchKio is an Electron app installed via .deb (arm64).
+# It provides its own fullscreen Chromium webview — no separate chromium-browser call.
+# Electron grants microphone permissions automatically for http://localhost origins.
+#
+# Optional MQTT flags (uncomment and fill in to integrate with Home Assistant):
+#   --mqtt-url=mqtt://192.168.1.X:1883 \
+#   --mqtt-user=kiosk \
+#   --mqtt-password=<password>
+
+# Kill any leftover TouchKio process first
+pkill -f "touchkio.*localhost" 2>/dev/null || true
+sleep 0.5
+
+echo "[kiosk] launching TouchKio → $URL"
+touchkio \
+  --web-url="$URL" \
+  --web-theme=dark \
+  --web-zoom=1.0 &
+TOUCHKIO_PID=$!
+echo "[kiosk] TouchKio PID: $TOUCHKIO_PID"
 
 # ── 4. Block until the container exits ───────────────────────────────────────
-echo "[kiosk] watching container (pid $CHROMIUM_PID for Chromium)…"
+echo "[kiosk] blocking on container exit (PID $TOUCHKIO_PID for TouchKio)…"
 docker wait touchsphere
+CONTAINER_EXIT=$?
+echo "[kiosk] container exited with code $CONTAINER_EXIT"
 
-# ── 5. Kill Chromium ─────────────────────────────────────────────────────────
-echo "[kiosk] container exited — killing Chromium"
-kill "$CHROMIUM_PID" 2>/dev/null || true
-pkill -f "chromium.*$URL" 2>/dev/null || true
+# ── 5. Kill TouchKio ─────────────────────────────────────────────────────────
+echo "[kiosk] killing TouchKio (PID $TOUCHKIO_PID)…"
+kill "$TOUCHKIO_PID" 2>/dev/null || true
+pkill -f "touchkio.*localhost" 2>/dev/null || true
 
-echo "[kiosk] done"
+echo "[kiosk] done — exit 0"
 exit 0
+
