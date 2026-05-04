@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useAudioDevices } from '../hooks/useAudioDevices'
 import { useDevice } from '../hooks/useDevice'
 
+type Tab = 'audio' | 'hardware' | 'system'
+
 function formatUptime(seconds: number): string {
   const d = Math.floor(seconds / 86400)
   const h = Math.floor((seconds % 86400) / 3600)
@@ -13,6 +15,7 @@ function formatUptime(seconds: number): string {
 
 export function SettingsPanel() {
   const [open, setOpen] = useState(false)
+  const [tab, setTab] = useState<Tab>('audio')
   const [confirmClose, setConfirmClose] = useState(false)
 
   const { metrics: device } = useDevice()
@@ -34,7 +37,6 @@ export function SettingsPanel() {
       setConfirmClose(true)
       return
     }
-    // Server broadcasts a reload SSE event to all connected clients.
     fetch('/api/system/restart', { method: 'POST' }).catch(() => {})
   }
 
@@ -42,6 +44,12 @@ export function SettingsPanel() {
     setOpen(false)
     setConfirmClose(false)
   }
+
+  const TABS: { id: Tab; label: string }[] = [
+    { id: 'audio',    label: 'Audio'    },
+    { id: 'hardware', label: 'Hardware' },
+    { id: 'system',   label: 'System'   },
+  ]
 
   return (
     <>
@@ -57,189 +65,263 @@ export function SettingsPanel() {
         </svg>
       </button>
 
-      {/* Settings panel */}
+      {/* Full-screen settings overlay */}
       {open && (
-        <>
-          {/* Backdrop */}
-          <div className="fixed inset-0 z-[500]" onClick={closePanel} />
+        <div className="fixed inset-0 z-[500] bg-black/90 backdrop-blur-md flex flex-col">
 
-          {/* Panel — slides up from bottom center */}
-          <div className="fixed bottom-0 left-1/2 -translate-x-1/2 z-[600] w-80 bg-[#111] border border-white/15 rounded-t-2xl shadow-2xl flex flex-col max-h-[85vh]"
-            onClick={e => e.stopPropagation()}>
+          {/* ── Header ── */}
+          <div className="flex items-center justify-between px-6 pt-6 pb-4 flex-shrink-0">
+            <h2 className="text-white/80 text-lg font-semibold tracking-wide">Settings</h2>
+            <button
+              onClick={closePanel}
+              className="w-9 h-9 rounded-full bg-white/10 border border-white/15 flex items-center justify-center text-white/50 hover:text-white/90 hover:bg-white/15 active:scale-90 transition-all"
+              aria-label="Close settings"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
 
-            {/* Handle */}
-            <div className="pt-4 px-4 flex-shrink-0">
-              <div className="w-10 h-1 bg-white/20 rounded-full mx-auto mb-4" />
-              <h3 className="text-white/60 text-xs font-semibold uppercase tracking-widest mb-3 px-1">Settings</h3>
-            </div>
+          {/* ── Tab bar ── */}
+          <div className="flex gap-1 px-6 pb-4 flex-shrink-0">
+            {TABS.map(t => (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`flex-1 py-2.5 rounded-xl text-sm font-medium transition-all active:scale-95 ${
+                  tab === t.id
+                    ? 'bg-white/15 text-white border border-white/20'
+                    : 'bg-white/5 text-white/40 border border-transparent hover:bg-white/8 hover:text-white/60'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
 
-            {/* Scrollable content */}
-            <div className="overflow-y-auto flex-1 px-4 pb-6 space-y-4">
+          {/* ── Tab content ── */}
+          <div className="flex-1 overflow-y-auto px-6 pb-8">
 
-              {/* ── Audio Devices ── */}
-              <div>
-                <div className="flex items-center justify-between mb-2 px-1">
-                  <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Audio</span>
+            {/* Audio tab */}
+            {tab === 'audio' && (
+              <div className="space-y-6 max-w-lg mx-auto">
+                <div className="flex items-center justify-between">
+                  <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Devices</span>
                   <button
                     onClick={() => void refreshDevices()}
                     disabled={devicesLoading}
-                    className="text-white/30 hover:text-white/60 active:scale-90 transition-all disabled:opacity-30"
+                    className="flex items-center gap-1.5 text-white/30 hover:text-white/60 active:scale-90 transition-all disabled:opacity-30 text-xs"
                     aria-label="Refresh audio devices"
                   >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
                       className={devicesLoading ? 'animate-spin' : ''}>
                       <polyline points="23 4 23 10 17 10" />
                       <polyline points="1 20 1 14 7 14" />
                       <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
                     </svg>
+                    Refresh
                   </button>
                 </div>
 
-                <div className="bg-white/5 rounded-xl overflow-hidden divide-y divide-white/5">
-                  {/* Microphone */}
-                  <div className="px-4 py-3">
-                    <div className="flex items-center gap-2 mb-1.5">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-cyan-400 flex-shrink-0">
-                        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                        <line x1="12" y1="19" x2="12" y2="23" />
-                        <line x1="8" y1="23" x2="16" y2="23" />
-                      </svg>
-                      <span className="text-white/50 text-xs">Microphone</span>
-                    </div>
-                    {devicesError ? (
-                      <p className="text-red-400/60 text-xs leading-relaxed">{devicesError}</p>
-                    ) : devicesLoading ? (
-                      <p className="text-white/25 text-xs">Scanning…</p>
-                    ) : inputDevices.length === 0 ? (
-                      <p className="text-white/25 text-xs">No microphones found</p>
-                    ) : (
-                      <select
-                        value={selectedInputId}
-                        onChange={e => setSelectedInput(e.target.value)}
-                        title="Select microphone"
-                        className="w-full bg-white/8 border border-white/10 rounded-lg px-2.5 py-1.5 text-white/80 text-xs appearance-none cursor-pointer focus:outline-none focus:border-cyan-500/50 focus:bg-white/10"
-                      >
-                        {inputDevices.map(d => (
-                          <option key={d.deviceId} value={d.deviceId} className="bg-[#1a1a1a]">
-                            {d.label}
-                          </option>
-                        ))}
-                      </select>
-                    )}
+                {/* Microphone */}
+                <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
+                  <div className="flex items-center gap-2.5">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-cyan-400 flex-shrink-0">
+                      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                      <line x1="12" y1="19" x2="12" y2="23" />
+                      <line x1="8" y1="23" x2="16" y2="23" />
+                    </svg>
+                    <span className="text-white/70 text-sm font-medium">Microphone</span>
                   </div>
+                  {devicesError ? (
+                    <p className="text-red-400/70 text-sm leading-relaxed">{devicesError}</p>
+                  ) : devicesLoading ? (
+                    <p className="text-white/30 text-sm">Scanning…</p>
+                  ) : inputDevices.length === 0 ? (
+                    <p className="text-white/30 text-sm">No microphones found</p>
+                  ) : (
+                    <select
+                      value={selectedInputId}
+                      onChange={e => setSelectedInput(e.target.value)}
+                      title="Select microphone"
+                      className="w-full bg-white/8 border border-white/12 rounded-xl px-4 py-3 text-white/80 text-sm appearance-none cursor-pointer focus:outline-none focus:border-cyan-500/50 focus:bg-white/10"
+                    >
+                      {inputDevices.map(d => (
+                        <option key={d.deviceId} value={d.deviceId} className="bg-[#1a1a1a]">
+                          {d.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
 
-                  {/* Speaker */}
-                  <div className="px-4 py-3">
-                    <div className="flex items-center gap-2 mb-1.5">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-400 flex-shrink-0">
-                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                        <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                      </svg>
-                      <span className="text-white/50 text-xs">Speaker</span>
-                    </div>
-                    {devicesError ? (
-                      <p className="text-red-400/60 text-xs leading-relaxed">{devicesError}</p>
-                    ) : devicesLoading ? (
-                      <p className="text-white/25 text-xs">Scanning…</p>
-                    ) : outputDevices.length === 0 ? (
-                      <p className="text-white/25 text-xs">No speakers found</p>
-                    ) : (
-                      <select
-                        value={selectedOutputId}
-                        onChange={e => setSelectedOutput(e.target.value)}
-                        title="Select speaker"
-                        className="w-full bg-white/8 border border-white/10 rounded-lg px-2.5 py-1.5 text-white/80 text-xs appearance-none cursor-pointer focus:outline-none focus:border-amber-500/50 focus:bg-white/10"
-                      >
-                        {outputDevices.map(d => (
-                          <option key={d.deviceId} value={d.deviceId} className="bg-[#1a1a1a]">
-                            {d.label}
-                          </option>
-                        ))}
-                      </select>
-                    )}
+                {/* Speaker */}
+                <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
+                  <div className="flex items-center gap-2.5">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-400 flex-shrink-0">
+                      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                      <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                    </svg>
+                    <span className="text-white/70 text-sm font-medium">Speaker</span>
                   </div>
+                  {devicesError ? (
+                    <p className="text-red-400/70 text-sm leading-relaxed">{devicesError}</p>
+                  ) : devicesLoading ? (
+                    <p className="text-white/30 text-sm">Scanning…</p>
+                  ) : outputDevices.length === 0 ? (
+                    <p className="text-white/30 text-sm">No speakers found</p>
+                  ) : (
+                    <select
+                      value={selectedOutputId}
+                      onChange={e => setSelectedOutput(e.target.value)}
+                      title="Select speaker"
+                      className="w-full bg-white/8 border border-white/12 rounded-xl px-4 py-3 text-white/80 text-sm appearance-none cursor-pointer focus:outline-none focus:border-amber-500/50 focus:bg-white/10"
+                    >
+                      {outputDevices.map(d => (
+                        <option key={d.deviceId} value={d.deviceId} className="bg-[#1a1a1a]">
+                          {d.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </div>
               </div>
+            )}
 
-              {/* ── Hardware Metrics ── */}
-              <div>
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest mb-2 px-1 block">Hardware</span>
-                <div className="bg-white/5 rounded-xl overflow-hidden divide-y divide-white/5">
-                  {/* CPU Temp */}
-                  <div className="px-4 py-3 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-rose-400 flex-shrink-0">
+            {/* Hardware tab */}
+            {tab === 'hardware' && (
+              <div className="space-y-4 max-w-lg mx-auto">
+                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Pi Metrics</span>
+
+                {/* CPU Temp */}
+                <div className="bg-white/5 rounded-2xl px-5 py-4 flex items-center justify-between border border-white/8">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-rose-500/15 flex items-center justify-center">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-rose-400">
                         <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z" />
                       </svg>
-                      <span className="text-white/50 text-xs">CPU Temp</span>
                     </div>
-                    <span className="text-white/80 text-xs font-mono">
-                      {device ? (device.cpuTempC !== null ? `${device.cpuTempC}°C` : 'N/A') : '—'}
-                    </span>
+                    <div>
+                      <p className="text-white/70 text-sm font-medium">CPU Temperature</p>
+                      <p className="text-white/30 text-xs">thermal_zone0</p>
+                    </div>
                   </div>
-                  {/* Memory */}
-                  <div className="px-4 py-3 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-sky-400 flex-shrink-0">
+                  <span className="text-white/80 text-base font-mono font-semibold">
+                    {device ? (device.cpuTempC !== null ? `${device.cpuTempC}°C` : 'N/A') : '—'}
+                  </span>
+                </div>
+
+                {/* Memory */}
+                <div className="bg-white/5 rounded-2xl px-5 py-4 border border-white/8 space-y-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-sky-500/15 flex items-center justify-center">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-sky-400">
                         <rect x="2" y="6" width="20" height="12" rx="2" />
                         <line x1="6" y1="10" x2="6" y2="14" />
                         <line x1="10" y1="10" x2="10" y2="14" />
                         <line x1="14" y1="10" x2="14" y2="14" />
                         <line x1="18" y1="10" x2="18" y2="14" />
                       </svg>
-                      <span className="text-white/50 text-xs">Memory</span>
                     </div>
-                    <span className="text-white/80 text-xs font-mono">
-                      {device ? `${device.memUsedPct}% · ${device.memAvailableMB} MB free` : '—'}
+                    <div className="flex-1">
+                      <p className="text-white/70 text-sm font-medium">Memory</p>
+                      <p className="text-white/30 text-xs">
+                        {device ? `${device.memAvailableMB} MB free of ${device.memTotalMB} MB` : '—'}
+                      </p>
+                    </div>
+                    <span className="text-white/80 text-base font-mono font-semibold">
+                      {device ? `${device.memUsedPct}%` : '—'}
                     </span>
                   </div>
-                  {/* Uptime */}
-                  <div className="px-4 py-3 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-400 flex-shrink-0">
+                  {device && (
+                    <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-sky-500/60 rounded-full transition-all"
+                        style={{ width: `${device.memUsedPct}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* Load Average */}
+                <div className="bg-white/5 rounded-2xl px-5 py-4 flex items-center justify-between border border-white/8">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-violet-500/15 flex items-center justify-center">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-violet-400">
+                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                      </svg>
+                    </div>
+                    <div>
+                      <p className="text-white/70 text-sm font-medium">Load Average</p>
+                      <p className="text-white/30 text-xs">{device ? `${device.cpuCount} cores` : '—'}</p>
+                    </div>
+                  </div>
+                  <span className="text-white/80 text-sm font-mono font-semibold">
+                    {device ? `${device.loadAvg1} · ${device.loadAvg5} · ${device.loadAvg15}` : '—'}
+                  </span>
+                </div>
+
+                {/* Uptime */}
+                <div className="bg-white/5 rounded-2xl px-5 py-4 flex items-center justify-between border border-white/8">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-emerald-500/15 flex items-center justify-center">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-400">
                         <circle cx="12" cy="12" r="10" />
                         <polyline points="12 6 12 12 16 14" />
                       </svg>
-                      <span className="text-white/50 text-xs">Uptime</span>
                     </div>
-                    <span className="text-white/80 text-xs font-mono">
-                      {device ? formatUptime(device.uptimeSeconds) : '—'}
-                    </span>
+                    <div>
+                      <p className="text-white/70 text-sm font-medium">Uptime</p>
+                      <p className="text-white/30 text-xs">{device?.hostname ?? '—'}</p>
+                    </div>
                   </div>
+                  <span className="text-white/80 text-base font-mono font-semibold">
+                    {device ? formatUptime(device.uptimeSeconds) : '—'}
+                  </span>
                 </div>
               </div>
+            )}
 
-              {/* ── Close App ── */}
-              <div>
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest mb-2 px-1 block">System</span>
-                <div className="bg-white/5 rounded-xl overflow-hidden">
+            {/* System tab */}
+            {tab === 'system' && (
+              <div className="space-y-4 max-w-lg mx-auto">
+                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Actions</span>
+
+                <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden">
                   {!confirmClose ? (
                     <button
                       onClick={handleCloseApp}
-                      className="w-full flex items-center gap-3 px-4 py-4 text-red-400 hover:bg-red-500/10 active:bg-red-500/20 transition-colors text-sm font-medium"
+                      className="w-full flex items-center gap-4 px-5 py-5 text-red-400 hover:bg-red-500/10 active:bg-red-500/20 transition-colors"
                     >
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-                        <polyline points="16 17 21 12 16 7" />
-                        <line x1="21" y1="12" x2="9" y2="12" />
-                      </svg>
-                      Restart App
+                      <div className="w-9 h-9 rounded-xl bg-red-500/15 flex items-center justify-center flex-shrink-0">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                          <polyline points="16 17 21 12 16 7" />
+                          <line x1="21" y1="12" x2="9" y2="12" />
+                        </svg>
+                      </div>
+                      <div className="text-left">
+                        <p className="text-sm font-medium">Restart App</p>
+                        <p className="text-red-400/50 text-xs mt-0.5">Reloads all connected screens</p>
+                      </div>
                     </button>
                   ) : (
-                    <div className="px-4 py-4 flex flex-col gap-3">
+                    <div className="px-5 py-5 space-y-4">
                       <p className="text-white/70 text-sm">Reload the app on all connected screens?</p>
-                      <div className="flex gap-2">
+                      <div className="flex gap-3">
                         <button
                           onClick={() => setConfirmClose(false)}
-                          className="flex-1 py-2.5 rounded-xl bg-white/10 text-white/60 text-sm"
+                          className="flex-1 py-3 rounded-xl bg-white/10 text-white/60 text-sm font-medium"
                         >
                           Cancel
                         </button>
                         <button
                           onClick={handleCloseApp}
-                          className="flex-1 py-2.5 rounded-xl bg-red-500 text-white font-bold text-sm"
+                          className="flex-1 py-3 rounded-xl bg-red-500 text-white font-bold text-sm"
                         >
                           Restart
                         </button>
@@ -248,18 +330,10 @@ export function SettingsPanel() {
                   )}
                 </div>
               </div>
+            )}
 
-              {/* Dismiss */}
-              <button
-                onClick={closePanel}
-                className="w-full py-3 rounded-xl bg-white/5 text-white/40 text-sm"
-              >
-                Dismiss
-              </button>
-
-            </div>{/* end scrollable */}
           </div>
-        </>
+        </div>
       )}
     </>
   )
