@@ -1,5 +1,19 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 
+// SpeechRecognition is not declared as a global in all TypeScript DOM lib versions,
+// so we define a minimal shape and access the constructor via `window`.
+type SpeechRecognitionInstance = {
+  continuous: boolean
+  interimResults: boolean
+  lang: string
+  start: () => void
+  stop: () => void
+  onresult: ((e: SpeechRecognitionEvent) => void) | null
+  onend: (() => void) | null
+  onerror: ((e: Event) => void) | null
+}
+type SpeechRecognitionCtor = new () => SpeechRecognitionInstance
+
 const DEFAULT_REPLIES = [
   "I heard you! That's interesting. Keep talking whenever you need me.",
   "Got it. I'm listening and here whenever you need me.",
@@ -26,7 +40,7 @@ export function useVoice(): VoiceState {
   const [reply, setReply]               = useState('')
   const [volume, setVolume]             = useState(0)
 
-  const recognitionRef  = useRef<SpeechRecognition | null>(null)
+  const recognitionRef  = useRef<SpeechRecognitionInstance | null>(null)
   const analyserRef     = useRef<AnalyserNode | null>(null)
   const audioCtxRef     = useRef<AudioContext | null>(null)
   const sourceRef       = useRef<MediaStreamAudioSourceNode | null>(null)
@@ -45,8 +59,11 @@ export function useVoice(): VoiceState {
   const startListening = useCallback(async () => {
     if (isListening) return
 
-    const SR = (window as typeof window & { webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition
-      ?? (typeof SpeechRecognition !== 'undefined' ? SpeechRecognition : null)
+    const w = window as typeof window & {
+      webkitSpeechRecognition?: SpeechRecognitionCtor
+      SpeechRecognition?: SpeechRecognitionCtor
+    }
+    const SR: SpeechRecognitionCtor | undefined = w.webkitSpeechRecognition ?? w.SpeechRecognition
     if (!SR) {
       console.warn('SpeechRecognition is not supported in this browser.')
       return
