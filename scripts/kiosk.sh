@@ -4,7 +4,7 @@
 
 
 COMPOSE_FILE="$(cd "$(dirname "$0")/.." && pwd)/docker-compose.yml"
-URL="http://localhost:3001"
+URL="https://localhost"   # Caddy HTTPS proxy on :443 — port 3001 is internal-only
 
 echo "[kiosk] =========================================="
 echo "[kiosk] TouchSphere + TouchKio launcher starting"
@@ -21,7 +21,7 @@ echo "[kiosk] container start requested"
 echo "[kiosk] waiting for server at $URL …"
 READY=0
 for i in $(seq 1 60); do
-  if curl -sf "$URL/api/health" -o /dev/null 2>/dev/null; then
+  if curl -sfk "$URL/api/health" -o /dev/null 2>/dev/null; then
     echo "[kiosk] server ready after ${i}s"
     READY=1
     break
