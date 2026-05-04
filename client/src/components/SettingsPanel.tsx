@@ -96,7 +96,7 @@ export function SettingsPanel() {
                       <span className="text-white/50 text-xs">Microphone</span>
                     </div>
                     {devicesError ? (
-                      <p className="text-red-400/70 text-xs">{devicesError}</p>
+                      <p className="text-red-400/60 text-xs leading-relaxed">{devicesError}</p>
                     ) : devicesLoading ? (
                       <p className="text-white/25 text-xs">Scanning…</p>
                     ) : inputDevices.length === 0 ? (
@@ -128,7 +128,7 @@ export function SettingsPanel() {
                       <span className="text-white/50 text-xs">Speaker</span>
                     </div>
                     {devicesError ? (
-                      <p className="text-red-400/70 text-xs">{devicesError}</p>
+                      <p className="text-red-400/60 text-xs leading-relaxed">{devicesError}</p>
                     ) : devicesLoading ? (
                       <p className="text-white/25 text-xs">Scanning…</p>
                     ) : outputDevices.length === 0 ? (

@@ -34,9 +34,23 @@ export function useAudioDevices(): UseAudioDevicesReturn {
   const [error, setError]     = useState<string | null>(null)
 
   const enumerate = useCallback(async () => {
+    // navigator.mediaDevices is only available in secure contexts:
+    // https:// OR http://localhost. Accessing via LAN IP (http://192.168.x.x)
+    // causes mediaDevices to be undefined — this is a browser security policy.
+    if (!window.isSecureContext) {
+      const msg = `Audio devices unavailable: page loaded over an insecure context (${window.location.origin}). ` +
+        'Use http://localhost:3001 or add HTTPS.'
+      console.warn('[AudioDevices]', msg)
+      setError(msg)
+      setLoading(false)
+      return
+    }
+
     if (!navigator.mediaDevices?.enumerateDevices) {
-      console.warn('[AudioDevices] enumerateDevices not supported in this browser')
-      setError('Device enumeration not supported')
+      const msg = 'Audio device enumeration is not supported in this browser / runtime.'
+      console.warn('[AudioDevices]', msg)
+      setError(msg)
+      setLoading(false)
       return
     }
 
