@@ -21,6 +21,26 @@ set -euo pipefail
 COMPOSE_FILE="$(cd "$(dirname "$0")/.." && pwd)/docker-compose.yml"
 URL="http://localhost:3001"
 
+# ── 0. Pre-create a Chromium profile that grants mic + speech permissions ─────
+# Without this (and the flags below) the kiosk has no way to click "Allow" on
+# the browser permission dialog, so SpeechRecognition and getUserMedia silently
+# fail in kiosk mode.
+CHROME_PROFILE="/tmp/touchsphere-kiosk-profile"
+mkdir -p "$CHROME_PROFILE/Default"
+cat > "$CHROME_PROFILE/Default/Preferences" << 'PREFS'
+{
+  "profile": {
+    "content_settings": {
+      "exceptions": {
+        "media_stream_mic": {
+          "http://localhost:3001,*": { "last_modified": "0", "setting": 1 }
+        }
+      }
+    }
+  }
+}
+PREFS
+
 # ── 1. Start the container ────────────────────────────────────────────────────
 echo "[kiosk] starting touchsphere container…"
 docker compose -f "$COMPOSE_FILE" up -d touchsphere
@@ -47,6 +67,10 @@ chromium-browser \
   --no-first-run \
   --disable-session-crashed-bubble \
   --disable-restore-session-state \
+  --user-data-dir="$CHROME_PROFILE" \
+  --use-fake-ui-for-media-stream \
+  --enable-speech-dispatcher \
+  --enable-features=WebSpeechAPI,SpeechSynthesis \
   "$URL" &
 CHROMIUM_PID=$!
 
