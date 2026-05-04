@@ -170,4 +170,3 @@ export function useVoice(): VoiceState {
 
   return { isListening, isSpeaking, transcript, reply, volume, startListening, stopListening }
 }
-}
