@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { fetchMonthEvents } from '../../../hooks/useCalendar'
 import type { CalendarEvent } from '../../../types'
+import { playStartupSound } from '../../../utils/sound'
 
 // ── Local-state types ─────────────────────────────────────────────────────────
 
@@ -589,18 +590,7 @@ export default function CalendarExpanded() {
 
   // ── Speaker test ─────────────────────────────────────────────────────────
   function playTestSound() {
-    const ctx = new AudioContext()
-    const osc = ctx.createOscillator()
-    const gain = ctx.createGain()
-    osc.connect(gain)
-    gain.connect(ctx.destination)
-    osc.type = 'sine'
-    osc.frequency.setValueAtTime(880, ctx.currentTime)
-    gain.gain.setValueAtTime(0.4, ctx.currentTime)
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.8)
-    osc.start(ctx.currentTime)
-    osc.stop(ctx.currentTime + 0.8)
-    osc.onended = () => ctx.close()
+    void playStartupSound()
   }
 
   const nowMinute = now.getHours() * 60 + now.getMinutes()
