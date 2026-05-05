@@ -5,7 +5,7 @@ interface Props {
 }
 
 export function VoiceInterface({ voice }: Props) {
-  const { isListening, isSpeaking, transcript, reply } = voice
+  const { isListening, transcript, reply } = voice
 
   return (
     <>
