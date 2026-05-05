@@ -1,6 +1,11 @@
 # ─── Stage 1: Build the React/Vite client ───────────────────────────────────
 FROM node:22-alpine AS client-builder
 
+# URL of the API the browser should hit (must match how users open the app).
+# Passed in from docker-compose `build.args.VITE_AUDIO_API`.
+ARG VITE_AUDIO_API=""
+ENV VITE_AUDIO_API=$VITE_AUDIO_API
+
 WORKDIR /build/client
 COPY client/package*.json ./
 RUN npm ci
