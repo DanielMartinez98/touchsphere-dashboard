@@ -24,7 +24,7 @@ const MODE_COLORS: Record<AppMode, string> = {
 
 function WorkIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="2" y="7" width="20" height="14" rx="2" />
       <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2" />
     </svg>
@@ -32,14 +32,14 @@ function WorkIcon() {
 }
 function RestIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
     </svg>
   )
 }
 function LockIcon({ open = false }: { open?: boolean }) {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
       {open
         ? <path d="M7 11V7a5 5 0 0 1 9.9-1" />
@@ -103,14 +103,14 @@ export function StatusBar({ mode, hasCred, setMode, createPassword }: Props) {
 
   return (
     <>
-      {/* Pill */}
+      {/* Pill — large, prominent top-center status badge */}
       <button
         onClick={() => setStep(s => s === 'idle' ? 'picker' : 'idle')}
-        className={`absolute top-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-semibold backdrop-blur-md transition-colors ${MODE_COLORS[mode]}`}
+        className={`absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 px-7 py-3.5 rounded-full border-2 text-lg font-semibold backdrop-blur-md transition-colors active:scale-95 shadow-lg ${MODE_COLORS[mode]}`}
       >
         {MODE_ICON[mode]}
-        {MODE_LABEL[mode]}
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+        <span className="tracking-wide">{MODE_LABEL[mode]}</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
           <path d="M6 9l6 6 6-6" />
         </svg>
       </button>
@@ -119,7 +119,7 @@ export function StatusBar({ mode, hasCred, setMode, createPassword }: Props) {
       {step === 'picker' && (
         <>
           <div className="fixed inset-0 z-[150]" onClick={closePicker} />
-          <div className="absolute top-10 left-1/2 -translate-x-1/2 z-[200] bg-black/90 border border-white/15 rounded-2xl p-2 flex flex-col gap-1 min-w-[160px] backdrop-blur-xl shadow-2xl">
+          <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[200] bg-black/90 border border-white/15 rounded-2xl p-2 flex flex-col gap-1 min-w-[200px] backdrop-blur-xl shadow-2xl">
             {(['work', 'rest', 'locked'] as AppMode[]).map(m => (
               <button
                 key={m}

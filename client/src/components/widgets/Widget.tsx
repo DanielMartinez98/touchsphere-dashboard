@@ -9,6 +9,8 @@ interface WidgetProps {
   expanded: React.ReactNode
   isOpen: boolean
   onToggle: () => void
+  /** Accent colour used for the glowing outer halo of the collapsed pill. */
+  accent?: string
 }
 
 const positionClasses: Record<WidgetPosition, string> = {
@@ -25,7 +27,7 @@ const expandOrigin: Record<WidgetPosition, string> = {
   'bottom-right': 'origin-bottom-right',
 }
 
-export default function Widget({ position, collapsed, expanded, isOpen, onToggle }: WidgetProps) {
+export default function Widget({ position, collapsed, expanded, isOpen, onToggle, accent }: WidgetProps) {
   // Close on Escape key
   useEffect(() => {
     if (!isOpen) return
@@ -42,15 +44,21 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
       <motion.button
         onClick={onToggle}
         className={`
-          relative flex flex-col gap-1 p-3
-          bg-black/60 backdrop-blur-md border border-white/10
-          rounded-2xl cursor-pointer active:scale-95
-          transition-colors hover:bg-white/5
+          relative flex flex-col gap-1.5 p-5
+          bg-black/65 backdrop-blur-md border-2 border-white/85
+          rounded-3xl cursor-pointer active:scale-95
+          transition-colors hover:bg-white/10
           ${position === 'top-right' || position === 'bottom-right' ? 'items-end' : 'items-start'}
           ${position.startsWith('top') ? 'rounded-t-none' : 'rounded-b-none'}
           ${position.endsWith('right') ? 'rounded-r-none' : 'rounded-l-none'}
         `}
-        style={{ minWidth: 160, maxWidth: 200 }}
+        style={{
+          minWidth: 230,
+          maxWidth: 290,
+          boxShadow: accent
+            ? `0 0 28px 2px ${accent}99, 0 0 60px 6px ${accent}55, inset 0 0 18px ${accent}22`
+            : undefined,
+        }}
         whileTap={{ scale: 0.95 }}
       >
         {collapsed}
