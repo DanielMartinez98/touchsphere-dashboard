@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { useAudioDevices } from '../hooks/useAudioDevices'
 import { useDevice } from '../hooks/useDevice'
+import { playStartupSound } from '../utils/sound'
 
-type Tab = 'audio' | 'hardware' | 'system'
+type Tab = 'audio' | 'sounds' | 'hardware' | 'system'
 
 function formatUptime(seconds: number): string {
   const d = Math.floor(seconds / 86400)
@@ -17,6 +18,17 @@ export function SettingsPanel() {
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState<Tab>('audio')
   const [confirmClose, setConfirmClose] = useState(false)
+  const [playingChime, setPlayingChime] = useState(false)
+
+  async function handlePlayChime() {
+    if (playingChime) return
+    setPlayingChime(true)
+    try {
+      await playStartupSound()
+    } finally {
+      window.setTimeout(() => setPlayingChime(false), 1200)
+    }
+  }
 
   const { metrics: device } = useDevice()
 
@@ -47,6 +59,7 @@ export function SettingsPanel() {
 
   const TABS: { id: Tab; label: string }[] = [
     { id: 'audio',    label: 'Audio'    },
+    { id: 'sounds',   label: 'Sounds'   },
     { id: 'hardware', label: 'Hardware' },
     { id: 'system',   label: 'System'   },
   ]
@@ -188,6 +201,34 @@ export function SettingsPanel() {
                       ))}
                     </select>
                   )}
+                </div>
+              </div>
+            )}
+
+            {/* Sounds tab */}
+            {tab === 'sounds' && (
+              <div className="space-y-4 max-w-lg mx-auto">
+                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Chimes</span>
+
+                <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden">
+                  <button
+                    onClick={() => void handlePlayChime()}
+                    disabled={playingChime}
+                    className="w-full flex items-center gap-4 px-5 py-5 text-white/80 hover:bg-white/8 active:bg-white/12 transition-colors disabled:opacity-60"
+                  >
+                    <div className="w-9 h-9 rounded-xl bg-amber-500/15 flex items-center justify-center flex-shrink-0">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-400">
+                        <polygon points="5 3 19 12 5 21 5 3" />
+                      </svg>
+                    </div>
+                    <div className="text-left flex-1">
+                      <p className="text-sm font-medium">Startup Chime</p>
+                      <p className="text-white/40 text-xs mt-0.5">Plays /start.mp3</p>
+                    </div>
+                    <span className="text-white/40 text-xs">
+                      {playingChime ? 'Playing…' : 'Play'}
+                    </span>
+                  </button>
                 </div>
               </div>
             )}
