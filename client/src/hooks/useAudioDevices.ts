@@ -58,21 +58,18 @@ export function useAudioDevices(): UseAudioDevicesReturn {
     console.log('[AudioDevices] enumerating devices…')
 
     try {
-      let devices = await navigator.mediaDevices.enumerateDevices()
+      const devices = await navigator.mediaDevices.enumerateDevices()
 
-      // Chromium only returns real labels after mic permission is granted.
-      // If labels are empty, request a brief getUserMedia to unlock them.
+      // NOTE: We deliberately do NOT call getUserMedia({ audio: true }) here just
+      // to unlock device labels. On Linux/PulseAudio, opening any mic stream while
+      // a Bluetooth speaker is active forces the BT card from A2DP (full-quality
+      // stereo) into HSP/HFP (8 kHz mono telephony) profile — and Pulse never
+      // switches it back. The result is "crunchy / phone-call" audio for every
+      // subsequent playback. Labels will be populated lazily once the user
+      // actually grants mic permission via the voice button or recorder.
       const hasLabels = devices.some(d => d.label !== '')
       if (!hasLabels) {
-        console.log('[AudioDevices] no labels found — requesting mic permission to unlock device names')
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-          stream.getTracks().forEach(t => t.stop()) // immediately release
-          devices = await navigator.mediaDevices.enumerateDevices()
-          console.log('[AudioDevices] permission granted — re-enumerated with labels')
-        } catch (permErr) {
-          console.warn('[AudioDevices] mic permission not granted — showing generic labels:', permErr)
-        }
+        console.log('[AudioDevices] device labels hidden until mic permission is granted by an explicit user action')
       }
 
       const inputs: AudioDevice[] = devices
