@@ -9,10 +9,10 @@
 //   play sidesteps that entirely — buffer sources are one-shot and cannot
 //   get into a stuck state.
 
-const SOUND_URL = '/start.mp3'
+const STARTUP_SOUND_URL = '/start.mp3'
 
 let ctx: AudioContext | null = null
-let bufferPromise: Promise<AudioBuffer> | null = null
+const bufferPromises = new Map<string, Promise<AudioBuffer>>()
 
 function getCtx(): AudioContext {
   if (ctx && ctx.state !== 'closed') return ctx
@@ -22,11 +22,12 @@ function getCtx(): AudioContext {
   return ctx
 }
 
-async function loadBuffer(): Promise<AudioBuffer> {
-  if (bufferPromise) return bufferPromise
-  bufferPromise = (async () => {
-    const res = await fetch(SOUND_URL, { cache: 'force-cache' })
-    if (!res.ok) throw new Error(`Failed to fetch ${SOUND_URL}: ${res.status}`)
+async function loadBuffer(url: string): Promise<AudioBuffer> {
+  const cached = bufferPromises.get(url)
+  if (cached) return cached
+  const promise = (async () => {
+    const res = await fetch(url, { cache: 'force-cache' })
+    if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`)
     const arrayBuf = await res.arrayBuffer()
     // decodeAudioData on older Chromium needs the callback form — wrap to be safe.
     return new Promise<AudioBuffer>((resolve, reject) => {
@@ -42,24 +43,29 @@ async function loadBuffer(): Promise<AudioBuffer> {
     })
   })()
   // If decoding fails, clear the cache so a future call can retry.
-  bufferPromise.catch(() => { bufferPromise = null })
-  return bufferPromise
+  promise.catch(() => { bufferPromises.delete(url) })
+  bufferPromises.set(url, promise)
+  return promise
 }
 
-export async function playStartupSound(): Promise<void> {
+export async function playSound(url: string): Promise<void> {
   try {
     const c = getCtx()
     // Browsers suspend the context until a user gesture — resume inside one.
     if (c.state === 'suspended') {
       try { await c.resume() } catch { /* ignore */ }
     }
-    const buffer = await loadBuffer()
+    const buffer = await loadBuffer(url)
     const src    = c.createBufferSource()
     src.buffer   = buffer
     src.connect(c.destination)
     src.start(0)
   } catch (err) {
     // Surface the failure in dev tools so we can debug Pi-only issues.
-    console.warn('[sound] playStartupSound failed:', err)
+    console.warn('[sound] playSound failed:', url, err)
   }
+}
+
+export function playStartupSound(): Promise<void> {
+  return playSound(STARTUP_SOUND_URL)
 }
