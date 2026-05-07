@@ -2,12 +2,15 @@ import { useState } from 'react'
 import { useAudioDevices } from '../hooks/useAudioDevices'
 import { useDevice } from '../hooks/useDevice'
 import { playSound } from '../utils/sound'
+import { useVolume, setVolume, getEffectiveGain, type VolumeCategory } from '../hooks/useVolume'
 
 type Tab = 'audio' | 'sounds' | 'hardware' | 'system'
 
-const SOUNDS: { id: string; label: string; subtitle: string; url: string; bg: string; fg: string }[] = [
-  { id: 'startup',  label: 'Startup Chime',          subtitle: '/start.mp3',                  url: '/start.mp3',                  bg: 'bg-amber-500/15',   fg: 'text-amber-400'   },
-  { id: 'bouncin',  label: 'Sudoku Masters Bouncin', subtitle: '/sudoku-masters-bouncin.wav', url: '/sudoku-masters-bouncin.wav', bg: 'bg-fuchsia-500/15', fg: 'text-fuchsia-400' },
+type SoundCategory = 'sfx' | 'music' | 'voice'
+
+const SOUNDS: { id: string; label: string; subtitle: string; url: string; bg: string; fg: string; category: SoundCategory }[] = [
+  { id: 'startup',  label: 'Startup Chime',          subtitle: '/start.mp3',                  url: '/start.mp3',                  bg: 'bg-amber-500/15',   fg: 'text-amber-400',   category: 'sfx'   },
+  { id: 'bouncin',  label: 'Sudoku Masters Bouncin', subtitle: '/sudoku-masters-bouncin.wav', url: '/sudoku-masters-bouncin.wav', bg: 'bg-fuchsia-500/15', fg: 'text-fuchsia-400', category: 'music' },
 ]
 
 function formatUptime(seconds: number): string {
@@ -27,11 +30,11 @@ export function SettingsPanel() {
   const [ttsTesting, setTtsTesting] = useState(false)
   const [ttsStatus,  setTtsStatus]  = useState<string | null>(null)
 
-  async function handlePlaySound(id: string, url: string) {
+  async function handlePlaySound(id: string, url: string, category: SoundCategory) {
     if (playingSoundId) return
     setPlayingSoundId(id)
     try {
-      await playSound(url)
+      await playSound(url, category)
     } finally {
       window.setTimeout(() => setPlayingSoundId(null), 1200)
     }
@@ -82,7 +85,11 @@ export function SettingsPanel() {
       await new Promise<void>((resolve) => {
         const src = ctx.createBufferSource()
         src.buffer = buffer
-        src.connect(ctx.destination)
+        // Apply voice gain (master * voice) so the test reflects the slider.
+        const gain = ctx.createGain()
+        gain.gain.value = getEffectiveGain('voice')
+        src.connect(gain)
+        gain.connect(ctx.destination)
         src.onended = () => resolve()
         src.start(0)
       })
@@ -275,7 +282,16 @@ export function SettingsPanel() {
             {/* Sounds tab */}
             {tab === 'sounds' && (
               <div className="space-y-4 max-w-lg mx-auto">
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Chimes</span>
+                {/* ── Volume sliders ── */}
+                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Volume</span>
+                <div className="bg-white/5 rounded-2xl border border-white/8 p-5 space-y-4">
+                  <VolumeSlider category="master" label="Master"        accent="text-white"        track="accent-white"          />
+                  <VolumeSlider category="sfx"    label="Sound Effects" accent="text-amber-400"    track="accent-amber-400"      />
+                  <VolumeSlider category="music"  label="Music"         accent="text-fuchsia-400"  track="accent-fuchsia-400"    />
+                  <VolumeSlider category="voice"  label="Voice"         accent="text-emerald-400"  track="accent-emerald-400"    />
+                </div>
+
+                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Chimes</span>
 
                 <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden divide-y divide-white/8">
                   {SOUNDS.map(s => {
@@ -284,7 +300,7 @@ export function SettingsPanel() {
                     return (
                       <button
                         key={s.id}
-                        onClick={() => void handlePlaySound(s.id, s.url)}
+                        onClick={() => void handlePlaySound(s.id, s.url, s.category)}
                         disabled={isPlaying || disabled}
                         className="w-full flex items-center gap-4 px-5 py-5 text-white/80 hover:bg-white/8 active:bg-white/12 transition-colors disabled:opacity-50"
                       >
@@ -477,5 +493,37 @@ export function SettingsPanel() {
         </div>
       )}
     </>
+  )
+}
+
+// ── Volume slider row (bound to the global volume store) ─────────────────────
+interface VolumeSliderProps {
+  category: VolumeCategory
+  label:    string
+  accent:   string  // Tailwind text color for the label/value (e.g. "text-amber-400")
+  track:    string  // Tailwind accent-* class for the native slider thumb/track
+}
+
+function VolumeSlider({ category, label, accent, track }: VolumeSliderProps) {
+  const volumes = useVolume()
+  const value = volumes[category]
+  const pct = Math.round(value * 100)
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className={`text-sm font-medium ${accent}`}>{label}</span>
+        <span className="text-white/50 text-xs font-mono tabular-nums">{pct}%</span>
+      </div>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        step={1}
+        value={pct}
+        onChange={e => setVolume(category, Number(e.target.value) / 100)}
+        aria-label={`${label} volume`}
+        className={`w-full h-2 ${track} cursor-pointer`}
+      />
+    </div>
   )
 }

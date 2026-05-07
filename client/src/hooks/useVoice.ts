@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { getEffectiveGain } from './useVolume'
 
 // SpeechRecognition is not declared as a global in all TypeScript DOM lib versions,
 // so we define a minimal shape and access the constructor via `window`.
@@ -87,7 +88,11 @@ async function speakText(text: string, onEnd: () => void) {
 
     const src = c.createBufferSource()
     src.buffer = buffer
-    src.connect(c.destination)
+    // Apply per-category gain (master * voice).
+    const gain = c.createGain()
+    gain.gain.value = getEffectiveGain('voice')
+    src.connect(gain)
+    gain.connect(c.destination)
     src.onended = () => {
       if (currentSource === src) currentSource = null
       onEnd()

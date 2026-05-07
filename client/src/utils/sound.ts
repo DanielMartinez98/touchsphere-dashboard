@@ -9,6 +9,8 @@
 //   play sidesteps that entirely — buffer sources are one-shot and cannot
 //   get into a stuck state.
 
+import { getEffectiveGain } from '../hooks/useVolume'
+
 const STARTUP_SOUND_URL = '/start.mp3'
 
 let ctx: AudioContext | null = null
@@ -48,7 +50,7 @@ async function loadBuffer(url: string): Promise<AudioBuffer> {
   return promise
 }
 
-export async function playSound(url: string): Promise<void> {
+export async function playSound(url: string, category: 'sfx' | 'music' | 'voice' = 'sfx'): Promise<void> {
   try {
     const c = getCtx()
     // Browsers suspend the context until a user gesture — resume inside one.
@@ -58,7 +60,13 @@ export async function playSound(url: string): Promise<void> {
     const buffer = await loadBuffer(url)
     const src    = c.createBufferSource()
     src.buffer   = buffer
-    src.connect(c.destination)
+    // Per-category gain (master * category, both 0..1). A fresh GainNode each
+    // play means changing the slider during playback won't retroactively
+    // affect already-started sounds, which is the expected UX.
+    const gain = c.createGain()
+    gain.gain.value = getEffectiveGain(category)
+    src.connect(gain)
+    gain.connect(c.destination)
     src.start(0)
   } catch (err) {
     // Surface the failure in dev tools so we can debug Pi-only issues.
@@ -67,5 +75,5 @@ export async function playSound(url: string): Promise<void> {
 }
 
 export function playStartupSound(): Promise<void> {
-  return playSound(STARTUP_SOUND_URL)
+  return playSound(STARTUP_SOUND_URL, 'sfx')
 }
