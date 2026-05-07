@@ -194,12 +194,16 @@ export function useWakeWord({ onWake, pause }: UseWakeWordOptions): UseWakeWordR
           }
         }
 
-        recognizer.on('result', (msg: { result?: { text?: string } }) => {
-          const t = msg.result?.text ?? ''
+        recognizer.on('result', (msg) => {
+          // vosk-browser's RecognizerMessage union also includes partial-shaped
+          // events; narrow defensively before reading `.text`.
+          const r = (msg as { result?: { text?: string } }).result
+          const t = r?.text ?? ''
           if (t) handleHit(t, 'final')
         })
-        recognizer.on('partialresult', (msg: { result?: { partial?: string } }) => {
-          const t = msg.result?.partial ?? ''
+        recognizer.on('partialresult', (msg) => {
+          const r = (msg as { result?: { partial?: string } }).result
+          const t = r?.partial ?? ''
           if (t) handleHit(t, 'partial')
         })
 
