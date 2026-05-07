@@ -269,31 +269,6 @@ export function SettingsPanel() {
                     </select>
                   )}
                 </div>
-
-                {/* TTS test — hits /api/tts and plays via WebAudio.
-                    Useful for debugging why voice replies aren't audible. */}
-                <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
-                  <div className="flex items-center gap-2.5">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-400 flex-shrink-0">
-                      <path d="M3 10v4a1 1 0 0 0 1 1h3l4 4V5L7 9H4a1 1 0 0 0-1 1z" />
-                      <path d="M16 8a5 5 0 0 1 0 8" />
-                      <path d="M19 5a9 9 0 0 1 0 14" />
-                    </svg>
-                    <span className="text-white/70 text-sm font-medium">Voice (TTS) Test</span>
-                  </div>
-                  <button
-                    onClick={() => void handleTestTts()}
-                    disabled={ttsTesting}
-                    className="w-full py-3 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 active:bg-emerald-500/40 disabled:opacity-50 text-emerald-300 text-sm font-medium border border-emerald-500/30 transition-colors"
-                  >
-                    {ttsTesting ? 'Testing…' : 'Say “testing testing testing”'}
-                  </button>
-                  {ttsStatus && (
-                    <p className="text-white/50 text-xs leading-relaxed font-mono break-words">
-                      {ttsStatus}
-                    </p>
-                  )}
-                </div>
               </div>
             )}
 
@@ -328,6 +303,32 @@ export function SettingsPanel() {
                       </button>
                     )
                   })}
+                </div>
+
+                {/* TTS test — hits /api/tts and plays via WebAudio.
+                    Useful for debugging why voice replies aren't audible. */}
+                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Voice (TTS)</span>
+                <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
+                  <div className="flex items-center gap-2.5">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-400 flex-shrink-0">
+                      <path d="M3 10v4a1 1 0 0 0 1 1h3l4 4V5L7 9H4a1 1 0 0 0-1 1z" />
+                      <path d="M16 8a5 5 0 0 1 0 8" />
+                      <path d="M19 5a9 9 0 0 1 0 14" />
+                    </svg>
+                    <span className="text-white/70 text-sm font-medium">Server-side TTS</span>
+                  </div>
+                  <button
+                    onClick={() => void handleTestTts()}
+                    disabled={ttsTesting}
+                    className="w-full py-3 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 active:bg-emerald-500/40 disabled:opacity-50 text-emerald-300 text-sm font-medium border border-emerald-500/30 transition-colors"
+                  >
+                    {ttsTesting ? 'Testing…' : 'Say “testing testing testing”'}
+                  </button>
+                  {ttsStatus && (
+                    <p className="text-white/50 text-xs leading-relaxed font-mono break-words">
+                      {ttsStatus}
+                    </p>
+                  )}
                 </div>
               </div>
             )}

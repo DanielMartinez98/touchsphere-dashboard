@@ -1,5 +1,9 @@
 import { Router } from 'express'
 import { spawn } from 'child_process'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import crypto from 'crypto'
 
 // GET /api/tts?text=hello
 //
@@ -9,14 +13,16 @@ import { spawn } from 'child_process'
 // no-op there). The client plays the returned WAV through WebAudio, which
 // routes correctly to the system default sink (e.g. Bluetooth A2DP).
 //
-// Quality is robotic but reliable. Swap `espeak-ng` for `piper` later if you
-// want neural TTS — the route signature stays the same.
+// Implementation note: we write to a temp file rather than `-w /dev/stdout`
+// + `--stdin`. That combo silently produces 0 bytes on Alpine espeak-ng
+// (1.51) — espeak's WAV writer seeks back to patch the RIFF header at the
+// end, which fails on a non-seekable pipe.
 const router = Router()
 
 const MAX_TEXT_LEN = 500            // hard cap to keep synth time bounded
 const SYNTH_TIMEOUT_MS = 10_000     // kill runaway processes
 
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   const text = String(req.query['text'] ?? '').trim()
   const voice = String(req.query['voice'] ?? 'en-us')
 
@@ -31,27 +37,39 @@ router.get('/', (req, res) => {
     return res.status(400).json({ error: 'invalid voice' })
   }
 
-  // IMPORTANT: pass text as an argv element (no shell), so it cannot be
-  // interpreted as shell metacharacters. -w - writes WAV to stdout.
-  const child = spawn('espeak-ng', [
+  // Unique temp file per request — avoid collisions between concurrent calls.
+  const tmpFile = path.join(os.tmpdir(), `tts-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.wav`)
+
+  // IMPORTANT: text passed as final argv element (no shell), so it can never
+  // be interpreted as shell metacharacters.
+  const args = [
     '-v', voice,
     '-s', '170',          // speed (words per minute)
     '-p', '55',           // pitch
-    '-a', '180',          // amplitude (max 200)
-    '-w', '/dev/stdout',
-    '--stdin',
-  ], { stdio: ['pipe', 'pipe', 'pipe'] })
+    '-a', '180',          // amplitude (0-200)
+    '-w', tmpFile,
+    text,
+  ]
+  console.log('[tts] espeak-ng', args.map(a => a === text ? `"${a}"` : a).join(' '))
 
-  const timer = setTimeout(() => {
-    child.kill('SIGKILL')
-  }, SYNTH_TIMEOUT_MS)
+  const child = spawn('espeak-ng', args, { stdio: ['ignore', 'pipe', 'pipe'] })
 
   let stderr = ''
   child.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
+  let stdout = ''
+  child.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
+
+  const timer = setTimeout(() => {
+    console.warn('[tts] timeout — killing espeak-ng')
+    child.kill('SIGKILL')
+  }, SYNTH_TIMEOUT_MS)
+
+  const cleanup = () => { fs.promises.unlink(tmpFile).catch(() => {}) }
 
   child.on('error', (err) => {
     clearTimeout(timer)
     console.error('[tts] spawn failed:', err.message)
+    cleanup()
     if (!res.headersSent) {
       res.status(500).json({ error: 'tts spawn failed', detail: err.message })
     }
@@ -59,17 +77,34 @@ router.get('/', (req, res) => {
 
   child.on('close', (code) => {
     clearTimeout(timer)
-    if (code !== 0 && !res.headersSent) {
-      console.error(`[tts] espeak-ng exited ${code}: ${stderr}`)
-      res.status(500).json({ error: 'tts failed', code, stderr })
+    if (code !== 0) {
+      console.error(`[tts] espeak-ng exit=${code} stderr="${stderr.trim()}" stdout="${stdout.trim()}"`)
+      cleanup()
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'tts failed', code, stderr: stderr.trim() })
+      }
+      return
     }
-  })
 
-  // Pipe stdin (the text to speak) → stream stdout (WAV) → response
-  res.setHeader('Content-Type', 'audio/wav')
-  res.setHeader('Cache-Control', 'no-store')
-  child.stdout.pipe(res)
-  child.stdin.end(text)
+    fs.stat(tmpFile, (statErr, stat) => {
+      if (statErr || stat.size === 0) {
+        console.error(`[tts] output file missing/empty: ${tmpFile} (size=${stat?.size ?? 'n/a'}) stderr="${stderr.trim()}"`)
+        cleanup()
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'tts produced empty wav', stderr: stderr.trim() })
+        }
+        return
+      }
+      console.log(`[tts] OK ${stat.size} bytes → "${text.slice(0, 60)}${text.length > 60 ? '…' : ''}"`)
+      res.setHeader('Content-Type', 'audio/wav')
+      res.setHeader('Content-Length', stat.size)
+      res.setHeader('Cache-Control', 'no-store')
+      const stream = fs.createReadStream(tmpFile)
+      stream.on('close', cleanup)
+      stream.on('error', cleanup)
+      stream.pipe(res)
+    })
+  })
 })
 
 export default router
