@@ -48,8 +48,11 @@ RUN mkdir -p /data/cache && chown -R app:app /data
 RUN printf '#!/bin/sh\nchown -R app:app /data\nexec su-exec app node server/dist/index.js\n' > /entrypoint.sh \
     && chmod +x /entrypoint.sh
 
-# su-exec is the Alpine equivalent of gosu for dropping privileges
-RUN apk add --no-cache su-exec
+# su-exec   — drop privileges (Alpine equivalent of gosu)
+# espeak-ng — server-side text-to-speech for /api/tts
+#             (TouchKio/Electron does NOT implement Web Speech API,
+#              so synthesis must happen server-side and be played as WAV)
+RUN apk add --no-cache su-exec espeak-ng
 
 # Expose the server port (override via PORT env var if needed)
 EXPOSE 3001

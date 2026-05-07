@@ -34,32 +34,69 @@ export interface VoiceState {
   stopListening: () => void
 }
 
-// Speak text, waiting for voices to load first (required on Chromium/Linux).
-function speakText(
-  text: string,
-  onEnd: () => void,
-) {
-  const doSpeak = () => {
-    window.speechSynthesis.cancel()
-    const utterance   = new SpeechSynthesisUtterance(text)
-    utterance.rate    = 1
-    utterance.pitch   = 1.1
-    utterance.volume  = 1
-    // Prefer a local (offline) voice when available — more reliable in kiosk.
-    const voices = window.speechSynthesis.getVoices()
-    if (voices.length > 0) {
-      utterance.voice = voices.find(v => v.localService) ?? voices[0]
-    }
-    utterance.onend   = onEnd
-    utterance.onerror = onEnd
-    window.speechSynthesis.speak(utterance)
-  }
+// Server base URL for the TTS endpoint. Same Vite env var the recorder uses,
+// so the kiosk can hit the Pi/server on a different host if needed.
+const API = import.meta.env.VITE_AUDIO_API ?? ''
 
-  if (window.speechSynthesis.getVoices().length > 0) {
-    doSpeak()
-  } else {
-    // Chromium loads voices asynchronously — wait for the event.
-    window.speechSynthesis.addEventListener('voiceschanged', doSpeak, { once: true })
+// Speak text by fetching a WAV from the server and playing it through WebAudio.
+//
+// We can NOT use window.speechSynthesis here: TouchKio is built on Electron,
+// and Electron does not implement the Web Speech API (`speak()` is a silent
+// no-op, `getVoices()` returns []). The server runs `espeak-ng` and streams
+// back a WAV; we decode it once and play via an AudioBufferSourceNode — the
+// same path our startup chime uses, which is already known to route correctly
+// through the Bluetooth A2DP sink.
+let ttsCtx: AudioContext | null = null
+let currentSource: AudioBufferSourceNode | null = null
+
+function getTtsCtx(): AudioContext {
+  if (ttsCtx && ttsCtx.state !== 'closed') return ttsCtx
+  const Ctor = window.AudioContext
+    || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+  ttsCtx = new Ctor()
+  return ttsCtx
+}
+
+async function speakText(text: string, onEnd: () => void) {
+  // Stop any in-flight playback so replies don't pile up.
+  try { currentSource?.stop() } catch { /* already stopped */ }
+  currentSource = null
+
+  try {
+    const c = getTtsCtx()
+    if (c.state === 'suspended') {
+      try { await c.resume() } catch { /* ignore */ }
+    }
+
+    const url = `${API}/api/tts?text=${encodeURIComponent(text)}`
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`tts http ${res.status}`)
+    const arrayBuf = await res.arrayBuffer()
+
+    // Older Chromium needs callback-form decodeAudioData — wrap to support both.
+    const buffer = await new Promise<AudioBuffer>((resolve, reject) => {
+      try {
+        const p = c.decodeAudioData(arrayBuf, resolve, reject)
+        if (p && typeof (p as Promise<AudioBuffer>).then === 'function') {
+          (p as Promise<AudioBuffer>).then(resolve, reject)
+        }
+      } catch (err) {
+        reject(err as Error)
+      }
+    })
+
+    const src = c.createBufferSource()
+    src.buffer = buffer
+    src.connect(c.destination)
+    src.onended = () => {
+      if (currentSource === src) currentSource = null
+      onEnd()
+    }
+    currentSource = src
+    src.start(0)
+  } catch (err) {
+    console.warn('[voice] TTS playback failed:', err)
+    onEnd()
   }
 }
 
@@ -163,7 +200,7 @@ export function useVoice(): VoiceState {
   useEffect(() => {
     return () => {
       recognitionRef.current?.abort()
-      window.speechSynthesis.cancel()
+      try { currentSource?.stop() } catch { /* already stopped */ }
       if (fadeRafRef.current !== null) cancelAnimationFrame(fadeRafRef.current)
     }
   }, [])
