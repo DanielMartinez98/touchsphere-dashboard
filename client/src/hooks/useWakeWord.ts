@@ -42,6 +42,44 @@ export function useWakeWordEnabled(): boolean {
   return useSyncExternalStore(subscribeEnabled, getEnabled, getEnabled)
 }
 
+// ── Live transcript store ────────────────────────────────────────────────
+// What Vosk thinks it's hearing right now — used by the Settings panel to
+// render a live diagnostic, so the user can verify the passive transcriber is
+// actually picking up audio. Kept in module scope (not React state) so writes
+// from the audio callback don't trigger renders unless someone is subscribed.
+export interface WakeTranscript {
+  partial: string  // interim guess, updates several times a second
+  final:   string  // last fully-committed phrase (locks in after a pause)
+}
+let transcriptValue: WakeTranscript = { partial: '', final: '' }
+const transcriptListeners = new Set<() => void>()
+function subscribeTranscript(cb: () => void) { transcriptListeners.add(cb); return () => { transcriptListeners.delete(cb) } }
+function getTranscript() { return transcriptValue }
+function setTranscript(next: WakeTranscript) {
+  // Identity check on both fields so no-op updates don't fan out.
+  if (next.partial === transcriptValue.partial && next.final === transcriptValue.final) return
+  transcriptValue = next
+  transcriptListeners.forEach(cb => cb())
+}
+export function useWakeWordTranscript(): WakeTranscript {
+  return useSyncExternalStore(subscribeTranscript, getTranscript, getTranscript)
+}
+
+// ── Live status store ────────────────────────────────────────────────────
+export interface WakeStatusInfo { status: WakeStatus; error: string | null }
+let statusValue: WakeStatusInfo = { status: 'idle', error: null }
+const statusListeners = new Set<() => void>()
+function subscribeStatus(cb: () => void) { statusListeners.add(cb); return () => { statusListeners.delete(cb) } }
+function getStatusInfo() { return statusValue }
+function publishStatus(next: WakeStatusInfo) {
+  if (next.status === statusValue.status && next.error === statusValue.error) return
+  statusValue = next
+  statusListeners.forEach(cb => cb())
+}
+export function useWakeWordStatus(): WakeStatusInfo {
+  return useSyncExternalStore(subscribeStatus, getStatusInfo, getStatusInfo)
+}
+
 // Bundled model path — relative to the public root.
 const MODEL_URL    = '/vosk-model-small-en-us-0.15.zip'
 const SAMPLE_RATE  = 16_000   // Vosk small-en wants 16 kHz mono PCM.
@@ -79,9 +117,13 @@ interface UseWakeWordOptions {
 
 export function useWakeWord({ onWake, pause }: UseWakeWordOptions): UseWakeWordReturn {
   const enabled = useWakeWordEnabled()
-  const [status,  setStatus]  = useState<WakeStatus>('idle')
-  const [error,   setError]   = useState<string | null>(null)
+  const { status, error } = useWakeWordStatus()
   const [lastHit, setLastHit] = useState<string | null>(null)
+
+  // Status updates go through the shared store so the Settings panel sees them.
+  // We capture both fields together to avoid intermediate inconsistent states.
+  const setStatus = useCallback((s: WakeStatus) => publishStatus({ status: s, error: null }), [])
+  const setError  = useCallback((e: string | null) => publishStatus({ status: 'error', error: e }), [])
 
   // Refs for the live session. Kept out of state so they don't cause re-renders.
   const modelRef        = useRef<Model | null>(null)
@@ -124,7 +166,7 @@ export function useWakeWord({ onWake, pause }: UseWakeWordOptions): UseWakeWordR
     if (!enabled) {
       teardown()
       setStatus('idle')
-      setError(null)
+      setTranscript({ partial: '', final: '' })
       return
     }
 
@@ -132,7 +174,6 @@ export function useWakeWord({ onWake, pause }: UseWakeWordOptions): UseWakeWordR
 
     ;(async () => {
       try {
-        setError(null)
         setStatus('loading')
         console.log('[wake] loading vosk model:', MODEL_URL)
 
@@ -199,11 +240,18 @@ export function useWakeWord({ onWake, pause }: UseWakeWordOptions): UseWakeWordR
           // events; narrow defensively before reading `.text`.
           const r = (msg as { result?: { text?: string } }).result
           const t = r?.text ?? ''
-          if (t) handleHit(t, 'final')
+          if (t) {
+            // Lock in as the new "final" line, clear the partial.
+            setTranscript({ partial: '', final: t })
+            handleHit(t, 'final')
+          }
         })
         recognizer.on('partialresult', (msg) => {
           const r = (msg as { result?: { partial?: string } }).result
           const t = r?.partial ?? ''
+          // Always update so the Settings UI shows a live indicator even when
+          // there's no wake-word match.
+          setTranscript({ partial: t, final: transcriptValue.final })
           if (t) handleHit(t, 'partial')
         })
 
@@ -237,7 +285,6 @@ export function useWakeWord({ onWake, pause }: UseWakeWordOptions): UseWakeWordR
         console.error('[wake] startup failed:', msg)
         if (!cancelled) {
           setError(msg)
-          setStatus('error')
         }
         teardown()
       }

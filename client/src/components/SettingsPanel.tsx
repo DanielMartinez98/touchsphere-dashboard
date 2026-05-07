@@ -3,7 +3,7 @@ import { useAudioDevices } from '../hooks/useAudioDevices'
 import { useDevice } from '../hooks/useDevice'
 import { playSound, playRecordChime } from '../utils/sound'
 import { useVolume, setVolume, getEffectiveGain, type VolumeCategory } from '../hooks/useVolume'
-import { useWakeWordEnabled, setWakeWordEnabled } from '../hooks/useWakeWord'
+import { useWakeWordEnabled, setWakeWordEnabled, useWakeWordTranscript, useWakeWordStatus } from '../hooks/useWakeWord'
 
 type Tab = 'sounds' | 'hardware' | 'system'
 
@@ -288,6 +288,8 @@ export function SettingsPanel() {
 
   const { metrics: device } = useDevice()
   const wakeWordEnabled = useWakeWordEnabled()
+  const wakeTranscript  = useWakeWordTranscript()
+  const wakeStatus      = useWakeWordStatus()
 
   const {
     inputDevices,
@@ -540,6 +542,66 @@ export function SettingsPanel() {
                     </p>
                   )}
                 </div>
+
+                {/* Live wake-word diagnostics. Updates several times a second
+                    while Vosk is listening so the user can see exactly what
+                    the passive transcriber is hearing — useful for verifying
+                    mic selection, distance, and pronunciation. */}
+                {wakeWordEnabled && (
+                  <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-white/70 text-sm font-medium">Live transcription</span>
+                      <span className={`text-xs font-mono px-2 py-1 rounded-md ${
+                        wakeStatus.status === 'listening' ? 'bg-emerald-500/15 text-emerald-300' :
+                        wakeStatus.status === 'cooldown'  ? 'bg-cyan-500/15    text-cyan-300'    :
+                        wakeStatus.status === 'loading'   ? 'bg-amber-500/15  text-amber-300 animate-pulse' :
+                        wakeStatus.status === 'error'     ? 'bg-red-500/15    text-red-300'     :
+                                                            'bg-white/8       text-white/40'
+                      }`}>
+                        {wakeStatus.status === 'listening' ? '● listening'  :
+                         wakeStatus.status === 'cooldown'  ? '● woke!'        :
+                         wakeStatus.status === 'loading'   ? 'loading model…' :
+                         wakeStatus.status === 'error'     ? 'error'           :
+                                                             'idle'}
+                      </span>
+                    </div>
+
+                    {wakeStatus.error && (
+                      <p className="text-red-400/80 text-xs leading-relaxed font-mono break-words">
+                        {wakeStatus.error}
+                      </p>
+                    )}
+
+                    {/* Final transcript: dim, last fully-committed phrase. */}
+                    {wakeTranscript.final && (
+                      <div className="bg-black/30 rounded-xl px-4 py-2 border border-white/5">
+                        <p className="text-white/45 text-xs uppercase tracking-widest mb-1">Last phrase</p>
+                        <p className="text-white/75 text-sm break-words">{wakeTranscript.final}</p>
+                      </div>
+                    )}
+
+                    {/* Live partial: bright cyan, italic, updates in real time. */}
+                    <div className="bg-cyan-500/8 rounded-xl px-4 py-3 border border-cyan-500/20 min-h-[3.5rem] flex items-center">
+                      {wakeTranscript.partial ? (
+                        <p className="text-cyan-200 text-sm leading-relaxed italic break-words">
+                          {wakeTranscript.partial}…
+                        </p>
+                      ) : (
+                        <p className="text-white/30 text-xs italic">
+                          {wakeStatus.status === 'listening'
+                            ? 'Speak — anything you say will appear here.'
+                            : wakeStatus.status === 'loading'
+                              ? 'Loading speech model…'
+                              : '—'}
+                        </p>
+                      )}
+                    </div>
+
+                    <p className="text-white/30 text-xs leading-relaxed">
+                      Audio is processed locally and never sent over the network. Say “Jarvis” to trigger the assistant.
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 
