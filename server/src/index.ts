@@ -14,6 +14,7 @@ import stateRouter from './routes/state'
 import deviceRouter from './routes/device'
 import audioRouter from './routes/audio'
 import ttsRouter from './routes/tts'
+import sttRouter from './routes/stt'
 
 dotenv.config()
 
@@ -92,6 +93,7 @@ app.use('/api/state', dataLimiter, stateRouter)
 app.use('/api/device', dataLimiter, deviceRouter)
 app.use('/api/audio', audioRouter)
 app.use('/api/tts', dataLimiter, ttsRouter)
+app.use('/api/stt', dataLimiter, sttRouter)
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true })

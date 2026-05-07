@@ -5,16 +5,25 @@ interface Props {
 }
 
 export function VoiceInterface({ voice }: Props) {
-  const { isListening, transcript, reply } = voice
+  const { isListening, isTranscribing, transcript, reply } = voice
 
   return (
     <>
       {/* ── Text overlay (transcript + reply) ── */}
-      {(transcript || reply) && (
+      {(transcript || reply || isTranscribing) && (
         <div className="absolute left-1/2 -translate-x-1/2 bottom-28 z-30 w-[min(88vw,500px)] flex flex-col items-center gap-3 pointer-events-none">
+          {/* Transcript from ElevenLabs Scribe — distinct violet color so it
+              reads as "what you said" vs. the amber AI reply below. */}
+          {isTranscribing && !transcript && (
+            <div className="bg-black/65 backdrop-blur-md rounded-2xl px-5 py-3 border border-violet-500/25 w-full">
+              <p className="text-violet-300/70 text-[15px] text-center leading-relaxed tracking-wide italic">
+                Transcribing…
+              </p>
+            </div>
+          )}
           {transcript && (
-            <div className="bg-black/65 backdrop-blur-md rounded-2xl px-5 py-3 border border-white/10 w-full">
-              <p className="text-cyan-300 text-[15px] text-center leading-relaxed tracking-wide">
+            <div className="bg-black/65 backdrop-blur-md rounded-2xl px-5 py-3 border border-violet-500/30 w-full">
+              <p className="text-violet-300 text-[15px] text-center leading-relaxed tracking-wide">
                 {transcript}
               </p>
             </div>
