@@ -35,9 +35,13 @@ export function SettingsPanel() {
   const [sttUploading,  setSttUploading]  = useState(false)
   const [sttTranscript, setSttTranscript] = useState<string>('')
   const [sttError,      setSttError]      = useState<string | null>(null)
-  const sttStreamRef   = useRef<MediaStream   | null>(null)
-  const sttRecorderRef = useRef<MediaRecorder | null>(null)
+  // Object URL for the most recent recording — used for the "tape playback".
+  const [sttClipUrl,    setSttClipUrl]    = useState<string | null>(null)
+  const [sttPlaying,    setSttPlaying]    = useState(false)
+  const sttStreamRef   = useRef<MediaStream    | null>(null)
+  const sttRecorderRef = useRef<MediaRecorder  | null>(null)
   const sttChunksRef   = useRef<Blob[]>([])
+  const sttAudioRef    = useRef<HTMLAudioElement | null>(null)
 
   function stopSttStream() {
     sttStreamRef.current?.getTracks().forEach(t => t.stop())
@@ -62,6 +66,16 @@ export function SettingsPanel() {
 
     setSttError(null)
     setSttTranscript('')
+    // Free any previous clip before starting a fresh recording.
+    if (sttClipUrl) {
+      try { URL.revokeObjectURL(sttClipUrl) } catch { /* ignore */ }
+      setSttClipUrl(null)
+    }
+    if (sttAudioRef.current) {
+      try { sttAudioRef.current.pause() } catch { /* ignore */ }
+      sttAudioRef.current = null
+    }
+    setSttPlaying(false)
 
     if (!navigator.mediaDevices?.getUserMedia) {
       setSttError('getUserMedia unavailable — page must be HTTPS.')
@@ -92,6 +106,9 @@ export function SettingsPanel() {
         setSttError('No audio captured.')
         return
       }
+      // Stash the recording so we can play it back after transcription.
+      const clipUrl = URL.createObjectURL(blob)
+      setSttClipUrl(clipUrl)
       setSttUploading(true)
       try {
         const API = (import.meta.env.VITE_AUDIO_API as string | undefined) ?? ''
@@ -108,6 +125,9 @@ export function SettingsPanel() {
         setSttError(err instanceof Error ? err.message : String(err))
       } finally {
         setSttUploading(false)
+        // Auto-play the "tape" once transcription is done so you can verify
+        // what the mic actually captured.
+        playSttClip(clipUrl)
       }
     }
     rec.onerror = (e) => {
@@ -125,6 +145,37 @@ export function SettingsPanel() {
     window.setTimeout(() => {
       try { rec.start(250) } catch (err) { console.warn('[stt-test] rec.start failed:', err) }
     }, 260)
+  }
+
+  // Plays the most recent recording back through the default audio output.
+  // Uses an HTMLAudioElement (not WebAudio) so the browser handles webm/opus
+  // decoding natively and routes to whatever sink the OS has selected.
+  function playSttClip(url?: string | null) {
+    const target = url ?? sttClipUrl
+    if (!target) return
+    // Stop any prior playback first.
+    if (sttAudioRef.current) {
+      try { sttAudioRef.current.pause() } catch { /* ignore */ }
+      sttAudioRef.current = null
+    }
+    const audio = new Audio(target)
+    // Volume slider integration: master * sfx (mic playback isn't "voice" TTS).
+    audio.volume = Math.max(0, Math.min(1, getEffectiveGain('sfx')))
+    audio.onended = () => {
+      setSttPlaying(false)
+      if (sttAudioRef.current === audio) sttAudioRef.current = null
+    }
+    audio.onerror = () => {
+      setSttPlaying(false)
+      if (sttAudioRef.current === audio) sttAudioRef.current = null
+    }
+    sttAudioRef.current = audio
+    setSttPlaying(true)
+    audio.play().catch(err => {
+      console.warn('[stt-test] playback failed:', err)
+      setSttPlaying(false)
+      sttAudioRef.current = null
+    })
   }
 
   async function handlePlaySound(id: string, url: string, category: SoundCategory) {
@@ -390,6 +441,18 @@ export function SettingsPanel() {
                         “{sttTranscript}”
                       </p>
                     </div>
+                  )}
+                  {sttClipUrl && (
+                    <button
+                      onClick={() => playSttClip()}
+                      disabled={sttPlaying}
+                      className="w-full py-2.5 rounded-xl bg-white/8 hover:bg-white/12 active:bg-white/15 disabled:opacity-50 text-white/70 text-xs font-medium border border-white/10 transition-colors flex items-center justify-center gap-2"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <polygon points="5 3 19 12 5 21 5 3" />
+                      </svg>
+                      {sttPlaying ? 'Playing recording…' : 'Replay recording'}
+                    </button>
                   )}
                   {sttError && (
                     <p className="text-red-400/80 text-xs leading-relaxed font-mono break-words">
