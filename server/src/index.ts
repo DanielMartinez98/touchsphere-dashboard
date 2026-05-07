@@ -15,6 +15,7 @@ import deviceRouter from './routes/device'
 import audioRouter from './routes/audio'
 import ttsRouter from './routes/tts'
 import sttRouter from './routes/stt'
+import chatRouter from './routes/chat'
 
 dotenv.config()
 
@@ -28,6 +29,9 @@ console.log('[startup] LOG_LEVEL             :', process.env['LOG_LEVEL'] ?? 'in
 console.log('[startup] OPENWEATHER_API_KEY   :', process.env['OPENWEATHER_API_KEY'] ? '✓ set' : '✗ MISSING')
 console.log('[startup] CALENDAR_ICAL_URL     :', process.env['CALENDAR_ICAL_URL']   ? '✓ set' : '— not set (calendar disabled)')
 console.log('[startup] ELEVENLABS_API_KEY    :', process.env['ELEVENLABS_API_KEY']  ? '✓ set' : '— not set (TTS will use espeak-ng)')
+console.log('[startup] OLLAMA_URL            :', process.env['OLLAMA_URL']           ?? 'http://host.docker.internal:11434 (default)')
+console.log('[startup] OLLAMA_MODEL          :', process.env['OLLAMA_MODEL']         ?? 'gemma3 (default)')
+console.log('[startup] OLLAMA_API_KEY        :', process.env['OLLAMA_API_KEY']       ? '✓ set' : '— not set (no auth header)')
 console.log('[startup] DEFAULT_LAT/LON       :',
   (process.env['DEFAULT_LAT'] && process.env['DEFAULT_LON'])
     ? `${process.env['DEFAULT_LAT']}, ${process.env['DEFAULT_LON']}`
@@ -94,6 +98,7 @@ app.use('/api/device', dataLimiter, deviceRouter)
 app.use('/api/audio', audioRouter)
 app.use('/api/tts', dataLimiter, ttsRouter)
 app.use('/api/stt', dataLimiter, sttRouter)
+app.use('/api/chat', dataLimiter, chatRouter)
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true })

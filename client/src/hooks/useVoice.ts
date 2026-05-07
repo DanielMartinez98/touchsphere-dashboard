@@ -1,14 +1,17 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { getEffectiveGain } from './useVolume'
 
-const DEFAULT_REPLIES = [
-  "I heard you! That's interesting. Keep talking whenever you need me.",
-  "Got it. I'm listening and here whenever you need me.",
-  "Thanks for saying that. I'm always nearby if you'd like to chat.",
-  "Understood. Feel free to speak again whenever you're ready.",
-  "Message received. I'm here and ready to listen anytime.",
-  "That's noted. Just tap the mic again whenever you want to continue.",
+// Fallback replies if /api/chat fails or returns nothing usable. We still want
+// the user to hear *something* so they know the loop completed.
+const FALLBACK_REPLIES = [
+  "Sorry, I'm having trouble reaching my brain right now.",
+  "I heard you, but I can't think of a reply at the moment.",
+  "Hmm, I lost my train of thought. Try again in a second?",
 ]
+
+// localStorage keys for the selected I/O devices (kept in sync by useAudioDevices).
+const LS_INPUT_KEY  = 'ts_audio_input_device'
+const LS_OUTPUT_KEY = 'ts_audio_output_device'
 
 export interface VoiceState {
   isListening: boolean
@@ -26,73 +29,74 @@ export interface VoiceState {
 const API = import.meta.env.VITE_AUDIO_API ?? ''
 
 // ── Voice Activity Detection (VAD) tuning ────────────────────────────────────
-// RMS threshold below which a frame counts as "silence".
 const SILENCE_RMS = 0.015
-// How long (ms) of continuous silence before we auto-stop the recorder.
 const SILENCE_HOLD_MS = 1500
-// Don't auto-stop until we've seen at least this many ms of speech first.
 const MIN_SPEECH_MS = 400
-// Hard upper bound — kill any recording that runs this long.
 const MAX_RECORD_MS = 20_000
 
 // ── TTS playback ─────────────────────────────────────────────────────────────
-// We can NOT use window.speechSynthesis here: TouchKio is built on Electron,
-// and Electron does not implement the Web Speech API. The server runs the TTS
-// (ElevenLabs or espeak-ng) and streams audio; we decode it once and play
-// via an AudioBufferSourceNode — same path as the startup chime, which is
-// known to route correctly through the Bluetooth A2DP sink.
-let ttsCtx: AudioContext | null = null
-let currentSource: AudioBufferSourceNode | null = null
-
-function getTtsCtx(): AudioContext {
-  if (ttsCtx && ttsCtx.state !== 'closed') return ttsCtx
-  const Ctor = window.AudioContext
-    || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
-  ttsCtx = new Ctor()
-  return ttsCtx
-}
+// We use HTMLAudioElement (not WebAudio) so we can call setSinkId() and route
+// the reply to whichever speaker the user picked in the Hardware tab. WebAudio
+// has no equivalent. The browser handles MP3/WAV decoding natively.
+let currentAudio: HTMLAudioElement | null = null
 
 async function speakText(text: string, onEnd: () => void) {
-  try { currentSource?.stop() } catch { /* already stopped */ }
-  currentSource = null
+  // Stop any in-flight playback so replies don't pile up.
+  if (currentAudio) {
+    try { currentAudio.pause() } catch { /* ignore */ }
+    currentAudio = null
+  }
 
   try {
-    const c = getTtsCtx()
-    if (c.state === 'suspended') {
-      try { await c.resume() } catch { /* ignore */ }
-    }
-
     const url = `${API}/api/tts?text=${encodeURIComponent(text)}`
-    const res = await fetch(url)
-    if (!res.ok) throw new Error(`tts http ${res.status}`)
-    const arrayBuf = await res.arrayBuffer()
-
-    const buffer = await new Promise<AudioBuffer>((resolve, reject) => {
-      try {
-        const p = c.decodeAudioData(arrayBuf, resolve, reject)
-        if (p && typeof (p as Promise<AudioBuffer>).then === 'function') {
-          (p as Promise<AudioBuffer>).then(resolve, reject)
-        }
-      } catch (err) {
-        reject(err as Error)
-      }
-    })
-
-    const src = c.createBufferSource()
-    src.buffer = buffer
-    const gain = c.createGain()
-    gain.gain.value = getEffectiveGain('voice')
-    src.connect(gain)
-    gain.connect(c.destination)
-    src.onended = () => {
-      if (currentSource === src) currentSource = null
+    const audio = new Audio(url)
+    audio.preload = 'auto'
+    audio.volume = Math.max(0, Math.min(1, getEffectiveGain('voice')))
+    audio.onended = () => {
+      if (currentAudio === audio) currentAudio = null
       onEnd()
     }
-    currentSource = src
-    src.start(0)
+    audio.onerror = () => {
+      console.warn('[voice] TTS audio error')
+      if (currentAudio === audio) currentAudio = null
+      onEnd()
+    }
+    currentAudio = audio
+
+    // Route to the user-selected speaker if supported.
+    type AudioWithSink = HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }
+    const a = audio as AudioWithSink
+    const outId = localStorage.getItem(LS_OUTPUT_KEY) ?? 'default'
+    if (outId && outId !== 'default' && typeof a.setSinkId === 'function') {
+      try { await a.setSinkId(outId) } catch (err) {
+        console.warn('[voice] setSinkId failed, using default sink:', err)
+      }
+    }
+
+    await audio.play()
   } catch (err) {
     console.warn('[voice] TTS playback failed:', err)
     onEnd()
+  }
+}
+
+// ── Chat (LLM reply) ─────────────────────────────────────────────────────────
+async function fetchReply(prompt: string): Promise<string> {
+  try {
+    const res = await fetch(`${API}/api/chat`, {
+      method:  'POST',
+      headers: { 'content-type': 'application/json' },
+      body:    JSON.stringify({ prompt }),
+    })
+    if (!res.ok) {
+      console.warn('[voice] /api/chat http', res.status)
+      return FALLBACK_REPLIES[Math.floor(Math.random() * FALLBACK_REPLIES.length)]!
+    }
+    const json = (await res.json()) as { reply?: string }
+    return (json.reply ?? '').trim() || FALLBACK_REPLIES[0]!
+  } catch (err) {
+    console.warn('[voice] /api/chat failed:', err)
+    return FALLBACK_REPLIES[Math.floor(Math.random() * FALLBACK_REPLIES.length)]!
   }
 }
 
@@ -176,15 +180,22 @@ export function useVoice(): VoiceState {
 
     let stream: MediaStream
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl:  true,
-          channelCount: 1,
-          sampleRate:   48000,
-        },
-      })
+      // Honor the mic selected in the Hardware tab. 'default' = OS default.
+      const inId = localStorage.getItem(LS_INPUT_KEY) ?? 'default'
+      const audioConstraints: MediaTrackConstraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl:  true,
+        channelCount: 1,
+        sampleRate:   48000,
+      }
+      if (inId && inId !== 'default') {
+        audioConstraints.deviceId = { exact: inId }
+      }
+      console.log('[voice] requesting mic with constraints:', audioConstraints)
+      stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints })
+      const track = stream.getAudioTracks()[0]
+      console.log('[voice] got track:', track?.label, track?.getSettings?.())
     } catch (err) {
       console.warn('[voice] mic permission denied:', err)
       return
@@ -231,8 +242,13 @@ export function useVoice(): VoiceState {
         setIsTranscribing(false)
       }
       setTranscript(text)
+      console.log('[voice] transcript:', text)
 
-      const replyText = DEFAULT_REPLIES[Math.floor(Math.random() * DEFAULT_REPLIES.length)]
+      // Ask the LLM for a reply. If the transcript was empty, fall back to a
+      // generic prompt so the user still hears something.
+      const prompt = text || "The user pressed the mic button but I couldn't hear what they said."
+      const replyText = await fetchReply(prompt)
+      console.log('[voice] reply:', replyText)
       setReply(replyText)
       setIsSpeaking(true)
       speakText(replyText, () => {
@@ -307,7 +323,10 @@ export function useVoice(): VoiceState {
   useEffect(() => {
     return () => {
       cleanup()
-      try { currentSource?.stop() } catch { /* already stopped */ }
+      if (currentAudio) {
+        try { currentAudio.pause() } catch { /* already stopped */ }
+        currentAudio = null
+      }
     }
   }, [cleanup])
 
