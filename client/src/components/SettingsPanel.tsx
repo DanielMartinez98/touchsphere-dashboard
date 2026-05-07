@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react'
 import { useAudioDevices } from '../hooks/useAudioDevices'
 import { useDevice } from '../hooks/useDevice'
-import { playSound } from '../utils/sound'
+import { playSound, playRecordChime } from '../utils/sound'
 import { useVolume, setVolume, getEffectiveGain, type VolumeCategory } from '../hooks/useVolume'
 
 type Tab = 'sounds' | 'hardware' | 'system'
@@ -55,6 +55,7 @@ export function SettingsPanel() {
         console.warn('[stt-test] stop failed:', err)
       }
       setSttRecording(false)
+      void playRecordChime('down')
       return
     }
     if (sttUploading) return
@@ -117,7 +118,13 @@ export function SettingsPanel() {
     }
 
     setSttRecording(true)
-    rec.start(250)
+    // Play the "start" chime first and wait for it to finish, otherwise the
+    // beep ends up at the head of the recording and Scribe can mistake it for
+    // (or be drowned out by) the actual speech.
+    void playRecordChime('up')
+    window.setTimeout(() => {
+      try { rec.start(250) } catch (err) { console.warn('[stt-test] rec.start failed:', err) }
+    }, 260)
   }
 
   async function handlePlaySound(id: string, url: string, category: SoundCategory) {

@@ -77,3 +77,40 @@ export async function playSound(url: string, category: 'sfx' | 'music' | 'voice'
 export function playStartupSound(): Promise<void> {
   return playSound(STARTUP_SOUND_URL, 'sfx')
 }
+
+// ── Synth chimes for the recorder ────────────────────────────────────────────
+// Plays a short two-tone beep (no asset file needed). `direction='up'` is the
+// "start recording" cue, `direction='down'` is the "stop recording" cue. Routed
+// through the sfx category so it follows the user's volume sliders.
+export async function playRecordChime(direction: 'up' | 'down' = 'up'): Promise<void> {
+  try {
+    const c = getCtx()
+    if (c.state === 'suspended') {
+      try { await c.resume() } catch { /* ignore */ }
+    }
+    const now    = c.currentTime
+    const tones  = direction === 'up' ? [660, 990] : [990, 660]
+    const tDur   = 0.09           // each tone length (s)
+    const gap    = 0.02           // gap between tones (s)
+    const peak   = 0.25 * getEffectiveGain('sfx')
+
+    tones.forEach((freq, i) => {
+      const start = now + i * (tDur + gap)
+      const end   = start + tDur
+      const osc   = c.createOscillator()
+      const gain  = c.createGain()
+      osc.type         = 'sine'
+      osc.frequency.value = freq
+      // Quick attack/decay envelope so the beep doesn't click on edges.
+      gain.gain.setValueAtTime(0, start)
+      gain.gain.linearRampToValueAtTime(peak, start + 0.01)
+      gain.gain.linearRampToValueAtTime(0,    end)
+      osc.connect(gain)
+      gain.connect(c.destination)
+      osc.start(start)
+      osc.stop(end + 0.02)
+    })
+  } catch (err) {
+    console.warn('[sound] playRecordChime failed:', err)
+  }
+}
