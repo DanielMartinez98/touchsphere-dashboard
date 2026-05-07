@@ -32,8 +32,10 @@ const API = import.meta.env.VITE_AUDIO_API ?? ''
 const SILENCE_RMS = 0.015
 const SILENCE_HOLD_MS = 1500
 const MIN_SPEECH_MS = 400
-const MAX_RECORD_MS = 20_000
-
+const MAX_RECORD_MS = 20_000// In follow-up turns (after the AI just spoke) we wait this long for the user
+// to start talking. If they don't, the conversation ends silently — no empty
+// transcript, no fallback reply, no TTS.
+const FOLLOWUP_NO_SPEECH_MS = 10_000
 // ── TTS playback ─────────────────────────────────────────────────────────────
 // We use HTMLAudioElement (not WebAudio) so we can call setSinkId() and route
 // the reply to whichever speaker the user picked in the Hardware tab. WebAudio
@@ -117,6 +119,7 @@ export function useVoice(): VoiceState {
   const vadRafRef    = useRef<number | null>(null)
   const maxTimerRef  = useRef<number | null>(null)
   const stoppedRef   = useRef(false)              // prevents double-stop
+  const abortedRef   = useRef(false)              // follow-up timed out — don't transcribe
   const volumeRef    = useRef(0)
 
   // Fully tear down mic + audio nodes + timers. Idempotent.
@@ -139,9 +142,12 @@ export function useVoice(): VoiceState {
   }, [])
 
   // Manual stop — also called by VAD when silence threshold is reached.
-  const stopRecording = useCallback(() => {
+  // `aborted` = true means the user never spoke during a follow-up turn, so the
+  // onstop handler should skip transcription and just end the conversation.
+  const stopRecording = useCallback((aborted = false) => {
     if (stoppedRef.current) return
     stoppedRef.current = true
+    if (aborted) abortedRef.current = true
     try {
       if (recorderRef.current && recorderRef.current.state !== 'inactive') {
         recorderRef.current.stop()
@@ -167,7 +173,7 @@ export function useVoice(): VoiceState {
     return (json.text ?? '').trim()
   }, [])
 
-  const startListening = useCallback(async () => {
+  const startListening = useCallback(async (isFollowUp = false) => {
     if (isListening || isTranscribing || isSpeaking) return
     if (!navigator.mediaDevices?.getUserMedia) {
       console.warn('[voice] getUserMedia unavailable — page must be HTTPS.')
@@ -177,6 +183,7 @@ export function useVoice(): VoiceState {
     setTranscript('')
     setReply('')
     stoppedRef.current = false
+    abortedRef.current = false
 
     let stream: MediaStream
     try {
@@ -216,6 +223,7 @@ export function useVoice(): VoiceState {
 
     rec.onstop = async () => {
       const blob = new Blob(chunksRef.current, { type: mime })
+      const aborted = abortedRef.current
       cleanup()
       setIsListening(false)
       // Fade the orb volume meter back to 0 quickly.
@@ -230,6 +238,13 @@ export function useVoice(): VoiceState {
         requestAnimationFrame(fadeStep)
       }
       requestAnimationFrame(fadeStep)
+
+      // Follow-up turn that timed out without any speech — end the
+      // conversation silently. No transcribe call, no LLM call, no TTS.
+      if (aborted) {
+        console.log('[voice] follow-up timed out — conversation ended')
+        return
+      }
 
       // Upload + display + reply.
       setIsTranscribing(true)
@@ -255,6 +270,10 @@ export function useVoice(): VoiceState {
         setIsSpeaking(false)
         setVolume(0)
         volumeRef.current = 0
+        // Continuous conversation: re-open the mic after the AI finishes.
+        // The follow-up flag activates the 10 s no-speech timeout so an
+        // unanswered prompt ends the conversation cleanly.
+        startListeningRef.current?.(true)
       })
     }
 
@@ -278,6 +297,7 @@ export function useVoice(): VoiceState {
     const buf = new Float32Array(analyser.fftSize)
     const startedAt = performance.now()
     let lastSpeechAt = performance.now()
+    let sawSpeech = false
 
     const tick = () => {
       if (!analyserRef.current) return
@@ -294,11 +314,22 @@ export function useVoice(): VoiceState {
       setVolume(volumeRef.current)
 
       const now = performance.now()
-      if (rms >= SILENCE_RMS) lastSpeechAt = now
-      const speechElapsed = now - startedAt
-      const silenceFor    = now - lastSpeechAt
+      if (rms >= SILENCE_RMS) {
+        lastSpeechAt = now
+        sawSpeech = true
+      }
+      const elapsedSinceStart = now - startedAt
+      const silenceFor        = now - lastSpeechAt
 
-      if (speechElapsed > MIN_SPEECH_MS && silenceFor > SILENCE_HOLD_MS) {
+      // Follow-up turn: if the user never spoke within the grace window, abort.
+      if (isFollowUp && !sawSpeech && elapsedSinceStart > FOLLOWUP_NO_SPEECH_MS) {
+        stopRecording(true)
+        return
+      }
+
+      // Normal end-of-utterance: spoke for at least MIN_SPEECH_MS and then went
+      // quiet for SILENCE_HOLD_MS.
+      if (sawSpeech && elapsedSinceStart > MIN_SPEECH_MS && silenceFor > SILENCE_HOLD_MS) {
         stopRecording()
         return
       }
@@ -319,6 +350,12 @@ export function useVoice(): VoiceState {
   const stopListening = useCallback(() => {
     stopRecording()
   }, [stopRecording])
+
+  // The TTS onEnd callback needs to call startListening, but startListening is
+  // declared after the recorder's onstop closes over it. Use a ref to break
+  // the chicken-and-egg, and keep it in sync after every render.
+  const startListeningRef = useRef<((followUp: boolean) => void) | null>(null)
+  startListeningRef.current = startListening
 
   useEffect(() => {
     return () => {

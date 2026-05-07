@@ -502,9 +502,9 @@ export function SettingsPanel() {
                 </div>
 
                 {/* Wake word — always-on offline detection via Vosk WASM. When
-                    enabled, saying “Jarvis” activates the assistant just like
-                    tapping the orb. The model file (~40 MB) must be present at
-                    /vosk-model-small-en-us-0.15.zip in the public folder. */}
+                    enabled, saying “Hey TouchSphere” activates the assistant
+                    just like tapping the orb. The model file (~40 MB) must be
+                    present at /vosk-model-small-en-us-0.15.zip in public. */}
                 <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Wake Word</span>
                 <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
                   <div className="flex items-center justify-between gap-4">
@@ -516,7 +516,7 @@ export function SettingsPanel() {
                         <line x1="15" y1="9" x2="15.01" y2="9" />
                       </svg>
                       <div className="min-w-0">
-                        <p className="text-white/70 text-sm font-medium">Always listen for “Jarvis”</p>
+                        <p className="text-white/70 text-sm font-medium">Always listen for “Hey TouchSphere”</p>
                         <p className="text-white/30 text-xs mt-0.5">Runs locally — audio never leaves the device until the wake word fires.</p>
                       </div>
                     </div>
@@ -598,7 +598,7 @@ export function SettingsPanel() {
                     </div>
 
                     <p className="text-white/30 text-xs leading-relaxed">
-                      Audio is processed locally and never sent over the network. Say “Jarvis” to trigger the assistant.
+                      Audio is processed locally and never sent over the network. Say “Hey TouchSphere” to trigger the assistant.
                     </p>
                   </div>
                 )}
