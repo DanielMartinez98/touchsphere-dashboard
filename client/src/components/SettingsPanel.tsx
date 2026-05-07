@@ -24,6 +24,8 @@ export function SettingsPanel() {
   const [tab, setTab] = useState<Tab>('audio')
   const [confirmClose, setConfirmClose] = useState(false)
   const [playingSoundId, setPlayingSoundId] = useState<string | null>(null)
+  const [ttsTesting, setTtsTesting] = useState(false)
+  const [ttsStatus,  setTtsStatus]  = useState<string | null>(null)
 
   async function handlePlaySound(id: string, url: string) {
     if (playingSoundId) return
@@ -32,6 +34,66 @@ export function SettingsPanel() {
       await playSound(url)
     } finally {
       window.setTimeout(() => setPlayingSoundId(null), 1200)
+    }
+  }
+
+  // Speak "testing" three times via the server-side /api/tts endpoint.
+  // Uses the same WebAudio path as playSound() (which is known to route to
+  // the active output sink — e.g. Bluetooth A2DP). Surfaces every failure
+  // mode in the UI so we can debug network / synth / decode issues live.
+  async function handleTestTts() {
+    if (ttsTesting) return
+    setTtsTesting(true)
+    setTtsStatus('Fetching…')
+    try {
+      const API = (import.meta.env.VITE_AUDIO_API as string | undefined) ?? ''
+      const url = `${API}/api/tts?text=${encodeURIComponent('testing testing testing')}`
+      console.log('[tts-test] GET', url)
+      const res = await fetch(url)
+      console.log('[tts-test] status', res.status, 'content-type', res.headers.get('content-type'))
+      if (!res.ok) {
+        const body = await res.text().catch(() => '')
+        throw new Error(`HTTP ${res.status} ${body.slice(0, 200)}`)
+      }
+      const arrayBuf = await res.arrayBuffer()
+      console.log('[tts-test] WAV bytes', arrayBuf.byteLength)
+      if (arrayBuf.byteLength < 100) {
+        throw new Error(`WAV too small (${arrayBuf.byteLength} bytes)`)
+      }
+      setTtsStatus(`Decoding (${arrayBuf.byteLength} bytes)…`)
+
+      const Ctor = window.AudioContext
+        || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+      const ctx = new Ctor()
+      if (ctx.state === 'suspended') {
+        try { await ctx.resume() } catch { /* ignore */ }
+      }
+      const buffer = await new Promise<AudioBuffer>((resolve, reject) => {
+        try {
+          const p = ctx.decodeAudioData(arrayBuf, resolve, reject)
+          if (p && typeof (p as Promise<AudioBuffer>).then === 'function') {
+            (p as Promise<AudioBuffer>).then(resolve, reject)
+          }
+        } catch (err) { reject(err as Error) }
+      })
+      console.log('[tts-test] decoded', buffer.duration.toFixed(2), 's,', buffer.sampleRate, 'Hz,', buffer.numberOfChannels, 'ch')
+      setTtsStatus(`Playing (${buffer.duration.toFixed(1)}s @ ${buffer.sampleRate}Hz)…`)
+
+      await new Promise<void>((resolve) => {
+        const src = ctx.createBufferSource()
+        src.buffer = buffer
+        src.connect(ctx.destination)
+        src.onended = () => resolve()
+        src.start(0)
+      })
+      setTtsStatus(`OK — played ${buffer.duration.toFixed(1)}s. If you heard nothing, the audio sink isn't your BT speaker.`)
+      console.log('[tts-test] playback finished')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error('[tts-test] failed:', msg)
+      setTtsStatus(`Error: ${msg}`)
+    } finally {
+      setTtsTesting(false)
     }
   }
 
@@ -205,6 +267,31 @@ export function SettingsPanel() {
                         </option>
                       ))}
                     </select>
+                  )}
+                </div>
+
+                {/* TTS test — hits /api/tts and plays via WebAudio.
+                    Useful for debugging why voice replies aren't audible. */}
+                <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
+                  <div className="flex items-center gap-2.5">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-400 flex-shrink-0">
+                      <path d="M3 10v4a1 1 0 0 0 1 1h3l4 4V5L7 9H4a1 1 0 0 0-1 1z" />
+                      <path d="M16 8a5 5 0 0 1 0 8" />
+                      <path d="M19 5a9 9 0 0 1 0 14" />
+                    </svg>
+                    <span className="text-white/70 text-sm font-medium">Voice (TTS) Test</span>
+                  </div>
+                  <button
+                    onClick={() => void handleTestTts()}
+                    disabled={ttsTesting}
+                    className="w-full py-3 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 active:bg-emerald-500/40 disabled:opacity-50 text-emerald-300 text-sm font-medium border border-emerald-500/30 transition-colors"
+                  >
+                    {ttsTesting ? 'Testing…' : 'Say “testing testing testing”'}
+                  </button>
+                  {ttsStatus && (
+                    <p className="text-white/50 text-xs leading-relaxed font-mono break-words">
+                      {ttsStatus}
+                    </p>
                   )}
                 </div>
               </div>
