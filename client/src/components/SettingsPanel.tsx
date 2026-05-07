@@ -37,6 +37,7 @@ export function SettingsPanel() {
   const [sttError,      setSttError]      = useState<string | null>(null)
   // Object URL for the most recent recording — used for the "tape playback".
   const [sttClipUrl,    setSttClipUrl]    = useState<string | null>(null)
+  const [sttClipBytes,  setSttClipBytes]  = useState<number>(0)
   const [sttPlaying,    setSttPlaying]    = useState(false)
   const sttStreamRef   = useRef<MediaStream    | null>(null)
   const sttRecorderRef = useRef<MediaRecorder  | null>(null)
@@ -84,9 +85,21 @@ export function SettingsPanel() {
 
     let stream: MediaStream
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, sampleRate: 48000 },
-      })
+      // Honor the device selected in the Hardware tab. 'default' = let the OS pick.
+      const audioConstraints: MediaTrackConstraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+        sampleRate: 48000,
+      }
+      if (selectedInputId && selectedInputId !== 'default') {
+        audioConstraints.deviceId = { exact: selectedInputId }
+      }
+      console.log('[stt-test] requesting mic with constraints:', audioConstraints)
+      stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints })
+      const track = stream.getAudioTracks()[0]
+      console.log('[stt-test] got track:', track?.label, track?.getSettings?.())
     } catch (err) {
       setSttError(`Mic permission denied: ${err instanceof Error ? err.message : String(err)}`)
       return
@@ -102,6 +115,7 @@ export function SettingsPanel() {
     rec.onstop = async () => {
       const blob = new Blob(sttChunksRef.current, { type: mime })
       stopSttStream()
+      console.log('[stt-test] recording stopped — blob size:', blob.size, 'bytes,', 'type:', blob.type)
       if (blob.size === 0) {
         setSttError('No audio captured.')
         return
@@ -109,6 +123,7 @@ export function SettingsPanel() {
       // Stash the recording so we can play it back after transcription.
       const clipUrl = URL.createObjectURL(blob)
       setSttClipUrl(clipUrl)
+      setSttClipBytes(blob.size)
       setSttUploading(true)
       try {
         const API = (import.meta.env.VITE_AUDIO_API as string | undefined) ?? ''
@@ -147,9 +162,10 @@ export function SettingsPanel() {
     }, 260)
   }
 
-  // Plays the most recent recording back through the default audio output.
-  // Uses an HTMLAudioElement (not WebAudio) so the browser handles webm/opus
-  // decoding natively and routes to whatever sink the OS has selected.
+  // Plays the most recent recording back through the SELECTED audio output.
+  // Uses an HTMLAudioElement (not WebAudio) so we can call setSinkId() to
+  // route to whichever speaker is picked in the Hardware tab — WebAudio has
+  // no equivalent. Falls back to default sink if setSinkId is unsupported.
   function playSttClip(url?: string | null) {
     const target = url ?? sttClipUrl
     if (!target) return
@@ -171,11 +187,28 @@ export function SettingsPanel() {
     }
     sttAudioRef.current = audio
     setSttPlaying(true)
-    audio.play().catch(err => {
-      console.warn('[stt-test] playback failed:', err)
-      setSttPlaying(false)
-      sttAudioRef.current = null
-    })
+
+    // Route to the selected output sink if the browser supports it.
+    type AudioWithSink = HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }
+    const a = audio as AudioWithSink
+    const startPlayback = () => {
+      audio.play().catch(err => {
+        console.warn('[stt-test] playback failed:', err)
+        setSttPlaying(false)
+        sttAudioRef.current = null
+      })
+    }
+    if (selectedOutputId && selectedOutputId !== 'default' && typeof a.setSinkId === 'function') {
+      console.log('[stt-test] routing playback to sink:', selectedOutputId)
+      a.setSinkId(selectedOutputId)
+        .then(startPlayback)
+        .catch(err => {
+          console.warn('[stt-test] setSinkId failed, falling back to default:', err)
+          startPlayback()
+        })
+    } else {
+      startPlayback()
+    }
   }
 
   async function handlePlaySound(id: string, url: string, category: SoundCategory) {
@@ -451,7 +484,7 @@ export function SettingsPanel() {
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                         <polygon points="5 3 19 12 5 21 5 3" />
                       </svg>
-                      {sttPlaying ? 'Playing recording…' : 'Replay recording'}
+                      {sttPlaying ? 'Playing recording…' : `Replay recording (${(sttClipBytes / 1024).toFixed(1)} KB)`}
                     </button>
                   )}
                   {sttError && (
