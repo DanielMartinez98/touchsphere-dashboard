@@ -26,6 +26,7 @@ console.log('[startup] CACHE_DIR             :', process.env['CACHE_DIR'] ?? '/t
 console.log('[startup] LOG_LEVEL             :', process.env['LOG_LEVEL'] ?? 'info (default)')
 console.log('[startup] OPENWEATHER_API_KEY   :', process.env['OPENWEATHER_API_KEY'] ? '✓ set' : '✗ MISSING')
 console.log('[startup] CALENDAR_ICAL_URL     :', process.env['CALENDAR_ICAL_URL']   ? '✓ set' : '— not set (calendar disabled)')
+console.log('[startup] ELEVENLABS_API_KEY    :', process.env['ELEVENLABS_API_KEY']  ? '✓ set' : '— not set (TTS will use espeak-ng)')
 console.log('[startup] DEFAULT_LAT/LON       :',
   (process.env['DEFAULT_LAT'] && process.env['DEFAULT_LON'])
     ? `${process.env['DEFAULT_LAT']}, ${process.env['DEFAULT_LON']}`
