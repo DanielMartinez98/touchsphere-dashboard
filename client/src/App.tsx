@@ -12,6 +12,7 @@ import MediaListExpanded from './components/widgets/MediaListWidget/MediaListExp
 import { useMediaList } from './hooks/useMediaList'
 import { useAppMode } from './hooks/useAppMode'
 import { useVoice } from './hooks/useVoice'
+import { useWakeWord } from './hooks/useWakeWord'
 import { StatusBar } from './components/StatusBar'
 import { LockScreen } from './components/LockScreen'
 import { SettingsPanel } from './components/SettingsPanel'
@@ -35,6 +36,21 @@ function App() {
   const { mode, hasCred, setMode, createPassword, verifyPassword, unlock } = useAppMode()
   const voice = useVoice()
   const startupPlayedRef = useRef(false)
+
+  // Wake-word listener — fully offline, runs in a Web Worker. When the user
+  // says "jarvis" the orb starts listening just like a manual tap. Paused
+  // while the assistant itself is talking or already capturing audio so we
+  // don't trigger on the TTS reply or fight for the mic device.
+  useWakeWord({
+    pause:  voice.isListening || voice.isSpeaking || voice.isTranscribing,
+    onWake: () => {
+      if (!startupPlayedRef.current) {
+        startupPlayedRef.current = true
+        void playStartupSound()
+      }
+      voice.startListening()
+    },
+  })
 
   // Listen for server-sent reload event and refresh the page
   useEffect(() => {

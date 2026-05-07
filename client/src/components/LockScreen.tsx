@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react'
-import { TouchKeyboard } from './widgets/MediaListWidget/TouchKeyboard'
 
 interface Props {
   verifyPassword: (input: string) => Promise<boolean>
   unlock: () => void
 }
+
+const MAX_LEN = 4
 
 function useClock() {
   const [now, setNow] = useState(() => new Date())
@@ -24,11 +25,11 @@ export function LockScreen({ verifyPassword, unlock }: Props) {
   const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
   const dateStr = now.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })
 
-  async function handleSubmit() {
-    if (!input || checking) return
+  async function submit(code: string) {
+    if (checking) return
     setChecking(true)
     setError(false)
-    const ok = await verifyPassword(input)
+    const ok = await verifyPassword(code)
     setChecking(false)
     if (ok) {
       unlock()
@@ -37,6 +38,27 @@ export function LockScreen({ verifyPassword, unlock }: Props) {
       setInput('')
     }
   }
+
+  function pressDigit(d: string) {
+    if (checking) return
+    if (error) setError(false)
+    if (input.length >= MAX_LEN) return
+    const next = input + d
+    setInput(next)
+    if (next.length === MAX_LEN) {
+      submit(next)
+    }
+  }
+
+  function pressDelete() {
+    if (checking) return
+    if (error) setError(false)
+    setInput((v) => v.slice(0, -1))
+  }
+
+  const digits = ['1', '2', '3', '4', '5', '6', '7', '8', '9']
+  const keyClass =
+    'w-20 h-20 rounded-full bg-white/10 hover:bg-white/15 active:bg-white/25 text-white text-3xl font-light flex items-center justify-center transition-colors disabled:opacity-40'
 
   return (
     <div className="fixed inset-0 z-[9999] bg-black/95 backdrop-blur-xl flex flex-col items-center justify-start pt-16 select-none">
@@ -52,33 +74,67 @@ export function LockScreen({ verifyPassword, unlock }: Props) {
         <path d="M7 11V7a5 5 0 0 1 10 0v4" />
       </svg>
 
-      {/* Password entry display */}
-      <div className="w-72 mb-3">
-        <div
-          className={`bg-white/8 border rounded-xl px-4 py-3 text-white text-center text-xl tracking-widest min-h-[52px] flex items-center justify-center transition-colors ${
-            error ? 'border-red-500/60 bg-red-500/10' : 'border-white/20'
-          }`}
-        >
-          {input
-            ? '•'.repeat(input.length)
-            : <span className="text-white/25 text-sm font-normal">Enter password</span>}
+      {/* PIN dots */}
+      <div className="mb-2">
+        <div className="flex items-center justify-center gap-5 min-h-[28px]">
+          {Array.from({ length: MAX_LEN }).map((_, i) => {
+            const filled = i < input.length
+            return (
+              <div
+                key={i}
+                className={`w-4 h-4 rounded-full border-2 transition-colors ${
+                  error
+                    ? 'border-red-500/70 bg-red-500/30'
+                    : filled
+                      ? 'border-white bg-white'
+                      : 'border-white/40 bg-transparent'
+                }`}
+              />
+            )
+          })}
         </div>
-        {error && (
-          <p className="text-red-400 text-sm text-center mt-2">Incorrect password</p>
-        )}
+        <p className={`text-sm text-center mt-3 transition-opacity ${error ? 'text-red-400 opacity-100' : 'opacity-0'}`}>
+          Incorrect passcode
+        </p>
       </div>
 
-      {/* Submit button */}
-      <button
-        onClick={handleSubmit}
-        disabled={!input || checking}
-        className="w-72 py-3 rounded-xl bg-[var(--accent,#06b6d4)] text-black font-bold text-base disabled:opacity-40 active:scale-95 transition-transform mb-4"
-      >
-        {checking ? 'Checking…' : 'Unlock'}
-      </button>
-
-      {/* Touch keyboard pinned to bottom */}
-      <TouchKeyboard value={input} onChange={setInput} onDone={handleSubmit} />
+      {/* Numeric keypad */}
+      <div className="mt-2 grid grid-cols-3 gap-4">
+        {digits.map((k) => (
+          <button
+            key={k}
+            onPointerDown={(e) => {
+              e.preventDefault()
+              pressDigit(k)
+            }}
+            disabled={checking}
+            className={keyClass}
+          >
+            {k}
+          </button>
+        ))}
+        <div className="w-20 h-20" />
+        <button
+          onPointerDown={(e) => {
+            e.preventDefault()
+            pressDigit('0')
+          }}
+          disabled={checking}
+          className={keyClass}
+        >
+          0
+        </button>
+        <button
+          onPointerDown={(e) => {
+            e.preventDefault()
+            pressDelete()
+          }}
+          disabled={checking || input.length === 0}
+          className="w-20 h-20 rounded-full text-white/80 text-sm font-medium flex items-center justify-center transition-colors disabled:opacity-30 active:bg-white/10"
+        >
+          Delete
+        </button>
+      </div>
     </div>
   )
 }

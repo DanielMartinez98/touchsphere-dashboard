@@ -3,6 +3,7 @@ import { useAudioDevices } from '../hooks/useAudioDevices'
 import { useDevice } from '../hooks/useDevice'
 import { playSound, playRecordChime } from '../utils/sound'
 import { useVolume, setVolume, getEffectiveGain, type VolumeCategory } from '../hooks/useVolume'
+import { useWakeWordEnabled, setWakeWordEnabled } from '../hooks/useWakeWord'
 
 type Tab = 'sounds' | 'hardware' | 'system'
 
@@ -286,6 +287,7 @@ export function SettingsPanel() {
   }
 
   const { metrics: device } = useDevice()
+  const wakeWordEnabled = useWakeWordEnabled()
 
   const {
     inputDevices,
@@ -495,6 +497,48 @@ export function SettingsPanel() {
                   <p className="text-white/30 text-xs leading-relaxed">
                     Tap “Start Recording”, speak a sentence, then tap “Stop & Transcribe” to verify the mic and STT pipeline are working.
                   </p>
+                </div>
+
+                {/* Wake word — always-on offline detection via Vosk WASM. When
+                    enabled, saying “Jarvis” activates the assistant just like
+                    tapping the orb. The model file (~40 MB) must be present at
+                    /vosk-model-small-en-us-0.15.zip in the public folder. */}
+                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Wake Word</span>
+                <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-cyan-400 flex-shrink-0">
+                        <circle cx="12" cy="12" r="10" />
+                        <path d="M8 14s1.5 2 4 2 4-2 4-2" />
+                        <line x1="9" y1="9" x2="9.01" y2="9" />
+                        <line x1="15" y1="9" x2="15.01" y2="9" />
+                      </svg>
+                      <div className="min-w-0">
+                        <p className="text-white/70 text-sm font-medium">Always listen for “Jarvis”</p>
+                        <p className="text-white/30 text-xs mt-0.5">Runs locally — audio never leaves the device until the wake word fires.</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setWakeWordEnabled(!wakeWordEnabled)}
+                      type="button"
+                      aria-label={wakeWordEnabled ? 'Disable wake word' : 'Enable wake word'}
+                      title={wakeWordEnabled ? 'Disable wake word' : 'Enable wake word'}
+                      className={`relative w-12 h-7 rounded-full transition-colors flex-shrink-0 ${
+                        wakeWordEnabled ? 'bg-cyan-500/70' : 'bg-white/15'
+                      }`}
+                    >
+                      <span
+                        className={`absolute top-1 w-5 h-5 rounded-full bg-white transition-transform ${
+                          wakeWordEnabled ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  {wakeWordEnabled && (
+                    <p className="text-white/40 text-xs leading-relaxed">
+                      First activation will download the speech model (~40 MB). Subsequent loads are instant.
+                    </p>
+                  )}
                 </div>
               </div>
             )}
