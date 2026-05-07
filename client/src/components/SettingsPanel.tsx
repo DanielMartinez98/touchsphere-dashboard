@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useAudioDevices } from '../hooks/useAudioDevices'
 import { useDevice } from '../hooks/useDevice'
 import { playSound } from '../utils/sound'
 import { useVolume, setVolume, getEffectiveGain, type VolumeCategory } from '../hooks/useVolume'
 
-type Tab = 'audio' | 'sounds' | 'hardware' | 'system'
+type Tab = 'sounds' | 'hardware' | 'system'
 
 type SoundCategory = 'sfx' | 'music' | 'voice'
 
@@ -24,11 +24,101 @@ function formatUptime(seconds: number): string {
 
 export function SettingsPanel() {
   const [open, setOpen] = useState(false)
-  const [tab, setTab] = useState<Tab>('audio')
+  const [tab, setTab] = useState<Tab>('sounds')
   const [confirmClose, setConfirmClose] = useState(false)
   const [playingSoundId, setPlayingSoundId] = useState<string | null>(null)
   const [ttsTesting, setTtsTesting] = useState(false)
   const [ttsStatus,  setTtsStatus]  = useState<string | null>(null)
+
+  // ── Transcription test state ─────────────────────────────────────────────
+  const [sttRecording,  setSttRecording]  = useState(false)
+  const [sttUploading,  setSttUploading]  = useState(false)
+  const [sttTranscript, setSttTranscript] = useState<string>('')
+  const [sttError,      setSttError]      = useState<string | null>(null)
+  const sttStreamRef   = useRef<MediaStream   | null>(null)
+  const sttRecorderRef = useRef<MediaRecorder | null>(null)
+  const sttChunksRef   = useRef<Blob[]>([])
+
+  function stopSttStream() {
+    sttStreamRef.current?.getTracks().forEach(t => t.stop())
+    sttStreamRef.current = null
+    sttRecorderRef.current = null
+  }
+
+  async function handleSttToggle() {
+    // If currently recording → stop and let onstop handle the upload.
+    if (sttRecording) {
+      const rec = sttRecorderRef.current
+      try {
+        if (rec && rec.state !== 'inactive') rec.stop()
+      } catch (err) {
+        console.warn('[stt-test] stop failed:', err)
+      }
+      setSttRecording(false)
+      return
+    }
+    if (sttUploading) return
+
+    setSttError(null)
+    setSttTranscript('')
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setSttError('getUserMedia unavailable — page must be HTTPS.')
+      return
+    }
+
+    let stream: MediaStream
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, sampleRate: 48000 },
+      })
+    } catch (err) {
+      setSttError(`Mic permission denied: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
+    sttStreamRef.current = stream
+
+    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm'
+    const rec  = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 32_000 })
+    sttRecorderRef.current = rec
+    sttChunksRef.current = []
+
+    rec.ondataavailable = (e) => { if (e.data.size > 0) sttChunksRef.current.push(e.data) }
+    rec.onstop = async () => {
+      const blob = new Blob(sttChunksRef.current, { type: mime })
+      stopSttStream()
+      if (blob.size === 0) {
+        setSttError('No audio captured.')
+        return
+      }
+      setSttUploading(true)
+      try {
+        const API = (import.meta.env.VITE_AUDIO_API as string | undefined) ?? ''
+        const fd  = new FormData()
+        fd.append('audio', blob, `clip-${Date.now()}.webm`)
+        const res = await fetch(`${API}/api/stt`, { method: 'POST', body: fd })
+        if (!res.ok) {
+          const detail = await res.text().catch(() => '')
+          throw new Error(`HTTP ${res.status} ${detail.slice(0, 200)}`)
+        }
+        const json = (await res.json()) as { text?: string; language_code?: string }
+        setSttTranscript((json.text ?? '').trim() || '(no speech detected)')
+      } catch (err) {
+        setSttError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setSttUploading(false)
+      }
+    }
+    rec.onerror = (e) => {
+      console.warn('[stt-test] recorder error:', e)
+      stopSttStream()
+      setSttRecording(false)
+      setSttError('Recorder error.')
+    }
+
+    setSttRecording(true)
+    rec.start(250)
+  }
 
   async function handlePlaySound(id: string, url: string, category: SoundCategory) {
     if (playingSoundId) return
@@ -132,8 +222,7 @@ export function SettingsPanel() {
   }
 
   const TABS: { id: Tab; label: string }[] = [
-    { id: 'audio',    label: 'Audio'    },
-    { id: 'sounds',   label: 'Sounds'   },
+    { id: 'sounds',   label: 'Audio'    },
     { id: 'hardware', label: 'Hardware' },
     { id: 'system',   label: 'System'   },
   ]
@@ -191,11 +280,128 @@ export function SettingsPanel() {
           {/* ── Tab content ── */}
           <div className="flex-1 overflow-y-auto px-6 pb-8">
 
-            {/* Audio tab */}
-            {tab === 'audio' && (
-              <div className="space-y-6 max-w-lg mx-auto">
+            {/* Sounds tab (labeled "Audio" in the tab bar) */}
+            {tab === 'sounds' && (
+              <div className="space-y-4 max-w-lg mx-auto">
+                {/* ── Volume sliders ── */}
+                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Volume</span>
+                <div className="bg-white/5 rounded-2xl border border-white/8 p-5 space-y-4">
+                  <VolumeSlider category="master" label="Master"        accent="text-white"        track="accent-white"          />
+                  <VolumeSlider category="sfx"    label="Sound Effects" accent="text-amber-400"    track="accent-amber-400"      />
+                  <VolumeSlider category="music"  label="Music"         accent="text-fuchsia-400"  track="accent-fuchsia-400"    />
+                  <VolumeSlider category="voice"  label="Voice"         accent="text-emerald-400"  track="accent-emerald-400"    />
+                </div>
+
+                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Chimes</span>
+
+                <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden divide-y divide-white/8">
+                  {SOUNDS.map(s => {
+                    const isPlaying = playingSoundId === s.id
+                    const disabled  = playingSoundId !== null && !isPlaying
+                    return (
+                      <button
+                        key={s.id}
+                        onClick={() => void handlePlaySound(s.id, s.url, s.category)}
+                        disabled={isPlaying || disabled}
+                        className="w-full flex items-center gap-4 px-5 py-5 text-white/80 hover:bg-white/8 active:bg-white/12 transition-colors disabled:opacity-50"
+                      >
+                        <div className={`w-9 h-9 rounded-xl ${s.bg} flex items-center justify-center flex-shrink-0`}>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={s.fg}>
+                            <polygon points="5 3 19 12 5 21 5 3" />
+                          </svg>
+                        </div>
+                        <div className="text-left flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">{s.label}</p>
+                          <p className="text-white/40 text-xs mt-0.5 truncate">{s.subtitle}</p>
+                        </div>
+                        <span className="text-white/40 text-xs flex-shrink-0">
+                          {isPlaying ? 'Playing…' : 'Play'}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+
+                {/* TTS test — hits /api/tts and plays via WebAudio.
+                    Useful for debugging why voice replies aren't audible. */}
+                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Voice (TTS)</span>
+                <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
+                  <div className="flex items-center gap-2.5">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-400 flex-shrink-0">
+                      <path d="M3 10v4a1 1 0 0 0 1 1h3l4 4V5L7 9H4a1 1 0 0 0-1 1z" />
+                      <path d="M16 8a5 5 0 0 1 0 8" />
+                      <path d="M19 5a9 9 0 0 1 0 14" />
+                    </svg>
+                    <span className="text-white/70 text-sm font-medium">Server-side TTS</span>
+                  </div>
+                  <button
+                    onClick={() => void handleTestTts()}
+                    disabled={ttsTesting}
+                    className="w-full py-3 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 active:bg-emerald-500/40 disabled:opacity-50 text-emerald-300 text-sm font-medium border border-emerald-500/30 transition-colors"
+                  >
+                    {ttsTesting ? 'Testing…' : 'Say “testing testing testing”'}
+                  </button>
+                  {ttsStatus && (
+                    <p className="text-white/50 text-xs leading-relaxed font-mono break-words">
+                      {ttsStatus}
+                    </p>
+                  )}
+                </div>
+
+                {/* Transcribe (STT) test — records mic audio, uploads to /api/stt,
+                    and shows what ElevenLabs Scribe heard. Tap once to start,
+                    again to stop and transcribe. */}
+                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Transcribe (STT)</span>
+                <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
+                  <div className="flex items-center gap-2.5">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-violet-400 flex-shrink-0">
+                      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                      <line x1="12" y1="19" x2="12" y2="23" />
+                      <line x1="8" y1="23" x2="16" y2="23" />
+                    </svg>
+                    <span className="text-white/70 text-sm font-medium">Mic → ElevenLabs Scribe</span>
+                  </div>
+                  <button
+                    onClick={() => void handleSttToggle()}
+                    disabled={sttUploading}
+                    className={`w-full py-3 rounded-xl text-sm font-medium border transition-colors active:scale-[0.99] disabled:opacity-50 ${
+                      sttRecording
+                        ? 'bg-red-500/25 hover:bg-red-500/35 text-red-200 border-red-500/40 animate-pulse'
+                        : 'bg-violet-500/20 hover:bg-violet-500/30 active:bg-violet-500/40 text-violet-300 border-violet-500/30'
+                    }`}
+                  >
+                    {sttRecording
+                      ? 'Stop & Transcribe'
+                      : sttUploading
+                        ? 'Transcribing…'
+                        : 'Start Recording'}
+                  </button>
+                  {sttTranscript && (
+                    <div className="bg-violet-500/10 border border-violet-500/25 rounded-xl px-4 py-3">
+                      <p className="text-violet-200 text-sm leading-relaxed break-words">
+                        “{sttTranscript}”
+                      </p>
+                    </div>
+                  )}
+                  {sttError && (
+                    <p className="text-red-400/80 text-xs leading-relaxed font-mono break-words">
+                      {sttError}
+                    </p>
+                  )}
+                  <p className="text-white/30 text-xs leading-relaxed">
+                    Tap “Start Recording”, speak a sentence, then tap “Stop & Transcribe” to verify the mic and STT pipeline are working.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Hardware tab */}
+            {tab === 'hardware' && (
+              <div className="space-y-4 max-w-lg mx-auto">
+                {/* ── Audio Devices (mic + speaker selectors) ── */}
                 <div className="flex items-center justify-between">
-                  <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Devices</span>
+                  <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Audio Devices</span>
                   <button
                     onClick={() => void refreshDevices()}
                     disabled={devicesLoading}
@@ -276,83 +482,8 @@ export function SettingsPanel() {
                     </select>
                   )}
                 </div>
-              </div>
-            )}
 
-            {/* Sounds tab */}
-            {tab === 'sounds' && (
-              <div className="space-y-4 max-w-lg mx-auto">
-                {/* ── Volume sliders ── */}
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Volume</span>
-                <div className="bg-white/5 rounded-2xl border border-white/8 p-5 space-y-4">
-                  <VolumeSlider category="master" label="Master"        accent="text-white"        track="accent-white"          />
-                  <VolumeSlider category="sfx"    label="Sound Effects" accent="text-amber-400"    track="accent-amber-400"      />
-                  <VolumeSlider category="music"  label="Music"         accent="text-fuchsia-400"  track="accent-fuchsia-400"    />
-                  <VolumeSlider category="voice"  label="Voice"         accent="text-emerald-400"  track="accent-emerald-400"    />
-                </div>
-
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Chimes</span>
-
-                <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden divide-y divide-white/8">
-                  {SOUNDS.map(s => {
-                    const isPlaying = playingSoundId === s.id
-                    const disabled  = playingSoundId !== null && !isPlaying
-                    return (
-                      <button
-                        key={s.id}
-                        onClick={() => void handlePlaySound(s.id, s.url, s.category)}
-                        disabled={isPlaying || disabled}
-                        className="w-full flex items-center gap-4 px-5 py-5 text-white/80 hover:bg-white/8 active:bg-white/12 transition-colors disabled:opacity-50"
-                      >
-                        <div className={`w-9 h-9 rounded-xl ${s.bg} flex items-center justify-center flex-shrink-0`}>
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={s.fg}>
-                            <polygon points="5 3 19 12 5 21 5 3" />
-                          </svg>
-                        </div>
-                        <div className="text-left flex-1 min-w-0">
-                          <p className="text-sm font-medium truncate">{s.label}</p>
-                          <p className="text-white/40 text-xs mt-0.5 truncate">{s.subtitle}</p>
-                        </div>
-                        <span className="text-white/40 text-xs flex-shrink-0">
-                          {isPlaying ? 'Playing…' : 'Play'}
-                        </span>
-                      </button>
-                    )
-                  })}
-                </div>
-
-                {/* TTS test — hits /api/tts and plays via WebAudio.
-                    Useful for debugging why voice replies aren't audible. */}
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Voice (TTS)</span>
-                <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
-                  <div className="flex items-center gap-2.5">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-400 flex-shrink-0">
-                      <path d="M3 10v4a1 1 0 0 0 1 1h3l4 4V5L7 9H4a1 1 0 0 0-1 1z" />
-                      <path d="M16 8a5 5 0 0 1 0 8" />
-                      <path d="M19 5a9 9 0 0 1 0 14" />
-                    </svg>
-                    <span className="text-white/70 text-sm font-medium">Server-side TTS</span>
-                  </div>
-                  <button
-                    onClick={() => void handleTestTts()}
-                    disabled={ttsTesting}
-                    className="w-full py-3 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 active:bg-emerald-500/40 disabled:opacity-50 text-emerald-300 text-sm font-medium border border-emerald-500/30 transition-colors"
-                  >
-                    {ttsTesting ? 'Testing…' : 'Say “testing testing testing”'}
-                  </button>
-                  {ttsStatus && (
-                    <p className="text-white/50 text-xs leading-relaxed font-mono break-words">
-                      {ttsStatus}
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Hardware tab */}
-            {tab === 'hardware' && (
-              <div className="space-y-4 max-w-lg mx-auto">
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Pi Metrics</span>
+                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Pi Metrics</span>
 
                 {/* CPU Temp */}
                 <div className="bg-white/5 rounded-2xl px-5 py-4 flex items-center justify-between border border-white/8">
