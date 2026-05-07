@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { AppMode } from '../hooks/useAppMode'
-import { TouchKeyboard } from './widgets/MediaListWidget/TouchKeyboard'
+
+const PIN_LEN = 4
 
 interface Props {
   mode: AppMode
@@ -85,14 +86,14 @@ export function StatusBar({ mode, hasCred, setMode, createPassword }: Props) {
   }
 
   async function handleCreateSubmit() {
-    if (pw.length < 4) { setError('Password must be at least 4 characters'); return }
+    if (pw.length !== PIN_LEN) { setError(`Passcode must be ${PIN_LEN} digits`); return }
     if (step === 'create-pw') {
       setStep('confirm-pw')
       setError('')
       return
     }
     // confirm-pw step
-    if (pw !== pwConfirm) { setError('Passwords do not match'); return }
+    if (pw !== pwConfirm) { setError('Passcodes do not match'); return }
     await createPassword(pw)
     setMode('locked')
     closePicker()
@@ -100,6 +101,21 @@ export function StatusBar({ mode, hasCred, setMode, createPassword }: Props) {
 
   const activeInput = step === 'confirm-pw' ? pwConfirm : pw
   const setActiveInput = step === 'confirm-pw' ? setPwConfirm : setPw
+
+  function pressDigit(d: string) {
+    if (activeInput.length >= PIN_LEN) return
+    if (error) setError('')
+    setActiveInput(activeInput + d)
+  }
+
+  function pressDelete() {
+    if (error) setError('')
+    setActiveInput(activeInput.slice(0, -1))
+  }
+
+  const digits = ['1', '2', '3', '4', '5', '6', '7', '8', '9']
+  const padKeyClass =
+    'w-16 h-16 rounded-full bg-white/10 hover:bg-white/15 active:bg-white/25 text-white text-2xl font-light flex items-center justify-center transition-colors'
 
   return (
     <>
@@ -142,40 +158,72 @@ export function StatusBar({ mode, hasCred, setMode, createPassword }: Props) {
           <div className="bg-[#111] border border-white/15 rounded-2xl p-6 w-80 flex flex-col gap-4 shadow-2xl">
             <div>
               <h2 className="text-white font-bold text-lg">
-                {step === 'create-pw' ? 'Create Lock Password' : 'Confirm Password'}
+                {step === 'create-pw' ? 'Create Lock Passcode' : 'Confirm Passcode'}
               </h2>
               <p className="text-white/40 text-xs mt-1">
                 {step === 'create-pw'
-                  ? 'This password will be required to unlock the screen.'
-                  : 'Enter the same password again to confirm.'}
+                  ? `Enter a ${PIN_LEN}-digit passcode to unlock the screen.`
+                  : 'Enter the same passcode again to confirm.'}
               </p>
             </div>
 
-            {/* Read-only display that shows stars — keyboard fills it */}
-            <div
-              className="bg-white/10 rounded-xl px-4 py-3 text-white text-sm tracking-widest cursor-pointer focus:outline-none border border-white/20 min-h-[44px]"
-            >
-              {activeInput ? '•'.repeat(activeInput.length) : <span className="text-white/30">tap keyboard below…</span>}
+            {/* PIN dots */}
+            <div className="flex items-center justify-center gap-4 py-2">
+              {Array.from({ length: PIN_LEN }).map((_, i) => {
+                const filled = i < activeInput.length
+                return (
+                  <div
+                    key={i}
+                    className={`w-3.5 h-3.5 rounded-full border-2 transition-colors ${
+                      filled ? 'border-white bg-white' : 'border-white/40 bg-transparent'
+                    }`}
+                  />
+                )
+              })}
             </div>
 
-            {error && <p className="text-red-400 text-xs">{error}</p>}
+            {/* Numeric keypad */}
+            <div className="grid grid-cols-3 gap-3 justify-items-center">
+              {digits.map((k) => (
+                <button
+                  key={k}
+                  onPointerDown={(e) => { e.preventDefault(); pressDigit(k) }}
+                  className={padKeyClass}
+                >
+                  {k}
+                </button>
+              ))}
+              <div className="w-16 h-16" />
+              <button
+                onPointerDown={(e) => { e.preventDefault(); pressDigit('0') }}
+                className={padKeyClass}
+              >
+                0
+              </button>
+              <button
+                onPointerDown={(e) => { e.preventDefault(); pressDelete() }}
+                disabled={activeInput.length === 0}
+                className="w-16 h-16 rounded-full text-white/80 text-xs font-medium flex items-center justify-center transition-colors disabled:opacity-30 active:bg-white/10"
+              >
+                Delete
+              </button>
+            </div>
+
+            {error && <p className="text-red-400 text-xs text-center">{error}</p>}
 
             <div className="flex gap-2">
               <button onClick={closePicker} className="flex-1 py-2.5 rounded-xl bg-white/10 text-white/70 text-sm">
                 Cancel
               </button>
-              <button onClick={handleCreateSubmit} className="flex-1 py-2.5 rounded-xl bg-[var(--accent,#06b6d4)] text-black font-bold text-sm">
+              <button
+                onClick={handleCreateSubmit}
+                disabled={activeInput.length !== PIN_LEN}
+                className="flex-1 py-2.5 rounded-xl bg-[var(--accent,#06b6d4)] text-black font-bold text-sm disabled:opacity-40"
+              >
                 {step === 'create-pw' ? 'Next' : 'Lock'}
               </button>
             </div>
           </div>
-
-          {/* Touch keyboard for password input */}
-          <TouchKeyboard
-            value={activeInput}
-            onChange={setActiveInput}
-            onDone={handleCreateSubmit}
-          />
         </div>,
         document.body
       )}
