@@ -259,10 +259,18 @@ export function useVoice(): VoiceState {
       setTranscript(text)
       console.log('[voice] transcript:', text)
 
-      // Ask the LLM for a reply. If the transcript was empty, fall back to a
-      // generic prompt so the user still hears something.
-      const prompt = text || "The user pressed the mic button but I couldn't hear what they said."
-      const replyText = await fetchReply(prompt)
+      // Treat very short or punctuation-only transcripts as no-speech. The
+      // server already strips audio-event tags, but Scribe can still emit a
+      // single short word ("uh", "yeah") for pure-noise clips. If we got
+      // nothing meaningful, end the conversation instead of replying to noise.
+      const cleaned = text.replace(/[^\p{L}\p{N}]/gu, '').trim()
+      if (cleaned.length < 2) {
+        console.log('[voice] no meaningful speech detected — ending conversation')
+        return
+      }
+
+      // Ask the LLM for a reply.
+      const replyText = await fetchReply(text)
       console.log('[voice] reply:', replyText)
       setReply(replyText)
       setIsSpeaking(true)

@@ -39,6 +39,13 @@ router.post('/', upload.single('audio'), async (req, res) => {
     const blob = new Blob([new Uint8Array(req.file.buffer)], { type: req.file.mimetype })
     fd.append('file', blob, req.file.originalname || 'clip.webm')
     fd.append('model_id', STT_MODEL)
+    // Ask Scribe to *tag* non-speech sounds (laughter, music, applause, etc.)
+    // so we can strip them out below. Without this they sometimes leak in as
+    // transcribed words ("uh", "hmm", random noise → bogus tokens).
+    fd.append('tag_audio_events', 'true')
+    // Disable speaker diarization — we have a single user, and the extra pass
+    // occasionally inserts speaker tokens we'd then need to scrub.
+    fd.append('diarize', 'false')
     if (lang && /^[a-z]{2,3}(-[a-z0-9]+)?$/i.test(lang)) {
       fd.append('language_code', lang)
     }
@@ -59,9 +66,40 @@ router.post('/', upload.single('audio'), async (req, res) => {
       return res.status(502).json({ error: 'stt failed', status: apiRes.status, detail: bodyText.slice(0, 500) })
     }
 
-    let parsed: { text?: string; language_code?: string } = {}
-    try { parsed = JSON.parse(bodyText) } catch { /* fall through */ }
-    const text = (parsed.text ?? '').trim()
+    // Scribe returns:
+    //   { text, language_code, words: [{ text, type, start, end, ... }] }
+    // where `type` is "word" | "spacing" | "audio_event". `audio_event` items
+    // are noise tags like "[laughter]" / "[music]" — we drop them entirely
+    // and rebuild the text from real word + spacing tokens only.
+    interface ScribeWord { text?: string; type?: string }
+    interface ScribeResponse {
+      text?: string
+      language_code?: string
+      words?: ScribeWord[]
+    }
+    let parsed: ScribeResponse = {}
+    try { parsed = JSON.parse(bodyText) as ScribeResponse } catch { /* fall through */ }
+
+    let text = ''
+    if (Array.isArray(parsed.words) && parsed.words.length > 0) {
+      text = parsed.words
+        .filter(w => w.type === 'word' || w.type === 'spacing')
+        .map(w => w.text ?? '')
+        .join('')
+        .trim()
+    } else {
+      text = (parsed.text ?? '').trim()
+    }
+
+    // Belt-and-suspenders: strip any bracketed audio-event tags that survived
+    // (e.g. "[music]", "(laughter)", "<noise>") plus collapse extra whitespace.
+    text = text
+      .replace(/\[[^\]]*\]/g, '')
+      .replace(/\([^)]*\)/g, '')
+      .replace(/<[^>]*>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+
     console.log(`[stt] OK lang=${parsed.language_code ?? '?'} chars=${text.length} → "${text.slice(0, 80)}${text.length > 80 ? '…' : ''}"`)
 
     res.json({ text, language_code: parsed.language_code ?? null })
