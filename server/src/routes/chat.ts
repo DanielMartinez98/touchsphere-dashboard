@@ -37,6 +37,7 @@ const OLLAMA_MODEL   = process.env['OLLAMA_MODEL']  ?? 'gemma3'
 const OLLAMA_API_KEY = process.env['OLLAMA_API_KEY'] ?? ''
 const TIMEOUT_MS     = Number(process.env['OLLAMA_TIMEOUT_MS'] ?? 30_000)
 const WEB_SEARCH_URL = process.env['OLLAMA_WEB_SEARCH_URL'] ?? 'https://ollama.com/api/web_search'
+const WEB_FETCH_URL  = process.env['OLLAMA_WEB_FETCH_URL']  ?? 'https://ollama.com/api/web_fetch'
 
 const WEB_SEARCH_ENABLED = (() => {
   const flag = process.env['OLLAMA_ENABLE_WEB_SEARCH']
@@ -51,15 +52,21 @@ const SYSTEM_PROMPT =
   "Reply in 1-2 short, natural-sounding sentences. " +
   "Avoid lists, markdown, code blocks, and emoji — your reply will be spoken aloud." +
   (WEB_SEARCH_ENABLED
-    ? " You have a web_search tool. Use it when the user asks about current events, " +
-      "recent news, live data (weather, sports scores, prices) or anything you don't " +
-      "reliably know. Otherwise answer from memory."
+    ? " You have web_search and web_fetch tools. Use web_search for current events, " +
+      "recent news, live data (weather, sports scores, prices, times), or anything " +
+      "you don't reliably know. If a search snippet looks promising but lacks the exact " +
+      "answer, call web_fetch on that URL to read the full page. " +
+      "CRITICAL: When you use a tool, base your answer strictly on what the tool actually " +
+      "returned. Do not invent facts, numbers, dates, names, or quotes. If the tool results " +
+      "do not contain a clear answer, say so honestly in one sentence rather than guessing."
     : "")
 
 const MAX_PROMPT_LEN     = 1000
 const MAX_HISTORY_MSGS   = 20      // user+assistant turns kept per request
-const MAX_TOOL_ROUNDS    = 3       // safety cap on tool-call loop
+const MAX_TOOL_ROUNDS    = 5       // safety cap on tool-call loop
 const MAX_SEARCH_RESULTS = 5
+const MAX_SNIPPET_CHARS  = 2000    // per-result content from web_search
+const MAX_TOOL_MSG_CHARS = 8000    // total chars we feed back per tool message
 
 type Role = 'system' | 'user' | 'assistant' | 'tool'
 interface ToolCall {
@@ -72,23 +79,42 @@ interface ChatMessage {
   tool_name?: string
 }
 
-const TOOLS = WEB_SEARCH_ENABLED ? [{
-  type: 'function',
-  function: {
-    name: 'web_search',
-    description: 'Search the public web for up-to-date information. Use for current events, recent news, live data, or anything that may have changed recently.',
-    parameters: {
-      type: 'object',
-      properties: {
-        query: {
-          type: 'string',
-          description: 'A concise search query (a few keywords, like a Google search).',
+const TOOLS = WEB_SEARCH_ENABLED ? [
+  {
+    type: 'function',
+    function: {
+      name: 'web_search',
+      description: 'Search the public web for up-to-date information. Returns a list of result snippets with titles and URLs. Use for current events, recent news, live data, or anything that may have changed recently.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'A concise search query (a few keywords, like a Google search).',
+          },
         },
+        required: ['query'],
       },
-      required: ['query'],
     },
   },
-}] : undefined
+  {
+    type: 'function',
+    function: {
+      name: 'web_fetch',
+      description: 'Fetch the full text content of a specific URL. Use this after web_search when a snippet looks relevant but you need the full page to answer accurately (e.g. exact numbers, dates, quotes).',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: {
+            type: 'string',
+            description: 'The full URL to fetch (must start with http:// or https://).',
+          },
+        },
+        required: ['url'],
+      },
+    },
+  },
+] : undefined
 
 // ── Tool implementations ──────────────────────────────────────────────────
 async function runWebSearch(query: string): Promise<string> {
@@ -116,7 +142,7 @@ async function runWebSearch(query: string): Promise<string> {
     if (results.length === 0) return 'No results.'
     return results
       .map((r, i) =>
-        `[${i + 1}] ${r.title ?? '(no title)'}\n${r.url ?? ''}\n${(r.content ?? '').slice(0, 600)}`,
+        `[${i + 1}] ${r.title ?? '(no title)'}\n${r.url ?? ''}\n${(r.content ?? '').slice(0, MAX_SNIPPET_CHARS)}`,
       )
       .join('\n\n')
   } catch (err) {
@@ -134,7 +160,47 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<str
     if (!q.trim()) return 'web_search error: missing "query" argument.'
     return runWebSearch(q.trim().slice(0, 200))
   }
+  if (name === 'web_fetch') {
+    const u = typeof args['url'] === 'string' ? args['url'] : ''
+    if (!u.trim()) return 'web_fetch error: missing "url" argument.'
+    return runWebFetch(u.trim())
+  }
   return `Unknown tool: ${name}`
+}
+
+async function runWebFetch(url: string): Promise<string> {
+  if (!OLLAMA_API_KEY) return 'web_fetch unavailable: no API key configured.'
+  if (!/^https?:\/\//i.test(url)) return `web_fetch error: url must start with http(s)://`
+  console.log(`[chat:tool] web_fetch url="${url.slice(0, 120)}"`)
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
+  try {
+    const res = await fetch(WEB_FETCH_URL, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'authorization': `Bearer ${OLLAMA_API_KEY}`,
+      },
+      signal: ctrl.signal,
+      body: JSON.stringify({ url }),
+    })
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '')
+      console.warn(`[chat:tool] web_fetch ${res.status}: ${detail.slice(0, 200)}`)
+      return `web_fetch failed: ${res.status} ${detail.slice(0, 200)}`
+    }
+    const json = (await res.json()) as { title?: string; content?: string }
+    const title = json.title ?? '(no title)'
+    const content = (json.content ?? '').trim()
+    if (!content) return `Fetched ${url} but the page had no extractable content.`
+    return `Title: ${title}\nURL: ${url}\n\n${content}`
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.warn('[chat:tool] web_fetch error:', msg)
+    return `web_fetch error: ${msg}`
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 // ── Single Ollama /api/chat round ─────────────────────────────────────────
@@ -251,7 +317,9 @@ router.post('/', async (req: Request, res: Response) => {
         const name = c.function?.name ?? ''
         const args = (c.function?.arguments ?? {}) as Record<string, unknown>
         const result = await runTool(name, args)
-        messages.push({ role: 'tool', content: result.slice(0, 4000), tool_name: name })
+        const truncated = result.slice(0, MAX_TOOL_MSG_CHARS)
+        console.log(`[chat:tool] ${name} returned ${result.length} chars (sent ${truncated.length}): ${truncated.slice(0, 200).replace(/\s+/g, ' ')}\u2026`)
+        messages.push({ role: 'tool', content: truncated, tool_name: name })
       }
     }
 
