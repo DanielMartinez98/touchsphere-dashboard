@@ -48,3 +48,20 @@
 .voice-ping {
   animation: voice-ping 1s cubic-bezier(0, 0, 0.2, 1) infinite;
 }
+
+/* Notion widget — bottom sheet slide-up animation */
+@keyframes tsSlideUp {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+.notion-sheet {
+  animation: tsSlideUp 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* Hide scrollbars on chip rows while keeping scroll functionality */
+.scrollbar-hide {
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}

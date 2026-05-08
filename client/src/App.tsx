@@ -37,7 +37,17 @@ function App() {
   const [open, setOpen] = useState<OpenWidget>(null)
   const toggle = (w: OpenWidget) => setOpen(prev => prev === w ? null : w)
   const { items, nextItem, addItem, removeItem, markDone } = useMediaList()
-  const { tasks: notionTasks, loading: notionLoading, error: notionError, refresh: notionRefresh, markDone: notionMarkDone } = useNotion()
+  const {
+    schema:      notionSchema,
+    tasks:       notionTasks,
+    loading:     notionLoading,
+    error:       notionError,
+    refresh:     notionRefresh,
+    createTask:  notionCreate,
+    updateTask:  notionUpdate,
+    archiveTask: notionArchive,
+    getTaskContent: notionGetContent,
+  } = useNotion()
   const { mode, hasCred, setMode, createPassword, verifyPassword, unlock } = useAppMode()
   const voice = useVoice()
   const startupPlayedRef = useRef(false)
@@ -143,11 +153,15 @@ function App() {
           collapsed={<NotionCollapsed tasks={notionTasks} loading={notionLoading} error={notionError} />}
           expanded={
             <NotionExpanded
+              schema={notionSchema}
               tasks={notionTasks}
               loading={notionLoading}
               error={notionError}
-              onMarkDone={notionMarkDone}
+              onUpdate={notionUpdate}
+              onArchive={notionArchive}
+              onCreate={notionCreate}
               onRefresh={notionRefresh}
+              getContent={notionGetContent}
             />
           }
         />
