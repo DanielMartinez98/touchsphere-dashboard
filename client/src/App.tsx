@@ -9,7 +9,10 @@ import { WeatherCollapsed } from './components/widgets/WeatherWidget/WeatherWidg
 import WeatherMap from './components/widgets/WeatherWidget/WeatherMap'
 import { MediaCollapsed } from './components/widgets/MediaListWidget/MediaListWidget'
 import MediaListExpanded from './components/widgets/MediaListWidget/MediaListExpanded'
+import { NotionCollapsed } from './components/widgets/NotionWidget/NotionWidget'
+import NotionExpanded from './components/widgets/NotionWidget/NotionExpanded'
 import { useMediaList } from './hooks/useMediaList'
+import { useNotion } from './hooks/useNotion'
 import { useAppMode } from './hooks/useAppMode'
 import { useVoice } from './hooks/useVoice'
 import { useWakeWord } from './hooks/useWakeWord'
@@ -19,13 +22,14 @@ import { SettingsPanel } from './components/SettingsPanel'
 import { VoiceInterface } from './components/VoiceInterface'
 import { playStartupSound } from './utils/sound'
 
-type OpenWidget = 'calendar' | 'clock' | 'weather' | 'media' | null
+type OpenWidget = 'calendar' | 'clock' | 'weather' | 'media' | 'notion' | null
 
 // Distinct glowing accent colour per corner.
 const ACCENT = {
   weather:  '#3b82f6', // blue
   calendar: '#facc15', // yellow
   media:    '#ef4444', // red  (collection)
+  notion:   '#22c55e', // green (work tasks)
   clock:    '#a855f7', // purple (time)
 } as const
 
@@ -33,6 +37,7 @@ function App() {
   const [open, setOpen] = useState<OpenWidget>(null)
   const toggle = (w: OpenWidget) => setOpen(prev => prev === w ? null : w)
   const { items, nextItem, addItem, removeItem, markDone } = useMediaList()
+  const { tasks: notionTasks, loading: notionLoading, error: notionError, refresh: notionRefresh, markDone: notionMarkDone } = useNotion()
   const { mode, hasCred, setMode, createPassword, verifyPassword, unlock } = useAppMode()
   const voice = useVoice()
   const startupPlayedRef = useRef(false)
@@ -58,6 +63,12 @@ function App() {
     es.addEventListener('reload', () => window.location.reload())
     return () => es.close()
   }, [])
+
+  // Close bottom-left widget when mode changes so stale panels don't linger
+  useEffect(() => {
+    if (mode === 'work' && open === 'media')   setOpen(null)
+    if (mode !== 'work' && open === 'notion')  setOpen(null)
+  }, [mode])
 
   const isRest = mode === 'rest' || mode === 'locked'
 
@@ -96,6 +107,7 @@ function App() {
 
       {/* Central tap target — invisible circle covering the orb that toggles voice */}
       <button
+        type="button"
         onClick={handleSphereTap}
         aria-label={voice.isListening ? 'Stop listening' : 'Start voice input'}
         className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10 w-[360px] h-[360px] max-w-[60vmin] max-h-[60vmin] rounded-full bg-transparent active:scale-95 transition-transform focus:outline-none"
@@ -121,15 +133,34 @@ function App() {
         expanded={<CalendarExpanded />}
       />
 
-      {/* Bottom-Left — Media List / Collection (red glow) */}
-      <Widget
-        position="bottom-left"
-        accent={ACCENT.media}
-        isOpen={open === 'media'}
-        onToggle={() => toggle('media')}
-        collapsed={<MediaCollapsed nextItem={nextItem} />}
-        expanded={<MediaListExpanded items={items} addItem={addItem} removeItem={removeItem} markDone={markDone} />}
-      />
+      {/* Bottom-Left — Notion tasks in work mode, Media collection in rest/locked */}
+      {mode === 'work' ? (
+        <Widget
+          position="bottom-left"
+          accent={ACCENT.notion}
+          isOpen={open === 'notion'}
+          onToggle={() => toggle('notion')}
+          collapsed={<NotionCollapsed tasks={notionTasks} loading={notionLoading} error={notionError} />}
+          expanded={
+            <NotionExpanded
+              tasks={notionTasks}
+              loading={notionLoading}
+              error={notionError}
+              onMarkDone={notionMarkDone}
+              onRefresh={notionRefresh}
+            />
+          }
+        />
+      ) : (
+        <Widget
+          position="bottom-left"
+          accent={ACCENT.media}
+          isOpen={open === 'media'}
+          onToggle={() => toggle('media')}
+          collapsed={<MediaCollapsed nextItem={nextItem} />}
+          expanded={<MediaListExpanded items={items} addItem={addItem} removeItem={removeItem} markDone={markDone} />}
+        />
+      )}
 
       {/* Bottom-Right — Clock / Time (purple glow) */}
       <Widget
