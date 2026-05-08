@@ -83,12 +83,20 @@ async function speakText(text: string, onEnd: () => void) {
 }
 
 // ── Chat (LLM reply) ─────────────────────────────────────────────────────────
-async function fetchReply(prompt: string): Promise<string> {
+// One entry in the running conversation. The server prepends the system
+// message and forwards the rest to Ollama, so the model sees prior turns.
+export interface ChatTurn { role: 'user' | 'assistant'; content: string }
+
+// Cap history to keep the request payload (and the model's context) bounded.
+// Server enforces its own cap too, but we trim here so we don't ship junk.
+const MAX_HISTORY_TURNS = 20
+
+async function fetchReply(messages: ChatTurn[]): Promise<string> {
   try {
     const res = await fetch(`${API}/api/chat`, {
       method:  'POST',
       headers: { 'content-type': 'application/json' },
-      body:    JSON.stringify({ prompt }),
+      body:    JSON.stringify({ messages }),
     })
     if (!res.ok) {
       console.warn('[voice] /api/chat http', res.status)
@@ -121,6 +129,10 @@ export function useVoice(): VoiceState {
   const stoppedRef   = useRef(false)              // prevents double-stop
   const abortedRef   = useRef(false)              // follow-up timed out — don't transcribe
   const volumeRef    = useRef(0)
+  // Running conversation. Lives in a ref because it's mutated from the
+  // recorder's onstop closure and we don't want every append to re-render.
+  // Cleared when the conversation ends (timeout, no-speech, or unmount).
+  const historyRef   = useRef<ChatTurn[]>([])
 
   // Fully tear down mic + audio nodes + timers. Idempotent.
   const cleanup = useCallback(() => {
@@ -184,6 +196,9 @@ export function useVoice(): VoiceState {
     setReply('')
     stoppedRef.current = false
     abortedRef.current = false
+    // Fresh wake-word activation — start a new conversation. Follow-up turns
+    // keep the existing history so the model has context.
+    if (!isFollowUp) historyRef.current = []
 
     let stream: MediaStream
     try {
@@ -241,8 +256,10 @@ export function useVoice(): VoiceState {
 
       // Follow-up turn that timed out without any speech — end the
       // conversation silently. No transcribe call, no LLM call, no TTS.
+      // Reset history so the next wake-word starts a fresh conversation.
       if (aborted) {
         console.log('[voice] follow-up timed out — conversation ended')
+        historyRef.current = []
         return
       }
 
@@ -266,12 +283,22 @@ export function useVoice(): VoiceState {
       const cleaned = text.replace(/[^\p{L}\p{N}]/gu, '').trim()
       if (cleaned.length < 2) {
         console.log('[voice] no meaningful speech detected — ending conversation')
+        historyRef.current = []
         return
       }
 
-      // Ask the LLM for a reply.
-      const replyText = await fetchReply(text)
+      // Append this user turn to the running history, then ask the LLM with
+      // full context so multi-turn conversations actually remember prior turns.
+      historyRef.current = [
+        ...historyRef.current,
+        { role: 'user', content: text },
+      ].slice(-MAX_HISTORY_TURNS)
+      const replyText = await fetchReply(historyRef.current)
       console.log('[voice] reply:', replyText)
+      historyRef.current = [
+        ...historyRef.current,
+        { role: 'assistant', content: replyText },
+      ].slice(-MAX_HISTORY_TURNS)
       setReply(replyText)
       setIsSpeaking(true)
       speakText(replyText, () => {
@@ -281,7 +308,12 @@ export function useVoice(): VoiceState {
         // Continuous conversation: re-open the mic after the AI finishes.
         // The follow-up flag activates the 10 s no-speech timeout so an
         // unanswered prompt ends the conversation cleanly.
-        startListeningRef.current?.(true)
+        //
+        // Defer to the next tick so React can flush setIsSpeaking(false) and
+        // reassign startListeningRef to the new closure. Otherwise the guard
+        // inside startListening still sees isSpeaking=true and bails out,
+        // killing the conversation after the first turn.
+        setTimeout(() => startListeningRef.current?.(true), 0)
       })
     }
 
@@ -368,6 +400,7 @@ export function useVoice(): VoiceState {
   useEffect(() => {
     return () => {
       cleanup()
+      historyRef.current = []
       if (currentAudio) {
         try { currentAudio.pause() } catch { /* already stopped */ }
         currentAudio = null
