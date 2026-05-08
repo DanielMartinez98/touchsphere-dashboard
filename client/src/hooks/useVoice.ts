@@ -408,5 +408,20 @@ export function useVoice(): VoiceState {
     }
   }, [cleanup])
 
+  // Auto-clear the on-screen transcript/reply after 30 s of inactivity, so the
+  // dashboard doesn't keep stale conversation text hanging over the orb. Any
+  // active voice state (listening, transcribing, speaking) cancels the timer
+  // and re-arms it on the next render once activity stops.
+  useEffect(() => {
+    const busy = isListening || isTranscribing || isSpeaking
+    if (busy) return
+    if (!transcript && !reply) return
+    const t = window.setTimeout(() => {
+      setTranscript('')
+      setReply('')
+    }, 30_000)
+    return () => window.clearTimeout(t)
+  }, [isListening, isTranscribing, isSpeaking, transcript, reply])
+
   return { isListening, isSpeaking, isTranscribing, transcript, reply, volume, startListening, stopListening }
 }
