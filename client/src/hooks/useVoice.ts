@@ -291,13 +291,13 @@ export function useVoice(): VoiceState {
       // full context so multi-turn conversations actually remember prior turns.
       historyRef.current = [
         ...historyRef.current,
-        { role: 'user', content: text },
+        { role: 'user', content: text } as ChatTurn,
       ].slice(-MAX_HISTORY_TURNS)
       const replyText = await fetchReply(historyRef.current)
       console.log('[voice] reply:', replyText)
       historyRef.current = [
         ...historyRef.current,
-        { role: 'assistant', content: replyText },
+        { role: 'assistant', content: replyText } as ChatTurn,
       ].slice(-MAX_HISTORY_TURNS)
       setReply(replyText)
       setIsSpeaking(true)
