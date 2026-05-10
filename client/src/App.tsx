@@ -45,8 +45,6 @@ function App() {
     refresh:     notionRefresh,
     createTask:  notionCreate,
     updateTask:  notionUpdate,
-    archiveTask: notionArchive,
-    getTaskContent: notionGetContent,
   } = useNotion()
   const { mode, hasCred, setMode, createPassword, verifyPassword, unlock } = useAppMode()
   const voice = useVoice()
@@ -158,10 +156,8 @@ function App() {
               loading={notionLoading}
               error={notionError}
               onUpdate={notionUpdate}
-              onArchive={notionArchive}
               onCreate={notionCreate}
               onRefresh={notionRefresh}
-              getContent={notionGetContent}
             />
           }
         />

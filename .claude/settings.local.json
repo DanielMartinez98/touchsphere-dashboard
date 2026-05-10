@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Bash(npm run *)",
+      "Bash(node -e 'const fs=require\\('\\\\''fs'\\\\''\\);const p='\\\\''__TRACKED_VAR__'\\\\'';let s=fs.readFileSync\\(p,'\\\\''utf8'\\\\''\\);s=s.replace\\(/<button onClick=/g,'\\\\''<button type=\"button\" onClick='\\\\''\\);fs.writeFileSync\\(p,s\\)')"
+    ]
+  }
+}
