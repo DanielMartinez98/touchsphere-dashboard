@@ -2,6 +2,7 @@ import { useState } from 'react'
 import MiniCalendar from './MiniCalendar'
 import { colorFg, colorBg } from './notion-colors'
 import { richTextWrite } from './notion-types'
+import { TouchInput } from '../../TouchInput'
 
 // Edits one property of a Notion page. Two layers:
 //   - PropertyValue (display text, used by DB rows / inline view)
@@ -165,31 +166,37 @@ function Inner({ schema, value, onSave }: { schema: any; value: any; onSave: (p:
 
 function TextProp({ value, type, onSave }: { value: any; type: string; onSave: (p: any) => void }) {
   const initial = (value?.[type] ?? []).map((t: any) => t.plain_text).join('')
-  const [text, setText] = useState(initial)
-  function commit() {
-    if (text === initial) return
-    onSave({ [type]: richTextWrite(text) })
-  }
   return (
-    <textarea value={text} onChange={e => setText(e.target.value)} onBlur={commit}
+    <TouchInput
+      value={initial}
+      onChange={t => onSave({ [type]: richTextWrite(t) })}
+      multiline
+      rows={Math.min(4, Math.max(1, initial.split('\n').length))}
+      placeholder="Empty"
+      ariaLabel={type === 'title' ? 'Title' : 'Text'}
       className="w-full bg-white/[0.05] text-white text-sm rounded-lg px-3 py-2 outline-none focus:ring-1 focus:ring-white/20 resize-none"
-      rows={Math.min(4, Math.max(1, text.split('\n').length))} />
+    />
   )
 }
 
 function NumberProp({ value, schema, onSave }: { value: any; schema: any; onSave: (p: any) => void }) {
   const initial = value?.number ?? ''
-  const [n, setN] = useState<string>(initial.toString())
   const fmt = schema.number?.format
-  function commit() {
-    const v = n.trim() === '' ? null : Number(n)
+  function commit(text: string) {
+    const trimmed = text.trim()
+    const v = trimmed === '' ? null : Number(trimmed)
     if (v === initial) return
     onSave({ number: Number.isFinite(v as number) ? v : null })
   }
   return (
     <div className="flex items-center gap-2">
-      <input inputMode="decimal" value={n} onChange={e => setN(e.target.value)} onBlur={commit}
-        className="flex-1 bg-white/[0.05] text-white text-sm rounded-lg px-3 py-2 outline-none focus:ring-1 focus:ring-white/20" />
+      <TouchInput
+        value={initial.toString()}
+        onChange={commit}
+        placeholder="0"
+        ariaLabel="Number"
+        className="flex-1 bg-white/[0.05] text-white text-sm rounded-lg px-3 py-2 outline-none focus:ring-1 focus:ring-white/20"
+      />
       {fmt && fmt !== 'number' && <span className="text-xs text-white/35">{fmt}</span>}
     </div>
   )
@@ -199,6 +206,7 @@ function CheckboxProp({ value, onSave }: { value: any; onSave: (p: any) => void 
   const checked = !!value?.checkbox
   return (
     <button type="button" onClick={() => onSave({ checkbox: !checked })}
+      aria-label={checked ? 'Uncheck' : 'Check'}
       className={`w-12 h-7 rounded-full relative transition-colors ${checked ? 'bg-green-500/40' : 'bg-white/10'}`}>
       <span className={`absolute top-1 w-5 h-5 rounded-full bg-white transition-transform ${checked ? 'translate-x-6' : 'translate-x-1'}`} />
     </button>
@@ -207,15 +215,19 @@ function CheckboxProp({ value, onSave }: { value: any; onSave: (p: any) => void 
 
 function UrlProp({ value, kind, onSave }: { value: any; kind: string; onSave: (p: any) => void }) {
   const initial = value?.[kind] ?? ''
-  const [v, setV] = useState(initial)
-  function commit() {
-    if (v === initial) return
-    onSave({ [kind]: v.trim() || null })
+  function commit(text: string) {
+    const trimmed = text.trim()
+    if (trimmed === initial) return
+    onSave({ [kind]: trimmed || null })
   }
   return (
-    <input type={kind === 'email' ? 'email' : kind === 'phone_number' ? 'tel' : 'url'}
-      value={v} onChange={e => setV(e.target.value)} onBlur={commit}
-      className="w-full bg-white/[0.05] text-white text-sm rounded-lg px-3 py-2 outline-none focus:ring-1 focus:ring-white/20" />
+    <TouchInput
+      value={initial}
+      onChange={commit}
+      placeholder={kind === 'email' ? 'name@example.com' : kind === 'phone_number' ? '+1 555…' : 'https://…'}
+      ariaLabel={kind}
+      className="w-full bg-white/[0.05] text-white text-sm rounded-lg px-3 py-2 outline-none focus:ring-1 focus:ring-white/20"
+    />
   )
 }
 
@@ -283,27 +295,122 @@ function MultiSelectProp({
   )
 }
 
+// Notion date prop has start, optional end, and per-field optional time. We
+// separate "date" and "time" toggles so users don't get a clock they didn't
+// ask for. The time picker is a simple HH:MM grid — touch-friendly without
+// pulling in a date library.
 function DateProp({ value, onSave }: { value: any; onSave: (d: any) => void }) {
-  const [showCal, setShowCal] = useState(false)
-  const start = value?.start ?? ''
-  const label = start
-    ? new Date(start + (start.length === 10 ? 'T12:00' : '')).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
-    : 'No date'
+  const [picking, setPicking] = useState<'start' | 'end' | null>(null)
+  const start: string = value?.start ?? ''
+  const end:   string | null = value?.end ?? null
+
+  const startDate = start.slice(0, 10)
+  const endDate   = end?.slice(0, 10) ?? ''
+  const startTime = start.length > 10 ? start.slice(11, 16) : ''
+  const endTime   = end && end.length > 10 ? end.slice(11, 16) : ''
+
+  function fmt(s: string): string {
+    if (!s) return 'None'
+    const d = new Date(s + (s.length === 10 ? 'T12:00' : ''))
+    const date = d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+    return s.length > 10 ? `${date} ${s.slice(11, 16)}` : date
+  }
+
+  // Compose start/end strings in Notion's accepted ISO format.
+  function compose(date: string, time: string): string {
+    if (!date) return ''
+    return time ? `${date}T${time}:00` : date
+  }
+
+  function setStart(date: string, time: string) {
+    onSave({ start: compose(date, time) || null, end: end ?? null })
+  }
+  function setEnd(date: string, time: string) {
+    onSave({ start, end: compose(date, time) || null })
+  }
+
   return (
-    <>
+    <div className="flex flex-col gap-2">
       <div className="flex gap-2">
-        <button type="button" onClick={() => setShowCal(s => !s)}
+        <button type="button" onClick={() => setPicking(picking === 'start' ? null : 'start')}
           className="flex-1 flex items-center gap-2 bg-white/[0.05] rounded-lg px-3 py-2 text-sm active:bg-white/10">
-          <span>📅</span><span className={start ? 'text-white' : 'text-white/30'}>{label}</span>
-          <span className="ml-auto text-white/20 text-xs">{showCal ? '▲' : '▼'}</span>
+          <span>📅</span>
+          <span className={start ? 'text-white' : 'text-white/30'}>{fmt(start)}</span>
+          <span className="ml-auto text-white/20 text-xs">{picking === 'start' ? '▲' : '▼'}</span>
         </button>
         {start && (
           <button type="button" onClick={() => onSave(null)} className="text-xs text-red-400/60 px-2 active:text-red-400">Clear</button>
         )}
       </div>
-      {showCal && (
-        <MiniCalendar value={start.slice(0, 10)} onChange={d => { onSave({ start: d }); setShowCal(false) }} />
+
+      {picking === 'start' && (
+        <div className="flex flex-col gap-2 bg-white/[0.03] rounded-xl p-2">
+          <MiniCalendar value={startDate} onChange={d => setStart(d, startTime)} />
+          <TimePicker value={startTime} onChange={t => setStart(startDate || todayISO(), t)} />
+        </div>
       )}
-    </>
+
+      {start && (
+        <div className="flex gap-2">
+          <button type="button" onClick={() => setPicking(picking === 'end' ? null : 'end')}
+            className="flex-1 flex items-center gap-2 bg-white/[0.05] rounded-lg px-3 py-2 text-sm active:bg-white/10">
+            <span className="text-white/40">→</span>
+            <span className={end ? 'text-white' : 'text-white/30'}>{end ? fmt(end) : 'No end'}</span>
+            <span className="ml-auto text-white/20 text-xs">{picking === 'end' ? '▲' : '▼'}</span>
+          </button>
+          {end && (
+            <button type="button" onClick={() => setEnd('', '')} className="text-xs text-red-400/60 px-2 active:text-red-400">Clear end</button>
+          )}
+        </div>
+      )}
+
+      {picking === 'end' && start && (
+        <div className="flex flex-col gap-2 bg-white/[0.03] rounded-xl p-2">
+          <MiniCalendar value={endDate || startDate} onChange={d => setEnd(d, endTime)} />
+          <TimePicker value={endTime} onChange={t => setEnd(endDate || startDate, t)} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function todayISO(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// Touch-friendly hour/minute selector. Hours scroll horizontally, minutes
+// snap to 5-minute steps. Empty selection clears the time.
+function TimePicker({ value, onChange }: { value: string; onChange: (t: string) => void }) {
+  const [hh, mm] = value ? value.split(':') : ['', '']
+  const hours = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'))
+  const mins  = ['00', '05', '10', '15', '20', '25', '30', '35', '40', '45', '50', '55']
+  function pickHour(h: string)   { onChange(`${h}:${mm || '00'}`) }
+  function pickMinute(m: string) { onChange(`${hh || '12'}:${m}`) }
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between text-[10px] text-white/35 uppercase tracking-wider">
+        <span>Time</span>
+        {value && <button type="button" onClick={() => onChange('')} className="text-red-400/60 active:text-red-400">Clear</button>}
+      </div>
+      <div className="flex gap-1 overflow-x-auto scrollbar-hide">
+        {hours.map(h => (
+          <button key={h} type="button" onClick={() => pickHour(h)}
+            className={`flex-shrink-0 w-9 h-8 rounded-md text-xs tabular-nums
+              ${hh === h ? 'bg-green-500 text-black' : 'bg-white/[0.05] text-white/70 active:bg-white/10'}`}>
+            {h}
+          </button>
+        ))}
+      </div>
+      <div className="flex gap-1 overflow-x-auto scrollbar-hide">
+        {mins.map(m => (
+          <button key={m} type="button" onClick={() => pickMinute(m)}
+            className={`flex-shrink-0 w-9 h-8 rounded-md text-xs tabular-nums
+              ${mm === m ? 'bg-green-500 text-black' : 'bg-white/[0.05] text-white/70 active:bg-white/10'}`}>
+            {m}
+          </button>
+        ))}
+      </div>
+    </div>
   )
 }

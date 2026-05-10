@@ -519,4 +519,137 @@ router.get('/users', async (_req, res) => {
   } catch (err) { notionError(res, err, 'Failed to fetch users') }
 })
 
+// ── Comments ────────────────────────────────────────────────────────────────
+// Notion's comment API only supports listing top-level page comments and
+// posting new ones; thread replies and editing existing comments aren't part
+// of the public API.
+
+router.get('/comments', async (req, res) => {
+  if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
+  const blockId = req.query['block_id'] as string | undefined
+  if (!blockId) { res.status(400).json({ error: 'block_id is required' }); return }
+  try {
+    const { data } = await axios.get(
+      `${NOTION_API}/comments?block_id=${blockId}`,
+      { headers: notionHeaders() },
+    )
+    res.json({
+      comments: (data.results as any[]).map(c => ({
+        id:        c.id,
+        text:      (c.rich_text ?? []).map((t: any) => t.plain_text).join(''),
+        createdBy: c.created_by,
+        createdAt: c.created_time,
+      })),
+    })
+  } catch (err) { notionError(res, err, 'Failed to fetch comments') }
+})
+
+router.post('/comments', async (req, res) => {
+  if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
+  const { pageId, text } = req.body as { pageId?: string; text?: string }
+  if (!pageId || !text?.trim()) { res.status(400).json({ error: 'pageId and text are required' }); return }
+  try {
+    const { data } = await axios.post(
+      `${NOTION_API}/comments`,
+      {
+        parent:    { page_id: pageId },
+        rich_text: [{ type: 'text', text: { content: text.trim() } }],
+      },
+      { headers: notionHeaders() },
+    )
+    res.status(201).json({ id: data.id })
+  } catch (err) { notionError(res, err, 'Failed to post comment') }
+})
+
+// ── Page duplicate ──────────────────────────────────────────────────────────
+// Notion has no native duplicate endpoint, so we create a new page and copy
+// the source's blocks (top level only). Properties are forwarded as-is.
+
+router.post('/pages/:id/duplicate', async (req, res) => {
+  if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
+  try {
+    const sourceId = req.params['id']!
+    const { data: src } = await axios.get(`${NOTION_API}/pages/${sourceId}`, { headers: notionHeaders() })
+
+    // Strip computed properties — only writable types may appear in the create
+    // payload, and the title needs a copy suffix.
+    const writable: Record<string, any> = {}
+    for (const [name, prop] of Object.entries(src.properties as Record<string, any>)) {
+      switch (prop.type) {
+        case 'title':
+          writable[name] = { title: [{ type: 'text', text: { content: pageTitle(src) + ' (copy)' } }] }
+          break
+        case 'rich_text':    writable[name] = { rich_text:    prop.rich_text };    break
+        case 'number':       writable[name] = { number:       prop.number };        break
+        case 'select':       writable[name] = prop.select       ? { select:       { name: prop.select.name } } : { select: null };           break
+        case 'multi_select': writable[name] = { multi_select: (prop.multi_select ?? []).map((o: any) => ({ name: o.name })) };               break
+        case 'status':       writable[name] = prop.status       ? { status:       { name: prop.status.name } } : { status: null };           break
+        case 'date':         writable[name] = { date:         prop.date };         break
+        case 'checkbox':     writable[name] = { checkbox:     prop.checkbox };     break
+        case 'url':          writable[name] = { url:          prop.url };          break
+        case 'email':        writable[name] = { email:        prop.email };        break
+        case 'phone_number': writable[name] = { phone_number: prop.phone_number }; break
+      }
+    }
+
+    // Pull the source's blocks (top level) and forward each as a creation
+    // payload. Nested children aren't copied — we'd need recursive walk.
+    const { data: blockPage } = await axios.get(
+      `${NOTION_API}/blocks/${sourceId}/children?page_size=100`,
+      { headers: notionHeaders() },
+    )
+    const children = (blockPage.results as any[])
+      .filter(b => !b.archived)
+      .map(b => {
+        const t = b.type
+        // Notion's create-block payload mirrors the read shape minus id/parent.
+        return { object: 'block', type: t, [t]: b[t] }
+      })
+
+    const { data: created } = await axios.post(
+      `${NOTION_API}/pages`,
+      {
+        parent:     src.parent,
+        icon:       src.icon ?? undefined,
+        cover:      src.cover ?? undefined,
+        properties: writable,
+        children,
+      },
+      { headers: notionHeaders() },
+    )
+    res.status(201).json({ id: created.id, title: pageTitle(created) })
+  } catch (err) { notionError(res, err, 'Failed to duplicate page') }
+})
+
+// ── Database property addition ──────────────────────────────────────────────
+// Adds a single property to an existing database. The body is the property
+// definition (e.g. { name: 'Notes', type: 'rich_text' }).
+
+router.post('/databases/:id/properties', async (req, res) => {
+  if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
+  const { name, type, options } = req.body as {
+    name?: string; type?: string; options?: { name: string; color?: string }[]
+  }
+  if (!name?.trim() || !type) { res.status(400).json({ error: 'name and type are required' }); return }
+  try {
+    // Build a minimal property definition. For select/multi_select we forward
+    // any user-supplied options.
+    const propDef: any = {}
+    if (type === 'select' || type === 'multi_select') {
+      propDef[type] = { options: options ?? [] }
+    } else if (type === 'number') {
+      propDef[type] = { format: 'number' }
+    } else {
+      propDef[type] = {}
+    }
+    await axios.patch(
+      `${NOTION_API}/databases/${req.params['id']}`,
+      { properties: { [name.trim()]: propDef } },
+      { headers: notionHeaders() },
+    )
+    schemaCache = null  // legacy cache invalidate
+    res.json({ ok: true })
+  } catch (err) { notionError(res, err, 'Failed to add property') }
+})
+
 export default router

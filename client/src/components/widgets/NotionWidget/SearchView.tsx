@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef } from 'react'
 import type { NotionClient } from '../../../hooks/useNotionClient'
 import type { SearchResult } from './notion-types'
+import { TouchInput } from '../../TouchInput'
 
 export default function SearchView({ client }: { client: NotionClient }) {
   const [results, setResults] = useState<SearchResult[]>([])
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState<string | null>(null)
   const [filter,  setFilter]  = useState<'all' | 'page' | 'database'>('all')
-  const inputRef = useRef<HTMLInputElement>(null)
   const seq = useRef(0)
 
   // Debounce — Notion's search is rate-limited per-integration; 250ms keeps it
@@ -30,17 +30,15 @@ export default function SearchView({ client }: { client: NotionClient }) {
     return () => clearTimeout(t)
   }, [client.query, filter, client])
 
-  // Auto-focus the search input on mount.
-  useEffect(() => { inputRef.current?.focus() }, [])
-
   return (
     <div className="flex flex-col gap-3 px-1">
       <div className="flex gap-2 items-center">
-        <input
-          ref={inputRef}
+        <TouchInput
           value={client.query}
-          onChange={e => client.setQuery(e.target.value)}
+          onChange={client.setQuery}
           placeholder="Search workspace…"
+          commitOn="change"
+          ariaLabel="Search workspace"
           className="flex-1 bg-white/[0.06] text-white text-sm rounded-xl px-4 py-3 outline-none focus:ring-1 focus:ring-white/20 placeholder-white/30"
         />
         {client.query && (

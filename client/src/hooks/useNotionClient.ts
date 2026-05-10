@@ -152,6 +152,45 @@ export function useNotionClient() {
     }
   }, [])
 
+  // ── Comments ────────────────────────────────────────────────────────────────
+
+  const getComments = useCallback(async (blockId: string) => {
+    return api<{ comments: { id: string; text: string; createdBy: any; createdAt: string }[] }>(
+      `/api/notion/comments?block_id=${blockId}`,
+    )
+  }, [])
+
+  const postComment = useCallback(async (pageId: string, text: string) => {
+    return api<{ id: string }>(
+      `/api/notion/comments`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pageId, text }) },
+    )
+  }, [])
+
+  // ── Page duplicate ──────────────────────────────────────────────────────────
+
+  const duplicatePage = useCallback(async (id: string): Promise<{ id: string; title: string }> => {
+    return api(
+      `/api/notion/pages/${id}/duplicate`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+    )
+  }, [])
+
+  // ── Database property addition ──────────────────────────────────────────────
+
+  const addProperty = useCallback(async (
+    dbId: string,
+    name: string,
+    type: string,
+    options?: { name: string; color?: string }[],
+  ) => {
+    schemaCache.current.delete(dbId)
+    await api(
+      `/api/notion/databases/${dbId}/properties`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, type, options }) },
+    )
+  }, [])
+
   return {
     // navigation
     stack, current, navigate, back, goHome, replace,
@@ -161,11 +200,13 @@ export function useNotionClient() {
     // workspace
     getWorkspace,
     // databases
-    getDatabase, queryDatabase,
+    getDatabase, queryDatabase, addProperty,
     // pages
-    getPage, updatePage, createPage, archivePage,
+    getPage, updatePage, createPage, archivePage, duplicatePage,
     // blocks
     getBlocks, appendBlocks, updateBlock, deleteBlock, textBlock,
+    // comments
+    getComments, postComment,
   }
 }
 

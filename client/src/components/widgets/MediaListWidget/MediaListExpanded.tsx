@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { MediaItem, MediaType } from '../../../types'
 import { MediaTypeIcon } from './MediaTypeIcon'
-import { TouchKeyboard } from './TouchKeyboard'
+import { TouchKeyboard } from '../../TouchKeyboard'
 
 const TYPES: MediaType[] = ['game', 'show', 'movie']
 

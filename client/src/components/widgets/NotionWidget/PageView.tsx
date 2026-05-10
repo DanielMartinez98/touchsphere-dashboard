@@ -3,29 +3,34 @@ import type { NotionClient } from '../../../hooks/useNotionClient'
 import type { NotionPage } from './notion-types'
 import BlockEditor from './BlockEditor'
 import PropertyEditor from './PropertyEditor'
+import { TouchInput } from '../../TouchInput'
+import EmojiPicker from './EmojiPicker'
+import CommentsSheet from './CommentsSheet'
+import { useNotionPins } from '../../../hooks/useNotionPins'
 
-// Title input that commits on blur. The page title is a special property in
-// Notion (always type='title'), edited inline at the top of the page.
+// Title input — opens TouchKeyboard on tap. Commits on Done.
 function TitleInput({ value, onSave }: { value: string; onSave: (t: string) => void }) {
-  const [draft, setDraft] = useState(value)
-  useEffect(() => setDraft(value), [value])
   return (
-    <input
-      value={draft}
+    <TouchInput
+      value={value}
+      onChange={onSave}
       placeholder="Untitled"
-      onChange={e => setDraft(e.target.value)}
-      onBlur={() => { if (draft !== value) onSave(draft) }}
+      ariaLabel="Page title"
       className="w-full bg-transparent text-2xl font-bold text-white outline-none placeholder-white/20 focus:bg-white/[0.04] rounded px-1 py-1"
     />
   )
 }
 
 export default function PageView({ pageId, client }: { pageId: string; client: NotionClient }) {
-  const [page,       setPage]       = useState<NotionPage | null>(null)
-  const [loading,    setLoading]    = useState(true)
-  const [error,      setError]      = useState<string | null>(null)
-  const [propsOpen,  setPropsOpen]  = useState(false)
+  const [page,        setPage]        = useState<NotionPage | null>(null)
+  const [loading,     setLoading]     = useState(true)
+  const [error,       setError]       = useState<string | null>(null)
+  const [propsOpen,   setPropsOpen]   = useState(false)
   const [archConfirm, setArchConfirm] = useState(false)
+  const [showIcon,    setShowIcon]    = useState(false)
+  const [showComments, setShowComments] = useState(false)
+  const [moreOpen,    setMoreOpen]    = useState(false)
+  const pins = useNotionPins()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -37,7 +42,17 @@ export default function PageView({ pageId, client }: { pageId: string; client: N
 
   useEffect(() => { void load() }, [load])
 
-  // Find the title-property key. Every Notion page has exactly one.
+  // Record visit in recents once the page is loaded.
+  useEffect(() => {
+    if (!page) return
+    pins.recordVisit({
+      id:    page.id,
+      title: page.title,
+      icon:  page.icon?.type === 'emoji' ? page.icon.value : null,
+      kind:  'page',
+    })
+  }, [page?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const titleKey = page ? Object.keys(page.properties).find(k => page.properties[k]?.type === 'title') : null
 
   async function saveTitle(t: string) {
@@ -56,9 +71,20 @@ export default function PageView({ pageId, client }: { pageId: string; client: N
     await client.updatePage(pageId, { properties: { [name]: payload } })
   }
 
+  async function setIcon(emoji: string | null) {
+    setPage(prev => prev ? { ...prev, icon: emoji ? { type: 'emoji', value: emoji } : null } : prev)
+    await client.updatePage(pageId, { icon: emoji ? { type: 'emoji', emoji } : null })
+  }
+
   async function archive() {
     await client.archivePage(pageId)
     client.back()
+  }
+
+  async function duplicate() {
+    setMoreOpen(false)
+    const { id } = await client.duplicatePage(pageId)
+    client.replace({ kind: 'page', id })
   }
 
   if (loading) {
@@ -68,12 +94,9 @@ export default function PageView({ pageId, client }: { pageId: string; client: N
     return <p className="text-sm text-red-400 px-4 py-6">{error ?? 'Page not found'}</p>
   }
 
-  // Property entries to show in the collapsible "properties" section. We
-  // exclude the title property because it's already rendered as the page title.
   const propEntries = Object.entries(page.properties).filter(([key]) => key !== titleKey)
-
-  // Cover image — pulled to a thin band so the page header doesn't dominate.
   const cover = page.cover?.file?.url ?? page.cover?.external?.url
+  const pinned = pins.isPinned(page.id)
 
   return (
     <div className="flex flex-col gap-4 px-1">
@@ -83,16 +106,51 @@ export default function PageView({ pageId, client }: { pageId: string; client: N
         </div>
       )}
 
-      {/* Title row — emoji icon + editable title */}
-      <div className="flex items-center gap-3 px-1">
-        {page.icon?.type === 'emoji' && <span className="text-3xl flex-shrink-0">{page.icon.value}</span>}
-        {page.icon?.type === 'url'   && <img src={page.icon.value} alt="" className="w-9 h-9 rounded flex-shrink-0" />}
+      {/* Title row — emoji icon (tappable to change), editable title, action chips */}
+      <div className="flex items-start gap-2 px-1">
+        <button type="button" onClick={() => setShowIcon(true)}
+          className="flex-shrink-0 w-10 h-10 flex items-center justify-center rounded-lg bg-white/[0.04] active:bg-white/10 text-2xl"
+          aria-label="Change page icon">
+          {page.icon?.type === 'emoji' ? page.icon.value
+            : page.icon?.type === 'url' ? <img src={page.icon.value} alt="" className="w-7 h-7 rounded" />
+            : '📄'}
+        </button>
         <div className="flex-1 min-w-0">
           <TitleInput value={page.title} onSave={saveTitle} />
         </div>
       </div>
 
-      {/* Properties — collapsed by default. Database rows often have many. */}
+      <div className="flex gap-1.5 px-1">
+        <button type="button" onClick={() => pins.togglePin({
+          id: page.id, title: page.title,
+          icon: page.icon?.type === 'emoji' ? page.icon.value : null,
+          kind: 'page',
+        })}
+          className={`px-3 py-1.5 rounded-full text-xs font-medium ${pinned ? 'bg-yellow-500/30 text-yellow-300' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
+          {pinned ? '★ Pinned' : '☆ Pin'}
+        </button>
+        <button type="button" onClick={() => setShowComments(true)}
+          className="px-3 py-1.5 rounded-full bg-white/[0.06] text-white/55 text-xs font-medium active:bg-white/10">
+          💬 Comments
+        </button>
+        <button type="button" onClick={() => setMoreOpen(o => !o)}
+          className="px-3 py-1.5 rounded-full bg-white/[0.06] text-white/55 text-xs font-medium active:bg-white/10">
+          More…
+        </button>
+      </div>
+
+      {moreOpen && (
+        <div className="flex flex-col gap-1.5 bg-white/[0.025] rounded-xl p-2 border border-white/[0.05] mx-1">
+          <button type="button" onClick={duplicate}
+            className="text-left text-sm text-white/80 px-3 py-2 rounded-lg active:bg-white/[0.06]">📋 Duplicate page</button>
+          {page.url && (
+            <a href={page.url} target="_blank" rel="noreferrer"
+               className="text-left text-sm text-blue-400 px-3 py-2 rounded-lg active:bg-white/[0.06]">↗ Open in Notion</a>
+          )}
+        </div>
+      )}
+
+      {/* Properties — collapsed by default */}
       {propEntries.length > 0 && (
         <div className="px-1">
           <button type="button" onClick={() => setPropsOpen(o => !o)}
@@ -120,12 +178,8 @@ export default function PageView({ pageId, client }: { pageId: string; client: N
       {/* Page body */}
       <BlockEditor pageId={pageId} client={client} />
 
-      {/* Footer actions */}
+      {/* Footer — archive */}
       <div className="pt-4 border-t border-white/[0.06] flex flex-col gap-2 px-1">
-        {page.url && (
-          <a href={page.url} target="_blank" rel="noreferrer"
-             className="text-center text-xs text-blue-400/70 active:text-blue-400">Open in Notion ↗</a>
-        )}
         {archConfirm ? (
           <div className="flex gap-2">
             <button type="button" onClick={() => setArchConfirm(false)}
@@ -140,6 +194,16 @@ export default function PageView({ pageId, client }: { pageId: string; client: N
           </button>
         )}
       </div>
+
+      {showIcon && (
+        <EmojiPicker
+          current={page.icon?.type === 'emoji' ? page.icon.value : null}
+          onPick={e => setIcon(e)}
+          onClear={() => setIcon(null)}
+          onClose={() => setShowIcon(false)}
+        />
+      )}
+      {showComments && <CommentsSheet pageId={pageId} client={client} onClose={() => setShowComments(false)} />}
     </div>
   )
 }

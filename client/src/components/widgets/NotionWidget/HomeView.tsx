@@ -3,6 +3,9 @@ import type { NotionTask, NotionSchema, TaskFields } from '../../../hooks/useNot
 import type { NotionClient } from '../../../hooks/useNotionClient'
 import { colorFg, colorBg } from './notion-colors'
 import MiniCalendar from './MiniCalendar'
+import { TouchInput } from '../../TouchInput'
+import { useNotionPins } from '../../../hooks/useNotionPins'
+import { useVoiceCapture } from '../../../hooks/useVoiceCapture'
 
 const PRI_ORDER: Record<string, number> = { High: 0, 'High Priority': 0, Urgent: 0, Medium: 1, Normal: 1, Low: 2 }
 type SortMode = 'priority' | 'due' | 'created'
@@ -169,9 +172,9 @@ function CreateTaskSheet({
           <div className="flex flex-col gap-5">
             <label className="flex flex-col gap-2">
               <span className="text-[11px] text-white/35 uppercase tracking-wider font-medium">Title</span>
-              <input autoFocus value={title} onChange={e => setTitle(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && save()}
+              <TouchInput value={title} onChange={setTitle} commitOn="change"
                 placeholder="Task name…"
+                ariaLabel="Task title"
                 className="bg-white/10 text-white placeholder-white/20 rounded-xl px-4 py-4 text-sm outline-none focus:ring-2 focus:ring-green-400" />
             </label>
             {schema.statusKey && schema.statusOptions.length > 0 && (
@@ -218,10 +221,62 @@ interface Props {
   onRefresh: () => void
 }
 
+function PinsAndRecents({
+  pins, client,
+}: {
+  pins:   ReturnType<typeof useNotionPins>
+  client: NotionClient
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      {pins.pinned.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <span className="text-[10px] uppercase tracking-wider text-white/30 px-1">Pinned</span>
+          <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
+            {pins.pinned.map(p => (
+              <button key={p.id} type="button"
+                onClick={() => client.navigate(p.kind === 'database' ? { kind: 'database', id: p.id } : { kind: 'page', id: p.id })}
+                className="flex-shrink-0 flex items-center gap-2 bg-white/[0.05] active:bg-white/10 rounded-lg px-3 py-2 max-w-[180px]">
+                <span className="text-base flex-shrink-0">{p.icon ?? (p.kind === 'database' ? '🗄️' : '📄')}</span>
+                <span className="text-xs text-white/80 truncate">{p.title}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {pins.recents.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <span className="text-[10px] uppercase tracking-wider text-white/30 px-1">Recent</span>
+          <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
+            {pins.recents.slice(0, 6).map(r => (
+              <button key={r.id} type="button"
+                onClick={() => client.navigate(r.kind === 'database' ? { kind: 'database', id: r.id } : { kind: 'page', id: r.id })}
+                className="flex-shrink-0 flex items-center gap-2 bg-white/[0.03] active:bg-white/[0.07] rounded-lg px-3 py-2 max-w-[180px]">
+                <span className="text-base flex-shrink-0">{r.icon ?? (r.kind === 'database' ? '🗄️' : '📄')}</span>
+                <span className="text-xs text-white/65 truncate">{r.title}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function HomeView({ schema, tasks, loading, error, client, onUpdate, onCreate, onRefresh }: Props) {
   const [filter,   setFilter]   = useState<string | null>(null)
   const [sort,     setSort]     = useState<SortMode>('priority')
   const [creating, setCreating] = useState(false)
+  const pins  = useNotionPins()
+  const voice = useVoiceCapture()
+
+  async function dictateTask() {
+    if (!voice.supported || !schema) return
+    const text = await voice.start()
+    if (!text) return
+    const defaultStatus = schema.statusOptions.find(o => schema.todoStatusNames.includes(o.name))?.name
+    onCreate({ title: text, status: defaultStatus })
+  }
 
   const filtered  = tasks.filter(t => filter === null ? true : t.status === filter)
   const pending   = sortedTasks(filtered.filter(t => !t.done), sort)
@@ -269,7 +324,7 @@ export default function HomeView({ schema, tasks, loading, error, client, onUpda
             className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold transition-colors
               ${filter === null ? 'bg-green-500 text-black' : 'bg-white/[0.07] text-white/40 active:bg-white/15'}`}>All</button>
           {schema.statusOptions.map(opt => (
-            <button key={opt.id} onClick={() => setFilter(opt.name === filter ? null : opt.name)}
+            <button key={opt.id} type="button" onClick={() => setFilter(opt.name === filter ? null : opt.name)}
               className="flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold transition-all border"
               style={{
                 background:  filter === opt.name ? colorBg(opt.color, 0.25) : 'rgba(255,255,255,0.05)',
@@ -280,6 +335,11 @@ export default function HomeView({ schema, tasks, loading, error, client, onUpda
             </button>
           ))}
         </div>
+      )}
+
+      {/* Pinned + Recents — populated as the user navigates around */}
+      {(pins.pinned.length > 0 || pins.recents.length > 0) && (
+        <PinsAndRecents pins={pins} client={client} />
       )}
 
       <div className="flex flex-col gap-2 pb-20">
@@ -313,11 +373,26 @@ export default function HomeView({ schema, tasks, loading, error, client, onUpda
       </div>
 
       {!loading && !error && schema && (
-        <button type="button" onClick={() => setCreating(true)}
-          className="absolute bottom-2 right-1 w-14 h-14 rounded-full bg-green-500 text-black
-                     flex items-center justify-center text-3xl font-light shadow-lg shadow-green-500/30
-                     active:scale-90 transition-transform z-10"
-          aria-label="Create task">+</button>
+        <div className="absolute bottom-2 right-1 flex flex-col gap-2 z-10">
+          {voice.supported && (
+            <button type="button" onClick={voice.listening ? voice.stop : dictateTask}
+              className={`w-12 h-12 rounded-full flex items-center justify-center text-xl shadow-lg active:scale-90 transition-transform
+                ${voice.listening ? 'bg-red-500 text-white shadow-red-500/30 animate-pulse' : 'bg-blue-500 text-white shadow-blue-500/30'}`}
+              aria-label="Dictate task">🎤</button>
+          )}
+          <button type="button" onClick={() => setCreating(true)}
+            className="w-14 h-14 rounded-full bg-green-500 text-black
+                       flex items-center justify-center text-3xl font-light shadow-lg shadow-green-500/30
+                       active:scale-90 transition-transform"
+            aria-label="Create task">+</button>
+        </div>
+      )}
+
+      {voice.listening && voice.interim && (
+        <div className="absolute bottom-20 right-1 left-4 z-10 bg-blue-500/20 backdrop-blur-md border border-blue-500/40 rounded-xl px-3 py-2">
+          <p className="text-[10px] text-blue-200 uppercase tracking-wider">Listening…</p>
+          <p className="text-sm text-white">{voice.interim}</p>
+        </div>
       )}
 
       {creating && schema && (

@@ -1,7 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import type { NotionClient } from '../../../hooks/useNotionClient'
 import type { NotionBlock, RichText } from './notion-types'
 import { colorBg, colorStyle, isBackground } from './notion-colors'
+import { TouchInput } from '../../TouchInput'
+import BlockColorMenu from './BlockColorMenu'
 
 // ── Rich-text rendering (read-only annotations) ──────────────────────────────
 
@@ -32,55 +34,27 @@ function RichTextSpan({ rt }: { rt: RichText[] | undefined }) {
   )
 }
 
-// ── Inline text editor — single-line autosave on blur or Enter ───────────────
+// ── Inline text editor backed by the on-screen TouchKeyboard ─────────────────
 
 function EditableLine({
-  value, placeholder, onSave, multiline = false, className = '', autoFocus = false,
+  value, placeholder, onSave, multiline = false, className = '',
 }: {
   value:        string
   placeholder?: string
   onSave:       (text: string) => void
   multiline?:   boolean
   className?:   string
-  autoFocus?:   boolean
 }) {
-  const [draft,   setDraft]   = useState(value)
-  const [editing, setEditing] = useState(false)
-  const ref = useRef<HTMLTextAreaElement | HTMLInputElement | null>(null)
-
-  // Sync external value updates when not editing.
-  useEffect(() => { if (!editing) setDraft(value) }, [value, editing])
-
-  function commit() {
-    setEditing(false)
-    if (draft !== value) onSave(draft)
-  }
-
-  function autoSize() {
-    if (multiline && ref.current && 'scrollHeight' in ref.current) {
-      const el = ref.current as HTMLTextAreaElement
-      el.style.height = 'auto'
-      el.style.height = el.scrollHeight + 'px'
-    }
-  }
-
-  useEffect(() => { if (editing) autoSize() }, [editing, draft])
-
-  const Tag = multiline ? 'textarea' : 'input'
+  // For multi-line blocks size the textarea by line-count so it grows as the
+  // user types. For single-line we let TouchInput render an input.
+  const rows = multiline ? Math.min(8, Math.max(1, value.split('\n').length)) : undefined
   return (
-    <Tag
-      ref={ref as any}
-      autoFocus={autoFocus}
-      value={draft}
+    <TouchInput
+      value={value}
+      onChange={onSave}
       placeholder={placeholder}
-      onFocus={() => setEditing(true)}
-      onChange={e => { setDraft(e.target.value); if (multiline) autoSize() }}
-      onBlur={commit}
-      onKeyDown={e => {
-        if (e.key === 'Enter' && !multiline) { e.preventDefault(); (e.target as HTMLElement).blur() }
-        if (e.key === 'Escape') { setDraft(value); setEditing(false); (e.target as HTMLElement).blur() }
-      }}
-      rows={multiline ? 1 : undefined}
+      multiline={multiline}
+      rows={rows}
       className={`w-full bg-transparent outline-none focus:bg-white/[0.04] focus:ring-1 focus:ring-white/15 rounded px-1.5 py-1 placeholder-white/20 resize-none ${className}`}
     />
   )
@@ -146,6 +120,7 @@ function BlockView({
   const text = richText(data.rich_text)
 
   const [showActions, setShowActions] = useState(false)
+  const [showColors,  setShowColors]  = useState(false)
   const [toggleOpen,  setToggleOpen]  = useState(false)
   const [children,    setChildren]    = useState<NotionBlock[] | null>(null)
 
@@ -172,11 +147,33 @@ function BlockView({
 
   // ── Helpers for save handlers ───────────────────────────────────────────────
 
+  // Preserve the first rich_text segment's annotations so re-saving text
+  // (after a tap-edit) doesn't blow away bold/italic/code formatting.
+  const currentAnnotations = (data.rich_text?.[0]?.annotations) ?? {}
+
   function saveText(newText: string) {
-    onUpdate(block.id, { [type]: { rich_text: [{ type: 'text', text: { content: newText } }] } })
+    onUpdate(block.id, {
+      [type]: { rich_text: [{ type: 'text', text: { content: newText }, annotations: currentAnnotations }] },
+    })
   }
   function saveCheck(checked: boolean) {
     onUpdate(block.id, { [type]: { checked } })
+  }
+
+  // Toggle an annotation on the entire block's rich_text. Touch makes
+  // selection-based formatting impractical, so block-wide formatting is the
+  // pragmatic alternative.
+  function toggleAnnotation(key: 'bold' | 'italic' | 'strikethrough' | 'underline' | 'code') {
+    const next = { ...currentAnnotations, [key]: !currentAnnotations[key] }
+    onUpdate(block.id, {
+      [type]: { rich_text: [{ type: 'text', text: { content: text }, annotations: next }] },
+    })
+  }
+
+  function setColor(color: string) {
+    // For text-bearing blocks Notion stores color at the block level, not on
+    // individual rich_text spans (where it would also work but is redundant).
+    onUpdate(block.id, { [type]: { color } })
   }
 
   // ── Renderers per block type ────────────────────────────────────────────────
@@ -421,25 +418,89 @@ function BlockView({
       editable = false
   }
 
-  // Apply background color tint at the block level for paragraphs/headings/etc.
+  // Apply text/background color at the block level for paragraphs/headings/etc.
   const blockColor = data.color
   const hasBgColor = isBackground(blockColor)
-  const wrapperStyle: React.CSSProperties = hasBgColor
-    ? { background: colorBg(blockColor, 0.10), borderRadius: 6, padding: '4px 6px' }
-    : {}
+  const wrapperStyle: React.CSSProperties = (() => {
+    if (!blockColor || blockColor === 'default') return {}
+    if (hasBgColor) return { background: colorBg(blockColor, 0.10), borderRadius: 6, padding: '4px 6px' }
+    // Foreground color — apply to the wrapper; child inputs inherit `color`.
+    return { ...colorStyle(blockColor) }
+  })()
+
+  // Block types that support text annotations (bold/italic/etc.) and color.
+  const TEXT_BLOCKS = new Set([
+    'paragraph', 'heading_1', 'heading_2', 'heading_3',
+    'bulleted_list_item', 'numbered_list_item', 'to_do', 'toggle',
+    'quote', 'callout', 'code',
+  ])
+  const supportsFormatting = TEXT_BLOCKS.has(type)
+
+  // Apply block-level annotation classes to the body wrapper. Block-wide
+  // formatting matches what the toolbar lets you toggle; per-span annotations
+  // are still rendered correctly because Notion writes them back into rich_text.
+  let annotationClass = ''
+  if (supportsFormatting) {
+    if (currentAnnotations.bold)          annotationClass += ' [&_textarea]:font-bold [&_input]:font-bold'
+    if (currentAnnotations.italic)        annotationClass += ' [&_textarea]:italic [&_input]:italic'
+    if (currentAnnotations.strikethrough) annotationClass += ' [&_textarea]:line-through [&_input]:line-through'
+    if (currentAnnotations.underline)     annotationClass += ' [&_textarea]:underline [&_input]:underline'
+    if (currentAnnotations.code)          annotationClass += ' [&_textarea]:font-mono [&_input]:font-mono'
+  }
+  const bodyWrapperClass = `relative ${annotationClass}`
 
   return (
-    <div className="group relative" style={wrapperStyle}
+    <div className={`group ${bodyWrapperClass}`} style={wrapperStyle}
          onTouchStart={() => setShowActions(true)}
          onMouseEnter={() => setShowActions(true)}
          onMouseLeave={() => setShowActions(false)}>
       {body}
       {editable && showActions && (
-        <button type="button" onClick={() => onDelete(block.id)}
-          className="absolute -right-1 top-0 w-6 h-6 rounded-full bg-red-500/20 text-red-300 text-xs active:bg-red-500/40"
-          aria-label="Delete block">×</button>
+        <div className="absolute -right-1 top-0 flex gap-0.5">
+          {supportsFormatting && (
+            <FormatActions
+              annotations={currentAnnotations}
+              onToggle={toggleAnnotation}
+              onColor={() => setShowColors(true)}
+            />
+          )}
+          <button type="button" onClick={() => onDelete(block.id)}
+            className="w-6 h-6 rounded-full bg-red-500/20 text-red-300 text-xs active:bg-red-500/40"
+            aria-label="Delete block">×</button>
+        </div>
+      )}
+      {showColors && (
+        <BlockColorMenu
+          current={blockColor}
+          onPick={c => { setColor(c); setShowColors(false) }}
+          onClose={() => setShowColors(false)}
+        />
       )}
     </div>
+  )
+}
+
+// Compact toolbar of annotation toggles. Each is a single-character chip;
+// at touch sizes that's still a 24px target, fine for finger taps.
+function FormatActions({
+  annotations, onToggle, onColor,
+}: {
+  annotations: Record<string, any>
+  onToggle:    (k: 'bold' | 'italic' | 'strikethrough' | 'underline' | 'code') => void
+  onColor:     () => void
+}) {
+  const cls = (active: boolean) =>
+    `w-6 h-6 rounded-full text-[11px] flex items-center justify-center
+     ${active ? 'bg-blue-500/40 text-white' : 'bg-white/10 text-white/55 active:bg-white/20'}`
+  return (
+    <>
+      <button type="button" onClick={() => onToggle('bold')}          aria-label="Bold"          className={`${cls(!!annotations.bold)} font-bold`}>B</button>
+      <button type="button" onClick={() => onToggle('italic')}        aria-label="Italic"        className={`${cls(!!annotations.italic)} italic`}>I</button>
+      <button type="button" onClick={() => onToggle('strikethrough')} aria-label="Strikethrough" className={`${cls(!!annotations.strikethrough)} line-through`}>S</button>
+      <button type="button" onClick={() => onToggle('underline')}     aria-label="Underline"     className={`${cls(!!annotations.underline)} underline`}>U</button>
+      <button type="button" onClick={() => onToggle('code')}          aria-label="Code"          className={`${cls(!!annotations.code)} font-mono text-[10px]`}>{'</>'}</button>
+      <button type="button" onClick={onColor}                          aria-label="Color"         className={`${cls(false)}`}>🎨</button>
+    </>
   )
 }
 
