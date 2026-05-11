@@ -114,3 +114,92 @@ export async function playRecordChime(direction: 'up' | 'down' = 'up'): Promise<
     console.warn('[sound] playRecordChime failed:', err)
   }
 }
+
+// ── "Thinking" loop ──────────────────────────────────────────────────────────
+// A soft, looping bed of three slowly-detuned sine tones with a gentle LFO,
+// played while the assistant is transcribing and waiting for the LLM. Built
+// entirely from oscillators so it adds zero asset weight and starts instantly
+// (no fetch / decode latency on the first invocation).
+//
+// Singleton: calling startThinkingSound() again while one is already playing
+// is a no-op, and stopThinkingSound() fades it out cleanly.
+
+interface ThinkingHandle {
+  oscs:    OscillatorNode[]
+  lfos:    OscillatorNode[]
+  master:  GainNode
+}
+let thinkingHandle: ThinkingHandle | null = null
+
+export async function startThinkingSound(): Promise<void> {
+  if (thinkingHandle) return
+  try {
+    const c = getCtx()
+    if (c.state === 'suspended') {
+      try { await c.resume() } catch { /* ignore */ }
+    }
+
+    const now    = c.currentTime
+    // Routed through 'music' so it follows the user's music slider — quieter
+    // than sfx so the transcript/orb pulse remain the focal point.
+    const peak   = 0.06 * getEffectiveGain('music')
+    const master = c.createGain()
+    master.gain.setValueAtTime(0, now)
+    master.gain.linearRampToValueAtTime(peak, now + 0.35)   // soft fade-in
+    master.connect(c.destination)
+
+    // A minor 11th-style chord at a low volume — pleasant + non-intrusive.
+    const freqs   = [196.0, 261.63, 392.0]    // G3, C4, G4
+    const oscs:  OscillatorNode[] = []
+    const lfos:  OscillatorNode[] = []
+
+    for (let i = 0; i < freqs.length; i++) {
+      const osc = c.createOscillator()
+      osc.type = i === 0 ? 'sine' : 'triangle'
+      osc.frequency.value = freqs[i]!
+
+      // Per-tone gain w/ slow tremolo (LFO modulates amplitude).
+      const toneGain = c.createGain()
+      toneGain.gain.value = 0.5
+
+      const lfo = c.createOscillator()
+      lfo.frequency.value = 0.25 + i * 0.13     // stagger LFO rates per tone
+      const lfoGain = c.createGain()
+      lfoGain.gain.value = 0.18                  // depth
+      lfo.connect(lfoGain)
+      lfoGain.connect(toneGain.gain)
+
+      osc.connect(toneGain)
+      toneGain.connect(master)
+      osc.start(now)
+      lfo.start(now)
+      oscs.push(osc)
+      lfos.push(lfo)
+    }
+
+    thinkingHandle = { oscs, lfos, master }
+  } catch (err) {
+    console.warn('[sound] startThinkingSound failed:', err)
+  }
+}
+
+export function stopThinkingSound(): void {
+  const h = thinkingHandle
+  if (!h) return
+  thinkingHandle = null
+  try {
+    const c = getCtx()
+    const now = c.currentTime
+    const fadeMs = 0.25
+    h.master.gain.cancelScheduledValues(now)
+    h.master.gain.setValueAtTime(h.master.gain.value, now)
+    h.master.gain.linearRampToValueAtTime(0, now + fadeMs)
+    // Stop oscillators just after the fade so we don't leak nodes.
+    const stopAt = now + fadeMs + 0.05
+    for (const o of h.oscs) { try { o.stop(stopAt) } catch { /* ignore */ } }
+    for (const l of h.lfos) { try { l.stop(stopAt) } catch { /* ignore */ } }
+    setTimeout(() => { try { h.master.disconnect() } catch { /* ignore */ } }, (fadeMs + 0.1) * 1000)
+  } catch (err) {
+    console.warn('[sound] stopThinkingSound failed:', err)
+  }
+}

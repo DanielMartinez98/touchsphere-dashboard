@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { getEffectiveGain } from './useVolume'
+import { startThinkingSound, stopThinkingSound } from '../utils/sound'
 
 // Fallback replies if /api/chat fails or returns nothing usable. We still want
 // the user to hear *something* so they know the loop completed.
@@ -270,6 +271,11 @@ export function useVoice(): VoiceState {
         return
       }
 
+      // Start the "thinking" loop the moment we begin uploading audio. It
+      // covers the entire transcribe + LLM round and is faded out just before
+      // TTS playback (or on any early exit below).
+      void startThinkingSound()
+
       // Upload + display + reply.
       setIsTranscribing(true)
       let text = ''
@@ -290,6 +296,7 @@ export function useVoice(): VoiceState {
       const cleaned = text.replace(/[^\p{L}\p{N}]/gu, '').trim()
       if (cleaned.length < 2) {
         console.log('[voice] no meaningful speech detected — ending conversation')
+        stopThinkingSound()
         historyRef.current = []
         return
       }
@@ -307,6 +314,8 @@ export function useVoice(): VoiceState {
         { role: 'assistant', content: replyText } as ChatTurn,
       ].slice(-MAX_HISTORY_TURNS)
       setReply(replyText)
+      // Hand off audio focus from the thinking loop to the TTS reply.
+      stopThinkingSound()
       setIsSpeaking(true)
       speakText(replyText, () => {
         setIsSpeaking(false)
@@ -407,6 +416,7 @@ export function useVoice(): VoiceState {
   useEffect(() => {
     return () => {
       cleanup()
+      stopThinkingSound()
       historyRef.current = []
       if (currentAudio) {
         try { currentAudio.pause() } catch { /* already stopped */ }
