@@ -1,38 +1,19 @@
 import { useState, useEffect, useCallback } from 'react'
 import type { NotionClient } from '../../../hooks/useNotionClient'
 import type { Workspace, WorkspaceItem } from './notion-types'
-
-// ── Tile renderer ────────────────────────────────────────────────────────────
-
-function Tile({
-  item, kind, onTap,
-}: {
-  item: WorkspaceItem
-  kind: 'page' | 'database'
-  onTap: () => void
-}) {
-  return (
-    <button type="button" onClick={onTap}
-      className="w-full text-left flex items-center gap-3 bg-white/[0.04] rounded-xl px-3 py-3 active:bg-white/[0.09] active:scale-[0.99] transition-all">
-      <span className="text-lg flex-shrink-0">
-        {item.icon?.type === 'emoji' ? item.icon.value
-          : item.icon?.type === 'url' ? <img src={item.icon.value} alt="" className="w-5 h-5 rounded inline" />
-          : kind === 'database' ? '🗄️' : '📄'}
-      </span>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm text-white truncate">{item.title}</p>
-        <p className="text-[10px] text-white/30 uppercase tracking-wider">{kind}</p>
-      </div>
-      <span className="text-white/20 text-sm">›</span>
-    </button>
-  )
-}
+import Tile from './Tile'
+import AddToGroupSheet from './AddToGroupSheet'
+import { useNotionGroups } from '../../../hooks/useNotionGroups'
 
 export default function BrowseView({ client }: { client: NotionClient }) {
   const [ws,      setWs]      = useState<Workspace | null>(null)
   const [loading, setLoading] = useState(true)
   const [error,   setError]   = useState<string | null>(null)
   const [tab,     setTab]     = useState<'all' | 'databases' | 'pages'>('all')
+  // Item targeted by a long-press, opens the bottom sheet.
+  const [adding,  setAdding]  = useState<{ item: WorkspaceItem; kind: 'page' | 'database' } | null>(null)
+
+  const groups = useNotionGroups()
 
   const load = useCallback(async (force = false) => {
     setLoading(true)
@@ -75,9 +56,11 @@ export default function BrowseView({ client }: { client: NotionClient }) {
           className="w-9 h-9 rounded-full bg-white/10 text-white/50 text-xl flex items-center justify-center active:scale-90">↺</button>
       </div>
 
+      <p className="text-[10px] text-white/30 px-1">Long-press any item to add it to a group.</p>
+
       <div className="flex gap-1.5">
         {(['all', 'databases', 'pages'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
+          <button key={t} type="button" onClick={() => setTab(t)}
             className={`flex-1 py-1.5 rounded-full text-xs font-medium transition-colors
               ${tab === t ? 'bg-green-500 text-black' : 'bg-white/[0.07] text-white/45 active:bg-white/15'}`}>
             {t === 'all' ? `All (${ws.databases.length + rootPages.length})`
@@ -91,8 +74,10 @@ export default function BrowseView({ client }: { client: NotionClient }) {
         <div className="flex flex-col gap-1.5">
           {tab === 'all' && <p className="text-[11px] text-white/30 uppercase tracking-wider px-1 mt-2">Databases</p>}
           {ws.databases.map(d => (
-            <Tile key={d.id} item={d} kind="database"
-                  onTap={() => client.navigate({ kind: 'database', id: d.id })} />
+            <Tile key={d.id} title={d.title} icon={d.icon} kind="database"
+                  inGroupCount={groups.groupsContaining(d.id).length}
+                  onTap={() => client.navigate({ kind: 'database', id: d.id })}
+                  onLongPress={() => setAdding({ item: d, kind: 'database' })} />
           ))}
         </div>
       )}
@@ -101,8 +86,10 @@ export default function BrowseView({ client }: { client: NotionClient }) {
         <div className="flex flex-col gap-1.5">
           {tab === 'all' && <p className="text-[11px] text-white/30 uppercase tracking-wider px-1 mt-2">Pages</p>}
           {rootPages.map(p => (
-            <Tile key={p.id} item={p} kind="page"
-                  onTap={() => client.navigate({ kind: 'page', id: p.id })} />
+            <Tile key={p.id} title={p.title} icon={p.icon} kind="page"
+                  inGroupCount={groups.groupsContaining(p.id).length}
+                  onTap={() => client.navigate({ kind: 'page', id: p.id })}
+                  onLongPress={() => setAdding({ item: p, kind: 'page' })} />
           ))}
         </div>
       )}
@@ -114,6 +101,15 @@ export default function BrowseView({ client }: { client: NotionClient }) {
       <p className="text-[10px] text-white/25 text-center pt-3">
         Share more pages or databases with your integration in Notion to see them here.
       </p>
+
+      {adding && (
+        <AddToGroupSheet
+          item={adding.item}
+          kind={adding.kind}
+          groups={groups}
+          onClose={() => setAdding(null)}
+        />
+      )}
     </div>
   )
 }

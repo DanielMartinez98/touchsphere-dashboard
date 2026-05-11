@@ -98,6 +98,7 @@ export type NavView =
   | { kind: 'home' }
   | { kind: 'browse' }
   | { kind: 'search' }
+  | { kind: 'groups' }
   | { kind: 'database', id: string }
   | { kind: 'page',     id: string }
 

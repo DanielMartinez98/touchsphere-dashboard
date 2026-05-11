@@ -135,8 +135,44 @@ export function useNotionClient() {
     })
   }, [])
 
+  // Convert a block to a different type. Notion accepts a type change via the
+  // standard PATCH endpoint — callers pass the full body shape for the target
+  // type (e.g. `{ heading_1: { rich_text: [...] } }` or `{ divider: {} }`).
+  const convertBlock = useCallback(async (id: string, body: any) => {
+    await api(`/api/notion/blocks/${id}`, {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+    })
+  }, [])
+
   const deleteBlock = useCallback(async (id: string) => {
     await api(`/api/notion/blocks/${id}`, { method: 'DELETE' })
+  }, [])
+
+  // Move a block among its siblings. After moving the block's id changes
+  // (we clone+archive on the server), so callers should refetch.
+  const moveBlock = useCallback(async (id: string, opts: { after?: string; before?: string }) => {
+    await api(`/api/notion/blocks/${id}/move`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(opts),
+    })
+  }, [])
+
+  const indentBlock = useCallback(async (id: string) => {
+    await api(`/api/notion/blocks/${id}/indent`, { method: 'POST' })
+  }, [])
+  const outdentBlock = useCallback(async (id: string) => {
+    await api(`/api/notion/blocks/${id}/outdent`, { method: 'POST' })
+  }, [])
+
+  // Fetch oembed/og preview for a URL. Used for bookmark + embed creation so
+  // the UI can show a title/description before persisting.
+  const oembed = useCallback(async (url: string) => {
+    return api<{ url: string; title: string; description?: string; image?: string; siteName?: string; type?: string }>(
+      `/api/notion/oembed?url=${encodeURIComponent(url)}`,
+    )
   }, [])
 
   // ── Convenience helpers used by the editor ─────────────────────────────────
@@ -191,6 +227,37 @@ export function useNotionClient() {
     )
   }, [])
 
+  // Generic database PATCH — body forwarded to Notion. Use this for title,
+  // icon, cover, and bulk-property edits.
+  const updateDatabase = useCallback(async (dbId: string, body: any) => {
+    schemaCache.current.delete(dbId)
+    await api(
+      `/api/notion/databases/${dbId}`,
+      { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+    )
+  }, [])
+
+  // Rename / retype / change options for an existing property.
+  const editProperty = useCallback(async (
+    dbId: string,
+    name: string,
+    patch: { rename?: string; type?: string; options?: { name: string; color?: string }[] },
+  ) => {
+    schemaCache.current.delete(dbId)
+    await api(
+      `/api/notion/databases/${dbId}/properties/${encodeURIComponent(name)}`,
+      { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) },
+    )
+  }, [])
+
+  const deleteProperty = useCallback(async (dbId: string, name: string) => {
+    schemaCache.current.delete(dbId)
+    await api(
+      `/api/notion/databases/${dbId}/properties/${encodeURIComponent(name)}`,
+      { method: 'DELETE' },
+    )
+  }, [])
+
   return {
     // navigation
     stack, current, navigate, back, goHome, replace,
@@ -200,11 +267,12 @@ export function useNotionClient() {
     // workspace
     getWorkspace,
     // databases
-    getDatabase, queryDatabase, addProperty,
+    getDatabase, queryDatabase, addProperty, updateDatabase, editProperty, deleteProperty,
     // pages
     getPage, updatePage, createPage, archivePage, duplicatePage,
     // blocks
     getBlocks, appendBlocks, updateBlock, deleteBlock, textBlock,
+    convertBlock, moveBlock, indentBlock, outdentBlock, oembed,
     // comments
     getComments, postComment,
   }

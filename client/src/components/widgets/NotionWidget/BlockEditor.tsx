@@ -1,9 +1,15 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import type { NotionClient } from '../../../hooks/useNotionClient'
 import type { NotionBlock, RichText } from './notion-types'
 import { colorBg, colorStyle, isBackground } from './notion-colors'
 import { TouchInput } from '../../TouchInput'
 import BlockColorMenu from './BlockColorMenu'
+import SlashMenu, { type BlockKindDef } from './SlashMenu'
+import LinkToPagePicker from './LinkToPagePicker'
+import MentionPicker, { type MentionPick } from './MentionPicker'
+import { detectMarkdown } from './markdown'
+import { useVoiceCapture } from '../../../hooks/useVoiceCapture'
+import { richTextWrite } from './notion-types'
 
 // ── Rich-text rendering (read-only annotations) ──────────────────────────────
 
@@ -12,7 +18,7 @@ function richText(rt: RichText[] | undefined): string {
   return rt.map(r => r.plain_text).join('')
 }
 
-function RichTextSpan({ rt }: { rt: RichText[] | undefined }) {
+function RichTextSpan({ rt, client }: { rt: RichText[] | undefined; client?: NotionClient }) {
   if (!rt || rt.length === 0) return null
   return (
     <>
@@ -25,6 +31,33 @@ function RichTextSpan({ rt }: { rt: RichText[] | undefined }) {
         if (a.strikethrough) className += ' line-through'
         if (a.underline)     className += ' underline'
         if (a.code)          className += ' font-mono bg-white/10 px-1 rounded'
+
+        // Mentions — render as a chip. Page mentions navigate when client is
+        // available; date mentions show as a formatted date; user mentions show
+        // a tinted name. All fall back to plain text if shape is unfamiliar.
+        const raw = r as any
+        if (raw.type === 'mention') {
+          const m = raw.mention
+          if (m?.type === 'page' && m.page?.id) {
+            const id = m.page.id as string
+            const onTap = client ? () => client.navigate({ kind: 'page', id }) : undefined
+            return (
+              <button key={i} type="button" onClick={onTap}
+                className={`${className} inline-flex items-center gap-1 px-1.5 py-px rounded bg-blue-500/20 text-blue-200 text-[0.95em] active:bg-blue-500/35`}
+                style={style}>
+                <span>📄</span><span>{r.plain_text || 'Untitled'}</span>
+              </button>
+            )
+          }
+          if (m?.type === 'date' && m.date?.start) {
+            const d = new Date(m.date.start)
+            const label = isNaN(d.getTime()) ? m.date.start : d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+            return <span key={i} className={`${className} inline-flex items-center gap-1 px-1.5 py-px rounded bg-purple-500/20 text-purple-200 text-[0.95em]`} style={style}>📅 {label}</span>
+          }
+          if (m?.type === 'user' && m.user?.name) {
+            return <span key={i} className={`${className} inline-flex items-center gap-1 px-1.5 py-px rounded bg-yellow-500/20 text-yellow-200 text-[0.95em]`} style={style}>@{m.user.name}</span>
+          }
+        }
         if (r.href) {
           return <a key={i} href={r.href} target="_blank" rel="noreferrer" className={className + ' text-blue-400 underline'} style={style}>{r.plain_text}</a>
         }
@@ -60,43 +93,60 @@ function EditableLine({
   )
 }
 
-// ── Block-type metadata — what's editable, what icon to show in the picker ───
+// (Block-kind catalog moved to ./markdown.ts so it can be reused by the slash
+// menu and the markdown-shortcut detector. Insertion is now handled by
+// SlashMenu + InsertSheets below.)
 
-interface BlockKindDef { type: string; label: string; icon: string }
+// ── Bottom sheets for block types that need extra input ──────────────────────
 
-const BLOCK_KINDS: BlockKindDef[] = [
-  { type: 'paragraph',          label: 'Text',         icon: '¶' },
-  { type: 'heading_1',          label: 'Heading 1',    icon: 'H1' },
-  { type: 'heading_2',          label: 'Heading 2',    icon: 'H2' },
-  { type: 'heading_3',          label: 'Heading 3',    icon: 'H3' },
-  { type: 'bulleted_list_item', label: 'Bulleted',     icon: '•' },
-  { type: 'numbered_list_item', label: 'Numbered',     icon: '1.' },
-  { type: 'to_do',              label: 'To-do',        icon: '☐' },
-  { type: 'toggle',             label: 'Toggle',       icon: '▸' },
-  { type: 'quote',              label: 'Quote',        icon: '"' },
-  { type: 'callout',            label: 'Callout',      icon: '💡' },
-  { type: 'divider',            label: 'Divider',      icon: '—' },
-  { type: 'code',               label: 'Code',         icon: '</>' },
-]
-
-// ── Block insertion picker ────────────────────────────────────────────────────
-
-function InsertMenu({ onPick, onClose }: { onPick: (type: string) => void; onClose: () => void }) {
+function UrlPromptSheet({
+  title, placeholder, onSubmit, onClose,
+}: { title: string; placeholder?: string; onSubmit: (url: string) => void; onClose: () => void }) {
+  const [v, setV] = useState('')
   return (
-    <div className="absolute inset-0 z-30 flex flex-col justify-end" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/50" />
-      <div className="relative bg-[#0e1117] border-t border-white/10 rounded-t-3xl px-4 pt-3 pb-8 z-40"
+    <div className="absolute inset-0 z-40 flex flex-col justify-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60" />
+      <div className="relative bg-[#0e1117] border-t border-white/10 rounded-t-3xl px-4 pt-3 pb-8 z-50"
            onClick={e => e.stopPropagation()}>
         <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-3" />
-        <h3 className="text-sm font-bold text-white mb-3 px-2">Insert block</h3>
-        <div className="grid grid-cols-3 gap-2">
-          {BLOCK_KINDS.map(k => (
-            <button key={k.type} onClick={() => { onPick(k.type); onClose() }}
-              className="flex flex-col items-center gap-1.5 py-3 rounded-xl bg-white/[0.05] active:bg-white/[0.12] active:scale-95 transition-all">
-              <span className="text-lg text-white/80">{k.icon}</span>
-              <span className="text-[11px] text-white/50">{k.label}</span>
-            </button>
-          ))}
+        <h3 className="text-sm font-bold text-white mb-3 px-1">{title}</h3>
+        <TouchInput value={v} onChange={setV} commitOn="change"
+          placeholder={placeholder ?? 'https://…'}
+          ariaLabel={title}
+          className="bg-white/[0.06] text-white rounded-xl px-4 py-3 text-sm outline-none focus:ring-1 focus:ring-white/20 placeholder-white/30 mb-3" />
+        <div className="grid grid-cols-2 gap-2">
+          <button type="button" onClick={onClose}
+            className="h-11 rounded-xl bg-white/10 text-white/60 text-sm font-semibold active:bg-white/15">Cancel</button>
+          <button type="button" disabled={!v.trim()} onClick={() => { onSubmit(v.trim()); onClose() }}
+            className="h-11 rounded-xl bg-green-500 text-black text-sm font-bold disabled:opacity-30 active:bg-green-400">Insert</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TextPromptSheet({
+  title, placeholder, multiline, onSubmit, onClose,
+}: { title: string; placeholder?: string; multiline?: boolean; onSubmit: (text: string) => void; onClose: () => void }) {
+  const [v, setV] = useState('')
+  return (
+    <div className="absolute inset-0 z-40 flex flex-col justify-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60" />
+      <div className="relative bg-[#0e1117] border-t border-white/10 rounded-t-3xl px-4 pt-3 pb-8 z-50"
+           onClick={e => e.stopPropagation()}>
+        <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-3" />
+        <h3 className="text-sm font-bold text-white mb-3 px-1">{title}</h3>
+        <TouchInput value={v} onChange={setV} commitOn="change"
+          placeholder={placeholder}
+          multiline={multiline}
+          rows={multiline ? 4 : undefined}
+          ariaLabel={title}
+          className={`bg-white/[0.06] text-white rounded-xl px-4 py-3 text-sm outline-none focus:ring-1 focus:ring-white/20 placeholder-white/30 mb-3 ${multiline ? 'min-h-[6rem]' : ''}`} />
+        <div className="grid grid-cols-2 gap-2">
+          <button type="button" onClick={onClose}
+            className="h-11 rounded-xl bg-white/10 text-white/60 text-sm font-semibold active:bg-white/15">Cancel</button>
+          <button type="button" disabled={!v.trim()} onClick={() => { onSubmit(v.trim()); onClose() }}
+            className="h-11 rounded-xl bg-green-500 text-black text-sm font-bold disabled:opacity-30 active:bg-green-400">Create</button>
         </div>
       </div>
     </div>
@@ -106,14 +156,25 @@ function InsertMenu({ onPick, onClose }: { onPick: (type: string) => void; onClo
 // ── A single block: render + inline edit + child fetching for containers ─────
 
 function BlockView({
-  block, client, depth, onUpdate, onDelete, listIndex,
+  block, client, depth, onUpdate, onDelete, onConvert, onMove, onIndent, onOutdent,
+  onInsertAfter, listIndex, headings, canMoveUp, canMoveDown, canOutdent,
 }: {
-  block:     NotionBlock
-  client:    NotionClient
-  depth:     number
-  onUpdate:  (id: string, patch: any) => void
-  onDelete:  (id: string) => void
-  listIndex?: number
+  block:        NotionBlock
+  client:       NotionClient
+  depth:        number
+  onUpdate:     (id: string, patch: any) => void
+  onDelete:     (id: string) => void
+  onConvert:    (id: string, newType: string, content: string, extra?: Record<string, any>) => void
+  onMove:       (id: string, dir: 'up' | 'down') => void
+  onIndent:     (id: string) => void
+  onOutdent:    (id: string) => void
+  onInsertAfter:(id: string) => void
+  listIndex?:   number
+  // For breadcrumb / table_of_contents derived from the parent page's blocks.
+  headings?:    Array<{ id: string; type: string; text: string }>
+  canMoveUp:    boolean
+  canMoveDown:  boolean
+  canOutdent:   boolean
 }) {
   const type = block.type
   const data = block[type] ?? {}
@@ -123,6 +184,9 @@ function BlockView({
   const [showColors,  setShowColors]  = useState(false)
   const [toggleOpen,  setToggleOpen]  = useState(false)
   const [children,    setChildren]    = useState<NotionBlock[] | null>(null)
+  const [convertOpen, setConvertOpen] = useState(false)
+  const [mentionOpen, setMentionOpen] = useState(false)
+  const voice = useVoiceCapture()
 
   // Lazy-load children for containers (toggle, column, synced) when expanded.
   const loadChildren = useCallback(async () => {
@@ -152,9 +216,46 @@ function BlockView({
   const currentAnnotations = (data.rich_text?.[0]?.annotations) ?? {}
 
   function saveText(newText: string) {
+    // Markdown shortcuts: "# foo" → heading_1, "- foo" → bullet, etc. Detected
+    // only on text-bearing blocks; the markdown utility filters by current type
+    // so already-formatted lines don't keep re-converting.
+    const md = detectMarkdown(newText, type)
+    if (md && md.type !== type) {
+      onConvert(block.id, md.type, md.content, md.extra)
+      return
+    }
     onUpdate(block.id, {
       [type]: { rich_text: [{ type: 'text', text: { content: newText }, annotations: currentAnnotations }] },
     })
+  }
+
+  // Voice-dictate: append the recognised text to the current block content.
+  async function dictate() {
+    if (!voice.supported) return
+    const result = await voice.start()
+    if (!result) return
+    const combined = text ? `${text} ${result}` : result
+    onUpdate(block.id, {
+      [type]: { rich_text: [{ type: 'text', text: { content: combined }, annotations: currentAnnotations }] },
+    })
+  }
+
+  // Insert a mention rich-text segment after the existing content. Notion
+  // mentions can carry a hidden plain_text "@name" placeholder which we omit so
+  // the API echoes back whatever the resolver returns.
+  function insertMention(pick: MentionPick) {
+    const existing = (data.rich_text ?? []) as any[]
+    let segment: any
+    if (pick.kind === 'page') {
+      segment = { type: 'mention', mention: { type: 'page', page: { id: pick.id } } }
+    } else if (pick.kind === 'date') {
+      segment = { type: 'mention', mention: { type: 'date', date: { start: pick.iso } } }
+    } else {
+      segment = { type: 'mention', mention: { type: 'user', user: { id: pick.id } } }
+    }
+    // Insert a separating space so the mention doesn't fuse with prior text.
+    const spaced = existing.length > 0 ? [...existing, { type: 'text', text: { content: ' ' } }, segment] : [segment]
+    onUpdate(block.id, { [type]: { rich_text: spaced } })
   }
   function saveCheck(checked: boolean) {
     onUpdate(block.id, { [type]: { checked } })
@@ -174,6 +275,13 @@ function BlockView({
     // For text-bearing blocks Notion stores color at the block level, not on
     // individual rich_text spans (where it would also work but is redundant).
     onUpdate(block.id, { [type]: { color } })
+  }
+
+  // Re-assemble the render context for nested children. The same handlers
+  // apply at every depth — children-of-toggle, columns, synced blocks etc.
+  const childCtx: RenderContext = {
+    client, onUpdate, onDelete, onConvert, onMove, onIndent, onOutdent, onInsertAfter,
+    headings: headings ?? [],
   }
 
   // ── Renderers per block type ────────────────────────────────────────────────
@@ -243,7 +351,7 @@ function BlockView({
           </div>
           {toggleOpen && children && (
             <div className="ml-7 mt-2 space-y-1">
-              {renderBlockList(children, client, depth + 1, onUpdate, onDelete)}
+              {renderBlockList(children, childCtx, depth + 1)}
             </div>
           )}
           {toggleOpen && children === null && <p className="ml-7 text-xs text-white/30 mt-1">Loading…</p>}
@@ -360,39 +468,73 @@ function BlockView({
       // Stack columns vertically on the kiosk's narrow screen rather than render
       // them side-by-side (would be unreadable at 720px).
       body = children
-        ? <div className="space-y-2">{renderBlockList(children, client, depth + 1, onUpdate, onDelete)}</div>
+        ? <div className="space-y-2">{renderBlockList(children, childCtx, depth + 1)}</div>
         : <p className="text-xs text-white/30 italic">Loading columns…</p>
       break
 
     case 'column':
       editable = false
       body = children
-        ? <div className="space-y-1">{renderBlockList(children, client, depth + 1, onUpdate, onDelete)}</div>
+        ? <div className="space-y-1">{renderBlockList(children, childCtx, depth + 1)}</div>
         : <p className="text-xs text-white/30 italic">Loading…</p>
       break
 
     case 'synced_block':
       editable = false
       body = children
-        ? <div className="space-y-1 border-l-2 border-blue-500/30 pl-2">{renderBlockList(children, client, depth + 1, onUpdate, onDelete)}</div>
+        ? <div className="space-y-1 border-l-2 border-blue-500/30 pl-2">{renderBlockList(children, childCtx, depth + 1)}</div>
         : <p className="text-xs text-white/30 italic">Loading synced block…</p>
       break
 
     case 'equation':
+      // LaTeX is plain text; render as monospace, edit via TouchInput. A future
+      // pass will plug KaTeX in for proper math rendering.
+      body = (
+        <div className="bg-white/[0.06] rounded-lg p-2 border border-white/[0.06]">
+          <div className="text-[10px] text-white/35 mb-1 uppercase tracking-wider">LaTeX</div>
+          <EditableLine value={data.expression ?? ''} placeholder="\\frac{a}{b}" multiline
+            onSave={v => onUpdate(block.id, { equation: { expression: v } })}
+            className="font-mono text-sm text-white/85" />
+        </div>
+      )
+      break
+
+    case 'breadcrumb':
+      // The actual parent chain requires walking the page hierarchy (async) —
+      // PageView is going to render it above the title in a later phase. For
+      // now show a clear marker so the block is visible.
       editable = false
-      body = <code className="bg-white/[0.06] rounded px-2 py-1 text-sm text-white/85 font-mono">{data.expression}</code>
+      body = <p className="text-xs text-white/45 italic">📍 breadcrumb (parent chain rendered above the page)</p>
       break
 
     case 'table_of_contents':
-    case 'breadcrumb':
+      // Build a tappable outline from the page's headings list. Indent by
+      // heading level so the visual nesting matches the document outline.
       editable = false
-      body = <p className="text-xs text-white/35 italic">[{type.replace('_', ' ')}]</p>
+      if (!headings || headings.length === 0) {
+        body = <p className="text-xs text-white/30 italic">📋 No headings yet — add a heading to populate the table of contents.</p>
+      } else {
+        body = (
+          <div className="flex flex-col gap-0.5 bg-white/[0.03] rounded-lg p-2 border border-white/[0.05]">
+            <div className="text-[10px] text-white/35 mb-1 uppercase tracking-wider">Contents</div>
+            {headings.map(h => {
+              const indent = h.type === 'heading_2' ? 'pl-3' : h.type === 'heading_3' ? 'pl-6' : ''
+              return (
+                <a key={h.id} href={`#${h.id}`}
+                  className={`text-xs text-blue-300/85 active:text-blue-200 truncate ${indent}`}>
+                  {h.text || '—'}
+                </a>
+              )
+            })}
+          </div>
+        )
+      }
       break
 
     case 'table':
       editable = false
       body = children
-        ? <div className="space-y-1 text-xs">{renderBlockList(children, client, depth + 1, onUpdate, onDelete)}</div>
+        ? <div className="space-y-1 text-xs">{renderBlockList(children, childCtx, depth + 1)}</div>
         : <p className="text-xs text-white/30 italic">Loading table…</p>
       break
 
@@ -402,7 +544,7 @@ function BlockView({
       body = (
         <div className="flex gap-2 border-b border-white/[0.06] py-1">
           {cells.map((cell, i) => (
-            <div key={i} className="flex-1 min-w-0 text-white/75 truncate"><RichTextSpan rt={cell} /></div>
+            <div key={i} className="flex-1 min-w-0 text-white/75 truncate"><RichTextSpan rt={cell} client={client} /></div>
           ))}
         </div>
       )
@@ -455,18 +597,57 @@ function BlockView({
          onMouseEnter={() => setShowActions(true)}
          onMouseLeave={() => setShowActions(false)}>
       {body}
-      {editable && showActions && (
-        <div className="absolute -right-1 top-0 flex gap-0.5">
-          {supportsFormatting && (
-            <FormatActions
-              annotations={currentAnnotations}
-              onToggle={toggleAnnotation}
-              onColor={() => setShowColors(true)}
-            />
+      {showActions && (
+        // Two-row toolbar attached to the right edge of the block. Row 1 is
+        // formatting (block-wide bold/italic/etc.); Row 2 is structure (move,
+        // indent, convert, mention, voice, insert-after, delete). Splitting
+        // the rows keeps tap targets at ≥24 px on the narrow kiosk.
+        <div className="absolute -right-1 top-0 flex flex-col items-end gap-0.5 z-10">
+          {editable && supportsFormatting && (
+            <div className="flex gap-0.5">
+              <FormatActions
+                annotations={currentAnnotations}
+                onToggle={toggleAnnotation}
+                onColor={() => setShowColors(true)}
+              />
+            </div>
           )}
-          <button type="button" onClick={() => onDelete(block.id)}
-            className="w-6 h-6 rounded-full bg-red-500/20 text-red-300 text-xs active:bg-red-500/40"
-            aria-label="Delete block">×</button>
+          <div className="flex gap-0.5 flex-wrap justify-end">
+            <button type="button" onClick={() => onMove(block.id, 'up')} disabled={!canMoveUp}
+              aria-label="Move up"
+              className="w-6 h-6 rounded-full bg-white/10 text-white/55 text-xs active:bg-white/20 disabled:opacity-25">↑</button>
+            <button type="button" onClick={() => onMove(block.id, 'down')} disabled={!canMoveDown}
+              aria-label="Move down"
+              className="w-6 h-6 rounded-full bg-white/10 text-white/55 text-xs active:bg-white/20 disabled:opacity-25">↓</button>
+            <button type="button" onClick={() => onIndent(block.id)}
+              aria-label="Indent"
+              className="w-6 h-6 rounded-full bg-white/10 text-white/55 text-xs active:bg-white/20">⇥</button>
+            <button type="button" onClick={() => onOutdent(block.id)} disabled={!canOutdent}
+              aria-label="Outdent"
+              className="w-6 h-6 rounded-full bg-white/10 text-white/55 text-xs active:bg-white/20 disabled:opacity-25">⇤</button>
+            {editable && (
+              <button type="button" onClick={() => setConvertOpen(true)}
+                aria-label="Turn into"
+                className="w-6 h-6 rounded-full bg-white/10 text-white/55 text-xs active:bg-white/20">⇄</button>
+            )}
+            {editable && (
+              <button type="button" onClick={() => setMentionOpen(true)}
+                aria-label="Mention"
+                className="w-6 h-6 rounded-full bg-white/10 text-white/55 text-xs active:bg-white/20">@</button>
+            )}
+            {editable && voice.supported && (
+              <button type="button" onClick={() => void dictate()}
+                aria-label="Dictate"
+                className={`w-6 h-6 rounded-full text-xs active:scale-95
+                  ${voice.listening ? 'bg-red-500 text-white animate-pulse' : 'bg-white/10 text-white/55 active:bg-white/20'}`}>🎤</button>
+            )}
+            <button type="button" onClick={() => onInsertAfter(block.id)}
+              aria-label="Insert below"
+              className="w-6 h-6 rounded-full bg-green-500/30 text-green-200 text-xs active:bg-green-500/50">+</button>
+            <button type="button" onClick={() => onDelete(block.id)}
+              aria-label="Delete block"
+              className="w-6 h-6 rounded-full bg-red-500/20 text-red-300 text-xs active:bg-red-500/40">×</button>
+          </div>
         </div>
       )}
       {showColors && (
@@ -475,6 +656,19 @@ function BlockView({
           onPick={c => { setColor(c); setShowColors(false) }}
           onClose={() => setShowColors(false)}
         />
+      )}
+      {convertOpen && (
+        <SlashMenu initialQuery=""
+          onPick={k => {
+            onConvert(block.id, k.type, text)
+            setConvertOpen(false)
+          }}
+          onClose={() => setConvertOpen(false)} />
+      )}
+      {mentionOpen && (
+        <MentionPicker client={client}
+          onPick={p => { insertMention(p); setMentionOpen(false) }}
+          onClose={() => setMentionOpen(false)} />
       )}
     </div>
   )
@@ -504,17 +698,30 @@ function FormatActions({
   )
 }
 
+// Aggregate of handlers + context passed through every recursive render. A
+// single object keeps the renderBlockList signature short and the children
+// pass-through trivial.
+interface RenderContext {
+  client:        NotionClient
+  onUpdate:      (id: string, patch: any) => void
+  onDelete:      (id: string) => void
+  onConvert:     (id: string, newType: string, content: string, extra?: Record<string, any>) => void
+  onMove:        (id: string, dir: 'up' | 'down') => void
+  onIndent:      (id: string) => void
+  onOutdent:     (id: string) => void
+  onInsertAfter: (id: string) => void
+  headings:      Array<{ id: string; type: string; text: string }>
+}
+
 // Render a flat list of blocks, tracking the running numbered-list index so
 // numbered items show "1. 2. 3." within the same run.
 function renderBlockList(
   blocks: NotionBlock[],
-  client: NotionClient,
-  depth: number,
-  onUpdate: (id: string, patch: any) => void,
-  onDelete: (id: string) => void,
+  ctx:    RenderContext,
+  depth:  number,
 ): React.ReactNode {
   let numberedRun = 0
-  return blocks.map(b => {
+  return blocks.map((b, idx) => {
     let listIndex: number | undefined
     if (b.type === 'numbered_list_item') {
       listIndex = numberedRun
@@ -522,11 +729,67 @@ function renderBlockList(
     } else {
       numberedRun = 0
     }
-    return <BlockView key={b.id} block={b} client={client} depth={depth} onUpdate={onUpdate} onDelete={onDelete} listIndex={listIndex} />
+    return (
+      <BlockView key={b.id} block={b}
+        client={ctx.client}
+        depth={depth}
+        onUpdate={ctx.onUpdate}
+        onDelete={ctx.onDelete}
+        onConvert={ctx.onConvert}
+        onMove={ctx.onMove}
+        onIndent={ctx.onIndent}
+        onOutdent={ctx.onOutdent}
+        onInsertAfter={ctx.onInsertAfter}
+        listIndex={listIndex}
+        headings={ctx.headings}
+        canMoveUp={idx > 0}
+        canMoveDown={idx < blocks.length - 1}
+        canOutdent={depth > 0}
+      />
+    )
   })
 }
 
+// Build a Notion block payload for either creation (with `object: 'block'` +
+// `type`) or update/convert (without — Notion infers type from the wrapping
+// key). The shape varies per type so we centralize it here.
+function buildBlockBody(type: string, content: string, extra?: Record<string, any>): any {
+  const rich_text = content ? [{ type: 'text', text: { content } }] : []
+  switch (type) {
+    case 'divider':           return { divider: {} }
+    case 'code':              return { code: { rich_text, language: extra?.['language'] ?? 'plain text' } }
+    case 'callout':           return { callout: { rich_text, icon: { type: 'emoji', emoji: extra?.['emoji'] ?? '💡' } } }
+    case 'to_do':             return { to_do: { rich_text, checked: extra?.['checked'] ?? false } }
+    case 'toggle':            return { toggle: { rich_text } }
+    case 'breadcrumb':        return { breadcrumb: {} }
+    case 'table_of_contents': return { table_of_contents: {} }
+    case 'equation':          return { equation: { expression: content } }
+    default:                  return { [type]: { rich_text, ...(extra ?? {}) } }
+  }
+}
+
+function buildCreatePayload(type: string, content: string, extra?: Record<string, any>): any {
+  return { object: 'block', type, ...buildBlockBody(type, content, extra) }
+}
+
 // ── Top-level page block editor ──────────────────────────────────────────────
+
+// State for the secondary input sheets — the slash menu hands off to one of
+// these when the user picks a block kind that needs more info (URL, LaTeX,
+// title, etc.). `afterId` carries the sibling the new block should follow;
+// null means "append to the end".
+type SheetState =
+  | { kind: 'none' }
+  | { kind: 'slash';  afterId: string | null; query?: string }
+  | { kind: 'image';  afterId: string | null }
+  | { kind: 'video';  afterId: string | null }
+  | { kind: 'file';   afterId: string | null }
+  | { kind: 'bookmark'; afterId: string | null }
+  | { kind: 'embed';  afterId: string | null }
+  | { kind: 'equation'; afterId: string | null }
+  | { kind: 'link_to_page'; afterId: string | null }
+  | { kind: 'sub_page'; afterId: string | null }
+  | { kind: 'inline_database'; afterId: string | null }
 
 export default function BlockEditor({
   pageId, client,
@@ -539,7 +802,7 @@ export default function BlockEditor({
   const [error,     setError]     = useState<string | null>(null)
   const [hasMore,   setHasMore]   = useState(false)
   const [cursor,    setCursor]    = useState<string | null>(null)
-  const [picker,    setPicker]    = useState(false)
+  const [sheet,     setSheet]     = useState<SheetState>({ kind: 'none' })
 
   const load = useCallback(async (append = false) => {
     if (!append) setLoading(true)
@@ -557,6 +820,18 @@ export default function BlockEditor({
   }, [pageId, client, cursor])
 
   useEffect(() => { void load(false) }, [pageId])
+
+  // Headings flattened from the current block list, used by table_of_contents
+  // rendering. Top-level only — TOC inside toggles isn't meaningful.
+  const headings = useMemo(() => {
+    return (blocks ?? [])
+      .filter(b => b.type === 'heading_1' || b.type === 'heading_2' || b.type === 'heading_3')
+      .map(b => ({
+        id: b.id,
+        type: b.type,
+        text: richText(b[b.type]?.rich_text),
+      }))
+  }, [blocks])
 
   async function handleUpdate(id: string, patch: any) {
     // Optimistic merge — the patch is shaped exactly like a block update body,
@@ -579,38 +854,160 @@ export default function BlockEditor({
     catch { void load(false) }
   }
 
-  async function handleInsert(type: string) {
-    const block = type === 'divider'
-      ? { object: 'block', type: 'divider', divider: {} }
-      : type === 'code'
-        ? { object: 'block', type: 'code', code: { rich_text: [], language: 'plain text' } }
-        : type === 'callout'
-          ? { object: 'block', type: 'callout', callout: { rich_text: [], icon: { type: 'emoji', emoji: '💡' } } }
-          : type === 'to_do'
-            ? { object: 'block', type: 'to_do', to_do: { rich_text: [], checked: false } }
-            : client.textBlock(type, '')
+  // Convert: change the block's type in-place via PATCH. We also update the
+  // local state optimistically so the conversion is instant.
+  async function handleConvert(id: string, newType: string, content: string, extra?: Record<string, any>) {
+    const body = buildBlockBody(newType, content, extra)
+    setBlocks(prev => prev ? prev.map(b => {
+      if (b.id !== id) return b
+      const next: any = { ...b, type: newType, has_children: false }
+      // Strip the old type's payload and apply the new one.
+      delete next[b.type]
+      Object.assign(next, body)
+      return next
+    }) : prev)
+    try { await client.convertBlock(id, body) }
+    catch { void load(false) }
+  }
+
+  // Move / indent / outdent — Notion has no native move endpoint so the server
+  // clones the block at the target position and archives the original. The
+  // block's id changes, so we just reload the page after the call.
+  async function handleMove(id: string, dir: 'up' | 'down') {
+    if (!blocks) return
+    const idx = blocks.findIndex(b => b.id === id)
+    if (idx === -1) return
     try {
-      const { results } = await client.appendBlocks(pageId, [block])
-      setBlocks(prev => prev ? [...prev, ...results] : results)
-    } catch (e: any) {
-      setError(e.message ?? 'Failed to add block')
+      if (dir === 'up' && idx > 0) {
+        const target = blocks[idx - 1]!
+        await client.moveBlock(id, { before: target.id })
+      } else if (dir === 'down' && idx < blocks.length - 1) {
+        const target = blocks[idx + 1]!
+        await client.moveBlock(id, { after: target.id })
+      }
+      await load(false)
+    } catch (e: any) { setError(e.message ?? 'Failed to move block') }
+  }
+  async function handleIndent(id: string) {
+    try { await client.indentBlock(id); await load(false) }
+    catch (e: any) { setError(e.message ?? 'Failed to indent block') }
+  }
+  async function handleOutdent(id: string) {
+    try { await client.outdentBlock(id); await load(false) }
+    catch (e: any) { setError(e.message ?? 'Failed to outdent block') }
+  }
+
+  // Insert a fresh block. `afterId === null` appends to the end of the page.
+  async function insertAt(afterId: string | null, payload: any) {
+    try {
+      // Notion's append-children supports an `after` parameter. The server
+      // route doesn't currently parse it, so for "after a specific block" we
+      // append then move into place. Append-to-end is the common case.
+      const { results } = await client.appendBlocks(pageId, [payload])
+      if (afterId && results.length > 0) {
+        // Newly appended block lands at the bottom; ask the server to move it.
+        try { await client.moveBlock(results[0]!.id, { after: afterId }) }
+        catch { /* tolerate */ }
+        await load(false)
+      } else {
+        setBlocks(prev => prev ? [...prev, ...results] : results)
+      }
+    } catch (e: any) { setError(e.message ?? 'Failed to add block') }
+  }
+
+  // Slash-menu pick handler. Branches by `needsInput` to the right input sheet
+  // or directly creates the block when no extra input is needed.
+  function handleSlashPick(kind: BlockKindDef) {
+    const afterId = sheet.kind === 'slash' ? sheet.afterId : null
+    setSheet({ kind: 'none' })
+    if (!kind.needsInput) {
+      void insertAt(afterId, buildCreatePayload(kind.type, ''))
+      return
     }
+    // Re-open the relevant input sheet, preserving the insertion target.
+    setSheet({ kind: kind.needsInput as SheetState['kind'], afterId } as SheetState)
+  }
+
+  // ── Sheet submit handlers (one per needsInput kind) ──────────────────────
+
+  async function submitUrlBlock(type: 'image' | 'video' | 'file' | 'embed', url: string, afterId: string | null) {
+    const payload: any = {
+      object: 'block', type,
+      [type]: { type: 'external', external: { url }, caption: [] },
+    }
+    await insertAt(afterId, payload)
+  }
+  async function submitBookmark(url: string, afterId: string | null) {
+    // Fetch OG preview for caption text. Tolerate failure — the bookmark is
+    // still useful with just the URL.
+    let caption: any[] = []
+    try {
+      const og = await client.oembed(url)
+      if (og.title && og.title !== url) caption = richTextWrite(og.title)
+    } catch { /* tolerate */ }
+    await insertAt(afterId, { object: 'block', type: 'bookmark', bookmark: { url, caption } })
+  }
+  async function submitEquation(expr: string, afterId: string | null) {
+    await insertAt(afterId, { object: 'block', type: 'equation', equation: { expression: expr } })
+  }
+  async function submitLinkToPage(targetId: string, kindOfTarget: 'page' | 'database', afterId: string | null) {
+    const payload: any = kindOfTarget === 'database'
+      ? { object: 'block', type: 'link_to_page', link_to_page: { type: 'database_id', database_id: targetId } }
+      : { object: 'block', type: 'link_to_page', link_to_page: { type: 'page_id',     page_id:     targetId } }
+    await insertAt(afterId, payload)
+  }
+  async function submitSubPage(title: string, afterId: string | null) {
+    // Create a new page under this one then refresh — the parent's child_page
+    // block will show up in the next load.
+    try {
+      await client.createPage({
+        parent:     { page_id: pageId },
+        properties: { title: { title: richTextWrite(title) } },
+      })
+      void afterId  // ordering: a new sub-page lands at the end anyway
+      await load(false)
+    } catch (e: any) { setError(e.message ?? 'Failed to create sub-page') }
+  }
+  async function submitInlineDatabase(_title: string, afterId: string | null) {
+    // The Notion API doesn't expose database creation via /pages — we'd need a
+    // dedicated /databases POST. For now surface a clear note so the user
+    // knows to create the DB in Notion proper.
+    void afterId
+    setError('Inline database creation is not yet supported via the API. Create the database in Notion and link to it instead.')
   }
 
   if (loading && !blocks) {
     return <div className="flex items-center justify-center py-10"><span className="w-8 h-8 rounded-full border-2 border-white/20 border-t-green-400 animate-spin" /></div>
   }
   if (error) {
-    return <p className="text-sm text-red-400 px-1">{error}</p>
+    return (
+      <div className="flex flex-col gap-2 px-1">
+        <p className="text-sm text-red-400">{error}</p>
+        <button type="button" onClick={() => { setError(null); void load(false) }}
+          className="self-start text-xs text-white/55 active:text-white/85">Retry</button>
+      </div>
+    )
   }
   if (!blocks) return null
+
+  const ctx: RenderContext = {
+    client,
+    onUpdate:      handleUpdate,
+    onDelete:      handleDelete,
+    onConvert:     handleConvert,
+    onMove:        handleMove,
+    onIndent:      handleIndent,
+    onOutdent:     handleOutdent,
+    onInsertAfter: id => setSheet({ kind: 'slash', afterId: id }),
+    headings,
+  }
 
   return (
     <div className="space-y-1.5 relative">
       {blocks.length === 0 && (
         <p className="text-sm text-white/30 italic px-1">This page is empty. Tap + to add a block.</p>
       )}
-      {renderBlockList(blocks, client, 0, handleUpdate, handleDelete)}
+      {renderBlockList(blocks, ctx, 0)}
 
       {hasMore && (
         <button type="button" onClick={() => load(true)}
@@ -619,12 +1016,61 @@ export default function BlockEditor({
         </button>
       )}
 
-      <button type="button" onClick={() => setPicker(true)}
+      <button type="button" onClick={() => setSheet({ kind: 'slash', afterId: null })}
         className="w-full mt-3 py-3 rounded-xl border-2 border-dashed border-white/15 text-white/45 text-sm active:bg-white/5 active:border-white/25">
         + Add block
       </button>
 
-      {picker && <InsertMenu onPick={handleInsert} onClose={() => setPicker(false)} />}
+      {sheet.kind === 'slash' && (
+        <SlashMenu initialQuery={sheet.query ?? ''}
+          onPick={handleSlashPick}
+          onClose={() => setSheet({ kind: 'none' })} />
+      )}
+      {sheet.kind === 'image' && (
+        <UrlPromptSheet title="Image URL" placeholder="https://example.com/photo.jpg"
+          onSubmit={u => void submitUrlBlock('image', u, sheet.afterId)}
+          onClose={() => setSheet({ kind: 'none' })} />
+      )}
+      {sheet.kind === 'video' && (
+        <UrlPromptSheet title="Video URL" placeholder="https://example.com/clip.mp4"
+          onSubmit={u => void submitUrlBlock('video', u, sheet.afterId)}
+          onClose={() => setSheet({ kind: 'none' })} />
+      )}
+      {sheet.kind === 'file' && (
+        <UrlPromptSheet title="File URL"
+          onSubmit={u => void submitUrlBlock('file', u, sheet.afterId)}
+          onClose={() => setSheet({ kind: 'none' })} />
+      )}
+      {sheet.kind === 'bookmark' && (
+        <UrlPromptSheet title="Bookmark URL"
+          onSubmit={u => void submitBookmark(u, sheet.afterId)}
+          onClose={() => setSheet({ kind: 'none' })} />
+      )}
+      {sheet.kind === 'embed' && (
+        <UrlPromptSheet title="Embed URL" placeholder="YouTube / Loom / Figma / Twitter…"
+          onSubmit={u => void submitUrlBlock('embed', u, sheet.afterId)}
+          onClose={() => setSheet({ kind: 'none' })} />
+      )}
+      {sheet.kind === 'equation' && (
+        <TextPromptSheet title="LaTeX equation" placeholder="\\frac{a}{b}" multiline
+          onSubmit={e => void submitEquation(e, sheet.afterId)}
+          onClose={() => setSheet({ kind: 'none' })} />
+      )}
+      {sheet.kind === 'link_to_page' && (
+        <LinkToPagePicker client={client}
+          onPick={r => void submitLinkToPage(r.id, r.object, sheet.afterId)}
+          onClose={() => setSheet({ kind: 'none' })} />
+      )}
+      {sheet.kind === 'sub_page' && (
+        <TextPromptSheet title="New sub-page" placeholder="Untitled"
+          onSubmit={t => void submitSubPage(t, sheet.afterId)}
+          onClose={() => setSheet({ kind: 'none' })} />
+      )}
+      {sheet.kind === 'inline_database' && (
+        <TextPromptSheet title="New database (not yet supported)" placeholder="Database title"
+          onSubmit={t => void submitInlineDatabase(t, sheet.afterId)}
+          onClose={() => setSheet({ kind: 'none' })} />
+      )}
     </div>
   )
 }

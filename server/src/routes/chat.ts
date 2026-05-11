@@ -29,6 +29,7 @@
 //                           (default: https://ollama.com/api/web_search)
 
 import { Router, type Request, type Response } from 'express'
+import { DASHBOARD_TOOLS, MUTATING_TOOLS, runDashboardTool } from './dashboard-tools'
 
 const router = Router()
 
@@ -48,17 +49,19 @@ const WEB_SEARCH_ENABLED = (() => {
 })()
 
 const SYSTEM_PROMPT =
-  "You are TouchSphere, a friendly desktop voice assistant. " +
+  "You are TouchSphere, a friendly desktop voice assistant living on the user's dashboard. " +
   "Reply in 1-2 short, natural-sounding sentences. " +
-  "Avoid lists, markdown, code blocks, and emoji — your reply will be spoken aloud." +
+  "Avoid lists, markdown, code blocks, and emoji \u2014 your reply will be spoken aloud. " +
+  "You have tools to read and update the dashboard's own widgets: " +
+  "get_time (current time at any city or IANA timezone \u2014 always use this for time questions, never guess), " +
+  "list_media_items / add_media_item / remove_media_item / mark_media_done (the user's playlist of games, shows, and movies \u2014 use add_media_item whenever the user wants to remember, queue, save, or jot down something to play or watch, picking the best type), " +
+  "get_weather, get_calendar_today, and get_device_status. " +
+  "CRITICAL: When you use a tool, base your answer strictly on what the tool actually returned. " +
+  "Do not invent facts, numbers, dates, names, titles, or quotes. After mutating tools (add/remove/mark) confirm what you did in one short sentence." +
   (WEB_SEARCH_ENABLED
-    ? " You have web_search and web_fetch tools. Use web_search for current events, " +
-      "recent news, live data (weather, sports scores, prices, times), or anything " +
-      "you don't reliably know. If a search snippet looks promising but lacks the exact " +
-      "answer, call web_fetch on that URL to read the full page. " +
-      "CRITICAL: When you use a tool, base your answer strictly on what the tool actually " +
-      "returned. Do not invent facts, numbers, dates, names, or quotes. If the tool results " +
-      "do not contain a clear answer, say so honestly in one sentence rather than guessing."
+    ? " You also have web_search and web_fetch tools for current events, recent news, live data, " +
+      "or anything you don't reliably know. If a search snippet looks promising but lacks the exact " +
+      "answer, call web_fetch on that URL to read the full page."
     : "")
 
 const MAX_PROMPT_LEN     = 1000
@@ -79,7 +82,7 @@ interface ChatMessage {
   tool_name?: string
 }
 
-const TOOLS = WEB_SEARCH_ENABLED ? [
+const WEB_TOOLS = WEB_SEARCH_ENABLED ? [
   {
     type: 'function',
     function: {
@@ -114,7 +117,10 @@ const TOOLS = WEB_SEARCH_ENABLED ? [
       },
     },
   },
-] : undefined
+] : []
+
+// Dashboard tools are always exposed; web tools layer on if configured.
+const TOOLS = [...DASHBOARD_TOOLS, ...WEB_TOOLS]
 
 // ── Tool implementations ──────────────────────────────────────────────────
 async function runWebSearch(query: string): Promise<string> {
@@ -165,6 +171,8 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<str
     if (!u.trim()) return 'web_fetch error: missing "url" argument.'
     return runWebFetch(u.trim())
   }
+  const dashboard = await runDashboardTool(name, args)
+  if (dashboard !== null) return dashboard
   return `Unknown tool: ${name}`
 }
 
@@ -223,7 +231,7 @@ async function callOllama(messages: ChatMessage[]): Promise<OllamaResponse> {
       stream: false,
       messages,
     }
-    if (TOOLS) body['tools'] = TOOLS
+    if (TOOLS.length > 0) body['tools'] = TOOLS
 
     const upstream = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
       method: 'POST',
@@ -281,8 +289,12 @@ router.post('/', async (req: Request, res: Response) => {
   const preview = last.content.slice(0, 80)
   console.log(
     `[chat] → ${OLLAMA_URL} model=${OLLAMA_MODEL} turns=${history.length} ` +
-    `tools=${WEB_SEARCH_ENABLED ? 'web_search' : 'off'} prompt="${preview}${last.content.length > 80 ? '…' : ''}"`,
+    `tools=dashboard${WEB_SEARCH_ENABLED ? '+web' : ''} prompt=\"${preview}${last.content.length > 80 ? '\u2026' : ''}\"`,
   )
+
+  // Track which client-side state slices the model touched so the client can
+  // refetch just those (rather than reloading every widget on every reply).
+  const changed = new Set<string>()
 
   try {
     // Tool-call loop. Bounded by MAX_TOOL_ROUNDS to prevent runaway upstreams.
@@ -300,15 +312,15 @@ router.post('/', async (req: Request, res: Response) => {
       // No tool calls → we're done.
       if (calls.length === 0) {
         const reply = text || "I'm here, but I didn't catch a reply that time."
-        console.log(`[chat] ← reply="${reply.slice(0, 80)}${reply.length > 80 ? '…' : ''}" rounds=${round + 1}`)
-        return res.json({ reply, model: OLLAMA_MODEL })
+        console.log(`[chat] ← reply="${reply.slice(0, 80)}${reply.length > 80 ? '…' : ''}" rounds=${round + 1} changed=[${[...changed].join(',')}]`)
+        return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed] })
       }
 
       // Cap reached — bail with whatever text we have so the user hears something.
       if (round === MAX_TOOL_ROUNDS) {
         console.warn(`[chat] tool-call cap reached (${MAX_TOOL_ROUNDS}) — returning fallback`)
         const reply = text || "I tried to look that up but couldn't finish in time."
-        return res.json({ reply, model: OLLAMA_MODEL })
+        return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed] })
       }
 
       // Execute each tool call and append the results back into the conversation.
@@ -317,6 +329,10 @@ router.post('/', async (req: Request, res: Response) => {
         const name = c.function?.name ?? ''
         const args = (c.function?.arguments ?? {}) as Record<string, unknown>
         const result = await runTool(name, args)
+        if (MUTATING_TOOLS.has(name) && !/^(Error|No playlist|Already on the list)/.test(result)) {
+          // Only media tools mutate today; bucket them under one slice key.
+          changed.add('media')
+        }
         const truncated = result.slice(0, MAX_TOOL_MSG_CHARS)
         console.log(`[chat:tool] ${name} returned ${result.length} chars (sent ${truncated.length}): ${truncated.slice(0, 200).replace(/\s+/g, ' ')}\u2026`)
         messages.push({ role: 'tool', content: truncated, tool_name: name })

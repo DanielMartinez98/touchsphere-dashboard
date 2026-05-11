@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback } from 'react'
 import type { NotionClient } from '../../../hooks/useNotionClient'
-import type { NotionPage } from './notion-types'
+import type { NotionPage, WorkspaceItem } from './notion-types'
 import BlockEditor from './BlockEditor'
 import PropertyEditor from './PropertyEditor'
 import { TouchInput } from '../../TouchInput'
 import EmojiPicker from './EmojiPicker'
 import CommentsSheet from './CommentsSheet'
+import AddToGroupSheet from './AddToGroupSheet'
 import { useNotionPins } from '../../../hooks/useNotionPins'
+import { useNotionGroups } from '../../../hooks/useNotionGroups'
 
 // Title input — opens TouchKeyboard on tap. Commits on Done.
 function TitleInput({ value, onSave }: { value: string; onSave: (t: string) => void }) {
@@ -30,7 +32,9 @@ export default function PageView({ pageId, client }: { pageId: string; client: N
   const [showIcon,    setShowIcon]    = useState(false)
   const [showComments, setShowComments] = useState(false)
   const [moreOpen,    setMoreOpen]    = useState(false)
-  const pins = useNotionPins()
+  const [showGroups,   setShowGroups]   = useState(false)
+  const pins   = useNotionPins()
+  const groups = useNotionGroups()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -96,7 +100,15 @@ export default function PageView({ pageId, client }: { pageId: string; client: N
 
   const propEntries = Object.entries(page.properties).filter(([key]) => key !== titleKey)
   const cover = page.cover?.file?.url ?? page.cover?.external?.url
-  const pinned = pins.isPinned(page.id)
+  // Number of groups this page belongs to — drives the "📁 In N groups" chip.
+  const groupCount = groups.groupsContaining(page.id).length
+  const pageAsItem: WorkspaceItem = {
+    id:    page.id,
+    title: page.title,
+    icon:  page.icon,
+    url:   page.url,
+    parent: page.parent,
+  }
 
   return (
     <div className="flex flex-col gap-4 px-1">
@@ -121,13 +133,9 @@ export default function PageView({ pageId, client }: { pageId: string; client: N
       </div>
 
       <div className="flex gap-1.5 px-1">
-        <button type="button" onClick={() => pins.togglePin({
-          id: page.id, title: page.title,
-          icon: page.icon?.type === 'emoji' ? page.icon.value : null,
-          kind: 'page',
-        })}
-          className={`px-3 py-1.5 rounded-full text-xs font-medium ${pinned ? 'bg-yellow-500/30 text-yellow-300' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
-          {pinned ? '★ Pinned' : '☆ Pin'}
+        <button type="button" onClick={() => setShowGroups(true)}
+          className={`px-3 py-1.5 rounded-full text-xs font-medium ${groupCount > 0 ? 'bg-yellow-500/25 text-yellow-300' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
+          {groupCount > 0 ? `📁 In ${groupCount} group${groupCount === 1 ? '' : 's'}` : '📁 Add to group'}
         </button>
         <button type="button" onClick={() => setShowComments(true)}
           className="px-3 py-1.5 rounded-full bg-white/[0.06] text-white/55 text-xs font-medium active:bg-white/10">
@@ -204,6 +212,13 @@ export default function PageView({ pageId, client }: { pageId: string; client: N
         />
       )}
       {showComments && <CommentsSheet pageId={pageId} client={client} onClose={() => setShowComments(false)} />}
+      {showGroups && (
+        <AddToGroupSheet
+          item={pageAsItem}
+          kind="page"
+          groups={groups}
+          onClose={() => setShowGroups(false)} />
+      )}
     </div>
   )
 }

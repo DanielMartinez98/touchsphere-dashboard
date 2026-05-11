@@ -102,7 +102,14 @@ async function fetchReply(messages: ChatTurn[]): Promise<string> {
       console.warn('[voice] /api/chat http', res.status)
       return FALLBACK_REPLIES[Math.floor(Math.random() * FALLBACK_REPLIES.length)]!
     }
-    const json = (await res.json()) as { reply?: string }
+    const json = (await res.json()) as { reply?: string; changed?: string[] }
+    // Tell affected widgets to re-fetch their data (e.g. the media list after
+    // the assistant added an item via add_media_item).
+    const changed = Array.isArray(json.changed) ? json.changed : []
+    if (changed.length > 0) {
+      console.log('[voice] state changed by chat tools:', changed)
+      window.dispatchEvent(new CustomEvent('ts:state-changed', { detail: { slices: changed } }))
+    }
     return (json.reply ?? '').trim() || FALLBACK_REPLIES[0]!
   } catch (err) {
     console.warn('[voice] /api/chat failed:', err)

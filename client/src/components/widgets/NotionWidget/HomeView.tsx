@@ -5,6 +5,7 @@ import { colorFg, colorBg } from './notion-colors'
 import MiniCalendar from './MiniCalendar'
 import { TouchInput } from '../../TouchInput'
 import { useNotionPins } from '../../../hooks/useNotionPins'
+import { useNotionGroups } from '../../../hooks/useNotionGroups'
 import { useVoiceCapture } from '../../../hooks/useVoiceCapture'
 
 const PRI_ORDER: Record<string, number> = { High: 0, 'High Priority': 0, Urgent: 0, Medium: 1, Normal: 1, Low: 2 }
@@ -221,28 +222,60 @@ interface Props {
   onRefresh: () => void
 }
 
-function PinsAndRecents({
-  pins, client,
+function GroupsAndRecents({
+  pins, groups, client,
 }: {
   pins:   ReturnType<typeof useNotionPins>
+  groups: ReturnType<typeof useNotionGroups>
   client: NotionClient
 }) {
+  // Show the first two groups inline so the user can jump straight to a group's
+  // items without leaving home. More than two would crowd the screen — anything
+  // beyond is one tap away via the Groups tab.
+  const featured = groups.groups.slice(0, 2)
+
   return (
-    <div className="flex flex-col gap-2">
-      {pins.pinned.length > 0 && (
-        <div className="flex flex-col gap-1">
-          <span className="text-[10px] uppercase tracking-wider text-white/30 px-1">Pinned</span>
-          <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
-            {pins.pinned.map(p => (
-              <button key={p.id} type="button"
-                onClick={() => client.navigate(p.kind === 'database' ? { kind: 'database', id: p.id } : { kind: 'page', id: p.id })}
-                className="flex-shrink-0 flex items-center gap-2 bg-white/[0.05] active:bg-white/10 rounded-lg px-3 py-2 max-w-[180px]">
-                <span className="text-base flex-shrink-0">{p.icon ?? (p.kind === 'database' ? '🗄️' : '📄')}</span>
-                <span className="text-xs text-white/80 truncate">{p.title}</span>
-              </button>
-            ))}
-          </div>
+    <div className="flex flex-col gap-3">
+      {featured.length > 0 && (
+        <div className="flex flex-col gap-2">
+          {featured.map(g => {
+            const fg = colorFg(g.color ?? 'default')
+            return (
+              <div key={g.id} className="flex flex-col gap-1">
+                <div className="flex items-center gap-2 px-1">
+                  <span className="text-base">{g.icon ?? '📁'}</span>
+                  <span className="text-[11px] font-semibold uppercase tracking-wider truncate flex-1" style={{ color: fg }}>{g.name}</span>
+                  <span className="text-[10px] text-white/25 tabular-nums">{g.items.length}</span>
+                </div>
+                {g.items.length === 0 ? (
+                  <p className="text-[11px] text-white/25 italic px-2">empty</p>
+                ) : (
+                  <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
+                    {g.items.slice(0, 8).map(it => (
+                      <button key={it.refId} type="button"
+                        onClick={() => client.navigate(it.kind === 'database' ? { kind: 'database', id: it.refId } : { kind: 'page', id: it.refId })}
+                        className="flex-shrink-0 flex items-center gap-2 rounded-lg px-3 py-2 max-w-[180px] active:scale-[0.97]"
+                        style={{ background: colorBg(g.color ?? 'default', 0.15) }}>
+                        <span className="text-base flex-shrink-0">{it.icon ?? (it.kind === 'database' ? '🗄️' : '📄')}</span>
+                        <span className="text-xs text-white/85 truncate">{it.title}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+          <button type="button" onClick={() => client.replace({ kind: 'groups' })}
+            className="self-start text-[11px] text-white/45 active:text-white/80 px-1 py-1">
+            {groups.groups.length > 2 ? `More groups (${groups.groups.length - 2}) →` : 'Manage groups →'}
+          </button>
         </div>
+      )}
+      {groups.groups.length === 0 && (
+        <button type="button" onClick={() => client.replace({ kind: 'groups' })}
+          className="self-start text-[11px] text-white/35 active:text-white/70 px-1">
+          + Create your first group
+        </button>
       )}
       {pins.recents.length > 0 && (
         <div className="flex flex-col gap-1">
@@ -267,8 +300,9 @@ export default function HomeView({ schema, tasks, loading, error, client, onUpda
   const [filter,   setFilter]   = useState<string | null>(null)
   const [sort,     setSort]     = useState<SortMode>('priority')
   const [creating, setCreating] = useState(false)
-  const pins  = useNotionPins()
-  const voice = useVoiceCapture()
+  const pins   = useNotionPins()
+  const groups = useNotionGroups()
+  const voice  = useVoiceCapture()
 
   async function dictateTask() {
     if (!voice.supported || !schema) return
@@ -337,9 +371,9 @@ export default function HomeView({ schema, tasks, loading, error, client, onUpda
         </div>
       )}
 
-      {/* Pinned + Recents — populated as the user navigates around */}
-      {(pins.pinned.length > 0 || pins.recents.length > 0) && (
-        <PinsAndRecents pins={pins} client={client} />
+      {/* Groups + Recents — populated as the user organizes their workspace */}
+      {(groups.groups.length > 0 || pins.recents.length > 0) && (
+        <GroupsAndRecents pins={pins} groups={groups} client={client} />
       )}
 
       <div className="flex flex-col gap-2 pb-20">

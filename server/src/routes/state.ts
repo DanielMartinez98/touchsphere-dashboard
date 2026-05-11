@@ -58,7 +58,7 @@ interface Credential {
 interface MediaItem {
   id: string
   title: string
-  type: 'game' | 'show'
+  type: 'game' | 'show' | 'movie'
   done: boolean
 }
 
@@ -169,15 +169,15 @@ router.post('/media', (req: Request, res: Response) => {
     res.status(400).json({ error: 'title is required' })
     return
   }
-  if (!type || !['game', 'show'].includes(type)) {
+  if (!type || !['game', 'show', 'movie'].includes(type)) {
     console.warn(`[state] POST media — invalid type: ${JSON.stringify(type)}`)
-    res.status(400).json({ error: 'type must be game | show' })
+    res.status(400).json({ error: 'type must be game | show | movie' })
     return
   }
   const item: MediaItem = {
     id: crypto.randomUUID(),
     title: title.trim(),
-    type: type as 'game' | 'show',
+    type: type as 'game' | 'show' | 'movie',
     done: false,
   }
   const items = readMediaList()
@@ -228,6 +228,201 @@ router.delete('/media/:id', (req: Request, res: Response) => {
     res.json({ ok: true })
   } catch {
     res.status(500).json({ error: 'Failed to persist media list' })
+  }
+})
+
+// ── Notion Groups ─────────────────────────────────────────────────────────────
+// User-defined collections of Notion pages/databases. Persisted server-side so
+// the same groups appear across browser refreshes and device swaps. Layout is
+// dense `order` integers per group and per item — the server rewrites them on
+// reorder so the client can treat indices as authoritative.
+
+interface NotionGroupItem {
+  refId: string
+  kind:  'page' | 'database'
+  title: string
+  icon:  string | null
+  order: number
+}
+
+interface NotionGroup {
+  id:        string
+  name:      string
+  icon:      string | null
+  color:     string | null
+  order:     number
+  collapsed: boolean
+  items:     NotionGroupItem[]
+}
+
+const GROUPS_FILE = 'notion-groups.json'
+
+function readGroups(): NotionGroup[] {
+  return readJSON<NotionGroup[]>(GROUPS_FILE, [])
+}
+function saveGroups(groups: NotionGroup[]): void {
+  writeJSON(GROUPS_FILE, groups)
+}
+
+// Sort + re-number so callers can rely on `order` being 0..n-1.
+function normalize(groups: NotionGroup[]): NotionGroup[] {
+  groups.sort((a, b) => a.order - b.order)
+  groups.forEach((g, i) => {
+    g.order = i
+    g.items.sort((a, b) => a.order - b.order)
+    g.items.forEach((it, j) => { it.order = j })
+  })
+  return groups
+}
+
+// GET /api/state/notion-groups
+router.get('/notion-groups', (_req: Request, res: Response) => {
+  const groups = normalize(readGroups())
+  console.log(`[state] GET notion-groups — ${groups.length} groups`)
+  res.json(groups)
+})
+
+// POST /api/state/notion-groups  { name, icon?, color? }
+router.post('/notion-groups', (req: Request, res: Response) => {
+  const { name, icon, color } = req.body as { name?: string; icon?: string | null; color?: string | null }
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    res.status(400).json({ error: 'name is required' })
+    return
+  }
+  const groups = readGroups()
+  const group: NotionGroup = {
+    id:        crypto.randomUUID(),
+    name:      name.trim(),
+    icon:      icon ?? null,
+    color:     color ?? null,
+    order:     groups.length,
+    collapsed: false,
+    items:     [],
+  }
+  groups.push(group)
+  try {
+    saveGroups(normalize(groups))
+    console.log(`[state] POST notion-groups — created "${group.name}" id=${group.id}`)
+    res.status(201).json(group)
+  } catch {
+    res.status(500).json({ error: 'Failed to persist groups' })
+  }
+})
+
+// PATCH /api/state/notion-groups/:id
+//   any of: { name, icon, color, collapsed, order, itemOrder: string[] }
+// itemOrder is a reordering of refIds within the group; missing refIds are appended.
+router.patch('/notion-groups/:id', (req: Request, res: Response) => {
+  const { id } = req.params
+  const patch = req.body as {
+    name?: string; icon?: string | null; color?: string | null;
+    collapsed?: boolean; order?: number; itemOrder?: string[]
+  }
+  const groups = readGroups()
+  const g = groups.find(x => x.id === id)
+  if (!g) { res.status(404).json({ error: 'Group not found' }); return }
+
+  if (typeof patch.name      === 'string')  g.name      = patch.name.trim() || g.name
+  if ('icon'      in patch)                  g.icon      = patch.icon ?? null
+  if ('color'     in patch)                  g.color     = patch.color ?? null
+  if (typeof patch.collapsed === 'boolean')  g.collapsed = patch.collapsed
+
+  // Group reorder: move this group to position `order` and shift the rest.
+  if (typeof patch.order === 'number') {
+    const target = Math.max(0, Math.min(groups.length - 1, patch.order))
+    const others = groups.filter(x => x.id !== id).sort((a, b) => a.order - b.order)
+    others.splice(target, 0, g)
+    others.forEach((x, i) => { x.order = i })
+  }
+
+  // Item reorder: apply the provided sequence; unknown ids are appended in their
+  // existing relative order so we never lose items by mistake.
+  if (Array.isArray(patch.itemOrder)) {
+    const byId = new Map(g.items.map(it => [it.refId, it]))
+    const ordered: NotionGroupItem[] = []
+    for (const refId of patch.itemOrder) {
+      const it = byId.get(refId)
+      if (it) { ordered.push(it); byId.delete(refId) }
+    }
+    for (const leftover of byId.values()) ordered.push(leftover)
+    g.items = ordered
+  }
+
+  try {
+    saveGroups(normalize(groups))
+    res.json(g)
+  } catch {
+    res.status(500).json({ error: 'Failed to persist groups' })
+  }
+})
+
+// DELETE /api/state/notion-groups/:id
+router.delete('/notion-groups/:id', (req: Request, res: Response) => {
+  const { id } = req.params
+  const groups = readGroups()
+  const filtered = groups.filter(g => g.id !== id)
+  if (filtered.length === groups.length) {
+    res.status(404).json({ error: 'Group not found' })
+    return
+  }
+  try {
+    saveGroups(normalize(filtered))
+    console.log(`[state] DELETE notion-groups/${id}`)
+    res.json({ ok: true })
+  } catch {
+    res.status(500).json({ error: 'Failed to persist groups' })
+  }
+})
+
+// POST /api/state/notion-groups/:id/items  { refId, kind, title, icon? }
+router.post('/notion-groups/:id/items', (req: Request, res: Response) => {
+  const { id } = req.params
+  const { refId, kind, title, icon } = req.body as {
+    refId?: string; kind?: string; title?: string; icon?: string | null
+  }
+  if (!refId || !kind || !title) {
+    res.status(400).json({ error: 'refId, kind, title are required' })
+    return
+  }
+  if (kind !== 'page' && kind !== 'database') {
+    res.status(400).json({ error: 'kind must be page | database' })
+    return
+  }
+  const groups = readGroups()
+  const g = groups.find(x => x.id === id)
+  if (!g) { res.status(404).json({ error: 'Group not found' }); return }
+
+  // Skip duplicates — adding the same item again is a no-op success.
+  if (!g.items.some(it => it.refId === refId)) {
+    g.items.push({ refId, kind, title, icon: icon ?? null, order: g.items.length })
+  }
+  try {
+    saveGroups(normalize(groups))
+    console.log(`[state] POST notion-groups/${id}/items — "${title}"`)
+    res.status(201).json(g)
+  } catch {
+    res.status(500).json({ error: 'Failed to persist groups' })
+  }
+})
+
+// DELETE /api/state/notion-groups/:id/items/:refId
+router.delete('/notion-groups/:id/items/:refId', (req: Request, res: Response) => {
+  const { id, refId } = req.params
+  const groups = readGroups()
+  const g = groups.find(x => x.id === id)
+  if (!g) { res.status(404).json({ error: 'Group not found' }); return }
+  const before = g.items.length
+  g.items = g.items.filter(it => it.refId !== refId)
+  if (g.items.length === before) {
+    res.status(404).json({ error: 'Item not found' })
+    return
+  }
+  try {
+    saveGroups(normalize(groups))
+    console.log(`[state] DELETE notion-groups/${id}/items/${refId}`)
+    res.json({ ok: true })
+  } catch {
+    res.status(500).json({ error: 'Failed to persist groups' })
   }
 })
 

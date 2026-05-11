@@ -7,22 +7,37 @@ export function useMediaList() {
   const [items, setItems] = useState<MediaItem[]>([])
   const [isLoading, setIsLoading] = useState(true)
 
-  // Load list from server on mount
+  // Load list from server on mount, and re-load whenever a chat tool mutates
+  // it (the voice hook dispatches `ts:state-changed` with `slices: ['media']`).
   useEffect(() => {
-    console.log('[MediaList] fetching list from server…')
-    fetch(API)
-      .then(res => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        return res.json() as Promise<MediaItem[]>
-      })
-      .then(data => {
-        console.log(`[MediaList] loaded ${data.length} items from server`)
-        setItems(data)
-      })
-      .catch(err => {
-        console.error('[MediaList] failed to load from server:', err)
-      })
-      .finally(() => setIsLoading(false))
+    let cancelled = false
+    const load = (reason: string) => {
+      console.log(`[MediaList] fetching list from server (${reason})…`)
+      fetch(API)
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
+          return res.json() as Promise<MediaItem[]>
+        })
+        .then(data => {
+          if (cancelled) return
+          console.log(`[MediaList] loaded ${data.length} items from server`)
+          setItems(data)
+        })
+        .catch(err => {
+          console.error('[MediaList] failed to load from server:', err)
+        })
+        .finally(() => { if (!cancelled) setIsLoading(false) })
+    }
+    load('mount')
+    const onChange = (e: Event) => {
+      const slices = (e as CustomEvent<{ slices?: string[] }>).detail?.slices
+      if (!slices || slices.includes('media')) load('chat-tool')
+    }
+    window.addEventListener('ts:state-changed', onChange)
+    return () => {
+      cancelled = true
+      window.removeEventListener('ts:state-changed', onChange)
+    }
   }, [])
 
   const addItem = useCallback((title: string, type: MediaType) => {

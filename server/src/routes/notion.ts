@@ -621,9 +621,238 @@ router.post('/pages/:id/duplicate', async (req, res) => {
   } catch (err) { notionError(res, err, 'Failed to duplicate page') }
 })
 
+// ── Block move ──────────────────────────────────────────────────────────────
+// Notion lacks a native move endpoint. We re-create the block at a target
+// position by appending a clone after the chosen sibling and archiving the
+// original. The block id changes — clients should refetch the parent's
+// children after this call.
+router.post('/blocks/:id/move', async (req, res) => {
+  if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
+  const { after, before } = req.body as { after?: string; before?: string }
+  const id = req.params['id']!
+  try {
+    // Resolve the block and its parent. The parent might be a page or another
+    // block; both expose children via /blocks/:parent/children.
+    const { data: block } = await axios.get(`${NOTION_API}/blocks/${id}`, { headers: notionHeaders() })
+    const parentType = block.parent?.type as string
+    const parentId   = block.parent?.page_id ?? block.parent?.block_id
+    if (!parentId) { res.status(400).json({ error: 'Could not resolve block parent' }); return }
+
+    const { data: page } = await axios.get(
+      `${NOTION_API}/blocks/${parentId}/children?page_size=100`,
+      { headers: notionHeaders() },
+    )
+    const siblings = (page.results as any[]).filter(b => !b.archived)
+    const myIdx     = siblings.findIndex(b => b.id === id)
+    if (myIdx === -1) { res.status(404).json({ error: 'Block not found among siblings' }); return }
+
+    // Clone payload — strip read-only fields. For blocks with children we'd
+    // need to recursively copy; this top-level clone covers paragraph/heading/
+    // list/todo/quote/callout/code/divider/image/etc.
+    const t = block.type
+    const cloned: any = { object: 'block', type: t, [t]: block[t] }
+
+    let targetIdx: number
+    if (after) {
+      const i = siblings.findIndex(b => b.id === after)
+      if (i === -1) { res.status(400).json({ error: 'after sibling not found' }); return }
+      targetIdx = i + 1
+    } else if (before) {
+      const i = siblings.findIndex(b => b.id === before)
+      if (i === -1) { res.status(400).json({ error: 'before sibling not found' }); return }
+      targetIdx = i
+    } else {
+      res.status(400).json({ error: 'after or before is required' }); return
+    }
+    // Account for the original we'll archive — if moving down past self, the
+    // index does not need adjusting because Notion's `after` is by id.
+    void targetIdx
+
+    // Notion's append-children supports an `after` parameter pointing at the
+    // sibling id this block should follow. If `before`, point at the previous
+    // sibling instead (or omit to append at top — handled by appending at index 0).
+    let afterId: string | undefined
+    if (after) afterId = after
+    else if (before) {
+      const idx = siblings.findIndex(b => b.id === before)
+      if (idx === 0) afterId = undefined  // moving to position 0 — special case
+      else           afterId = siblings[idx - 1]?.id
+    }
+
+    await axios.patch(
+      `${NOTION_API}/blocks/${parentId}/children`,
+      afterId ? { children: [cloned], after: afterId } : { children: [cloned] },
+      { headers: notionHeaders() },
+    )
+    await axios.delete(`${NOTION_API}/blocks/${id}`, { headers: notionHeaders() })
+    res.json({ ok: true })
+  } catch (err) { notionError(res, err, 'Failed to move block') }
+})
+
+// ── Indent / outdent ────────────────────────────────────────────────────────
+// Indent = move this block into its previous sibling as a child.
+// Outdent = move this block out of its parent into the grandparent's children.
+// Both rely on the same clone+archive pattern (Notion can't reparent in place).
+
+router.post('/blocks/:id/indent', async (req, res) => {
+  if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
+  const id = req.params['id']!
+  try {
+    const { data: block } = await axios.get(`${NOTION_API}/blocks/${id}`, { headers: notionHeaders() })
+    const parentId = block.parent?.page_id ?? block.parent?.block_id
+    if (!parentId) { res.status(400).json({ error: 'No parent' }); return }
+    const { data: page } = await axios.get(
+      `${NOTION_API}/blocks/${parentId}/children?page_size=100`,
+      { headers: notionHeaders() },
+    )
+    const siblings = (page.results as any[]).filter(b => !b.archived)
+    const myIdx    = siblings.findIndex(b => b.id === id)
+    if (myIdx <= 0) { res.status(400).json({ error: 'No previous sibling to indent under' }); return }
+    const prev = siblings[myIdx - 1]
+    const t = block.type
+    const cloned: any = { object: 'block', type: t, [t]: block[t] }
+    await axios.patch(
+      `${NOTION_API}/blocks/${prev.id}/children`,
+      { children: [cloned] },
+      { headers: notionHeaders() },
+    )
+    await axios.delete(`${NOTION_API}/blocks/${id}`, { headers: notionHeaders() })
+    res.json({ ok: true })
+  } catch (err) { notionError(res, err, 'Failed to indent block') }
+})
+
+router.post('/blocks/:id/outdent', async (req, res) => {
+  if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
+  const id = req.params['id']!
+  try {
+    const { data: block } = await axios.get(`${NOTION_API}/blocks/${id}`, { headers: notionHeaders() })
+    // We need the parent block (so we can move into its parent) — only works
+    // when the parent is a block (not a top-level page).
+    if (block.parent?.type !== 'block_id') {
+      res.status(400).json({ error: 'Already at top level' }); return
+    }
+    const parentBlockId = block.parent.block_id as string
+    const { data: parentBlock } = await axios.get(`${NOTION_API}/blocks/${parentBlockId}`, { headers: notionHeaders() })
+    const grandparentId = parentBlock.parent?.page_id ?? parentBlock.parent?.block_id
+    if (!grandparentId) { res.status(400).json({ error: 'No grandparent' }); return }
+    const t = block.type
+    const cloned: any = { object: 'block', type: t, [t]: block[t] }
+    await axios.patch(
+      `${NOTION_API}/blocks/${grandparentId}/children`,
+      { children: [cloned], after: parentBlockId },
+      { headers: notionHeaders() },
+    )
+    await axios.delete(`${NOTION_API}/blocks/${id}`, { headers: notionHeaders() })
+    res.json({ ok: true })
+  } catch (err) { notionError(res, err, 'Failed to outdent block') }
+})
+
+// ── oEmbed / OpenGraph preview ──────────────────────────────────────────────
+// Server-side fetch for bookmark/embed metadata. We do a HEAD-style GET, parse
+// <meta og:*> tags out of the HTML head, and return { title, description,
+// image, siteName, type }. Keeps secrets and CORS issues server-side.
+
+router.get('/oembed', async (req, res) => {
+  const url = req.query['url'] as string | undefined
+  if (!url || !/^https?:\/\//i.test(url)) {
+    res.status(400).json({ error: 'url is required and must start with http(s)' }); return
+  }
+  try {
+    const { data: html } = await axios.get<string>(url, {
+      timeout:         5000,
+      maxContentLength: 1_000_000,
+      // Pretend to be a browser — many sites block non-browser UAs from HTML.
+      headers: { 'User-Agent': 'Mozilla/5.0 (TouchSphere) AppleWebKit/537.36' },
+      // Get the body as text so we can scrape og:* meta tags.
+      responseType: 'text',
+    })
+    function og(prop: string): string | undefined {
+      const re = new RegExp(`<meta[^>]+(?:property|name)=["']${prop}["'][^>]+content=["']([^"']+)["']`, 'i')
+      const re2 = new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${prop}["']`, 'i')
+      return html.match(re)?.[1] ?? html.match(re2)?.[1]
+    }
+    const titleTag = html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]
+    res.json({
+      url,
+      title:       og('og:title')        ?? titleTag       ?? url,
+      description: og('og:description')  ?? og('description'),
+      image:       og('og:image'),
+      siteName:    og('og:site_name'),
+      type:        og('og:type'),
+    })
+  } catch (err) {
+    // Fall back to a minimal record so the client can still create a bookmark
+    // block with just the URL when the target is unreachable / 403.
+    res.json({ url, title: url, description: null, image: null })
+    void err
+  }
+})
+
 // ── Database property addition ──────────────────────────────────────────────
 // Adds a single property to an existing database. The body is the property
 // definition (e.g. { name: 'Notes', type: 'rich_text' }).
+
+// ── Database update (title / icon / cover / property edits) ─────────────────
+// Forwards the body to Notion's PATCH /v1/databases/:id. Useful for renaming,
+// changing icon/cover, and editing existing properties (rename via { oldName:
+// { name: 'newName' } }, retype, change select options, or delete via
+// { propName: null }).
+router.patch('/databases/:id', async (req, res) => {
+  if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
+  try {
+    await axios.patch(
+      `${NOTION_API}/databases/${req.params['id']}`,
+      req.body,
+      { headers: notionHeaders() },
+    )
+    // Invalidate the legacy schema cache in case the task DB was edited.
+    schemaCache = null
+    res.json({ ok: true })
+  } catch (err) { notionError(res, err, 'Failed to update database') }
+})
+
+// Convenience endpoint: rename or delete a single property without the caller
+// having to know Notion's PATCH-database body shape. Body: `{ rename }` or
+// nothing (DELETE method = remove).
+router.patch('/databases/:id/properties/:name', async (req, res) => {
+  if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
+  const { rename, options, type } = req.body as {
+    rename?: string
+    options?: { name: string; color?: string }[]
+    type?:   string
+  }
+  const propBody: any = {}
+  if (rename)             propBody.name = rename
+  if (type)               propBody.type = type
+  if (options && options.length > 0) {
+    // Only select/multi_select/status accept options. We assume the caller is
+    // applying to a compatible property; Notion will reject otherwise.
+    propBody.select       = { options }
+    propBody.multi_select = { options }
+  }
+  try {
+    await axios.patch(
+      `${NOTION_API}/databases/${req.params['id']}`,
+      { properties: { [req.params['name']!]: propBody } },
+      { headers: notionHeaders() },
+    )
+    schemaCache = null
+    res.json({ ok: true })
+  } catch (err) { notionError(res, err, 'Failed to edit property') }
+})
+
+router.delete('/databases/:id/properties/:name', async (req, res) => {
+  if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
+  try {
+    await axios.patch(
+      `${NOTION_API}/databases/${req.params['id']}`,
+      { properties: { [req.params['name']!]: null } },
+      { headers: notionHeaders() },
+    )
+    schemaCache = null
+    res.json({ ok: true })
+  } catch (err) { notionError(res, err, 'Failed to delete property') }
+})
 
 router.post('/databases/:id/properties', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }

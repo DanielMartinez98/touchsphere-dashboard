@@ -5,6 +5,7 @@ import BrowseView   from './BrowseView'
 import SearchView   from './SearchView'
 import PageView     from './PageView'
 import DatabaseView from './DatabaseView'
+import GroupsView   from './GroupsView'
 
 interface Props {
   schema:     NotionSchema | null
@@ -28,6 +29,7 @@ export default function NotionExpanded({
     view.kind === 'home'     ? 'Notion' :
     view.kind === 'browse'   ? 'Browse' :
     view.kind === 'search'   ? 'Search' :
+    view.kind === 'groups'   ? 'Groups' :
     view.kind === 'page'     ? 'Page'   :
     view.kind === 'database' ? 'Database' : ''
 
@@ -47,6 +49,10 @@ export default function NotionExpanded({
           className={`w-9 h-9 rounded-full text-lg flex items-center justify-center active:scale-90
             ${view.kind === 'search' ? 'bg-green-500/30 text-green-300' : 'bg-white/10 text-white/60'}`}
           aria-label="Search">🔍</button>
+        <button type="button" onClick={() => client.replace({ kind: 'groups' })}
+          className={`w-9 h-9 rounded-full text-lg flex items-center justify-center active:scale-90
+            ${view.kind === 'groups' ? 'bg-green-500/30 text-green-300' : 'bg-white/10 text-white/60'}`}
+          aria-label="Groups">📁</button>
         <button type="button" onClick={() => client.replace({ kind: 'browse' })}
           className={`w-9 h-9 rounded-full text-lg flex items-center justify-center active:scale-90
             ${view.kind === 'browse' ? 'bg-green-500/30 text-green-300' : 'bg-white/10 text-white/60'}`}
@@ -73,6 +79,7 @@ export default function NotionExpanded({
         )}
         {view.kind === 'browse'   && <BrowseView   client={client} />}
         {view.kind === 'search'   && <SearchView   client={client} />}
+        {view.kind === 'groups'   && <GroupsView   client={client} />}
         {view.kind === 'page'     && <PageView     pageId={view.id} client={client} />}
         {view.kind === 'database' && <DatabaseView dbId={view.id} client={client} />}
       </div>

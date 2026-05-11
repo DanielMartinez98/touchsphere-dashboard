@@ -1,14 +1,19 @@
 import { useState, useEffect, useRef } from 'react'
 import type { NotionClient } from '../../../hooks/useNotionClient'
-import type { SearchResult } from './notion-types'
+import type { SearchResult, WorkspaceItem } from './notion-types'
 import { TouchInput } from '../../TouchInput'
+import Tile from './Tile'
+import AddToGroupSheet from './AddToGroupSheet'
+import { useNotionGroups } from '../../../hooks/useNotionGroups'
 
 export default function SearchView({ client }: { client: NotionClient }) {
   const [results, setResults] = useState<SearchResult[]>([])
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState<string | null>(null)
   const [filter,  setFilter]  = useState<'all' | 'page' | 'database'>('all')
+  const [adding,  setAdding]  = useState<{ item: WorkspaceItem; kind: 'page' | 'database' } | null>(null)
   const seq = useRef(0)
+  const groups = useNotionGroups()
 
   // Debounce — Notion's search is rate-limited per-integration; 250ms keeps it
   // responsive without flooding. seq guards against out-of-order responses.
@@ -49,7 +54,7 @@ export default function SearchView({ client }: { client: NotionClient }) {
 
       <div className="flex gap-1.5">
         {(['all', 'page', 'database'] as const).map(f => (
-          <button key={f} onClick={() => setFilter(f)}
+          <button key={f} type="button" onClick={() => setFilter(f)}
             className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors
               ${filter === f ? 'bg-green-500 text-black' : 'bg-white/[0.07] text-white/45 active:bg-white/15'}`}>
             {f === 'all' ? 'All' : f === 'page' ? 'Pages' : 'Databases'}
@@ -73,20 +78,25 @@ export default function SearchView({ client }: { client: NotionClient }) {
       )}
 
       <div className="flex flex-col gap-1.5">
-        {results.map(r => (
-          <button key={r.id} onClick={() => client.navigate(r.object === 'database' ? { kind: 'database', id: r.id } : { kind: 'page', id: r.id })}
-            className="w-full text-left flex items-center gap-3 bg-white/[0.04] rounded-xl px-3 py-2.5 active:bg-white/[0.08] active:scale-[0.99]">
-            <span className="text-lg flex-shrink-0">
-              {r.icon?.type === 'emoji' ? r.icon.value : r.object === 'database' ? '🗄️' : '📄'}
-            </span>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm text-white truncate">{r.title}</p>
-              <p className="text-[10px] text-white/35 uppercase tracking-wider">{r.object}</p>
-            </div>
-            <span className="text-white/20 text-sm">›</span>
-          </button>
-        ))}
+        {results.map(r => {
+          const kind = r.object === 'database' ? 'database' : 'page'
+          const item: WorkspaceItem = { id: r.id, title: r.title, icon: r.icon, url: r.url, parent: r.parent }
+          return (
+            <Tile key={r.id} title={r.title} icon={r.icon} kind={kind}
+              inGroupCount={groups.groupsContaining(r.id).length}
+              onTap={() => client.navigate(kind === 'database' ? { kind: 'database', id: r.id } : { kind: 'page', id: r.id })}
+              onLongPress={() => setAdding({ item, kind })} />
+          )
+        })}
       </div>
+
+      {adding && (
+        <AddToGroupSheet
+          item={adding.item}
+          kind={adding.kind}
+          groups={groups}
+          onClose={() => setAdding(null)} />
+      )}
     </div>
   )
 }
