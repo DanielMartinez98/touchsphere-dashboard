@@ -20,6 +20,8 @@ import { StatusBar } from './components/StatusBar'
 import { LockScreen } from './components/LockScreen'
 import { SettingsPanel } from './components/SettingsPanel'
 import { VoiceInterface } from './components/VoiceInterface'
+import { BedtimeBanner } from './components/BedtimeBanner'
+import { useAutoMode } from './hooks/useAutoSchedule'
 import { playStartupSound } from './utils/sound'
 
 type OpenWidget = 'calendar' | 'clock' | 'weather' | 'media' | 'notion' | null
@@ -49,6 +51,10 @@ function App() {
   const { mode, hasCred, setMode, createPassword, verifyPassword, unlock } = useAppMode()
   const voice = useVoice()
   const startupPlayedRef = useRef(false)
+
+  // Drives automatic work/rest mode switching and the bedtime alert
+  // based on the user's configured schedule (Settings → Schedule tab).
+  useAutoMode(mode, setMode)
 
   // Wake-word listener — fully offline, runs in a Web Worker. When the user
   // says "jarvis" the orb starts listening just like a manual tap. Paused
@@ -195,6 +201,9 @@ function App() {
 
       {/* Voice interface — transcript + reply overlays (mic button removed; tap the orb) */}
       <VoiceInterface voice={voice} />
+
+      {/* Bedtime alert toast — driven by the schedule in settings */}
+      <BedtimeBanner />
 
       {/* Lock screen — covers everything when mode is 'locked' */}
       {mode === 'locked' && (

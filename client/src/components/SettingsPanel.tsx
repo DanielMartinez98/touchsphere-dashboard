@@ -4,8 +4,9 @@ import { useDevice } from '../hooks/useDevice'
 import { playSound, playRecordChime } from '../utils/sound'
 import { useVolume, setVolume, getEffectiveGain, type VolumeCategory } from '../hooks/useVolume'
 import { useWakeWordEnabled, setWakeWordEnabled, useWakeWordTranscript, useWakeWordStatus } from '../hooks/useWakeWord'
+import { useAutoSchedule, fireBedtimeAlert } from '../hooks/useAutoSchedule'
 
-type Tab = 'sounds' | 'hardware' | 'system'
+type Tab = 'sounds' | 'hardware' | 'schedule' | 'system'
 
 type SoundCategory = 'sfx' | 'music' | 'voice'
 
@@ -319,8 +320,11 @@ export function SettingsPanel() {
   const TABS: { id: Tab; label: string }[] = [
     { id: 'sounds',   label: 'Audio'    },
     { id: 'hardware', label: 'Hardware' },
+    { id: 'schedule', label: 'Schedule' },
     { id: 'system',   label: 'System'   },
   ]
+
+  const { schedule, updateSchedule } = useAutoSchedule()
 
   return (
     <>
@@ -780,6 +784,91 @@ export function SettingsPanel() {
                     {device ? formatUptime(device.uptimeSeconds) : '—'}
                   </span>
                 </div>
+              </div>
+            )}
+
+            {/* Schedule tab — Work & Rest hours + bedtime alert */}
+            {tab === 'schedule' && (
+              <div className="space-y-4 max-w-lg mx-auto">
+                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Work &amp; Rest Hours</span>
+
+                {/* Enable toggle */}
+                <div className="bg-white/5 rounded-2xl p-5 border border-white/8 flex items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-white/70 text-sm font-medium">Auto switch modes</p>
+                    <p className="text-white/30 text-xs mt-0.5">
+                      Flip between work and rest at the times below. Bedtime fires a one-time alert.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => updateSchedule({ enabled: !schedule.enabled })}
+                    type="button"
+                    aria-label={schedule.enabled ? 'Disable schedule' : 'Enable schedule'}
+                    className={`relative w-12 h-7 rounded-full transition-colors flex-shrink-0 ${
+                      schedule.enabled ? 'bg-emerald-500/70' : 'bg-white/15'
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-1 left-1 w-5 h-5 rounded-full bg-white shadow-md transition-transform ${
+                        schedule.enabled ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* Time inputs */}
+                <div className={`bg-white/5 rounded-2xl p-5 border border-white/8 space-y-4 ${schedule.enabled ? '' : 'opacity-60'}`}>
+                  <label className="block">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-white/70 text-sm font-medium">Work starts</span>
+                      <span className="text-cyan-300/80 text-xs font-mono">{schedule.workStart}</span>
+                    </div>
+                    <input
+                      type="time"
+                      value={schedule.workStart}
+                      onChange={e => updateSchedule({ workStart: e.target.value })}
+                      className="w-full bg-white/8 border border-white/12 rounded-xl px-4 py-3 text-white/90 text-base font-mono focus:outline-none focus:border-cyan-500/50"
+                    />
+                  </label>
+
+                  <label className="block">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-white/70 text-sm font-medium">Rest starts</span>
+                      <span className="text-fuchsia-300/80 text-xs font-mono">{schedule.restStart}</span>
+                    </div>
+                    <input
+                      type="time"
+                      value={schedule.restStart}
+                      onChange={e => updateSchedule({ restStart: e.target.value })}
+                      className="w-full bg-white/8 border border-white/12 rounded-xl px-4 py-3 text-white/90 text-base font-mono focus:outline-none focus:border-fuchsia-500/50"
+                    />
+                  </label>
+
+                  <label className="block">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-white/70 text-sm font-medium">Bedtime alert</span>
+                      <span className="text-indigo-300/80 text-xs font-mono">{schedule.bedtime}</span>
+                    </div>
+                    <input
+                      type="time"
+                      value={schedule.bedtime}
+                      onChange={e => updateSchedule({ bedtime: e.target.value })}
+                      className="w-full bg-white/8 border border-white/12 rounded-xl px-4 py-3 text-white/90 text-base font-mono focus:outline-none focus:border-indigo-500/50"
+                    />
+                  </label>
+                </div>
+
+                {/* Test button */}
+                <button
+                  onClick={() => fireBedtimeAlert()}
+                  className="w-full py-3 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 active:bg-indigo-500/40 text-indigo-200 text-sm font-medium border border-indigo-500/30 transition-colors"
+                >
+                  Test bedtime alert
+                </button>
+
+                <p className="text-white/30 text-xs leading-relaxed">
+                  Times use the device's local clock. The bedtime alert fires once per day. Locked mode is never overridden — auto switching resumes after unlock.
+                </p>
               </div>
             )}
 
