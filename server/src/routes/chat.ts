@@ -55,7 +55,8 @@ const SYSTEM_PROMPT =
   "You have tools to read and update the dashboard's own widgets: " +
   "get_time (current time at any city or IANA timezone \u2014 always use this for time questions, never guess), " +
   "list_media_items / add_media_item / remove_media_item / mark_media_done (the user's playlist of games, shows, and movies \u2014 use add_media_item whenever the user wants to remember, queue, save, or jot down something to play or watch, picking the best type), " +
-  "get_weather, get_calendar_today, and get_device_status. " +
+  "get_weather, get_calendar_today, get_calendar_day, get_calendar_week, get_calendar_range, and get_device_status. " +
+  "For any calendar question other than 'today', use get_calendar_day, get_calendar_week, or get_calendar_range — never guess what is on a date you haven't fetched. " +
   "CRITICAL: When you use a tool, base your answer strictly on what the tool actually returned. " +
   "Do not invent facts, numbers, dates, names, titles, or quotes. After mutating tools (add/remove/mark) confirm what you did in one short sentence." +
   (WEB_SEARCH_ENABLED

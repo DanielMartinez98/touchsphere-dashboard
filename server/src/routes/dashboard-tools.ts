@@ -235,15 +235,157 @@ async function getWeather(): Promise<string> {
          `humidity ${w.humidity}%, wind ${w.wind_speed} m/s, rain chance ${Math.round((w.rain_chance ?? 0) * 100)}%.`
 }
 
+interface CalEvent { id?: string; title: string; start: string; end: string; allDay: boolean }
+
+// Parse a date the model may pass us. Accepts:
+//   YYYY-MM-DD                           → that day
+//   "today" / "tomorrow" / "yesterday"
+//   "+3" / "-2"                          → relative day offset
+//   weekday names ("monday", "next friday", "this saturday")
+// Returns a Date pinned to local-midnight, or null.
+const WEEKDAYS = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday']
+function parseDateInput(input: string): Date | null {
+  const raw = (input ?? '').trim().toLowerCase()
+  if (!raw) return null
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+
+  if (raw === 'today')     return today
+  if (raw === 'tomorrow')  return new Date(today.getTime() + 86_400_000)
+  if (raw === 'yesterday') return new Date(today.getTime() - 86_400_000)
+
+  // YYYY-MM-DD
+  const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw)
+  if (ymd) {
+    const d = new Date(parseInt(ymd[1]!), parseInt(ymd[2]!) - 1, parseInt(ymd[3]!))
+    return isNaN(d.getTime()) ? null : d
+  }
+
+  // Relative offset like "+3" or "-2"
+  const rel = /^([+-]?\d{1,3})$/.exec(raw)
+  if (rel) return new Date(today.getTime() + parseInt(rel[1]!) * 86_400_000)
+
+  // Weekday names: "monday", "next monday", "this monday"
+  const wd = /^(?:(this|next|last)\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)$/.exec(raw)
+  if (wd) {
+    const target = WEEKDAYS.indexOf(wd[2]!)
+    const cur = today.getDay()
+    let delta = (target - cur + 7) % 7
+    if (wd[1] === 'next' && delta === 0) delta = 7
+    if (wd[1] === 'last') delta = delta === 0 ? -7 : delta - 7
+    if (!wd[1] && delta === 0) {} // "monday" today → today
+    return new Date(today.getTime() + delta * 86_400_000)
+  }
+
+  // Last-resort native parse (e.g. "Jan 5 2026")
+  const fallback = new Date(raw)
+  if (!isNaN(fallback.getTime())) {
+    fallback.setHours(0, 0, 0, 0)
+    return fallback
+  }
+  return null
+}
+
+function ymdKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// Fetch events for whichever month(s) the [start, end] range touches and merge.
+// `/api/calendar/month` is cached server-side so this stays cheap.
+async function fetchEventsInRange(start: Date, end: Date): Promise<CalEvent[]> {
+  const months = new Set<string>()
+  const cur = new Date(start.getFullYear(), start.getMonth(), 1)
+  const stopAt = new Date(end.getFullYear(), end.getMonth(), 1)
+  while (cur <= stopAt) {
+    months.add(`${cur.getFullYear()}-${cur.getMonth()}`)
+    cur.setMonth(cur.getMonth() + 1)
+  }
+  const all: CalEvent[] = []
+  const seen = new Set<string>()
+  for (const m of months) {
+    const [y, mo] = m.split('-')
+    const data = await localGet<{ events?: CalEvent[] }>(`/api/calendar/month?year=${y}&month=${mo}`)
+    for (const ev of data?.events ?? []) {
+      const id = ev.id ?? `${ev.title}|${ev.start}`
+      if (seen.has(id)) continue
+      seen.add(id)
+      all.push(ev)
+    }
+  }
+  // Filter to events that overlap [start, end). All-day events use a YYYY-MM-DD
+  // string, so compare via Date constructor at local midnight.
+  const startMs = start.getTime()
+  const endMs   = end.getTime()
+  return all.filter(ev => {
+    const sMs = (ev.start.length === 10 ? new Date(ev.start + 'T00:00') : new Date(ev.start)).getTime()
+    const eMs = (ev.end.length   === 10 ? new Date(ev.end   + 'T23:59') : new Date(ev.end)).getTime()
+    return sMs < endMs && eMs > startMs
+  }).sort((a, b) => a.start.localeCompare(b.start))
+}
+
+function formatEvent(ev: CalEvent, includeDate = false): string {
+  const d = ev.start.length === 10 ? new Date(ev.start + 'T12:00') : new Date(ev.start)
+  const datePart = includeDate
+    ? d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) + ' '
+    : ''
+  if (ev.allDay) return `- ${datePart}${ev.title} (all day)`
+  const t = new Date(ev.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
+  return `- ${datePart}${t} \u2014 ${ev.title}`
+}
+
 async function getCalendarToday(): Promise<string> {
-  const data = await localGet<{ events?: Array<{ title: string; start: string; allDay: boolean }> }>('/api/calendar/today')
+  // Loopback to /today keeps caching tight for the most-common query.
+  const data = await localGet<{ events?: CalEvent[] }>('/api/calendar/today')
   const events = data?.events ?? []
   if (events.length === 0) return 'No events on the calendar today.'
-  return `Today's events:\n` + events.map(e => {
-    if (e.allDay) return `- ${e.title} (all day)`
-    const t = new Date(e.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
-    return `- ${t} — ${e.title}`
-  }).join('\n')
+  return `Today's events:\n` + events.map(e => formatEvent(e)).join('\n')
+}
+
+async function getCalendarDay(input: string): Promise<string> {
+  const day = parseDateInput(input || 'today')
+  if (!day) return `I couldn't understand the date "${input}". Try YYYY-MM-DD, "tomorrow", or a weekday name.`
+  const next = new Date(day.getTime() + 86_400_000)
+  const events = await fetchEventsInRange(day, next)
+  const label  = day.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
+  if (events.length === 0) return `No events on ${label}.`
+  return `Events on ${label}:\n` + events.map(e => formatEvent(e)).join('\n')
+}
+
+async function getCalendarRange(startInput: string, endInput: string): Promise<string> {
+  const start = parseDateInput(startInput || 'today')
+  if (!start) return `I couldn't understand the start date "${startInput}".`
+  const end = endInput ? parseDateInput(endInput) : new Date(start.getTime() + 7 * 86_400_000)
+  if (!end) return `I couldn't understand the end date "${endInput}".`
+  // Range is inclusive on both ends — bump end to end-of-day.
+  const endExclusive = new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1)
+  if (endExclusive <= start) return `End date must be on or after start date.`
+  // Cap at 60 days to avoid runaway tool output.
+  const maxEnd = new Date(start.getTime() + 60 * 86_400_000)
+  const cappedEnd = endExclusive > maxEnd ? maxEnd : endExclusive
+  const events = await fetchEventsInRange(start, cappedEnd)
+  const startLbl = start.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+  const endLbl   = new Date(cappedEnd.getTime() - 1).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+  if (events.length === 0) return `No events between ${startLbl} and ${endLbl}.`
+  // Group by day for readability.
+  const byDay = new Map<string, CalEvent[]>()
+  for (const ev of events) {
+    const key = ev.start.length === 10 ? ev.start : ymdKey(new Date(ev.start))
+    if (!byDay.has(key)) byDay.set(key, [])
+    byDay.get(key)!.push(ev)
+  }
+  const lines: string[] = [`Events from ${startLbl} to ${endLbl}:`]
+  for (const [key, evs] of [...byDay.entries()].sort()) {
+    const d = new Date(key + 'T12:00')
+    lines.push(`\n${d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}:`)
+    for (const ev of evs) lines.push(formatEvent(ev))
+  }
+  return lines.join('\n')
+}
+
+async function getCalendarWeek(startInput: string): Promise<string> {
+  const start = parseDateInput(startInput || 'today')
+  if (!start) return `I couldn't understand the start date "${startInput}".`
+  const end = new Date(start.getTime() + 6 * 86_400_000) // 7-day window
+  return getCalendarRange(ymdKey(start), ymdKey(end))
 }
 
 async function getDeviceStatus(): Promise<string> {
@@ -354,6 +496,56 @@ export const DASHBOARD_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'get_calendar_day',
+      description:
+        "Events on a specific day. Accepts YYYY-MM-DD, 'today', 'tomorrow', " +
+        "'yesterday', a relative offset like '+3' or '-2', or a weekday like " +
+        "'monday' / 'next friday' / 'last sunday'. Use this for any single-day question " +
+        "other than today.",
+      parameters: {
+        type: 'object',
+        properties: {
+          date: { type: 'string', description: 'Day to look up (see description for accepted formats).' },
+        },
+        required: ['date'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_calendar_week',
+      description:
+        "Events for a 7-day window starting on `start` (default: today). Use this when " +
+        "the user asks 'this week', 'next week', 'the week of ...', etc.",
+      parameters: {
+        type: 'object',
+        properties: {
+          start: { type: 'string', description: "First day of the week to show. Same formats as get_calendar_day. Defaults to 'today'." },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_calendar_range',
+      description:
+        'Events between two dates (inclusive on both ends). Capped at 60 days. Use this for ' +
+        "questions like 'what's on between Monday and Wednesday' or 'events from May 5 to May 10'.",
+      parameters: {
+        type: 'object',
+        properties: {
+          start: { type: 'string', description: 'Start date (same formats as get_calendar_day).' },
+          end:   { type: 'string', description: 'End date, inclusive (same formats as get_calendar_day).' },
+        },
+        required: ['start', 'end'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'get_device_status',
       description: 'CPU temperature, memory, load average, and uptime of the device running TouchSphere.',
       parameters: { type: 'object', properties: {} },
@@ -377,6 +569,9 @@ export async function runDashboardTool(
     }
     case 'get_weather':        return getWeather()
     case 'get_calendar_today': return getCalendarToday()
+    case 'get_calendar_day':   return getCalendarDay(str('date'))
+    case 'get_calendar_week':  return getCalendarWeek(str('start'))
+    case 'get_calendar_range': return getCalendarRange(str('start'), str('end'))
     case 'get_device_status':  return getDeviceStatus()
     default: return null
   }
