@@ -85,6 +85,10 @@ export interface NotionSchema {
   priorityKey:      string | null
   priorityOptions:  SchemaOption[]
   dueKey:           string | null
+  // Relation property pointing at projects (e.g. "Project", "Projects", "Area")
+  // and the id of the related DB so the client can navigate or fetch titles.
+  projectKey:       string | null
+  projectDbId:      string | null
 }
 
 let schemaCache: NotionSchema | null = null
@@ -137,7 +141,19 @@ async function getSchema(force = false): Promise<NotionSchema> {
   const dueEntry = findProp(props, ['due', 'deadline', 'date'], ['date'])
   const dueKey   = dueEntry?.[0] ?? null
 
-  schemaCache   = { titleKey, statusKey, statusType, statusOptions, doneStatusNames, todoStatusNames, priorityKey, priorityOptions, dueKey }
+  // Project relation — prefer name match ("project", "projects", "area",
+  // "epic") then fall back to the first relation property of any name. The
+  // related DB id lets us resolve project titles in a batch.
+  let projectKey: string | null = null
+  let projectDbId: string | null = null
+  const relationEntry = findProp(props, ['project', 'projects', 'area', 'epic'], ['relation'])
+                     ?? Object.entries(props).find(([, p]) => p.type === 'relation') as [string, any] | undefined ?? null
+  if (relationEntry) {
+    projectKey  = relationEntry[0]
+    projectDbId = relationEntry[1]?.relation?.database_id ?? null
+  }
+
+  schemaCache   = { titleKey, statusKey, statusType, statusOptions, doneStatusNames, todoStatusNames, priorityKey, priorityOptions, dueKey, projectKey, projectDbId }
   schemaCacheTs = Date.now()
   return schemaCache
 }
@@ -160,7 +176,13 @@ function extractTask(page: any, schema: NotionSchema) {
   const doneViaBox  = checkEntry ? (checkEntry[1].checkbox ?? false) : false
   const done        = doneViaBox || (status != null && doneSet.has(status.toLowerCase()))
 
-  return { id: page.id, title, status, priority, due, done, createdAt: page.created_time }
+  // Pull related project ids; titles are resolved in /tasks after the main
+  // query so we avoid an N+1 round-trip per task.
+  const projectIds: string[] = schema.projectKey
+    ? ((props[schema.projectKey]?.relation ?? []) as any[]).map(r => r.id)
+    : []
+
+  return { id: page.id, title, status, priority, due, done, createdAt: page.created_time, projectIds }
 }
 
 function buildTaskProperties(
@@ -195,13 +217,44 @@ router.get('/schema', async (_req, res) => {
 router.get('/tasks', async (_req, res) => {
   if (!tasksConfigured()) { res.status(503).json({ error: 'Notion task DB not configured' }); return }
   try {
-    const schema   = await getSchema()
-    const { data } = await axios.post(
-      `${NOTION_API}/databases/${process.env['NOTION_DATABASE_ID']}/query`,
-      { page_size: 100, sorts: [{ timestamp: 'created_time', direction: 'descending' }] },
-      { headers: notionHeaders() },
-    )
-    res.json((data.results as any[]).filter(p => !p.archived).map(p => extractTask(p, schema)))
+    const schema = await getSchema()
+
+    // Walk every page of the task DB. Cap at 10 pages (~1000 tasks) to avoid
+    // hammering the API on pathological DBs — well above any realistic
+    // personal task list. Older Phase-1 code stopped at the first page.
+    const all: any[] = []
+    let cursor: string | undefined
+    let safety = 0
+    do {
+      const { data } = await axios.post(
+        `${NOTION_API}/databases/${process.env['NOTION_DATABASE_ID']}/query`,
+        {
+          page_size: 100,
+          sorts: [{ timestamp: 'created_time', direction: 'descending' }],
+          ...(cursor ? { start_cursor: cursor } : {}),
+        },
+        { headers: notionHeaders() },
+      )
+      for (const r of data.results as any[]) if (!r.archived) all.push(r)
+      cursor = data.has_more ? data.next_cursor : undefined
+      safety++
+    } while (cursor && safety < 10)
+
+    const tasks = all.map(p => extractTask(p, schema))
+
+    // Resolve project titles once per unique id so the client can label rows
+    // without an N+1 round-trip. Tolerant of failures (a stale relation just
+    // produces a missing title).
+    const projects: Record<string, { id: string; title: string; icon: string | null }> = {}
+    const uniqueIds = Array.from(new Set(tasks.flatMap(t => t.projectIds)))
+    await Promise.all(uniqueIds.map(async id => {
+      try {
+        const { data } = await axios.get(`${NOTION_API}/pages/${id}`, { headers: notionHeaders() })
+        projects[id] = { id, title: pageTitle(data), icon: iconOf(data)?.value ?? null }
+      } catch { /* tolerate */ }
+    }))
+
+    res.json({ tasks, projects })
   } catch (err) { notionError(res, err, 'Failed to fetch tasks') }
 })
 

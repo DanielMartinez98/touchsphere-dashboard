@@ -12,16 +12,28 @@ export interface NotionSchema {
   priorityKey:      string | null
   priorityOptions:  SchemaOption[]
   dueKey:           string | null
+  // Optional relation property pointing to a projects DB. When present we can
+  // filter/group tasks by project on the Home view.
+  projectKey:       string | null
+  projectDbId:      string | null
 }
 
 export interface NotionTask {
-  id:        string
-  title:     string
-  status:    string | null
-  priority:  string | null
-  due:       string | null  // YYYY-MM-DD
-  done:      boolean
-  createdAt: string
+  id:         string
+  title:      string
+  status:     string | null
+  priority:   string | null
+  due:        string | null  // YYYY-MM-DD
+  done:       boolean
+  createdAt:  string
+  // Ids of related project pages (length matches the Notion relation property).
+  projectIds: string[]
+}
+
+export interface ProjectRef {
+  id:    string
+  title: string
+  icon:  string | null
 }
 
 export type TaskFields = Partial<{
@@ -44,11 +56,17 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+interface TasksResponse {
+  tasks:    NotionTask[]
+  projects: Record<string, ProjectRef>
+}
+
 export function useNotion() {
-  const [schema,  setSchema]  = useState<NotionSchema | null>(null)
-  const [tasks,   setTasks]   = useState<NotionTask[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error,   setError]   = useState<string | null>(null)
+  const [schema,   setSchema]   = useState<NotionSchema | null>(null)
+  const [tasks,    setTasks]    = useState<NotionTask[]>([])
+  const [projects, setProjects] = useState<Record<string, ProjectRef>>({})
+  const [loading,  setLoading]  = useState(true)
+  const [error,    setError]    = useState<string | null>(null)
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -56,10 +74,11 @@ export function useNotion() {
     try {
       const [s, t] = await Promise.all([
         apiFetch<NotionSchema>('/api/notion/schema'),
-        apiFetch<NotionTask[]>('/api/notion/tasks'),
+        apiFetch<TasksResponse>('/api/notion/tasks'),
       ])
       setSchema(s)
-      setTasks(t)
+      setTasks(t.tasks)
+      setProjects(t.projects)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to load')
     } finally {
@@ -69,8 +88,9 @@ export function useNotion() {
 
   const refreshTasks = useCallback(async () => {
     try {
-      const t = await apiFetch<NotionTask[]>('/api/notion/tasks')
-      setTasks(t)
+      const t = await apiFetch<TasksResponse>('/api/notion/tasks')
+      setTasks(t.tasks)
+      setProjects(t.projects)
     } catch { /* silent background refresh */ }
   }, [])
 
@@ -133,6 +153,7 @@ export function useNotion() {
   return {
     schema,
     tasks,
+    projects,
     loading,
     error,
     refresh: loadAll,

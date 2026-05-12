@@ -1,4 +1,4 @@
-import type { NotionTask, NotionSchema, TaskFields } from '../../../hooks/useNotion'
+import type { NotionTask, NotionSchema, TaskFields, ProjectRef } from '../../../hooks/useNotion'
 import { useNotionClient } from '../../../hooks/useNotionClient'
 import HomeView     from './HomeView'
 import BrowseView   from './BrowseView'
@@ -10,6 +10,7 @@ import GroupsView   from './GroupsView'
 interface Props {
   schema:     NotionSchema | null
   tasks:      NotionTask[]
+  projects:   Record<string, ProjectRef>
   loading:    boolean
   error:      string | null
   onUpdate:   (id: string, fields: TaskFields) => void
@@ -18,7 +19,7 @@ interface Props {
 }
 
 export default function NotionExpanded({
-  schema, tasks, loading, error, onUpdate, onCreate, onRefresh,
+  schema, tasks, projects, loading, error, onUpdate, onCreate, onRefresh,
 }: Props) {
   const client = useNotionClient()
   const view   = client.current
@@ -69,6 +70,7 @@ export default function NotionExpanded({
           <HomeView
             schema={schema}
             tasks={tasks}
+            projects={projects}
             loading={loading}
             error={error}
             client={client}

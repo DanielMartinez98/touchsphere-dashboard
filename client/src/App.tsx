@@ -42,6 +42,7 @@ function App() {
   const {
     schema:      notionSchema,
     tasks:       notionTasks,
+    projects:    notionProjects,
     loading:     notionLoading,
     error:       notionError,
     refresh:     notionRefresh,
@@ -159,6 +160,7 @@ function App() {
             <NotionExpanded
               schema={notionSchema}
               tasks={notionTasks}
+              projects={notionProjects}
               loading={notionLoading}
               error={notionError}
               onUpdate={notionUpdate}

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { NotionTask, NotionSchema, TaskFields } from '../../../hooks/useNotion'
+import type { NotionTask, NotionSchema, TaskFields, ProjectRef } from '../../../hooks/useNotion'
 import type { NotionClient } from '../../../hooks/useNotionClient'
 import { colorFg, colorBg } from './notion-colors'
 import MiniCalendar from './MiniCalendar'
@@ -43,16 +43,21 @@ function fmtDue(due: string): { label: string; overdue: boolean } {
 // ── Task row ─────────────────────────────────────────────────────────────────
 
 function TaskRow({
-  task, schema, onTap, onToggleDone,
+  task, schema, projects, onTap, onToggleDone, onTapProject,
 }: {
   task:         NotionTask
   schema:       NotionSchema
+  projects:     Record<string, ProjectRef>
   onTap:        () => void
   onToggleDone: () => void
+  onTapProject: (projectId: string) => void
 }) {
   const due       = task.due ? fmtDue(task.due) : null
   const priOpt    = schema.priorityOptions.find(o => o.name === task.priority)
   const statusOpt = schema.statusOptions.find(o => o.name === task.status)
+  // Resolve project chips — tasks can belong to multiple projects, but on the
+  // narrow Home row we render at most two to keep the layout scannable.
+  const taskProjects = task.projectIds.map(id => projects[id]).filter(Boolean) as ProjectRef[]
 
   return (
     <div onClick={onTap}
@@ -92,6 +97,16 @@ function TaskRow({
               ${due.overdue ? 'text-red-400 bg-red-500/15' : 'text-white/35 bg-white/[0.06]'}`}>
               {due.label}
             </span>
+          )}
+          {taskProjects.slice(0, 2).map(p => (
+            <button key={p.id} type="button"
+              onClick={e => { e.stopPropagation(); onTapProject(p.id) }}
+              className="text-[11px] px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-200/85 active:bg-blue-500/30 max-w-[10rem] truncate">
+              {p.icon ? `${p.icon} ` : '📁 '}{p.title}
+            </button>
+          ))}
+          {taskProjects.length > 2 && (
+            <span className="text-[10px] text-white/30">+{taskProjects.length - 2}</span>
           )}
         </div>
       </div>
@@ -214,6 +229,7 @@ function CreateTaskSheet({
 interface Props {
   schema:    NotionSchema | null
   tasks:     NotionTask[]
+  projects:  Record<string, ProjectRef>
   loading:   boolean
   error:     string | null
   client:    NotionClient
@@ -296,13 +312,31 @@ function GroupsAndRecents({
   )
 }
 
-export default function HomeView({ schema, tasks, loading, error, client, onUpdate, onCreate, onRefresh }: Props) {
-  const [filter,   setFilter]   = useState<string | null>(null)
-  const [sort,     setSort]     = useState<SortMode>('priority')
-  const [creating, setCreating] = useState(false)
+export default function HomeView({ schema, tasks, projects, loading, error, client, onUpdate, onCreate, onRefresh }: Props) {
+  const [filter,        setFilter]        = useState<string | null>(null)
+  const [projectFilter, setProjectFilter] = useState<string | null>(null)
+  const [sort,          setSort]          = useState<SortMode>('priority')
+  const [creating,      setCreating]      = useState(false)
   const pins   = useNotionPins()
   const groups = useNotionGroups()
   const voice  = useVoiceCapture()
+
+  // Project chips — derive from the set of projects actually referenced by
+  // the current task list and sort by count desc so the most relevant ones
+  // land first. Tasks without any project go under a synthetic "No project".
+  const projectsInUse = (() => {
+    const counts = new Map<string, number>()
+    let unassigned = 0
+    for (const t of tasks) {
+      if (t.projectIds.length === 0) unassigned++
+      for (const id of t.projectIds) counts.set(id, (counts.get(id) ?? 0) + 1)
+    }
+    const list = Array.from(counts.entries())
+      .map(([id, count]) => ({ project: projects[id], count, id }))
+      .filter(x => !!x.project) as { project: ProjectRef; count: number; id: string }[]
+    list.sort((a, b) => b.count - a.count)
+    return { list, unassigned }
+  })()
 
   async function dictateTask() {
     if (!voice.supported || !schema) return
@@ -312,7 +346,14 @@ export default function HomeView({ schema, tasks, loading, error, client, onUpda
     onCreate({ title: text, status: defaultStatus })
   }
 
-  const filtered  = tasks.filter(t => filter === null ? true : t.status === filter)
+  // Filter chain: status → project. Special sentinel "__none__" for tasks
+  // with no related project (so "Tasks not yet assigned to a project" stays
+  // reachable from the chip strip).
+  const filtered  = tasks
+    .filter(t => filter        === null ? true : t.status === filter)
+    .filter(t => projectFilter === null ? true
+              : projectFilter === '__none__' ? t.projectIds.length === 0
+              : t.projectIds.includes(projectFilter))
   const pending   = sortedTasks(filtered.filter(t => !t.done), sort)
   const done      = sortedTasks(filtered.filter(t =>  t.done), sort)
   const allSorted = [...pending, ...done]
@@ -371,6 +412,37 @@ export default function HomeView({ schema, tasks, loading, error, client, onUpda
         </div>
       )}
 
+      {/* Project filter — derived from the active task list. Hidden when
+          the task DB has no relation property (projectsInUse is empty and
+          there's nothing unassigned either). */}
+      {schema?.projectKey && (projectsInUse.list.length > 0 || projectsInUse.unassigned > 0) && (
+        <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
+          <button type="button" onClick={() => setProjectFilter(null)}
+            className={`flex-shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium
+              ${projectFilter === null ? 'bg-blue-500/40 text-blue-100' : 'bg-white/[0.05] text-white/40 active:bg-white/[0.1]'}`}>
+            All projects
+          </button>
+          {projectsInUse.list.map(({ project, count, id }) => (
+            <button key={id} type="button"
+              onClick={() => setProjectFilter(projectFilter === id ? null : id)}
+              className={`flex-shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium
+                ${projectFilter === id ? 'bg-blue-500/40 text-blue-100' : 'bg-white/[0.05] text-white/55 active:bg-white/[0.1]'}`}>
+              {project.icon ? <span>{project.icon}</span> : <span>📁</span>}
+              <span className="truncate max-w-[7rem]">{project.title}</span>
+              <span className="opacity-50 tabular-nums">{count}</span>
+            </button>
+          ))}
+          {projectsInUse.unassigned > 0 && (
+            <button type="button"
+              onClick={() => setProjectFilter(projectFilter === '__none__' ? null : '__none__')}
+              className={`flex-shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium
+                ${projectFilter === '__none__' ? 'bg-blue-500/40 text-blue-100' : 'bg-white/[0.05] text-white/45 active:bg-white/[0.1]'}`}>
+              No project · <span className="opacity-60 tabular-nums">{projectsInUse.unassigned}</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Groups + Recents — populated as the user organizes their workspace */}
       {(groups.groups.length > 0 || pins.recents.length > 0) && (
         <GroupsAndRecents pins={pins} groups={groups} client={client} />
@@ -390,8 +462,8 @@ export default function HomeView({ schema, tasks, loading, error, client, onUpda
         )}
         {!loading && !error && allSorted.length === 0 && (
           <div className="flex flex-col items-center gap-2 py-10">
-            {filter
-              ? <p className="text-white/30 text-sm">No tasks with status "{filter}"</p>
+            {filter || projectFilter
+              ? <p className="text-white/30 text-sm">No tasks match the current filter.</p>
               : <><span className="text-4xl">✓</span><p className="text-green-400 font-semibold mt-1">All done!</p></>}
           </div>
         )}
@@ -400,8 +472,10 @@ export default function HomeView({ schema, tasks, loading, error, client, onUpda
             key={task.id}
             task={task}
             schema={schema}
+            projects={projects}
             onTap={() => client.navigate({ kind: 'page', id: task.id })}
             onToggleDone={() => toggleDone(task)}
+            onTapProject={id => setProjectFilter(projectFilter === id ? null : id)}
           />
         ))}
       </div>
