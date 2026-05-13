@@ -37,6 +37,18 @@ const MAX_RECORD_MS = 20_000// In follow-up turns (after the AI just spoke) we w
 // to start talking. If they don't, the conversation ends silently — no empty
 // transcript, no fallback reply, no TTS.
 const FOLLOWUP_NO_SPEECH_MS = 10_000
+// After TTS finishes, wait this long before re-opening the mic so speaker tail,
+// reverb, and any AEC convergence don't get picked up as user speech.
+const POST_TTS_GRACE_MS = 500
+
+// Decide whether the assistant's reply expects a follow-up. We only keep the
+// mic open when the reply actually ends with a question — i.e. the assistant
+// needs clarification. Otherwise we treat the turn as complete and end the
+// conversation. Trailing whitespace and closing quotes are tolerated.
+function replyExpectsFollowUp(text: string): boolean {
+  const trimmed = text.replace(/["'”’\s]+$/u, '')
+  return trimmed.endsWith('?')
+}
 // ── TTS playback ─────────────────────────────────────────────────────────────
 // We use HTMLAudioElement (not WebAudio) so we can call setSinkId() and route
 // the reply to whichever speaker the user picked in the Hardware tab. WebAudio
@@ -317,19 +329,24 @@ export function useVoice(): VoiceState {
       // Hand off audio focus from the thinking loop to the TTS reply.
       stopThinkingSound()
       setIsSpeaking(true)
+      const wantFollowUp = replyExpectsFollowUp(replyText)
       speakText(replyText, () => {
         setIsSpeaking(false)
         setVolume(0)
         volumeRef.current = 0
-        // Continuous conversation: re-open the mic after the AI finishes.
-        // The follow-up flag activates the 10 s no-speech timeout so an
-        // unanswered prompt ends the conversation cleanly.
-        //
-        // Defer to the next tick so React can flush setIsSpeaking(false) and
-        // reassign startListeningRef to the new closure. Otherwise the guard
-        // inside startListening still sees isSpeaking=true and bails out,
-        // killing the conversation after the first turn.
-        setTimeout(() => startListeningRef.current?.(true), 0)
+        // Only re-open the mic if the assistant actually asked a question
+        // (i.e. needs clarification). Otherwise treat the answer as complete
+        // and end the conversation — the next wake-word starts fresh.
+        if (!wantFollowUp) {
+          console.log('[voice] reply did not end with a question — ending conversation')
+          historyRef.current = []
+          return
+        }
+        // Grace delay so speaker tail / room reverb doesn't trigger VAD on the
+        // freshly-reopened mic. Also gives React time to flush setIsSpeaking
+        // and re-bind startListeningRef to the latest closure (the guard
+        // inside startListening would otherwise still see isSpeaking=true).
+        setTimeout(() => startListeningRef.current?.(true), POST_TTS_GRACE_MS)
       })
     }
 
