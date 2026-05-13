@@ -18,6 +18,12 @@ export interface VoiceState {
   isListening: boolean
   isSpeaking: boolean
   isTranscribing: boolean
+  // True from the moment we start uploading audio for STT until TTS playback
+  // begins (or the conversation ends early). Covers both transcription and the
+  // LLM round-trip so the wake word stays paused through the whole "thinking"
+  // window — otherwise the recognizer would hear the user / its own voice in
+  // the gap between STT returning and TTS starting.
+  isThinking: boolean
   transcript: string
   reply: string
   volume: number
@@ -134,6 +140,7 @@ export function useVoice(): VoiceState {
   const [isListening,    setIsListening]    = useState(false)
   const [isSpeaking,     setIsSpeaking]     = useState(false)
   const [isTranscribing, setIsTranscribing] = useState(false)
+  const [isThinking,     setIsThinking]     = useState(false)
   const [transcript,     setTranscript]     = useState('')
   const [reply,          setReply]          = useState('')
   const [volume,         setVolume]         = useState(0)
@@ -206,7 +213,7 @@ export function useVoice(): VoiceState {
   }, [])
 
   const startListening = useCallback(async (isFollowUp = false) => {
-    if (isListening || isTranscribing || isSpeaking) return
+    if (isListening || isTranscribing || isThinking || isSpeaking) return
     if (!navigator.mediaDevices?.getUserMedia) {
       console.warn('[voice] getUserMedia unavailable — page must be HTTPS.')
       return
@@ -289,6 +296,7 @@ export function useVoice(): VoiceState {
       void startThinkingSound()
 
       // Upload + display + reply.
+      setIsThinking(true)
       setIsTranscribing(true)
       let text = ''
       try {
@@ -309,6 +317,7 @@ export function useVoice(): VoiceState {
       if (cleaned.length < 2) {
         console.log('[voice] no meaningful speech detected — ending conversation')
         stopThinkingSound()
+        setIsThinking(false)
         historyRef.current = []
         return
       }
@@ -328,6 +337,7 @@ export function useVoice(): VoiceState {
       setReply(replyText)
       // Hand off audio focus from the thinking loop to the TTS reply.
       stopThinkingSound()
+      setIsThinking(false)
       setIsSpeaking(true)
       const wantFollowUp = replyExpectsFollowUp(replyText)
       speakText(replyText, () => {
@@ -418,7 +428,7 @@ export function useVoice(): VoiceState {
       console.log('[voice] max record time reached')
       stopRecording()
     }, MAX_RECORD_MS)
-  }, [isListening, isTranscribing, isSpeaking, cleanup, stopRecording, transcribe])
+  }, [isListening, isTranscribing, isThinking, isSpeaking, cleanup, stopRecording, transcribe])
 
   const stopListening = useCallback(() => {
     stopRecording()
@@ -447,7 +457,7 @@ export function useVoice(): VoiceState {
   // active voice state (listening, transcribing, speaking) cancels the timer
   // and re-arms it on the next render once activity stops.
   useEffect(() => {
-    const busy = isListening || isTranscribing || isSpeaking
+    const busy = isListening || isTranscribing || isThinking || isSpeaking
     if (busy) return
     if (!transcript && !reply) return
     const t = window.setTimeout(() => {
@@ -455,7 +465,7 @@ export function useVoice(): VoiceState {
       setReply('')
     }, 30_000)
     return () => window.clearTimeout(t)
-  }, [isListening, isTranscribing, isSpeaking, transcript, reply])
+  }, [isListening, isTranscribing, isThinking, isSpeaking, transcript, reply])
 
-  return { isListening, isSpeaking, isTranscribing, transcript, reply, volume, startListening, stopListening }
+  return { isListening, isSpeaking, isTranscribing, isThinking, transcript, reply, volume, startListening, stopListening }
 }

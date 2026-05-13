@@ -62,7 +62,7 @@ function App() {
   // while the assistant itself is talking or already capturing audio so we
   // don't trigger on the TTS reply or fight for the mic device.
   useWakeWord({
-    pause:  voice.isListening || voice.isSpeaking || voice.isTranscribing,
+    pause:  voice.isListening || voice.isSpeaking || voice.isTranscribing || voice.isThinking,
     onWake: () => {
       if (!startupPlayedRef.current) {
         startupPlayedRef.current = true
