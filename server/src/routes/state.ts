@@ -60,6 +60,7 @@ interface MediaItem {
   title: string
   type: 'game' | 'show' | 'movie'
   done: boolean
+  starred?: boolean
 }
 
 // ── App Mode ─────────────────────────────────────────────────────────────────
@@ -191,7 +192,9 @@ router.post('/media', (req: Request, res: Response) => {
   }
 })
 
-// PATCH /api/state/media/:id  — toggle done
+// PATCH /api/state/media/:id
+//   no body            → toggle done (back-compat)
+//   { done?, starred? } → set explicit values
 router.patch('/media/:id', (req: Request, res: Response) => {
   const { id } = req.params
   const items = readMediaList()
@@ -201,7 +204,16 @@ router.patch('/media/:id', (req: Request, res: Response) => {
     res.status(404).json({ error: 'Item not found' })
     return
   }
-  items[idx] = { ...items[idx], done: !items[idx].done }
+  const body = (req.body ?? {}) as { done?: boolean; starred?: boolean }
+  const hasField = typeof body.done === 'boolean' || typeof body.starred === 'boolean'
+  const next = { ...items[idx] }
+  if (!hasField) {
+    next.done = !next.done
+  } else {
+    if (typeof body.done === 'boolean') next.done = body.done
+    if (typeof body.starred === 'boolean') next.starred = body.starred
+  }
+  items[idx] = next
   try {
     saveMediaList(items)
     console.log(`[state] PATCH media/${id} — done toggled to ${items[idx].done} ("${items[idx].title}")`)

@@ -45,4 +45,5 @@ export interface MediaItem {
   title: string
   type: MediaType
   done: boolean
+  starred?: boolean
 }

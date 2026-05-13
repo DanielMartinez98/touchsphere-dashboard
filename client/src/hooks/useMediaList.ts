@@ -80,6 +80,35 @@ export function useMediaList() {
       })
   }, [])
 
+  const toggleStar = useCallback((id: string) => {
+    let nextStarred = false
+    setItems(prev => prev.map(i => {
+      if (i.id !== id) return i
+      nextStarred = !i.starred
+      console.log(`[MediaList] TOGGLE star id=${id} "${i.title}" → ${nextStarred}`)
+      return { ...i, starred: nextStarred }
+    }))
+    fetch(`${API}/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ starred: nextStarred }),
+    })
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        return res.json() as Promise<MediaItem>
+      })
+      .then(updated => {
+        setItems(prev => prev.map(i => i.id === id ? updated : i))
+      })
+      .catch(err => {
+        console.error(`[MediaList] toggleStar ${id} failed — restoring:`, err)
+        fetch(API)
+          .then(r => r.json() as Promise<MediaItem[]>)
+          .then(setItems)
+          .catch(() => {})
+      })
+  }, [])
+
   const markDone = useCallback((id: string) => {
     // Optimistic update
     setItems(prev => prev.map(i => {
@@ -105,8 +134,12 @@ export function useMediaList() {
       })
   }, [])
 
-  const nextItem = items.find(i => !i.done) ?? null
+  // Prefer starred items so pinned picks surface in the collapsed "Up Next" tile.
+  const nextItem =
+    items.find(i => !i.done && i.starred) ??
+    items.find(i => !i.done) ??
+    null
 
-  return { items, nextItem, isLoading, addItem, removeItem, markDone }
+  return { items, nextItem, isLoading, addItem, removeItem, markDone, toggleStar }
 }
 
