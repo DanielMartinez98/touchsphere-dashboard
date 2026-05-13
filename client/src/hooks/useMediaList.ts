@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
-import type { MediaItem, MediaType } from '../types'
+import type { MediaItem, MediaStatus, MediaType } from '../types'
 
 const API = '/api/state/media'
 
@@ -80,6 +80,34 @@ export function useMediaList() {
       })
   }, [])
 
+  const setStatus = useCallback((id: string, status: MediaStatus) => {
+    // Optimistic update — also keep `done` in sync so legacy consumers stay coherent.
+    setItems(prev => prev.map(i => {
+      if (i.id !== id) return i
+      console.log(`[MediaList] SET status id=${id} "${i.title}" → ${status}`)
+      return { ...i, status, done: status === 'done' }
+    }))
+    fetch(`${API}/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    })
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        return res.json() as Promise<MediaItem>
+      })
+      .then(updated => {
+        setItems(prev => prev.map(i => i.id === id ? updated : i))
+      })
+      .catch(err => {
+        console.error(`[MediaList] setStatus ${id} failed — restoring:`, err)
+        fetch(API)
+          .then(r => r.json() as Promise<MediaItem[]>)
+          .then(setItems)
+          .catch(() => {})
+      })
+  }, [])
+
   const toggleStar = useCallback((id: string) => {
     let nextStarred = false
     setItems(prev => prev.map(i => {
@@ -135,11 +163,13 @@ export function useMediaList() {
   }, [])
 
   // Prefer starred items so pinned picks surface in the collapsed "Up Next" tile.
+  // Skip both done and dropped — neither is a candidate for "up next".
+  const isActive = (i: MediaItem) => i.status !== 'done' && i.status !== 'dropped'
   const nextItem =
-    items.find(i => !i.done && i.starred) ??
-    items.find(i => !i.done) ??
+    items.find(i => isActive(i) && i.starred) ??
+    items.find(isActive) ??
     null
 
-  return { items, nextItem, isLoading, addItem, removeItem, markDone, toggleStar }
+  return { items, nextItem, isLoading, addItem, removeItem, markDone, toggleStar, setStatus }
 }
 

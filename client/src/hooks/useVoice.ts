@@ -47,14 +47,10 @@ const FOLLOWUP_NO_SPEECH_MS = 10_000
 // reverb, and any AEC convergence don't get picked up as user speech.
 const POST_TTS_GRACE_MS = 500
 
-// Decide whether the assistant's reply expects a follow-up. We only keep the
-// mic open when the reply actually ends with a question — i.e. the assistant
-// needs clarification. Otherwise we treat the turn as complete and end the
-// conversation. Trailing whitespace and closing quotes are tolerated.
-function replyExpectsFollowUp(text: string): boolean {
-  const trimmed = text.replace(/["'”’\s]+$/u, '')
-  return trimmed.endsWith('?')
-}
+// Whether the mic should reopen after TTS is now decided explicitly by the
+// assistant via the end_conversation / keep_listening tool calls. The server
+// returns `keepListening: boolean` on every chat reply; we just forward that
+// value through. Default = false (end the turn) when the field is missing.
 // ── TTS playback ─────────────────────────────────────────────────────────────
 // We use HTMLAudioElement (not WebAudio) so we can call setSinkId() and route
 // the reply to whichever speaker the user picked in the Hardware tab. WebAudio
@@ -110,7 +106,9 @@ export interface ChatTurn { role: 'user' | 'assistant'; content: string }
 // Server enforces its own cap too, but we trim here so we don't ship junk.
 const MAX_HISTORY_TURNS = 20
 
-async function fetchReply(messages: ChatTurn[]): Promise<string> {
+interface ChatReply { text: string; keepListening: boolean }
+
+async function fetchReply(messages: ChatTurn[]): Promise<ChatReply> {
   try {
     const res = await fetch(`${API}/api/chat`, {
       method:  'POST',
@@ -119,9 +117,9 @@ async function fetchReply(messages: ChatTurn[]): Promise<string> {
     })
     if (!res.ok) {
       console.warn('[voice] /api/chat http', res.status)
-      return FALLBACK_REPLIES[Math.floor(Math.random() * FALLBACK_REPLIES.length)]!
+      return { text: FALLBACK_REPLIES[Math.floor(Math.random() * FALLBACK_REPLIES.length)]!, keepListening: false }
     }
-    const json = (await res.json()) as { reply?: string; changed?: string[] }
+    const json = (await res.json()) as { reply?: string; changed?: string[]; keepListening?: boolean }
     // Tell affected widgets to re-fetch their data (e.g. the media list after
     // the assistant added an item via add_media_item).
     const changed = Array.isArray(json.changed) ? json.changed : []
@@ -129,10 +127,11 @@ async function fetchReply(messages: ChatTurn[]): Promise<string> {
       console.log('[voice] state changed by chat tools:', changed)
       window.dispatchEvent(new CustomEvent('ts:state-changed', { detail: { slices: changed } }))
     }
-    return (json.reply ?? '').trim() || FALLBACK_REPLIES[0]!
+    const text = (json.reply ?? '').trim() || FALLBACK_REPLIES[0]!
+    return { text, keepListening: json.keepListening === true }
   } catch (err) {
     console.warn('[voice] /api/chat failed:', err)
-    return FALLBACK_REPLIES[Math.floor(Math.random() * FALLBACK_REPLIES.length)]!
+    return { text: FALLBACK_REPLIES[Math.floor(Math.random() * FALLBACK_REPLIES.length)]!, keepListening: false }
   }
 }
 
@@ -328,8 +327,8 @@ export function useVoice(): VoiceState {
         ...historyRef.current,
         { role: 'user', content: text } as ChatTurn,
       ].slice(-MAX_HISTORY_TURNS)
-      const replyText = await fetchReply(historyRef.current)
-      console.log('[voice] reply:', replyText)
+      const { text: replyText, keepListening: wantFollowUp } = await fetchReply(historyRef.current)
+      console.log(`[voice] reply: "${replyText}" keepListening=${wantFollowUp}`)
       historyRef.current = [
         ...historyRef.current,
         { role: 'assistant', content: replyText } as ChatTurn,
@@ -339,16 +338,15 @@ export function useVoice(): VoiceState {
       stopThinkingSound()
       setIsThinking(false)
       setIsSpeaking(true)
-      const wantFollowUp = replyExpectsFollowUp(replyText)
       speakText(replyText, () => {
         setIsSpeaking(false)
         setVolume(0)
         volumeRef.current = 0
-        // Only re-open the mic if the assistant actually asked a question
-        // (i.e. needs clarification). Otherwise treat the answer as complete
-        // and end the conversation — the next wake-word starts fresh.
+        // The assistant decides explicitly via end_conversation / keep_listening
+        // tool calls. If it didn't opt in to another turn, end the conversation
+        // — the next wake-word starts fresh.
         if (!wantFollowUp) {
-          console.log('[voice] reply did not end with a question — ending conversation')
+          console.log('[voice] assistant ended the conversation (no keep_listening)')
           historyRef.current = []
           return
         }

@@ -55,12 +55,41 @@ interface Credential {
   salt: string
 }
 
+type MediaType   = 'game' | 'show' | 'movie'
+type MediaStatus = 'not_started' | 'in_progress' | 'done' | 'dropped'
+
+const STATUSES: readonly MediaStatus[] = ['not_started', 'in_progress', 'done', 'dropped']
+const MOVIE_STATUSES: readonly MediaStatus[] = ['not_started', 'done']
+
+function isStatusAllowed(type: MediaType, status: MediaStatus): boolean {
+  return type === 'movie' ? MOVIE_STATUSES.includes(status) : STATUSES.includes(status)
+}
+
 interface MediaItem {
   id: string
   title: string
-  type: 'game' | 'show' | 'movie'
+  type: MediaType
   done: boolean
+  status: MediaStatus
   starred?: boolean
+}
+
+// Normalize a raw item (possibly written before `status` existed) so callers
+// can rely on status being present and matching `done`.
+function normalizeMediaItem(raw: Partial<MediaItem> & { type: MediaType }): MediaItem {
+  const done = raw.done === true
+  let status = raw.status
+  if (!status || !STATUSES.includes(status)) {
+    status = done ? 'done' : 'not_started'
+  }
+  return {
+    id:      raw.id ?? crypto.randomUUID(),
+    title:   raw.title ?? '',
+    type:    raw.type,
+    done:    status === 'done',
+    status,
+    ...(raw.starred ? { starred: true } : {}),
+  }
 }
 
 // ── App Mode ─────────────────────────────────────────────────────────────────
@@ -148,7 +177,8 @@ router.post('/cred/verify', (req: Request, res: Response) => {
 
 // ── Media List ────────────────────────────────────────────────────────────────
 function readMediaList(): MediaItem[] {
-  return readJSON<MediaItem[]>('media.json', [])
+  const raw = readJSON<Array<Partial<MediaItem> & { type: MediaType }>>('media.json', [])
+  return raw.map(normalizeMediaItem)
 }
 
 function saveMediaList(items: MediaItem[]): void {
@@ -178,8 +208,9 @@ router.post('/media', (req: Request, res: Response) => {
   const item: MediaItem = {
     id: crypto.randomUUID(),
     title: title.trim(),
-    type: type as 'game' | 'show' | 'movie',
+    type: type as MediaType,
     done: false,
+    status: 'not_started',
   }
   const items = readMediaList()
   items.push(item)
@@ -193,8 +224,8 @@ router.post('/media', (req: Request, res: Response) => {
 })
 
 // PATCH /api/state/media/:id
-//   no body            → toggle done (back-compat)
-//   { done?, starred? } → set explicit values
+//   no body                       → toggle done (back-compat)
+//   { done?, starred?, status? }  → set explicit values
 router.patch('/media/:id', (req: Request, res: Response) => {
   const { id } = req.params
   const items = readMediaList()
@@ -204,16 +235,34 @@ router.patch('/media/:id', (req: Request, res: Response) => {
     res.status(404).json({ error: 'Item not found' })
     return
   }
-  const body = (req.body ?? {}) as { done?: boolean; starred?: boolean }
-  const hasField = typeof body.done === 'boolean' || typeof body.starred === 'boolean'
+  const body = (req.body ?? {}) as { done?: boolean; starred?: boolean; status?: MediaStatus }
+  const hasField =
+    typeof body.done    === 'boolean' ||
+    typeof body.starred === 'boolean' ||
+    typeof body.status  === 'string'
   const next = { ...items[idx] }
   if (!hasField) {
-    next.done = !next.done
+    next.status = next.status === 'done' ? 'not_started' : 'done'
+    next.done   = next.status === 'done'
   } else {
-    if (typeof body.done === 'boolean') next.done = body.done
     if (typeof body.starred === 'boolean') next.starred = body.starred
+    if (typeof body.status === 'string') {
+      if (!STATUSES.includes(body.status)) {
+        res.status(400).json({ error: `status must be one of ${STATUSES.join(', ')}` })
+        return
+      }
+      if (!isStatusAllowed(next.type, body.status)) {
+        res.status(400).json({ error: `status "${body.status}" is not allowed for ${next.type}s` })
+        return
+      }
+      next.status = body.status
+      next.done   = body.status === 'done'
+    } else if (typeof body.done === 'boolean') {
+      next.done   = body.done
+      next.status = body.done ? 'done' : (next.status === 'done' ? 'not_started' : next.status)
+    }
   }
-  items[idx] = next
+  items[idx] = normalizeMediaItem(next)
   try {
     saveMediaList(items)
     console.log(`[state] PATCH media/${id} — done toggled to ${items[idx].done} ("${items[idx].title}")`)

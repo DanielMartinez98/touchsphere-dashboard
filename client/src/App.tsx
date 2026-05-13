@@ -38,7 +38,7 @@ const ACCENT = {
 function App() {
   const [open, setOpen] = useState<OpenWidget>(null)
   const toggle = (w: OpenWidget) => setOpen(prev => prev === w ? null : w)
-  const { items, nextItem, addItem, removeItem, markDone, toggleStar } = useMediaList()
+  const { items, nextItem, addItem, removeItem, markDone, toggleStar, setStatus } = useMediaList()
   const {
     schema:      notionSchema,
     tasks:       notionTasks,
@@ -176,7 +176,7 @@ function App() {
           isOpen={open === 'media'}
           onToggle={() => toggle('media')}
           collapsed={<MediaCollapsed nextItem={nextItem} />}
-          expanded={<MediaListExpanded items={items} addItem={addItem} removeItem={removeItem} markDone={markDone} toggleStar={toggleStar} />}
+          expanded={<MediaListExpanded items={items} addItem={addItem} removeItem={removeItem} markDone={markDone} toggleStar={toggleStar} setStatus={setStatus} />}
         />
       )}
 

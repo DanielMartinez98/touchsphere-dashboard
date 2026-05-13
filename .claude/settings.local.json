@@ -3,7 +3,9 @@
     "allow": [
       "Bash(npx tsc *)",
       "Bash(npm run *)",
-      "Bash(node -e 'const fs=require\\('\\\\''fs'\\\\''\\);const p='\\\\''__TRACKED_VAR__'\\\\'';let s=fs.readFileSync\\(p,'\\\\''utf8'\\\\''\\);s=s.replace\\(/<button onClick=/g,'\\\\''<button type=\"button\" onClick='\\\\''\\);fs.writeFileSync\\(p,s\\)')"
+      "Bash(node -e 'const fs=require\\('\\\\''fs'\\\\''\\);const p='\\\\''__TRACKED_VAR__'\\\\'';let s=fs.readFileSync\\(p,'\\\\''utf8'\\\\''\\);s=s.replace\\(/<button onClick=/g,'\\\\''<button type=\"button\" onClick='\\\\''\\);fs.writeFileSync\\(p,s\\)')",
+      "Bash(cd ../server && npx tsc --noEmit 2>&1 | head -10)",
+      "Read(//c/Users/mmdan/OneDrive/Desktop/project_mini ipad/**)"
     ]
   }
 }

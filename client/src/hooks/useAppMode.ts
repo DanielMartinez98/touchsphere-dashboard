@@ -18,30 +18,38 @@ export function useAppMode() {
   const [hasCred, setHasCred] = useState(false)
   const [prevUnlocked, setPrevUnlocked] = useState<'work' | 'rest'>('work')
 
-  // Restore mode and cred presence from server on mount
+  // Restore mode and cred presence from server on mount, then refetch the mode
+  // any time a chat tool mutates it (the voice hook dispatches `ts:state-changed`
+  // with `slices: ['mode']` after set_app_mode).
   useEffect(() => {
     console.log('[AppMode] loading mode and credential from server…')
 
-    Promise.all([
-      fetch('/api/state/mode').then(r => r.ok ? r.json() as Promise<{ mode: AppMode }> : null),
-      fetch('/api/state/cred').then(r => r.ok ? r.json() as Promise<{ exists: boolean }> : null),
-    ]).then(([modeData, credData]) => {
-      if (modeData) {
-        console.log(`[AppMode] restored mode: ${modeData.mode}`)
-        setModeState(modeData.mode)
-        if (modeData.mode !== 'locked') setPrevUnlocked(modeData.mode)
-      } else {
-        console.warn('[AppMode] could not load mode from server — using default: work')
-      }
-      if (credData) {
-        console.log(`[AppMode] credential exists: ${credData.exists}`)
-        setHasCred(credData.exists)
-      } else {
-        console.warn('[AppMode] could not load cred status from server')
-      }
-    }).catch(err => {
-      console.error('[AppMode] failed to load initial state:', err)
-    })
+    const loadMode = (reason: string) => {
+      fetch('/api/state/mode')
+        .then(r => r.ok ? r.json() as Promise<{ mode: AppMode }> : null)
+        .then(data => {
+          if (!data) return
+          console.log(`[AppMode] mode (${reason}): ${data.mode}`)
+          setModeState(data.mode)
+          if (data.mode !== 'locked') setPrevUnlocked(data.mode)
+        })
+        .catch(err => console.error('[AppMode] failed to load mode:', err))
+    }
+
+    loadMode('mount')
+    fetch('/api/state/cred')
+      .then(r => r.ok ? r.json() as Promise<{ exists: boolean }> : null)
+      .then(credData => {
+        if (credData) setHasCred(credData.exists)
+      })
+      .catch(err => console.error('[AppMode] failed to load cred status:', err))
+
+    const onChange = (e: Event) => {
+      const slices = (e as CustomEvent<{ slices?: string[] }>).detail?.slices
+      if (!slices || slices.includes('mode')) loadMode('chat-tool')
+    }
+    window.addEventListener('ts:state-changed', onChange)
+    return () => window.removeEventListener('ts:state-changed', onChange)
   }, [])
 
   const setMode = useCallback((m: AppMode) => {

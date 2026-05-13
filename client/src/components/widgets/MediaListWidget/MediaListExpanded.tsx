@@ -1,7 +1,31 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { MediaItem, MediaType } from '../../../types'
+import type { MediaItem, MediaStatus, MediaType } from '../../../types'
+import { statusesFor } from '../../../types'
 import { MediaTypeIcon } from './MediaTypeIcon'
 import { TouchKeyboard } from '../../TouchKeyboard'
+
+const STATUS_LABEL: Record<MediaStatus, string> = {
+  not_started: 'Not started',
+  in_progress: 'In progress',
+  done:        'Done',
+  dropped:     'Dropped',
+}
+
+const STATUS_GLYPH: Record<MediaStatus, string> = {
+  not_started: '○',
+  in_progress: '▶',
+  done:        '✓',
+  dropped:     '✕',
+}
+
+// Tailwind class fragments per status — used on the cycle button so the
+// current state is visible at a glance.
+const STATUS_BTN_CLASS: Record<MediaStatus, string> = {
+  not_started: 'bg-white/10 text-white/60',
+  in_progress: 'bg-cyan-400/25 text-cyan-200',
+  done:        'bg-emerald-500/25 text-emerald-300',
+  dropped:     'bg-rose-500/20 text-rose-300',
+}
 
 const TYPES: MediaType[] = ['game', 'show', 'movie']
 type Filter = 'all' | MediaType
@@ -18,14 +42,16 @@ interface Props {
   removeItem: (id: string) => void
   markDone: (id: string) => void
   toggleStar: (id: string) => void
+  setStatus: (id: string, status: MediaStatus) => void
 }
 
 export default function MediaListExpanded({
   items,
   addItem,
   removeItem,
-  markDone,
+  markDone: _markDone,
   toggleStar,
+  setStatus,
 }: Props) {
   const [title, setTitle] = useState('')
   const [type, setType] = useState<MediaType>('show')
@@ -72,18 +98,19 @@ export default function MediaListExpanded({
     return arr
   }, [items, filter, shuffleSeed])
 
-  // Display order: starred first, then the (possibly shuffled) rest. Done at
-  // the bottom regardless so completed items don't crowd the active queue.
+  // Display order: starred first, then the (possibly shuffled) rest. Done and
+  // dropped sink to the bottom so the active queue stays clean.
   const ordered = useMemo(() => {
-    const active = filtered.filter(i => !i.done)
-    const done = filtered.filter(i => i.done)
+    const isInactive = (i: MediaItem) => i.status === 'done' || i.status === 'dropped'
+    const active = filtered.filter(i => !isInactive(i))
+    const inactive = filtered.filter(isInactive)
     const starred = active.filter(i => i.starred)
     const rest = active.filter(i => !i.starred)
-    return [...starred, ...rest, ...done]
+    return [...starred, ...rest, ...inactive]
   }, [filtered])
 
   const recommend = () => {
-    const pool = filtered.filter(i => !i.done)
+    const pool = filtered.filter(i => i.status !== 'done' && i.status !== 'dropped')
     if (pool.length === 0) {
       setRecommendedId(null)
       return
@@ -222,6 +249,9 @@ export default function MediaListExpanded({
         )}
         {ordered.map(item => {
           const isRecommended = item.id === recommendedId
+          const cycle = statusesFor(item.type)
+          const nextStatus = cycle[(cycle.indexOf(item.status) + 1) % cycle.length]!
+          const isInactive = item.status === 'done' || item.status === 'dropped'
           return (
             <div
               key={item.id}
@@ -231,19 +261,23 @@ export default function MediaListExpanded({
                   : item.starred
                     ? 'bg-amber-400/10 border-amber-400/30'
                     : 'bg-white/5 border-transparent'
-              } ${item.done ? 'opacity-40' : ''}`}
+              } ${isInactive ? 'opacity-50' : ''}`}
             >
               <MediaTypeIcon type={item.type} className="text-2xl text-white/80 shrink-0" />
               <div className="flex-1 min-w-0">
                 <div
                   className={`text-base font-semibold leading-tight ${
-                    item.done ? 'line-through text-white/40' : 'text-white'
+                    item.status === 'done'    ? 'line-through text-white/40' :
+                    item.status === 'dropped' ? 'line-through text-white/30' :
+                                                'text-white'
                   }`}
                 >
                   {item.title}
                 </div>
-                <div className="text-[10px] uppercase tracking-wider text-white/40 mt-0.5">
-                  {TYPE_LABEL[item.type]}
+                <div className="text-[10px] uppercase tracking-wider text-white/40 mt-0.5 flex items-center gap-1.5">
+                  <span>{TYPE_LABEL[item.type]}</span>
+                  <span className="text-white/20">·</span>
+                  <span>{STATUS_LABEL[item.status]}</span>
                 </div>
               </div>
               <button
@@ -258,10 +292,12 @@ export default function MediaListExpanded({
                 {item.starred ? '★' : '☆'}
               </button>
               <button
-                onClick={() => markDone(item.id)}
-                className="w-9 h-9 rounded-full border border-white/20 flex items-center justify-center text-sm active:scale-90"
+                onClick={() => setStatus(item.id, nextStatus)}
+                aria-label={`Status: ${STATUS_LABEL[item.status]}. Tap for ${STATUS_LABEL[nextStatus]}.`}
+                title={`${STATUS_LABEL[item.status]} → ${STATUS_LABEL[nextStatus]}`}
+                className={`min-w-[2.25rem] h-9 px-2 rounded-full flex items-center justify-center text-sm font-bold active:scale-90 ${STATUS_BTN_CLASS[item.status]}`}
               >
-                {item.done ? '↩' : '✓'}
+                {STATUS_GLYPH[item.status]}
               </button>
               <button
                 onClick={() => removeItem(item.id)}

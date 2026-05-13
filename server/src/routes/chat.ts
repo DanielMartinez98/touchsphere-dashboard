@@ -30,6 +30,7 @@
 
 import { Router, type Request, type Response } from 'express'
 import { DASHBOARD_TOOLS, MUTATING_TOOLS, runDashboardTool } from './dashboard-tools'
+import { addMemory, formatForPrompt as formatMemoryForPrompt } from '../memory'
 
 const router = Router()
 
@@ -52,15 +53,39 @@ const SYSTEM_PROMPT =
   "You are TouchSphere, a friendly desktop voice assistant living on the user's dashboard. " +
   "Reply in 1-2 short, natural-sounding sentences. " +
   "Avoid lists, markdown, code blocks, and emoji \u2014 your reply will be spoken aloud. " +
-  "TURN CONTROL: the mic only re-opens for another user turn if your reply ends with a '?'. " +
-  "End your reply with a question ONLY when you genuinely need clarification from the user to complete their request " +
-  "(e.g. ambiguous title, missing date, unclear target). " +
-  "If you have answered the question or completed the action, end with a statement (no trailing question), " +
-  "and do NOT tack on filler like 'anything else?' or 'let me know if you need more' \u2014 that keeps the mic open unnecessarily. " +
+  "TURN CONTROL \u2014 you decide explicitly when the conversation ends. " +
+  "The microphone is CLOSED while you think and speak. To control whether it reopens after your reply, " +
+  "you MUST call exactly one of these tools BEFORE producing your final spoken text: " +
+  "  - end_conversation()  -- conversation is complete; mic stays closed (this is the default expectation). " +
+  "  - keep_listening()    -- you need another user turn; mic reopens after TTS finishes. " +
+  "Call end_conversation in every case below: " +
+  "(a) you answered the question, " +
+  "(b) you completed an action (added/removed/marked an item, fetched info, etc.), " +
+  "(c) you reported a result from a tool, " +
+  "(d) you acknowledged something (\"got it\", \"sure\", \"done\"), " +
+  "(e) you don't know and have nothing more to try. " +
+  "Call keep_listening ONLY when you literally cannot proceed without more input from the user " +
+  "(ambiguous title, missing date, unclear target, multiple matching items to disambiguate). " +
+  "Never call keep_listening for filler like \"anything else?\", \"sound good?\", or \"let me know if you need more\" \u2014 those are end_conversation. " +
+  "If you forget to call either tool, the system defaults to end_conversation. " +
+  "Only call ONE turn-control tool per reply; if you change your mind mid-turn, the LATER call wins. " +
+  "Don't quote the user's question back at them; if you must reference what they asked, paraphrase as a statement. " +
   "You have tools to read and update the dashboard's own widgets: " +
   "get_time (current time at any city or IANA timezone \u2014 always use this for time questions, never guess), " +
-  "list_media_items / add_media_item / remove_media_item / mark_media_done (the user's playlist of games, shows, and movies \u2014 use add_media_item whenever the user wants to remember, queue, save, or jot down something to play or watch, picking the best type), " +
-  "get_weather, get_calendar_today, get_calendar_day, get_calendar_week, get_calendar_range, and get_device_status. " +
+  "list_media_items / add_media_item / remove_media_item / mark_media_done / set_media_status / star_media_item / recommend_media_item " +
+  "(the user's playlist of games, shows, and movies \u2014 use add_media_item to save anything they want to remember to play or watch, " +
+  "set_media_status when they report progress on games/shows (\"started\", \"finished\", \"gave up\") with status in_progress | done | dropped, " +
+  "star_media_item to pin priorities to the top, recommend_media_item when they ask what to play/watch next. " +
+  "Note: movies only support \"not_started\" or \"done\" \u2014 never use in_progress or dropped on a movie), " +
+  "set_app_mode (switch between work and rest modes \u2014 use when the user says \"switch to rest\", \"back to work\", etc.), " +
+  "get_weather (now), get_weather_forecast (future \u2014 use for any \"will it rain\", \"high tomorrow\", multi-hour question), " +
+  "get_air_quality, get_calendar_today, get_calendar_day, get_calendar_week, get_calendar_range, get_device_status, " +
+  "remember (save a fact to long-term or short-term memory), forget (remove memories matching a query), and list_memories. " +
+  "PERSISTENT MEMORY: anything you saved with remember in a past conversation is auto-injected into your prompt below — " +
+  "treat those as facts you already know and answer directly without re-asking. Use remember whenever the user shares " +
+  "something they would not want to repeat (their name, preferences, recurring routines, what they're working on today). " +
+  "Choose scope=long for stable facts, scope=short for context that's only relevant for the rest of the day. " +
+  "Use forget when the user contradicts a saved fact or asks you to forget something. " +
   "For any calendar question other than 'today', use get_calendar_day, get_calendar_week, or get_calendar_range — never guess what is on a date you haven't fetched. " +
   "CRITICAL: When you use a tool, base your answer strictly on what the tool actually returned. " +
   "Do not invent facts, numbers, dates, names, titles, or quotes. After mutating tools (add/remove/mark) confirm what you did in one short sentence." +
@@ -125,8 +150,43 @@ const WEB_TOOLS = WEB_SEARCH_ENABLED ? [
   },
 ] : []
 
+// ── Turn-control tools ────────────────────────────────────────────────────
+// The model decides explicitly whether the mic reopens for another turn by
+// calling one of these (instead of the previous '?' heuristic). Default is
+// to end the conversation if neither is called by the time the model emits a
+// final text reply — i.e. silence ends the session, the model has to opt in
+// to keep listening.
+const TURN_CONTROL_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'end_conversation',
+      description:
+        'Signal that the conversation is COMPLETE and the microphone should NOT reopen. ' +
+        'Call this whenever you have answered the question, completed the requested action, ' +
+        'reported a tool result, acknowledged something, or have nothing more to do. ' +
+        'This is the default — when in doubt, call this. ' +
+        'Call it BEFORE producing your final spoken reply, in the same turn.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'keep_listening',
+      description:
+        'Signal that you NEED another user turn and the microphone should reopen after you finish speaking. ' +
+        'Call this ONLY when you literally cannot proceed without more input from the user ' +
+        '(ambiguous title, missing date, multiple matching items to disambiguate, unclear target). ' +
+        'Do NOT call this for filler like "anything else?" — those should use end_conversation instead. ' +
+        'Call it BEFORE producing your final spoken reply, in the same turn.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+] as const
+
 // Dashboard tools are always exposed; web tools layer on if configured.
-const TOOLS = [...DASHBOARD_TOOLS, ...WEB_TOOLS]
+const TOOLS = [...DASHBOARD_TOOLS, ...TURN_CONTROL_TOOLS, ...WEB_TOOLS]
 
 // ── Tool implementations ──────────────────────────────────────────────────
 async function runWebSearch(query: string): Promise<string> {
@@ -167,6 +227,11 @@ async function runWebSearch(query: string): Promise<string> {
 }
 
 async function runTool(name: string, args: Record<string, unknown>): Promise<string> {
+  if (name === 'end_conversation' || name === 'keep_listening') {
+    // Handled at the call-site for control-flow purposes; this branch only
+    // runs if the loop somehow forwards it here. Return a brief ACK either way.
+    return 'Acknowledged.'
+  }
   if (name === 'web_search') {
     const q = typeof args['query'] === 'string' ? args['query'] : ''
     if (!q.trim()) return 'web_search error: missing "query" argument.'
@@ -214,6 +279,66 @@ async function runWebFetch(url: string): Promise<string> {
     return `web_fetch error: ${msg}`
   } finally {
     clearTimeout(timer)
+  }
+}
+
+// ── Background session summarizer ─────────────────────────────────────────
+// When the assistant calls end_conversation we kick this off (fire-and-forget)
+// to distill the just-finished session into one short note that lives in
+// short-term memory for the next 24h. Skipped for trivial sessions to avoid
+// burning tokens on "what time is it"-style one-shots.
+async function summarizeAndStore(history: ChatMessage[], finalReply: string): Promise<void> {
+  // Filter to user/assistant text turns; tool messages and the system prompt
+  // aren't useful here. Append the just-spoken final reply so the summarizer
+  // sees how the assistant closed the conversation.
+  const turns = history.filter(m =>
+    (m.role === 'user' || m.role === 'assistant') && m.content && m.content.trim(),
+  )
+  if (finalReply.trim()) turns.push({ role: 'assistant', content: finalReply.trim() })
+  const transcript = turns
+    .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.trim()}`)
+    .join('\n')
+  if (!transcript) return
+  const userTurns = history.filter(m => m.role === 'user').length
+  // Single-turn Q&A rarely contains anything worth remembering for tomorrow.
+  if (userTurns < 2 && transcript.length < 200) return
+
+  try {
+    const summarizerMessages: ChatMessage[] = [
+      {
+        role: 'system',
+        content:
+          "You are a memory summarizer. Given a transcript of a voice conversation between a user and " +
+          "an assistant, write ONE short factual sentence (under 25 words) that captures only the parts " +
+          "worth remembering for tomorrow — what the user is doing, planning, feeling, or interested in. " +
+          "Skip pleasantries, weather lookups, time checks, and anything trivial. " +
+          "If the conversation contains nothing memorable, reply with the single word: SKIP.",
+      },
+      { role: 'user', content: transcript.slice(0, 4000) },
+    ]
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 15_000)
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
+    const res = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
+      method: 'POST',
+      headers,
+      signal: ctrl.signal,
+      body: JSON.stringify({ model: OLLAMA_MODEL, stream: false, messages: summarizerMessages }),
+    }).finally(() => clearTimeout(timer))
+    if (!res.ok) {
+      console.warn('[memory:auto] summarizer upstream', res.status)
+      return
+    }
+    const json = await res.json() as { message?: { content?: string }; response?: string }
+    const summary = (json.message?.content ?? json.response ?? '').trim()
+    if (!summary || /^skip\.?$/i.test(summary) || summary.length > 250) {
+      console.log(`[memory:auto] no summary stored (raw="${summary.slice(0, 60)}")`)
+      return
+    }
+    addMemory(summary, 'short', 'auto')
+  } catch (err) {
+    console.warn('[memory:auto] summarize failed:', err)
   }
 }
 
@@ -287,8 +412,12 @@ router.post('/', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'a final user message (or `prompt`) is required' })
   }
 
+  // Inject persistent memory into the system message so the assistant treats
+  // remembered facts as background knowledge without having to call list_memories.
+  const memoryBlock = formatMemoryForPrompt()
+  const systemContent = memoryBlock ? `${SYSTEM_PROMPT}\n${memoryBlock}` : SYSTEM_PROMPT
   const messages: ChatMessage[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: systemContent },
     ...history,
   ]
 
@@ -301,6 +430,11 @@ router.post('/', async (req: Request, res: Response) => {
   // Track which client-side state slices the model touched so the client can
   // refetch just those (rather than reloading every widget on every reply).
   const changed = new Set<string>()
+
+  // Turn control. Default = end conversation (mic stays closed). Flipped to
+  // true when the model calls keep_listening; flipped back to false if it
+  // later calls end_conversation in the same turn.
+  let keepListening = false
 
   try {
     // Tool-call loop. Bounded by MAX_TOOL_ROUNDS to prevent runaway upstreams.
@@ -318,15 +452,18 @@ router.post('/', async (req: Request, res: Response) => {
       // No tool calls → we're done.
       if (calls.length === 0) {
         const reply = text || "I'm here, but I didn't catch a reply that time."
-        console.log(`[chat] ← reply="${reply.slice(0, 80)}${reply.length > 80 ? '…' : ''}" rounds=${round + 1} changed=[${[...changed].join(',')}]`)
-        return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed] })
+        console.log(`[chat] ← reply="${reply.slice(0, 80)}${reply.length > 80 ? '…' : ''}" rounds=${round + 1} changed=[${[...changed].join(',')}] keepListening=${keepListening}`)
+        // Conversation is ending — kick off a background summary for short-term
+        // memory. Fire-and-forget so the user gets their reply without waiting.
+        if (!keepListening) void summarizeAndStore(messages, reply)
+        return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed], keepListening })
       }
 
       // Cap reached — bail with whatever text we have so the user hears something.
       if (round === MAX_TOOL_ROUNDS) {
         console.warn(`[chat] tool-call cap reached (${MAX_TOOL_ROUNDS}) — returning fallback`)
         const reply = text || "I tried to look that up but couldn't finish in time."
-        return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed] })
+        return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed], keepListening })
       }
 
       // Execute each tool call and append the results back into the conversation.
@@ -334,10 +471,29 @@ router.post('/', async (req: Request, res: Response) => {
       for (const c of calls) {
         const name = c.function?.name ?? ''
         const args = (c.function?.arguments ?? {}) as Record<string, unknown>
+
+        // Turn-control tools flip the mic flag for the response and feed back a
+        // short ACK so the model continues to its final spoken reply.
+        if (name === 'end_conversation') {
+          keepListening = false
+          console.log('[chat:tool] end_conversation \u2014 mic will stay closed')
+          messages.push({ role: 'tool', content: 'Acknowledged. The microphone will stay closed after your reply.', tool_name: name })
+          continue
+        }
+        if (name === 'keep_listening') {
+          keepListening = true
+          console.log('[chat:tool] keep_listening \u2014 mic will reopen after reply')
+          messages.push({ role: 'tool', content: 'Acknowledged. The microphone will reopen after your reply so the user can respond.', tool_name: name })
+          continue
+        }
+
         const result = await runTool(name, args)
         if (MUTATING_TOOLS.has(name) && !/^(Error|No playlist|Already on the list)/.test(result)) {
-          // Only media tools mutate today; bucket them under one slice key.
-          changed.add('media')
+          // Bucket each mutating tool under the client-side slice key its
+          // matching hook listens for. The voice hook fans these out as
+          // ts:state-changed events so only the affected widgets refetch.
+          if (name === 'set_app_mode') changed.add('mode')
+          else                          changed.add('media')
         }
         const truncated = result.slice(0, MAX_TOOL_MSG_CHARS)
         console.log(`[chat:tool] ${name} returned ${result.length} chars (sent ${truncated.length}): ${truncated.slice(0, 200).replace(/\s+/g, ' ')}\u2026`)
