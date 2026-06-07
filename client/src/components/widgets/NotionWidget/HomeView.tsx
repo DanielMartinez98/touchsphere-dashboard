@@ -30,7 +30,11 @@ function sortedTasks(tasks: NotionTask[], mode: SortMode): NotionTask[] {
 }
 
 function fmtDue(due: string): { label: string; overdue: boolean } {
-  const d = new Date(due + 'T12:00')
+  // Anchor both dates at local midnight so the difference is a whole-day count.
+  // (Math.round, not floor, absorbs the ±1h DST wobble.) Anchoring the due date
+  // at noon while today sits at midnight would skew every label half a day —
+  // a task due today would read "Tomorrow", an overdue one "Today".
+  const d = new Date(due + 'T00:00')
   const todayMs = new Date().setHours(0, 0, 0, 0)
   const diff = Math.round((d.getTime() - todayMs) / 86_400_000)
   if (diff < 0)   return { label: `${Math.abs(diff)}d overdue`, overdue: true }
@@ -481,15 +485,20 @@ export default function HomeView({ schema, tasks, projects, loading, error, clie
       </div>
 
       {!loading && !error && schema && (
-        <div className="absolute bottom-2 right-1 flex flex-col gap-2 z-10">
+        // Sticky (not absolute) so the buttons stay pinned to the bottom of the
+        // scroll viewport even when the task list overflows. pointer-events-none
+        // on the wrapper keeps the row beneath it tappable; the buttons re-enable
+        // it. The negative margin lets it overlay the list's pb-20 gutter rather
+        // than reserving a tall empty strip.
+        <div className="sticky bottom-3 z-10 -mt-14 flex flex-col items-end gap-2 pr-1 pointer-events-none">
           {voice.supported && (
             <button type="button" onClick={voice.listening ? voice.stop : dictateTask}
-              className={`w-12 h-12 rounded-full flex items-center justify-center text-xl shadow-lg active:scale-90 transition-transform
+              className={`pointer-events-auto w-12 h-12 rounded-full flex items-center justify-center text-xl shadow-lg active:scale-90 transition-transform
                 ${voice.listening ? 'bg-red-500 text-white shadow-red-500/30 animate-pulse' : 'bg-blue-500 text-white shadow-blue-500/30'}`}
               aria-label="Dictate task">🎤</button>
           )}
           <button type="button" onClick={() => setCreating(true)}
-            className="w-14 h-14 rounded-full bg-green-500 text-black
+            className="pointer-events-auto w-14 h-14 rounded-full bg-green-500 text-black
                        flex items-center justify-center text-3xl font-light shadow-lg shadow-green-500/30
                        active:scale-90 transition-transform"
             aria-label="Create task">+</button>
@@ -497,7 +506,7 @@ export default function HomeView({ schema, tasks, projects, loading, error, clie
       )}
 
       {voice.listening && voice.interim && (
-        <div className="absolute bottom-20 right-1 left-4 z-10 bg-blue-500/20 backdrop-blur-md border border-blue-500/40 rounded-xl px-3 py-2">
+        <div className="sticky bottom-20 z-10 mx-1 -mt-2 bg-blue-500/20 backdrop-blur-md border border-blue-500/40 rounded-xl px-3 py-2">
           <p className="text-[10px] text-blue-200 uppercase tracking-wider">Listening…</p>
           <p className="text-sm text-white">{voice.interim}</p>
         </div>
