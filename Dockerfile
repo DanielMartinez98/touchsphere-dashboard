@@ -8,7 +8,12 @@ ENV VITE_AUDIO_API=$VITE_AUDIO_API
 
 WORKDIR /build/client
 COPY client/package*.json ./
-RUN npm ci
+# Retry: under QEMU emulation OpenSSL's AES-GCM can intermittently corrupt the
+# TLS stream to the npm registry (ERR_SSL_CIPHER_OPERATION_FAILED). The failure
+# is flaky, so a couple of retries reliably gets a clean run. Root cause is the
+# emulator — update host QEMU (`tonistiigi/binfmt --install all`) and/or build
+# the native platform only to avoid it entirely.
+RUN npm ci || npm ci || npm ci
 COPY client/ ./
 RUN npm run build          # outputs to /build/client/dist
 
@@ -18,7 +23,8 @@ FROM node:22-alpine AS server-builder
 
 WORKDIR /build/server
 COPY server/package*.json ./
-RUN npm ci
+# See client stage: retry guards against flaky AES-GCM/TLS failures under QEMU.
+RUN npm ci || npm ci || npm ci
 COPY server/ ./
 RUN npm run build          # outputs to /build/server/dist
 
@@ -33,7 +39,8 @@ WORKDIR /app
 
 # Install only production dependencies
 COPY server/package*.json ./server/
-RUN cd server && npm ci --omit=dev
+# See client stage: retry guards against flaky AES-GCM/TLS failures under QEMU.
+RUN cd server && { npm ci --omit=dev || npm ci --omit=dev || npm ci --omit=dev; }
 
 # Copy compiled server
 COPY --from=server-builder /build/server/dist ./server/dist
