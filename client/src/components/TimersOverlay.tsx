@@ -1,4 +1,5 @@
-import { formatRemaining, formatClock, type TimersApi, type Timer } from '../hooks/useTimers'
+import { formatRemaining, formatClock, formatRepeatDays, type TimersApi, type Timer } from '../hooks/useTimers'
+import { formatStopwatch, type StopwatchApi } from '../hooks/useStopwatch'
 
 /**
  * Ambient timer/alarm surface. Two parts:
@@ -26,14 +27,25 @@ function AlarmIcon() {
     </svg>
   )
 }
+function StopwatchIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="14" r="7" />
+      <path d="M12 14V11" />
+      <path d="M9 2h6" />
+      <path d="M18 7l1.5-1.5" />
+    </svg>
+  )
+}
 
-export function TimersOverlay({ timers }: { timers: TimersApi }) {
-  const { timers: pending, ringing, now, cancel, snooze } = timers
+export function TimersOverlay({ timers, stopwatch }: { timers: TimersApi; stopwatch?: StopwatchApi }) {
+  const { timers: pending, ringing, now, cancel, dismiss, snooze } = timers
+  const showStopwatch = !!stopwatch?.running
 
   return (
     <>
       {/* ── Glanceable countdown pills (left edge, vertically centered) ── */}
-      {pending.length > 0 && (
+      {(pending.length > 0 || showStopwatch) && (
         <div className="absolute left-3 top-1/2 -translate-y-1/2 z-30 flex flex-col gap-2 pointer-events-none">
           {pending.map(t => {
             const isAlarm = t.kind === 'alarm'
@@ -51,7 +63,7 @@ export function TimersOverlay({ timers }: { timers: TimersApi }) {
                   {t.label
                     ? <div className="text-white/45 text-[10px] mt-0.5 truncate">{t.label}</div>
                     : isAlarm
-                      ? <div className="text-white/45 text-[10px] mt-0.5">alarm</div>
+                      ? <div className="text-white/45 text-[10px] mt-0.5">{t.repeatDays?.length ? formatRepeatDays(t.repeatDays) : 'alarm'}</div>
                       : null}
                 </div>
                 <button
@@ -67,6 +79,16 @@ export function TimersOverlay({ timers }: { timers: TimersApi }) {
               </div>
             )
           })}
+
+          {/* Running stopwatch — glanceable, no controls (manage it in the Clock widget). */}
+          {showStopwatch && stopwatch && (
+            <div className="flex items-center gap-2.5 pl-3 pr-4 py-2 rounded-2xl bg-black/55 backdrop-blur-md border border-cyan-400/30 shadow-lg">
+              <span className="text-cyan-300 flex-shrink-0"><StopwatchIcon /></span>
+              <div className="text-white font-mono text-lg font-semibold leading-none tabular-nums">
+                {formatStopwatch(stopwatch.elapsed)}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -75,6 +97,7 @@ export function TimersOverlay({ timers }: { timers: TimersApi }) {
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[700] flex flex-col gap-2 w-[480px] max-w-[92%]">
           {ringing.map((t: Timer) => {
             const isAlarm = t.kind === 'alarm'
+            const recurring = t.repeatDays?.length > 0
             const title = isAlarm ? (t.label || 'Alarm') : (t.label ? `${t.label} — done` : 'Timer done')
             const snoozeMs = isAlarm ? 5 * 60_000 : 60_000
             const snoozeLabel = isAlarm ? 'Snooze 5m' : '+1 min'
@@ -88,7 +111,9 @@ export function TimersOverlay({ timers }: { timers: TimersApi }) {
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-amber-50 text-sm font-semibold truncate">{title}</p>
-                  <p className="text-amber-100/80 text-xs mt-0.5">{isAlarm ? 'Alarm ringing' : 'Time’s up'}</p>
+                  <p className="text-amber-100/80 text-xs mt-0.5">
+                    {isAlarm ? 'Alarm ringing' : 'Time’s up'}{recurring ? ' · repeats' : ''}
+                  </p>
                 </div>
                 <button
                   onClick={() => snooze(t, snoozeMs)}
@@ -97,7 +122,7 @@ export function TimersOverlay({ timers }: { timers: TimersApi }) {
                   {snoozeLabel}
                 </button>
                 <button
-                  onClick={() => cancel(t.id)}
+                  onClick={() => dismiss(t)}
                   className="px-4 py-2 rounded-xl bg-white/20 hover:bg-white/30 active:scale-95 text-white text-sm font-semibold transition-all flex-shrink-0"
                 >
                   Dismiss

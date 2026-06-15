@@ -9,6 +9,7 @@ export interface Timer {
   fireAt:     number      // epoch ms
   createdAt:  number
   durationMs: number      // 0 for alarms
+  repeatDays: number[]    // weekdays an alarm repeats on (0=Sun..6=Sat); [] = one-shot
 }
 
 const API = '/api/timers'
@@ -26,6 +27,17 @@ export function formatRemaining(ms: number): string {
 /** "7:30 AM" for an alarm's fire time. */
 export function formatClock(epoch: number): string {
   return new Date(epoch).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
+}
+
+/** "Every day", "Weekdays", "Weekends", or "Mon, Wed, Fri". '' for one-shot. */
+export function formatRepeatDays(days: number[]): string {
+  if (!days || days.length === 0) return ''
+  const set = [...days].sort((a, b) => a - b)
+  if (set.length === 7) return 'Every day'
+  if (set.length === 5 && [1, 2, 3, 4, 5].every(d => set.includes(d))) return 'Weekdays'
+  if (set.length === 2 && set.includes(0) && set.includes(6)) return 'Weekends'
+  const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+  return set.map(d => DOW[d]).join(', ')
 }
 
 /**
@@ -117,24 +129,46 @@ export function useTimers() {
       .catch(err => { console.warn('[timers] addTimer failed:', err); return null })
   }, [])
 
-  const addAlarm = useCallback((fireAt: number, label = ''): Promise<Timer | null> => {
+  const addAlarm = useCallback((fireAt: number, label = '', repeatDays: number[] = []): Promise<Timer | null> => {
     return fetch(API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kind: 'alarm', fireAt, label }),
+      body: JSON.stringify({ kind: 'alarm', fireAt, label, repeatDays }),
     })
       .then(r => (r.ok ? (r.json() as Promise<Timer>) : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then(t => { setTimers(prev => [...prev, t].sort((a, b) => a.fireAt - b.fireAt)); return t })
       .catch(err => { console.warn('[timers] addAlarm failed:', err); return null })
   }, [])
 
-  // Dismiss the ringing timer and start a fresh one (used for snooze).
-  const snooze = useCallback((t: Timer, extraMs: number) => {
-    cancel(t.id)
-    void addTimer(extraMs, t.label)
-  }, [cancel, addTimer])
+  // Roll a recurring alarm forward to its next occurrence (server computes it),
+  // re-inserting the advanced record as pending so tomorrow's ring stays set.
+  const advance = useCallback((t: Timer) => {
+    setRinging(prev => prev.filter(x => x.id !== t.id))
+    fetch(`${API}/${t.id}/advance`, { method: 'POST' })
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((updated: Timer | { removed?: boolean }) => {
+        if (updated && 'id' in updated) {
+          setTimers(prev => [...prev.filter(x => x.id !== updated.id), updated].sort((a, b) => a.fireAt - b.fireAt))
+        }
+      })
+      .catch(err => console.warn('[timers] advance failed:', err))
+  }, [])
 
-  return { timers, ringing, now, addTimer, addAlarm, cancel, snooze }
+  // Dismiss a ringing item: a recurring alarm rolls to its next day; a one-shot
+  // timer/alarm is removed for good.
+  const dismiss = useCallback((t: Timer) => {
+    if (t.repeatDays?.length) advance(t)
+    else cancel(t.id)
+  }, [advance, cancel])
+
+  // Dismiss the ringing item (keeping any recurrence) and start a one-off
+  // snooze countdown.
+  const snooze = useCallback((t: Timer, extraMs: number) => {
+    dismiss(t)
+    void addTimer(extraMs, t.label)
+  }, [dismiss, addTimer])
+
+  return { timers, ringing, now, addTimer, addAlarm, cancel, dismiss, snooze }
 }
 
 export type TimersApi = ReturnType<typeof useTimers>

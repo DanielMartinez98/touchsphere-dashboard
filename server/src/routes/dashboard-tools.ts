@@ -13,6 +13,7 @@ import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
 import { addMemory, loadMemories, removeMemories } from '../memory'
+import { nextRecurringFireAt, sanitizeRepeatDays } from './timers'
 
 // ── State file helpers (mirror state.ts) ─────────────────────────────────────
 function stateDir(): string {
@@ -623,22 +624,68 @@ interface TimerRecord {
   fireAt: number
   createdAt: number
   durationMs: number
+  repeatDays: number[]   // weekdays an alarm repeats on (0=Sun..6=Sat); [] = one-shot
 }
 
 const TIMER_RING_GRACE_MS = 5 * 60 * 1000
 const TIMER_MAX_DURATION_MS = 24 * 60 * 60 * 1000
 
+// Same prune-and-advance contract as routes/timers.ts (recurring alarms roll
+// forward instead of being pruned), so the voice path sees the same list.
 function readTimers(): TimerRecord[] {
   const now = Date.now()
   const all = readJSON<TimerRecord[]>('timers.json', [])
-  const alive = all
-    .filter(t => typeof t.fireAt === 'number' && t.fireAt >= now - TIMER_RING_GRACE_MS)
-    .sort((a, b) => a.fireAt - b.fireAt)
-  if (alive.length !== all.length) writeJSON('timers.json', alive)
+  let mutated = false
+  const alive: TimerRecord[] = []
+  for (const t of all) {
+    if (!Array.isArray(t.repeatDays)) t.repeatDays = []
+    if (typeof t.fireAt !== 'number') { mutated = true; continue }
+    if (t.repeatDays.length > 0) {
+      if (t.fireAt < now - TIMER_RING_GRACE_MS) {
+        const next = nextRecurringFireAt(t, now)
+        if (next !== t.fireAt) { t.fireAt = next; mutated = true }
+      }
+      alive.push(t)
+    } else if (t.fireAt >= now - TIMER_RING_GRACE_MS) {
+      alive.push(t)
+    } else {
+      mutated = true
+    }
+  }
+  alive.sort((a, b) => a.fireAt - b.fireAt)
+  if (mutated) writeJSON('timers.json', alive)
   return alive
 }
 function writeTimers(timers: TimerRecord[]): void {
   writeJSON('timers.json', timers)
+}
+
+// "daily"/"every day", "weekdays", "weekends", or day names ("mon, wed, fri").
+// Returns a weekday set (0=Sun..6=Sat); [] when nothing recognised / one-shot.
+function parseRepeat(input: string): number[] {
+  const raw = (input ?? '').trim().toLowerCase()
+  if (!raw || /\b(once|one[- ]?time|no repeat|don'?t repeat)\b/.test(raw)) return []
+  if (/\b(daily|every ?day|each day)\b/.test(raw)) return [0, 1, 2, 3, 4, 5, 6]
+  if (/\bweekdays?\b|every weekday|work ?days?/.test(raw)) return [1, 2, 3, 4, 5]
+  if (/\bweekends?\b/.test(raw)) return [0, 6]
+  const names: Record<string, number> = {
+    sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
+  }
+  const days = new Set<number>()
+  for (const m of raw.matchAll(/\b(sun|mon|tue|wed|thu|fri|sat)[a-z]*\b/g)) {
+    days.add(names[m[1]!]!)
+  }
+  return sanitizeRepeatDays([...days])
+}
+
+// "every day", "weekdays", "Mon, Wed, Fri" — human summary of a repeat set.
+function formatRepeat(days: number[]): string {
+  if (days.length === 0) return ''
+  if (days.length === 7) return 'every day'
+  if (days.length === 5 && [1, 2, 3, 4, 5].every(d => days.includes(d))) return 'weekdays'
+  if (days.length === 2 && days.includes(0) && days.includes(6)) return 'weekends'
+  const NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+  return days.map(d => NAMES[d]).join(', ')
 }
 
 // "10 minutes", "1h30m", "90 seconds", "1.5 hours", "20" (→ minutes). Returns ms.
@@ -715,6 +762,7 @@ function setTimer(hours: number, minutes: number, seconds: number, durationStr: 
     fireAt: now + ms,
     createdAt: now,
     durationMs: ms,
+    repeatDays: [],
   }
   timers.push(timer)
   writeTimers(timers)
@@ -723,9 +771,11 @@ function setTimer(hours: number, minutes: number, seconds: number, durationStr: 
   return `Timer set${name} for ${formatDurationMs(ms)}.`
 }
 
-function setAlarm(timeStr: string, label: string): string {
-  const fireAt = parseAlarmTime(timeStr)
+function setAlarm(timeStr: string, label: string, repeatStr: string): string {
+  let fireAt = parseAlarmTime(timeStr)
   if (!fireAt) return `Error: I couldn't understand the time "${timeStr}". Try something like "7:30 am".`
+  const repeatDays = parseRepeat(repeatStr)
+  if (repeatDays.length > 0) fireAt = nextRecurringFireAt({ fireAt, repeatDays })
   const now = Date.now()
   const timers = readTimers()
   const alarm: TimerRecord = {
@@ -735,11 +785,15 @@ function setAlarm(timeStr: string, label: string): string {
     fireAt,
     createdAt: now,
     durationMs: 0,
+    repeatDays,
   }
   timers.push(alarm)
   writeTimers(timers)
-  console.log(`[chat:tool] set_alarm → ${formatClock(fireAt)} "${alarm.label}"`)
+  console.log(`[chat:tool] set_alarm → ${formatClock(fireAt)} "${alarm.label}"${repeatDays.length ? ` repeat=${formatRepeat(repeatDays)}` : ''}`)
   const name = alarm.label ? ` for ${alarm.label}` : ''
+  if (repeatDays.length > 0) {
+    return `Alarm set${name} for ${formatClock(fireAt)}, repeating ${formatRepeat(repeatDays)}.`
+  }
   const day = fireAt - now > 24 * 3_600_000 || new Date(fireAt).getDate() !== new Date(now).getDate() ? ' tomorrow' : ''
   return `Alarm set${name} for ${formatClock(fireAt)}${day}.`
 }
@@ -751,7 +805,8 @@ function listTimers(): string {
   const lines = timers.map(t => {
     const remaining = t.fireAt - now
     if (t.kind === 'alarm') {
-      return `- Alarm${t.label ? ` (${t.label})` : ''} at ${formatClock(t.fireAt)}`
+      const repeat = t.repeatDays?.length ? ` (repeats ${formatRepeat(t.repeatDays)})` : ''
+      return `- Alarm${t.label ? ` (${t.label})` : ''} at ${formatClock(t.fireAt)}${repeat}`
     }
     const left = remaining > 0 ? `${formatDurationMs(remaining)} left` : 'ringing now'
     return `- Timer${t.label ? ` (${t.label})` : ''}: ${left}`
@@ -1102,12 +1157,15 @@ export const DASHBOARD_TOOLS = [
       name: 'set_alarm',
       description:
         'Set an alarm that rings at a specific wall-clock time ("wake me at 7:30 am", "alarm for 6 pm"). ' +
-        'Resolves to the next future occurrence of that time. For a relative countdown use set_timer instead.',
+        'A one-shot alarm resolves to the next future occurrence of that time. Pass repeat to make it recur ' +
+        '("every weekday at 7", "daily alarm at 8am", "wake me at 6 on weekends"). For a relative countdown ' +
+        'use set_timer instead.',
       parameters: {
         type: 'object',
         properties: {
-          time:  { type: 'string', description: 'Clock time, e.g. "7:30 am", "19:00", "noon", "midnight".' },
-          label: { type: 'string', description: 'Optional short name for the alarm.' },
+          time:   { type: 'string', description: 'Clock time, e.g. "7:30 am", "19:00", "noon", "midnight".' },
+          label:  { type: 'string', description: 'Optional short name for the alarm.' },
+          repeat: { type: 'string', description: 'Optional recurrence: "daily", "weekdays", "weekends", or day names like "mon, wed, fri". Omit for a one-time alarm.' },
         },
         required: ['time'],
       },
@@ -1178,7 +1236,7 @@ export async function runDashboardTool(
       const num = (k: string) => (typeof args[k] === 'number' ? (args[k] as number) : 0)
       return setTimer(num('hours'), num('minutes'), num('seconds'), str('duration'), str('label'))
     }
-    case 'set_alarm':          return setAlarm(str('time'), str('label'))
+    case 'set_alarm':          return setAlarm(str('time'), str('label'), str('repeat'))
     case 'list_timers':        return listTimers()
     case 'cancel_timer':       return cancelTimer(str('query'))
     default: return null

@@ -17,6 +17,7 @@ import { useAppMode } from './hooks/useAppMode'
 import { useVoice } from './hooks/useVoice'
 import { useWakeWord } from './hooks/useWakeWord'
 import { useTimers } from './hooks/useTimers'
+import { useStopwatch } from './hooks/useStopwatch'
 import { StatusBar } from './components/StatusBar'
 import { LockScreen } from './components/LockScreen'
 import { SettingsPanel } from './components/SettingsPanel'
@@ -54,6 +55,7 @@ function App() {
   const { mode, hasCred, setMode, createPassword, verifyPassword, unlock } = useAppMode()
   const voice = useVoice()
   const timers = useTimers()
+  const stopwatch = useStopwatch()
   const startupPlayedRef = useRef(false)
 
   // Drives automatic work/rest mode switching and the bedtime alert
@@ -190,7 +192,7 @@ function App() {
         isOpen={open === 'clock'}
         onToggle={() => toggle('clock')}
         collapsed={<ClockCollapsed />}
-        expanded={<WorldClock timers={timers} />}
+        expanded={<WorldClock timers={timers} stopwatch={stopwatch} />}
       />
 
       {/* Top-Center — Status / Mode selector */}
@@ -211,7 +213,7 @@ function App() {
       <BedtimeBanner />
 
       {/* Countdown timers & alarms — glanceable pills + ringing banner */}
-      <TimersOverlay timers={timers} />
+      <TimersOverlay timers={timers} stopwatch={stopwatch} />
 
       {/* Lock screen — covers everything when mode is 'locked' */}
       {mode === 'locked' && (
