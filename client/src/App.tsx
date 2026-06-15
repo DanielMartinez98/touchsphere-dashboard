@@ -16,11 +16,13 @@ import { useNotion } from './hooks/useNotion'
 import { useAppMode } from './hooks/useAppMode'
 import { useVoice } from './hooks/useVoice'
 import { useWakeWord } from './hooks/useWakeWord'
+import { useTimers } from './hooks/useTimers'
 import { StatusBar } from './components/StatusBar'
 import { LockScreen } from './components/LockScreen'
 import { SettingsPanel } from './components/SettingsPanel'
 import { VoiceInterface } from './components/VoiceInterface'
 import { BedtimeBanner } from './components/BedtimeBanner'
+import { TimersOverlay } from './components/TimersOverlay'
 import { useAutoMode } from './hooks/useAutoSchedule'
 import { playStartupSound } from './utils/sound'
 
@@ -51,6 +53,7 @@ function App() {
   } = useNotion()
   const { mode, hasCred, setMode, createPassword, verifyPassword, unlock } = useAppMode()
   const voice = useVoice()
+  const timers = useTimers()
   const startupPlayedRef = useRef(false)
 
   // Drives automatic work/rest mode switching and the bedtime alert
@@ -187,7 +190,7 @@ function App() {
         isOpen={open === 'clock'}
         onToggle={() => toggle('clock')}
         collapsed={<ClockCollapsed />}
-        expanded={<WorldClock />}
+        expanded={<WorldClock timers={timers} />}
       />
 
       {/* Top-Center — Status / Mode selector */}
@@ -206,6 +209,9 @@ function App() {
 
       {/* Bedtime alert toast — driven by the schedule in settings */}
       <BedtimeBanner />
+
+      {/* Countdown timers & alarms — glanceable pills + ringing banner */}
+      <TimersOverlay timers={timers} />
 
       {/* Lock screen — covers everything when mode is 'locked' */}
       {mode === 'locked' && (

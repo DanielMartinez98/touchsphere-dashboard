@@ -29,7 +29,7 @@
 //                           (default: https://ollama.com/api/web_search)
 
 import { Router, type Request, type Response } from 'express'
-import { DASHBOARD_TOOLS, MUTATING_TOOLS, runDashboardTool } from './dashboard-tools'
+import { DASHBOARD_TOOLS, MUTATING_TOOLS, TOOL_SLICE, runDashboardTool } from './dashboard-tools'
 import { addMemory, formatForPrompt as formatMemoryForPrompt } from '../memory'
 
 const router = Router()
@@ -78,6 +78,10 @@ const SYSTEM_PROMPT =
   "star_media_item to pin priorities to the top, recommend_media_item when they ask what to play/watch next. " +
   "Note: movies only support \"not_started\" or \"done\" \u2014 never use in_progress or dropped on a movie), " +
   "set_app_mode (switch between work and rest modes \u2014 use when the user says \"switch to rest\", \"back to work\", etc.), " +
+  "set_timer / set_alarm / list_timers / cancel_timer " +
+  "(set_timer for relative countdowns \u2014 \"timer for 10 minutes\", pass the duration in the hours/minutes/seconds fields; " +
+  "set_alarm for an absolute clock time \u2014 \"wake me at 7:30 am\"; the dashboard rings and shows the countdown automatically, " +
+  "so just confirm what you set in one short sentence), " +
   "get_weather (now), get_weather_forecast (future \u2014 use for any \"will it rain\", \"high tomorrow\", multi-hour question), " +
   "get_air_quality, get_calendar_today, get_calendar_day, get_calendar_week, get_calendar_range, get_device_status, " +
   "remember (save a fact to long-term or short-term memory), forget (remove memories matching a query), and list_memories. " +
@@ -488,12 +492,11 @@ router.post('/', async (req: Request, res: Response) => {
         }
 
         const result = await runTool(name, args)
-        if (MUTATING_TOOLS.has(name) && !/^(Error|No playlist|Already on the list)/.test(result)) {
+        if (MUTATING_TOOLS.has(name) && !/^(Error|No playlist|No timer|There are no|Already on the list|Nothing)/.test(result)) {
           // Bucket each mutating tool under the client-side slice key its
           // matching hook listens for. The voice hook fans these out as
           // ts:state-changed events so only the affected widgets refetch.
-          if (name === 'set_app_mode') changed.add('mode')
-          else                          changed.add('media')
+          changed.add(TOOL_SLICE[name] ?? 'media')
         }
         const truncated = result.slice(0, MAX_TOOL_MSG_CHARS)
         console.log(`[chat:tool] ${name} returned ${result.length} chars (sent ${truncated.length}): ${truncated.slice(0, 200).replace(/\s+/g, ' ')}\u2026`)

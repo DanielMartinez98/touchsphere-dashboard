@@ -17,6 +17,7 @@ import ttsRouter from './routes/tts'
 import sttRouter from './routes/stt'
 import chatRouter from './routes/chat'
 import notionRouter from './routes/notion'
+import timersRouter from './routes/timers'
 
 dotenv.config()
 
@@ -103,6 +104,7 @@ app.use('/api/tts', dataLimiter, ttsRouter)
 app.use('/api/stt', dataLimiter, sttRouter)
 app.use('/api/chat', dataLimiter, chatRouter)
 app.use('/api/notion', dataLimiter, notionRouter)
+app.use('/api/timers', dataLimiter, timersRouter)
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true })

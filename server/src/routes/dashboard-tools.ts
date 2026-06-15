@@ -611,6 +611,175 @@ function listMemoriesTool(): string {
   return parts.join('\n')
 }
 
+// ── Timers & alarms ────────────────────────────────────────────────────────────
+// Mirrors the shape persisted by routes/timers.ts. We write the same JSON file
+// directly (like the media list) so a voice-created timer is identical to a
+// touch-created one. The client owns the countdown + ring; this is just storage.
+type TimerKind = 'timer' | 'alarm'
+interface TimerRecord {
+  id: string
+  label: string
+  kind: TimerKind
+  fireAt: number
+  createdAt: number
+  durationMs: number
+}
+
+const TIMER_RING_GRACE_MS = 5 * 60 * 1000
+const TIMER_MAX_DURATION_MS = 24 * 60 * 60 * 1000
+
+function readTimers(): TimerRecord[] {
+  const now = Date.now()
+  const all = readJSON<TimerRecord[]>('timers.json', [])
+  const alive = all
+    .filter(t => typeof t.fireAt === 'number' && t.fireAt >= now - TIMER_RING_GRACE_MS)
+    .sort((a, b) => a.fireAt - b.fireAt)
+  if (alive.length !== all.length) writeJSON('timers.json', alive)
+  return alive
+}
+function writeTimers(timers: TimerRecord[]): void {
+  writeJSON('timers.json', timers)
+}
+
+// "10 minutes", "1h30m", "90 seconds", "1.5 hours", "20" (→ minutes). Returns ms.
+function parseDurationToMs(input: string): number {
+  const raw = (input ?? '').trim().toLowerCase()
+  if (!raw) return 0
+  // Bare number → assume minutes (most common spoken case: "set a timer for 20").
+  if (/^\d+(\.\d+)?$/.test(raw)) return Math.round(parseFloat(raw) * 60_000)
+  let ms = 0
+  const re = /(\d+(?:\.\d+)?)\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)/g
+  let match: RegExpExecArray | null
+  while ((match = re.exec(raw)) !== null) {
+    const value = parseFloat(match[1]!)
+    const unit = match[2]!
+    if (unit.startsWith('h')) ms += value * 3_600_000
+    else if (unit.startsWith('s')) ms += value * 1_000
+    else ms += value * 60_000   // m / min / minute
+  }
+  return Math.round(ms)
+}
+
+function formatDurationMs(ms: number): string {
+  const totalSec = Math.round(ms / 1000)
+  const h = Math.floor(totalSec / 3600)
+  const m = Math.floor((totalSec % 3600) / 60)
+  const s = totalSec % 60
+  const parts: string[] = []
+  if (h) parts.push(`${h} hour${h === 1 ? '' : 's'}`)
+  if (m) parts.push(`${m} minute${m === 1 ? '' : 's'}`)
+  if (s && !h) parts.push(`${s} second${s === 1 ? '' : 's'}`)
+  return parts.join(' ') || '0 seconds'
+}
+
+// Parse a wall-clock time ("7:30am", "19:00", "noon", "midnight", "7 pm") and
+// resolve to the next future occurrence in local time. Returns epoch ms or null.
+function parseAlarmTime(input: string): number | null {
+  const raw = (input ?? '').trim().toLowerCase()
+  if (!raw) return null
+  let hh: number | null = null
+  let mm = 0
+  if (raw === 'noon') { hh = 12 }
+  else if (raw === 'midnight') { hh = 0 }
+  else {
+    const m = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/.exec(raw)
+    if (!m) return null
+    hh = parseInt(m[1]!, 10)
+    mm = m[2] ? parseInt(m[2], 10) : 0
+    const mer = m[3]
+    if (mer === 'pm' && hh < 12) hh += 12
+    if (mer === 'am' && hh === 12) hh = 0
+  }
+  if (hh === null || hh < 0 || hh > 23 || mm < 0 || mm > 59) return null
+  const now = new Date()
+  const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0)
+  if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1) // roll to tomorrow
+  return target.getTime()
+}
+
+function formatClock(epoch: number): string {
+  return new Date(epoch).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
+}
+
+function setTimer(hours: number, minutes: number, seconds: number, durationStr: string, label: string): string {
+  let ms = (hours * 3_600_000) + (minutes * 60_000) + (seconds * 1_000)
+  if (ms <= 0 && durationStr) ms = parseDurationToMs(durationStr)
+  if (ms <= 0) return 'Error: specify a duration (e.g. 10 minutes).'
+  if (ms > TIMER_MAX_DURATION_MS) ms = TIMER_MAX_DURATION_MS
+  const now = Date.now()
+  const timers = readTimers()
+  const timer: TimerRecord = {
+    id: crypto.randomUUID(),
+    label: label.trim().slice(0, 60),
+    kind: 'timer',
+    fireAt: now + ms,
+    createdAt: now,
+    durationMs: ms,
+  }
+  timers.push(timer)
+  writeTimers(timers)
+  console.log(`[chat:tool] set_timer → ${formatDurationMs(ms)} "${timer.label}"`)
+  const name = timer.label ? ` for ${timer.label}` : ''
+  return `Timer set${name} for ${formatDurationMs(ms)}.`
+}
+
+function setAlarm(timeStr: string, label: string): string {
+  const fireAt = parseAlarmTime(timeStr)
+  if (!fireAt) return `Error: I couldn't understand the time "${timeStr}". Try something like "7:30 am".`
+  const now = Date.now()
+  const timers = readTimers()
+  const alarm: TimerRecord = {
+    id: crypto.randomUUID(),
+    label: label.trim().slice(0, 60),
+    kind: 'alarm',
+    fireAt,
+    createdAt: now,
+    durationMs: 0,
+  }
+  timers.push(alarm)
+  writeTimers(timers)
+  console.log(`[chat:tool] set_alarm → ${formatClock(fireAt)} "${alarm.label}"`)
+  const name = alarm.label ? ` for ${alarm.label}` : ''
+  const day = fireAt - now > 24 * 3_600_000 || new Date(fireAt).getDate() !== new Date(now).getDate() ? ' tomorrow' : ''
+  return `Alarm set${name} for ${formatClock(fireAt)}${day}.`
+}
+
+function listTimers(): string {
+  const timers = readTimers()
+  if (timers.length === 0) return 'No active timers or alarms.'
+  const now = Date.now()
+  const lines = timers.map(t => {
+    const remaining = t.fireAt - now
+    if (t.kind === 'alarm') {
+      return `- Alarm${t.label ? ` (${t.label})` : ''} at ${formatClock(t.fireAt)}`
+    }
+    const left = remaining > 0 ? `${formatDurationMs(remaining)} left` : 'ringing now'
+    return `- Timer${t.label ? ` (${t.label})` : ''}: ${left}`
+  })
+  return `Active timers and alarms:\n${lines.join('\n')}`
+}
+
+function cancelTimer(query: string): string {
+  const timers = readTimers()
+  if (timers.length === 0) return 'There are no active timers or alarms to cancel.'
+  const q = query.trim().toLowerCase()
+  if (!q || q === 'all') {
+    if (!q && timers.length > 1) {
+      return `There are ${timers.length} active timers — say which one to cancel, or "cancel all".`
+    }
+    writeTimers([])
+    console.log(`[chat:tool] cancel_timer → cleared ${timers.length}`)
+    return timers.length === 1 ? 'Cancelled the timer.' : `Cancelled all ${timers.length} timers and alarms.`
+  }
+  // Match by label, falling back to kind keyword ("timer" / "alarm").
+  const hit = timers.find(t => t.label.toLowerCase().includes(q))
+    ?? timers.find(t => t.kind === q)
+  if (!hit) return `No timer or alarm matching "${query}".`
+  writeTimers(timers.filter(t => t.id !== hit.id))
+  console.log(`[chat:tool] cancel_timer → "${hit.label || hit.kind}"`)
+  return `Cancelled the ${hit.kind}${hit.label ? ` for ${hit.label}` : ''}.`
+}
+
 // ── Tool dispatch ────────────────────────────────────────────────────────────
 export const DASHBOARD_TOOLS = [
   {
@@ -907,6 +1076,67 @@ export const DASHBOARD_TOOLS = [
       parameters: { type: 'object', properties: {} },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'set_timer',
+      description:
+        'Start a countdown timer that rings on the dashboard when it elapses. Use for any relative duration ' +
+        '("set a timer for 10 minutes", "remind me in 90 seconds", "20 minute timer for the pasta"). ' +
+        'Provide the duration with the hours/minutes/seconds fields. Add a short label only if the user named ' +
+        'what the timer is for (e.g. "pasta", "laundry"). For an absolute clock time use set_alarm instead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          hours:   { type: 'number', description: 'Whole hours of the countdown.' },
+          minutes: { type: 'number', description: 'Whole minutes of the countdown.' },
+          seconds: { type: 'number', description: 'Whole seconds of the countdown.' },
+          label:   { type: 'string', description: 'Optional short name for what the timer is for.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_alarm',
+      description:
+        'Set an alarm that rings at a specific wall-clock time ("wake me at 7:30 am", "alarm for 6 pm"). ' +
+        'Resolves to the next future occurrence of that time. For a relative countdown use set_timer instead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          time:  { type: 'string', description: 'Clock time, e.g. "7:30 am", "19:00", "noon", "midnight".' },
+          label: { type: 'string', description: 'Optional short name for the alarm.' },
+        },
+        required: ['time'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_timers',
+      description: 'List the active timers and alarms with their remaining time / ring time.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'cancel_timer',
+      description:
+        'Cancel a timer or alarm. Pass the label (or "timer"/"alarm") to target a specific one, "all" to clear ' +
+        'everything, or leave the query empty when there is only one. Use when the user says "cancel the timer", ' +
+        '"stop the pasta timer", "turn off my alarm".',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Label to match, "all", or empty for the only active timer.' },
+        },
+      },
+    },
+  },
 ] as const
 
 export async function runDashboardTool(
@@ -944,6 +1174,13 @@ export async function runDashboardTool(
     case 'remember':           return rememberFact(str('content'), str('scope'))
     case 'forget':             return forgetFact(str('query'))
     case 'list_memories':      return listMemoriesTool()
+    case 'set_timer': {
+      const num = (k: string) => (typeof args[k] === 'number' ? (args[k] as number) : 0)
+      return setTimer(num('hours'), num('minutes'), num('seconds'), str('duration'), str('label'))
+    }
+    case 'set_alarm':          return setAlarm(str('time'), str('label'))
+    case 'list_timers':        return listTimers()
+    case 'cancel_timer':       return cancelTimer(str('query'))
     default: return null
   }
 }
@@ -959,4 +1196,17 @@ export const MUTATING_TOOLS = new Set([
   'set_app_mode',
   'remember',
   'forget',
+  'set_timer',
+  'set_alarm',
+  'cancel_timer',
 ])
+
+// Maps a mutating tool to the client-side state slice it touches, so the chat
+// route can tell exactly which widgets/hooks should refetch.
+export const TOOL_SLICE: Record<string, string> = {
+  set_app_mode: 'mode',
+  set_timer:    'timers',
+  set_alarm:    'timers',
+  cancel_timer: 'timers',
+  // everything else defaults to 'media'
+}

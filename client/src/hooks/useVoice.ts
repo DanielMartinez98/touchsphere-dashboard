@@ -26,6 +26,9 @@ export interface VoiceState {
   isThinking: boolean
   transcript: string
   reply: string
+  // Human-readable error shown to the user when voice can't start (mic blocked,
+  // not a secure context, etc.). Empty when there's nothing to report. Auto-clears.
+  error: string
   volume: number
   startListening: () => void
   stopListening: () => void
@@ -142,6 +145,7 @@ export function useVoice(): VoiceState {
   const [isThinking,     setIsThinking]     = useState(false)
   const [transcript,     setTranscript]     = useState('')
   const [reply,          setReply]          = useState('')
+  const [error,          setError]          = useState('')
   const [volume,         setVolume]         = useState(0)
 
   // Refs for the live recording session — none of these need to trigger renders.
@@ -215,11 +219,13 @@ export function useVoice(): VoiceState {
     if (isListening || isTranscribing || isThinking || isSpeaking) return
     if (!navigator.mediaDevices?.getUserMedia) {
       console.warn('[voice] getUserMedia unavailable — page must be HTTPS.')
+      setError('Microphone needs a secure (HTTPS) connection.')
       return
     }
 
     setTranscript('')
     setReply('')
+    setError('')
     stoppedRef.current = false
     abortedRef.current = false
     // Fresh wake-word activation — start a new conversation. Follow-up turns
@@ -246,6 +252,14 @@ export function useVoice(): VoiceState {
       console.log('[voice] got track:', track?.label, track?.getSettings?.())
     } catch (err) {
       console.warn('[voice] mic permission denied:', err)
+      const name = (err as DOMException)?.name
+      setError(
+        name === 'NotAllowedError' || name === 'SecurityError'
+          ? 'Microphone access blocked — allow it to use voice.'
+          : name === 'NotFoundError'
+            ? 'No microphone found.'
+            : 'Couldn’t access the microphone.',
+      )
       return
     }
     streamRef.current = stream
@@ -465,5 +479,12 @@ export function useVoice(): VoiceState {
     return () => window.clearTimeout(t)
   }, [isListening, isTranscribing, isThinking, isSpeaking, transcript, reply])
 
-  return { isListening, isSpeaking, isTranscribing, isThinking, transcript, reply, volume, startListening, stopListening }
+  // Auto-dismiss a voice error after a few seconds so the toast doesn't linger.
+  useEffect(() => {
+    if (!error) return
+    const t = window.setTimeout(() => setError(''), 6000)
+    return () => window.clearTimeout(t)
+  }, [error])
+
+  return { isListening, isSpeaking, isTranscribing, isThinking, transcript, reply, error, volume, startListening, stopListening }
 }

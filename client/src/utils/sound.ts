@@ -203,3 +203,73 @@ export function stopThinkingSound(): void {
     console.warn('[sound] stopThinkingSound failed:', err)
   }
 }
+
+// ── Alarm ring ─────────────────────────────────────────────────────────────────
+// A looping, attention-grabbing chime for when a timer or alarm fires. Built
+// from oscillators (no asset) so it starts instantly and can ring indefinitely
+// until the user dismisses it. Routed through the 'sfx' category so it follows
+// the master/sfx volume but stays prominent. Singleton — repeated start calls
+// are a no-op; stop fades it out and tears the scheduler down.
+
+interface AlarmHandle {
+  master: GainNode
+  interval: number
+}
+let alarmHandle: AlarmHandle | null = null
+
+export function startAlarmSound(): void {
+  if (alarmHandle) return
+  try {
+    const c = getCtx()
+    if (c.state === 'suspended') { void c.resume().catch(() => { /* ignore */ }) }
+
+    const master = c.createGain()
+    master.gain.value = 1
+    master.connect(c.destination)
+
+    // One "ring" = three rising beeps. We re-schedule a ring roughly once per
+    // second via setInterval so it loops until stopped.
+    const scheduleRing = () => {
+      const start = c.currentTime + 0.02
+      const peak = 0.5 * getEffectiveGain('sfx')
+      const tones = [880, 1175, 1568]   // A5, D6, G6 — bright and urgent
+      tones.forEach((freq, i) => {
+        const t0 = start + i * 0.16
+        const t1 = t0 + 0.14
+        const osc = c.createOscillator()
+        const g = c.createGain()
+        osc.type = 'square'
+        osc.frequency.value = freq
+        g.gain.setValueAtTime(0, t0)
+        g.gain.linearRampToValueAtTime(peak, t0 + 0.01)
+        g.gain.linearRampToValueAtTime(0, t1)
+        osc.connect(g)
+        g.connect(master)
+        osc.start(t0)
+        osc.stop(t1 + 0.02)
+      })
+    }
+    scheduleRing()
+    const interval = window.setInterval(scheduleRing, 1000)
+    alarmHandle = { master, interval }
+  } catch (err) {
+    console.warn('[sound] startAlarmSound failed:', err)
+  }
+}
+
+export function stopAlarmSound(): void {
+  const h = alarmHandle
+  if (!h) return
+  alarmHandle = null
+  try {
+    window.clearInterval(h.interval)
+    const c = getCtx()
+    const now = c.currentTime
+    h.master.gain.cancelScheduledValues(now)
+    h.master.gain.setValueAtTime(h.master.gain.value, now)
+    h.master.gain.linearRampToValueAtTime(0, now + 0.1)
+    setTimeout(() => { try { h.master.disconnect() } catch { /* ignore */ } }, 200)
+  } catch (err) {
+    console.warn('[sound] stopAlarmSound failed:', err)
+  }
+}
