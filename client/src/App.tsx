@@ -191,7 +191,7 @@ function App() {
         accent={ACCENT.clock}
         isOpen={open === 'clock'}
         onToggle={() => toggle('clock')}
-        collapsed={<ClockCollapsed />}
+        collapsed={<ClockCollapsed timers={timers} stopwatch={stopwatch} />}
         expanded={<WorldClock timers={timers} stopwatch={stopwatch} />}
       />
 

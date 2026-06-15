@@ -66,6 +66,8 @@ function Stepper({ value, onChange, min = 0, max, unit }: {
 export default function WorldClock({ timers, stopwatch }: { timers?: TimersApi; stopwatch?: StopwatchApi }) {
   const now = useClock()
 
+  // Top-level view: the world clock, or the timers/alarms/stopwatch tools.
+  const [view, setView] = useState<'clock' | 'timers'>('clock')
   // Custom timer/alarm creator + stopwatch tabs.
   const [tab,    setTab]    = useState<'timer' | 'alarm' | 'stopwatch'>('timer')
   const [label,  setLabel]  = useState('')
@@ -94,9 +96,37 @@ export default function WorldClock({ timers, stopwatch }: { timers?: TimersApi; 
     setLabel(''); setRepeatDays([])
   }
 
+  // Count of pending timers/alarms (badge on the Timers view button).
+  const activeCount = (timers?.timers.length ?? 0) + (stopwatch?.running ? 1 : 0)
+
   return (
     <div className="flex flex-col h-full p-6 pt-16 gap-4 overflow-y-auto">
-      <h2 className="text-2xl font-bold text-white/80 mb-1">World Clock</h2>
+      {/* Top-level view switch — World Clock vs the timer tools. */}
+      <div className="flex gap-2 self-start bg-white/5 rounded-2xl p-1">
+        <button
+          onClick={() => setView('clock')}
+          className={`px-5 py-2 rounded-xl text-base font-semibold transition-all ${
+            view === 'clock' ? 'bg-cyan-500/25 text-white' : 'text-white/40 hover:text-white/70'
+          }`}
+        >
+          World Clock
+        </button>
+        <button
+          onClick={() => setView('timers')}
+          className={`px-5 py-2 rounded-xl text-base font-semibold transition-all flex items-center gap-2 ${
+            view === 'timers' ? 'bg-purple-500/25 text-white' : 'text-white/40 hover:text-white/70'
+          }`}
+        >
+          Timers & Stopwatch
+          {activeCount > 0 && (
+            <span className="min-w-5 h-5 px-1.5 rounded-full bg-purple-500/60 text-white text-xs font-bold flex items-center justify-center">
+              {activeCount}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {view === 'clock' && (
       <div className="grid grid-cols-2 gap-3">
         {ZONES.map(({ label, tz }) => {
           const time = now.toLocaleTimeString([], {
@@ -120,9 +150,10 @@ export default function WorldClock({ timers, stopwatch }: { timers?: TimersApi; 
           )
         })}
       </div>
+      )}
 
-      {/* ── Timers & alarms ── */}
-      {timers && (
+      {/* ── Timers, alarms & stopwatch ── */}
+      {view === 'timers' && timers && (
         <div className="mt-2">
           {/* Timer / Alarm / Stopwatch tab toggle */}
           <div className="flex items-center justify-between mb-3">
