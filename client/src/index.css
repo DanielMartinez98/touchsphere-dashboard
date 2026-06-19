@@ -1,5 +1,24 @@
 @import "tailwindcss";
 
+/* Bundled color-emoji font. In production the app runs on a Raspberry Pi shown
+   via TouchKio (Electron/Chromium), which renders with the host OS fonts — and
+   Raspberry Pi OS ships no color emoji font, so Notion page icons and the
+   📄/🗄️/💡 fallbacks render as blank tofu. Bundling the font makes emoji render
+   regardless of host fonts and keeps the kiosk offline-capable. */
+@font-face {
+  font-family: 'Noto Color Emoji';
+  src: url('/fonts/NotoColorEmoji.woff2') format('woff2');
+  font-display: swap;
+}
+
+/* Ensure the emoji family is in the default sans stack so every emoji glyph can
+   resolve to the bundled font. (Tailwind v4 already lists it last by default;
+   pinned here so it survives any future theme change.) */
+@theme {
+  --font-sans: ui-sans-serif, system-ui, sans-serif,
+    'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+}
+
 /* Time scrubber slider */
 .time-scrubber {
   height: 6px;
