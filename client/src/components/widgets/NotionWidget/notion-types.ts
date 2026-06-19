@@ -14,6 +14,17 @@ export interface NotionIcon {
   value: string
 }
 
+// Image URL for a *raw* Notion icon object (external / file / custom_emoji).
+// Returns null for emoji or no icon — those render as text. custom_emoji is a
+// workspace-uploaded image; without this case such icons silently vanish.
+export function rawIconUrl(icon: any): string | null {
+  if (!icon) return null
+  if (icon.type === 'external')     return icon.external?.url     ?? null
+  if (icon.type === 'file')         return icon.file?.url         ?? null
+  if (icon.type === 'custom_emoji') return icon.custom_emoji?.url ?? null
+  return null
+}
+
 export interface WorkspaceItem {
   id:     string
   title:  string

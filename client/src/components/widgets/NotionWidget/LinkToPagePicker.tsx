@@ -53,7 +53,9 @@ export default function LinkToPagePicker({
             onClick={() => { onPick(r); onClose() }}
             className="w-full text-left flex items-center gap-3 bg-white/[0.04] rounded-xl px-3 py-2.5 active:bg-white/[0.09]">
             <span className="text-base flex-shrink-0">
-              {r.icon?.type === 'emoji' ? r.icon.value : r.object === 'database' ? '🗄️' : '📄'}
+              {r.icon?.type === 'emoji' ? r.icon.value
+                : r.icon?.type === 'url' ? <img src={r.icon.value} alt="" className="w-5 h-5 rounded inline" />
+                : r.object === 'database' ? '🗄️' : '📄'}
             </span>
             <div className="flex-1 min-w-0">
               <p className="text-sm text-white truncate">{r.title}</p>

@@ -9,7 +9,7 @@ import LinkToPagePicker from './LinkToPagePicker'
 import MentionPicker, { type MentionPick } from './MentionPicker'
 import { detectMarkdown } from './markdown'
 import { useVoiceCapture } from '../../../hooks/useVoiceCapture'
-import { richTextWrite } from './notion-types'
+import { richTextWrite, rawIconUrl } from './notion-types'
 
 // ── Rich-text rendering (read-only annotations) ──────────────────────────────
 
@@ -368,11 +368,14 @@ function BlockView({
       break
 
     case 'callout': {
-      const icon = data.icon?.emoji ?? data.icon?.external?.url ?? '💡'
+      const iconUrl = rawIconUrl(data.icon)
+      const emoji   = data.icon?.type === 'emoji' ? data.icon.emoji : null
       const colorBgVal = colorBg(data.color, 0.12)
       body = (
         <div className="flex items-start gap-3 p-3 rounded-lg" style={{ background: colorBgVal }}>
-          <span className="text-lg flex-shrink-0">{typeof icon === 'string' && icon.length <= 4 ? icon : '💡'}</span>
+          {iconUrl
+            ? <img src={iconUrl} alt="" className="w-5 h-5 rounded flex-shrink-0" />
+            : <span className="text-lg flex-shrink-0">{emoji ?? '💡'}</span>}
           <div className="flex-1"><EditableLine value={text} placeholder="Callout" multiline onSave={saveText} className="text-sm text-white/85" /></div>
         </div>
       )

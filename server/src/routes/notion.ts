@@ -68,6 +68,9 @@ function iconOf(obj: any): { type: 'emoji' | 'url'; value: string } | null {
   if (i.type === 'emoji') return { type: 'emoji', value: i.emoji }
   if (i.type === 'external') return { type: 'url', value: i.external.url }
   if (i.type === 'file')     return { type: 'url', value: i.file.url }
+  // Workspace custom emoji — an uploaded image referenced by shortcode. Render
+  // it as a URL icon like external/file icons (otherwise it falls back to 📄).
+  if (i.type === 'custom_emoji') return { type: 'url', value: i.custom_emoji.url }
   return null
 }
 

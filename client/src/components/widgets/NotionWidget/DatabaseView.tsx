@@ -3,7 +3,7 @@ import type { NotionClient } from '../../../hooks/useNotionClient'
 import type { DatabaseSchema } from './notion-types'
 import { PropertyValue } from './PropertyEditor'
 import { colorBg, colorFg } from './notion-colors'
-import { richTextWrite } from './notion-types'
+import { richTextWrite, rawIconUrl } from './notion-types'
 import { TouchInput } from '../../TouchInput'
 import FilterTree, { type FilterModel, EMPTY_FILTER, toNotionFilter } from './FilterTree'
 import MultiSort,  { type SortKey,     EMPTY_SORT,   toNotionSorts  } from './MultiSort'
@@ -147,7 +147,9 @@ function Row({
       onClick={onTap}
       className="w-full text-left bg-white/[0.04] active:bg-white/[0.09] rounded-xl p-3 border border-white/[0.06] active:scale-[0.99] transition-all">
       <div className="flex items-center gap-2 mb-1.5">
-        {row.icon?.type === 'emoji' && <span className="flex-shrink-0">{row.icon.emoji}</span>}
+        {row.icon?.type === 'emoji'
+          ? <span className="flex-shrink-0">{row.icon.emoji}</span>
+          : rawIconUrl(row.icon) && <img src={rawIconUrl(row.icon)!} alt="" className="w-4 h-4 rounded flex-shrink-0" />}
         <p className="text-sm font-medium text-white truncate flex-1">{title}</p>
       </div>
       {displayProps.length > 0 && (
@@ -414,6 +416,7 @@ function GalleryView({
             className="text-left bg-white/[0.04] rounded-xl overflow-hidden border border-white/[0.06] active:scale-[0.98]">
             <div className="h-20 bg-gradient-to-br from-white/[0.06] to-white/[0.02] flex items-center justify-center">
               {cover ? <img src={cover} alt="" className="w-full h-full object-cover" />
+                     : rawIconUrl(r.icon) ? <img src={rawIconUrl(r.icon)!} alt="" className="w-8 h-8 rounded" />
                      : <span className="text-2xl">{r.icon?.emoji ?? '📄'}</span>}
             </div>
             <p className="px-2.5 py-2 text-xs text-white truncate">{getRowTitle(r, schema)}</p>
@@ -556,7 +559,9 @@ export default function DatabaseView({ dbId, client }: { dbId: string; client: N
     <div className="flex flex-col gap-3 px-1">
       {/* Header */}
       <div className="flex items-center gap-2">
-        {schema.icon?.type === 'emoji' && <span className="text-2xl">{schema.icon.value}</span>}
+        {schema.icon?.type === 'emoji'
+          ? <span className="text-2xl">{schema.icon.value}</span>
+          : schema.icon?.type === 'url' && <img src={schema.icon.value} alt="" className="w-7 h-7 rounded" />}
         <h2 className="text-xl font-bold text-white truncate flex-1">{schema.title}</h2>
         <button type="button" onClick={() => setShowSavedViews(o => !o)}
           aria-label="Saved views"
