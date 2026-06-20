@@ -12,6 +12,7 @@ import DatabaseSettingsSheet from './DatabaseSettingsSheet'
 import RowContextSheet from './RowContextSheet'
 import InlineChipEditor from './InlineChipEditor'
 import TimelineView from './TimelineView'
+import MineFilterChip from './MineFilterChip'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -458,6 +459,14 @@ export default function DatabaseView({ dbId, client }: { dbId: string; client: N
   // for list view starts unset until the user picks something.
   const groupKey = useMemo(() => schema ? findKeyOfType(schema, ['status', 'select']) : null, [schema])
   const dateKey  = useMemo(() => schema ? findKeyOfType(schema, ['date']) : null, [schema])
+  // Assignee property for the "Only mine" shortcut — prefer an assignee/owner-
+  // named people property, else the first people property in the schema.
+  const peopleKey = useMemo(() => {
+    if (!schema) return null
+    const ppl = Object.keys(schema.properties).filter(k => schema.properties[k].type === 'people')
+    if (ppl.length === 0) return null
+    return ppl.find(k => /assign|owner|person/i.test(k)) ?? ppl[0]!
+  }, [schema])
 
   const displayProps = useMemo(() => {
     if (!schema) return []
@@ -631,6 +640,11 @@ export default function DatabaseView({ dbId, client }: { dbId: string; client: N
             </div>
           )}
         </div>
+      )}
+
+      {/* Assigned-to-me shortcut — only when the database has a people property */}
+      {peopleKey && (
+        <MineFilterChip peopleKey={peopleKey} filter={filter} onChange={setFilter} />
       )}
 
       {/* View tabs */}

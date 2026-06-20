@@ -3,6 +3,7 @@ import type { DatabaseSchema } from './notion-types'
 import { colorBg, colorFg } from './notion-colors'
 import { TouchInput } from '../../TouchInput'
 import MiniCalendar from './MiniCalendar'
+import { useNotionMe } from '../../../hooks/useNotionMe'
 
 // Flat conjunction/disjunction filter model. Each condition targets one
 // property; the top-level `combinator` AND/OR joins all of them. This covers
@@ -75,6 +76,10 @@ const OPS: Record<string, OperatorDef[]> = {
                  { id: 'is_empty', label: 'is empty', api: 'is_empty', valueless: true }],
   checkbox:     [{ id: 'equals_true',  label: 'is checked',   api: 'equals',  valueless: true },
                  { id: 'equals_false', label: 'is unchecked', api: 'equals',  valueless: true }],
+  people:       [{ id: 'contains', label: 'is',     api: 'contains' },
+                 { id: 'does_not_contain', label: 'is not', api: 'does_not_contain' },
+                 { id: 'is_empty',     label: 'is empty',     api: 'is_empty',     valueless: true },
+                 { id: 'is_not_empty', label: 'is not empty', api: 'is_not_empty', valueless: true }],
 }
 
 function opsFor(type: string): OperatorDef[] { return OPS[type] ?? OPS['rich_text']! }
@@ -259,6 +264,8 @@ function ConditionRow({
         ariaLabel="Filter value"
         className="bg-white/[0.06] text-white text-xs rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-white/20 w-28" />
     )
+  } else if (condition.type === 'people') {
+    valueUi = <PeopleValue value={condition.value} onChange={v => onChange({ value: v })} />
   } else {
     valueUi = (
       <TouchInput value={String(condition.value ?? '')} onChange={v => onChange({ value: v })} commitOn="change"
@@ -306,6 +313,42 @@ function ConditionRow({
       )}
 
       <div className="px-1">{valueUi}</div>
+    </div>
+  )
+}
+
+// People-property value picker. The selected value is a Notion user id. Offers a
+// "🙋 Me" shortcut once the user has starred (★) themselves — the integration is
+// a bot and can't know who "you" are, so this is a one-time, persisted choice.
+function PeopleValue({ value, onChange }: { value: string | null; onChange: (id: string) => void }) {
+  const { users, meId, setMe, loading } = useNotionMe()
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap gap-1 items-center">
+        {meId && (
+          <button type="button" onClick={() => onChange(meId)}
+            className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${value === meId ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/70 active:bg-white/10'}`}>
+            🙋 Me
+          </button>
+        )}
+        {loading && users.length === 0 && <span className="text-[11px] text-white/30 italic">loading users…</span>}
+        {users.map(u => (
+          <span key={u.id} className="flex items-center rounded-full overflow-hidden">
+            <button type="button" onClick={() => onChange(u.id)}
+              className={`flex items-center gap-1 pl-1.5 pr-2 py-0.5 text-[11px] ${value === u.id ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
+              {u.avatarUrl
+                ? <img src={u.avatarUrl} alt="" className="w-4 h-4 rounded-full" />
+                : <span className="w-4 h-4 rounded-full bg-white/15 flex items-center justify-center text-[8px]">{u.name?.[0] ?? '?'}</span>}
+              {u.name}
+            </button>
+            <button type="button" aria-label={meId === u.id ? `Unset ${u.name} as me` : `Set ${u.name} as me`}
+              onClick={() => setMe(meId === u.id ? null : u.id)}
+              className={`px-1.5 py-0.5 text-[11px] ${meId === u.id ? 'text-yellow-300 bg-white/[0.06]' : 'text-white/25 bg-white/[0.03] active:bg-white/10'}`}>★</button>
+          </span>
+        ))}
+      </div>
+      <span className="text-[10px] text-white/25">★ marks who you are — enables the “Only mine” shortcut.</span>
     </div>
   )
 }
