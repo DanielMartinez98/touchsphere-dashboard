@@ -10,10 +10,10 @@ services:
       dockerfile: Dockerfile
     container_name: touchsphere
     restart: on-failure
-    # Port 3001 is NOT exposed to the host anymore — Caddy reaches it over the
-    # internal Docker network.  If you need direct access for debugging, add:
-    #   ports:
-    #     - "3001:3001"
+    # Expose the Node app directly on the host so it's reachable at
+    # http://<server-ip>:3001 (and http://localhost:3001 on the Pi itself).
+    ports:
+      - "3001:3001"
     env_file:
       - .env             # put your real secrets here (never committed)
     environment:
