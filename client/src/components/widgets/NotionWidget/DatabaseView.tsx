@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { Layers, SlidersHorizontal, MoreHorizontal, RotateCw, ChevronLeft, ChevronRight, CheckSquare, X, FileText, List, Columns3, CalendarDays, ChartGantt, LayoutGrid } from 'lucide-react'
 import type { NotionClient } from '../../../hooks/useNotionClient'
 import type { DatabaseSchema } from './notion-types'
 import { PropertyValue } from './PropertyEditor'
@@ -106,7 +107,7 @@ function QuickAddRow({
         <div className="flex gap-1 overflow-x-auto scrollbar-hide">
           {statusOpts.map((o: any) => (
             <button key={o.id} type="button" onClick={() => setStatus(s => s === o.name ? null : o.name)}
-              className="flex-shrink-0 px-2.5 py-0.5 rounded-full text-[10px] border"
+              className="flex-shrink-0 px-2.5 py-0.5 rounded-full text-xs border"
               style={{
                 background:  status === o.name ? colorBg(o.color, 0.3) : 'rgba(255,255,255,0.04)',
                 color:       status === o.name ? colorFg(o.color)       : 'rgba(255,255,255,0.45)',
@@ -151,10 +152,10 @@ function Row({
         {row.icon?.type === 'emoji'
           ? <span className="flex-shrink-0">{row.icon.emoji}</span>
           : rawIconUrl(row.icon) && <img src={rawIconUrl(row.icon)!} alt="" className="w-4 h-4 rounded flex-shrink-0" />}
-        <p className="text-sm font-medium text-white truncate flex-1">{title}</p>
+        <p className="text-[15px] font-medium text-white truncate flex-1">{title}</p>
       </div>
       {displayProps.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 text-[11px]">
+        <div className="flex flex-wrap gap-1.5 text-[13px]">
           {displayProps.map(k => {
             const val = row.properties[k]
             if (!val) return null
@@ -193,7 +194,7 @@ function ListView({
   onEditChip:     (rowId: string, propKey: string) => void
   groupBy:        string | null
 }) {
-  if (rows.length === 0) return <p className="text-sm text-white/30 italic px-1 py-6 text-center">No rows.</p>
+  if (rows.length === 0) return <p className="text-base text-white/45 italic px-1 py-6 text-center">No rows.</p>
 
   const renderRow = (r: any) => {
     if (selectMode) {
@@ -207,7 +208,7 @@ function ListView({
             {isSel && '✓'}
           </span>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-white truncate">{getRowTitle(r, schema)}</p>
+            <p className="text-[15px] font-medium text-white truncate">{getRowTitle(r, schema)}</p>
           </div>
         </button>
       )
@@ -257,7 +258,7 @@ function ListView({
         <details key={name} open className="flex flex-col gap-1">
           <summary className="flex items-center gap-2 cursor-pointer list-none px-1 py-1">
             <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: colorFg(color) }}>{name}</span>
-            <span className="text-[10px] text-white/30 tabular-nums">{rs.length}</span>
+            <span className="text-xs text-white/30 tabular-nums">{rs.length}</span>
           </summary>
           <div className="flex flex-col gap-2 mt-1">{rs.map(renderRow)}</div>
         </details>
@@ -266,7 +267,7 @@ function ListView({
         <details className="flex flex-col gap-1">
           <summary className="flex items-center gap-2 cursor-pointer list-none px-1 py-1">
             <span className="text-xs font-semibold uppercase tracking-wider text-white/35">No {groupBy}</span>
-            <span className="text-[10px] text-white/25 tabular-nums">{ungrouped.length}</span>
+            <span className="text-xs text-white/25 tabular-nums">{ungrouped.length}</span>
           </summary>
           <div className="flex flex-col gap-2 mt-1">{ungrouped.map(renderRow)}</div>
         </details>
@@ -313,7 +314,7 @@ function BoardView({
           <div className="flex items-center justify-between px-1">
             <span className="text-xs font-semibold uppercase tracking-wider"
                   style={{ color: colorFg(col.color) }}>{col.label}</span>
-            <span className="text-[10px] text-white/30 tabular-nums">{col.rows.length}</span>
+            <span className="text-xs text-white/30 tabular-nums">{col.rows.length}</span>
           </div>
           <div className="flex flex-col gap-2 max-h-[60vh] overflow-y-auto pr-1">
             {col.rows.map(r => (
@@ -323,7 +324,7 @@ function BoardView({
                 <p className="text-sm text-white truncate">{getRowTitle(r, schema)}</p>
               </button>
             ))}
-            {col.rows.length === 0 && <p className="text-[11px] text-white/20 italic px-1">empty</p>}
+            {col.rows.length === 0 && <p className="text-[13px] text-white/20 italic px-1">empty</p>}
           </div>
         </div>
       ))}
@@ -364,12 +365,12 @@ function CalendarView({
   return (
     <div className="bg-white/[0.03] rounded-xl p-3">
       <div className="flex items-center justify-between mb-2">
-        <button type="button" onClick={prev} className="w-9 h-9 rounded-full bg-white/10 text-white text-xl flex items-center justify-center active:scale-90">‹</button>
+        <button type="button" onClick={prev} aria-label="Previous month" className="w-11 h-11 rounded-full bg-glass-2 text-white flex items-center justify-center active:scale-90"><ChevronLeft size={20} /></button>
         <span className="text-sm font-semibold text-white">{mName} {py}</span>
-        <button type="button" onClick={next} className="w-9 h-9 rounded-full bg-white/10 text-white text-xl flex items-center justify-center active:scale-90">›</button>
+        <button type="button" onClick={next} aria-label="Next month" className="w-11 h-11 rounded-full bg-glass-2 text-white flex items-center justify-center active:scale-90"><ChevronRight size={20} /></button>
       </div>
       <div className="grid grid-cols-7 mb-1">
-        {['S','M','T','W','T','F','S'].map((d, i) => <span key={i} className="text-[10px] text-white/25 text-center">{d}</span>)}
+        {['S','M','T','W','T','F','S'].map((d, i) => <span key={i} className="text-xs text-white/25 text-center">{d}</span>)}
       </div>
       <div className="grid grid-cols-7 gap-1">
         {Array.from({ length: first }).map((_, i) => <div key={i} />)}
@@ -380,15 +381,15 @@ function CalendarView({
           const isT  = day === today.getDate() && pm === today.getMonth() && py === today.getFullYear()
           return (
             <div key={day} className={`min-h-[60px] rounded-md p-1 ${isT ? 'bg-white/10' : 'bg-white/[0.03]'}`}>
-              <div className={`text-[10px] mb-0.5 ${isT ? 'text-white' : 'text-white/35'}`}>{day}</div>
+              <div className={`text-xs mb-0.5 ${isT ? 'text-white' : 'text-white/35'}`}>{day}</div>
               <div className="flex flex-col gap-0.5">
                 {rs.slice(0, 3).map(r => (
                   <button key={r.id} type="button" onClick={() => client.navigate({ kind: 'page', id: r.id })}
-                    className="text-left text-[10px] truncate text-white/85 bg-blue-500/30 rounded px-1 active:bg-blue-500/50">
+                    className="text-left text-xs truncate text-white/85 bg-blue-500/30 rounded px-1 active:bg-blue-500/50">
                     {getRowTitle(r, schema).slice(0, 16)}
                   </button>
                 ))}
-                {rs.length > 3 && <span className="text-[9px] text-white/40">+{rs.length - 3}</span>}
+                {rs.length > 3 && <span className="text-[11px] text-white/40">+{rs.length - 3}</span>}
               </div>
             </div>
           )
@@ -407,7 +408,7 @@ function GalleryView({
   schema: DatabaseSchema
   client: NotionClient
 }) {
-  if (rows.length === 0) return <p className="text-sm text-white/30 italic py-6 text-center">No rows.</p>
+  if (rows.length === 0) return <p className="text-base text-white/45 italic py-6 text-center">No rows.</p>
   return (
     <div className="grid grid-cols-2 gap-2">
       {rows.map(r => {
@@ -418,7 +419,8 @@ function GalleryView({
             <div className="h-20 bg-gradient-to-br from-white/[0.06] to-white/[0.02] flex items-center justify-center">
               {cover ? <img src={cover} alt="" className="w-full h-full object-cover" />
                      : rawIconUrl(r.icon) ? <img src={rawIconUrl(r.icon)!} alt="" className="w-8 h-8 rounded" />
-                     : <span className="text-2xl">{r.icon?.emoji ?? '📄'}</span>}
+                     : r.icon?.emoji ? <span className="text-2xl">{r.icon.emoji}</span>
+                     : <FileText size={24} className="text-white/40" />}
             </div>
             <p className="px-2.5 py-2 text-xs text-white truncate">{getRowTitle(r, schema)}</p>
           </button>
@@ -505,12 +507,12 @@ export default function DatabaseView({ dbId, client }: { dbId: string; client: N
     return <p className="text-sm text-red-400 px-4 py-6">{error ?? 'Database not found'}</p>
   }
 
-  const VIEW_TABS: { id: ViewMode; label: string; icon: string; enabled: boolean }[] = [
-    { id: 'list',     label: 'List',     icon: '☰',  enabled: true },
-    { id: 'board',    label: 'Board',    icon: '⊞',  enabled: !!groupKey },
-    { id: 'calendar', label: 'Calendar', icon: '📅', enabled: !!dateKey  },
-    { id: 'timeline', label: 'Timeline', icon: '📈', enabled: !!dateKey  },
-    { id: 'gallery',  label: 'Gallery',  icon: '▦',  enabled: true },
+  const VIEW_TABS: { id: ViewMode; label: string; icon: React.ReactElement; enabled: boolean }[] = [
+    { id: 'list',     label: 'List',     icon: <List size={15} />,         enabled: true },
+    { id: 'board',    label: 'Board',    icon: <Columns3 size={15} />,     enabled: !!groupKey },
+    { id: 'calendar', label: 'Calendar', icon: <CalendarDays size={15} />, enabled: !!dateKey  },
+    { id: 'timeline', label: 'Timeline', icon: <ChartGantt size={15} />,   enabled: !!dateKey  },
+    { id: 'gallery',  label: 'Gallery',  icon: <LayoutGrid size={15} />,   enabled: true },
   ]
 
   // Properties usable as a grouping key in list view — same set the board view
@@ -571,43 +573,43 @@ export default function DatabaseView({ dbId, client }: { dbId: string; client: N
         {schema.icon?.type === 'emoji'
           ? <span className="text-2xl">{schema.icon.value}</span>
           : schema.icon?.type === 'url' && <img src={schema.icon.value} alt="" className="w-7 h-7 rounded" />}
-        <h2 className="text-xl font-bold text-white truncate flex-1">{schema.title}</h2>
+        <h2 className="text-xl font-bold font-display text-white truncate flex-1">{schema.title}</h2>
         <button type="button" onClick={() => setShowSavedViews(o => !o)}
           aria-label="Saved views"
-          className={`w-9 h-9 rounded-full text-base flex items-center justify-center active:scale-90 ${showSavedViews ? 'bg-blue-500/30 text-blue-200' : 'bg-white/10 text-white/50'}`}>⊟</button>
+          className={`w-11 h-11 rounded-full flex items-center justify-center active:scale-90 ${showSavedViews ? 'bg-blue-500/30 text-blue-200' : 'bg-glass-2 text-white/60'}`}><Layers size={18} /></button>
         <button type="button" onClick={() => setShowFilterBar(o => !o)}
           aria-label="Filter and sort"
-          className={`w-9 h-9 rounded-full text-base flex items-center justify-center active:scale-90 ${showFilterBar || filter.conditions.length > 0 ? 'bg-green-500/30 text-green-300' : 'bg-white/10 text-white/50'}`}>⚙</button>
+          className={`w-11 h-11 rounded-full flex items-center justify-center active:scale-90 ${showFilterBar || filter.conditions.length > 0 ? 'bg-green-500/30 text-green-300' : 'bg-glass-2 text-white/60'}`}><SlidersHorizontal size={18} /></button>
         <button type="button" onClick={() => setShowSettings(true)}
           aria-label="Database settings"
-          className="w-9 h-9 rounded-full bg-white/10 text-white/50 text-base flex items-center justify-center active:scale-90">⋯</button>
+          className="w-11 h-11 rounded-full bg-glass-2 text-white/60 flex items-center justify-center active:scale-90"><MoreHorizontal size={18} /></button>
         <button type="button" onClick={() => setReload(r => r + 1)}
           aria-label="Refresh"
-          className="w-9 h-9 rounded-full bg-white/10 text-white/50 text-xl flex items-center justify-center active:scale-90">↺</button>
+          className="w-11 h-11 rounded-full bg-glass-2 text-white/60 flex items-center justify-center active:scale-90"><RotateCw size={18} /></button>
       </div>
-      {schema.description && <p className="text-xs text-white/45">{schema.description}</p>}
+      {schema.description && <p className="text-sm text-white/50">{schema.description}</p>}
 
       {/* Saved views strip */}
       {showSavedViews && (
         <div className="flex flex-col gap-2 bg-white/[0.025] rounded-xl p-3 border border-white/[0.05]">
           <div className="flex gap-1.5 flex-wrap">
             {savedViews.views.length === 0 && (
-              <p className="text-[11px] text-white/35 italic">No saved views yet.</p>
+              <p className="text-[13px] text-white/35 italic">No saved views yet.</p>
             )}
             {savedViews.views.map(v => (
               <div key={v.id} className="flex items-center gap-0.5">
                 <button type="button" onClick={() => applySavedView(v.id)}
-                  className="px-2.5 py-1 rounded-l-full text-[11px] bg-white/[0.06] text-white/75 active:bg-white/10">
+                  className="px-2.5 py-1 rounded-l-full text-[13px] bg-white/[0.06] text-white/75 active:bg-white/10">
                   {v.name}
                 </button>
                 <button type="button" onClick={() => savedViews.deleteView(v.id)}
                   aria-label={`Delete view ${v.name}`}
-                  className="w-6 h-6 rounded-r-full bg-red-500/20 text-red-300 text-[10px] active:bg-red-500/40">×</button>
+                  className="w-8 h-8 rounded-r-full bg-red-500/20 text-red-300 flex items-center justify-center active:bg-red-500/40"><X size={13} /></button>
               </div>
             ))}
           </div>
           <button type="button" onClick={saveCurrentView}
-            className="self-start px-3 py-1.5 rounded-full text-[11px] font-medium bg-green-500/20 text-green-200 active:bg-green-500/35">
+            className="self-start px-3 py-1.5 rounded-full text-[13px] font-medium bg-green-500/20 text-green-200 active:bg-green-500/35">
             + Save current view
           </button>
         </div>
@@ -617,22 +619,22 @@ export default function DatabaseView({ dbId, client }: { dbId: string; client: N
       {showFilterBar && (
         <div className="flex flex-col gap-3 bg-white/[0.025] rounded-xl p-3 border border-white/[0.05]">
           <div className="flex flex-col gap-1.5">
-            <span className="text-[10px] text-white/35 uppercase tracking-wider">Filter</span>
+            <span className="text-xs text-white/35 uppercase tracking-wider">Filter</span>
             <FilterTree schema={schema} model={filter} onChange={setFilter} />
           </div>
           <div className="flex flex-col gap-1.5">
-            <span className="text-[10px] text-white/35 uppercase tracking-wider">Sort</span>
+            <span className="text-xs text-white/35 uppercase tracking-wider">Sort</span>
             <MultiSort schema={schema} sorts={sorts} onChange={setSorts} />
           </div>
           {view === 'list' && groupCandidates.length > 0 && (
             <div className="flex flex-col gap-1.5">
-              <span className="text-[10px] text-white/35 uppercase tracking-wider">Group by</span>
+              <span className="text-xs text-white/35 uppercase tracking-wider">Group by</span>
               <div className="flex flex-wrap gap-1.5">
                 <button type="button" onClick={() => setGroupBy(null)}
-                  className={`px-2.5 py-1 rounded-full text-[11px] ${groupBy === null ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>None</button>
+                  className={`px-2.5 py-1 rounded-full text-[13px] ${groupBy === null ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>None</button>
                 {groupCandidates.map(([name, p]) => (
                   <button key={name} type="button" onClick={() => setGroupBy(name)}
-                    className={`px-2.5 py-1 rounded-full text-[11px] ${groupBy === name ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
+                    className={`px-2.5 py-1 rounded-full text-[13px] ${groupBy === name ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
                     {name} <span className="opacity-50">·{p.type}</span>
                   </button>
                 ))}
@@ -651,9 +653,9 @@ export default function DatabaseView({ dbId, client }: { dbId: string; client: N
       <div className="flex gap-1.5 bg-white/[0.04] rounded-lg p-1">
         {VIEW_TABS.filter(t => t.enabled).map(t => (
           <button key={t.id} type="button" onClick={() => setView(t.id)}
-            className={`flex-1 py-1.5 rounded-md text-xs font-medium transition-colors
-              ${view === t.id ? 'bg-white/15 text-white' : 'text-white/45 active:bg-white/[0.07]'}`}>
-            <span className="mr-1">{t.icon}</span>{t.label}
+            className={`flex-1 py-2.5 rounded-md text-sm font-medium transition-colors flex items-center justify-center gap-1.5
+              ${view === t.id ? 'bg-white/15 text-white' : 'text-white/50 active:bg-white/[0.07]'}`}>
+            {t.icon}{t.label}
           </button>
         ))}
       </div>
@@ -663,17 +665,17 @@ export default function DatabaseView({ dbId, client }: { dbId: string; client: N
         <div className="flex gap-2">
           <button type="button"
             onClick={() => { setSelectMode(s => !s); setSelected(new Set()) }}
-            className={`px-3 py-1.5 rounded-full text-xs font-medium ${selectMode ? 'bg-blue-500/30 text-blue-300' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
-            {selectMode ? `${selected.size} selected` : '☑ Select'}
+            className={`px-4 py-2 rounded-full text-sm font-medium flex items-center gap-1.5 ${selectMode ? 'bg-blue-500/30 text-blue-300' : 'bg-white/[0.06] text-white/60 active:bg-white/10'}`}>
+            {selectMode ? `${selected.size} selected` : <><CheckSquare size={15} /> Select</>}
           </button>
           {selectMode && selected.size > 0 && (
             <button type="button" onClick={bulkArchive}
-              className="px-3 py-1.5 rounded-full text-xs font-bold bg-red-500 text-white active:bg-red-600">
+              className="px-4 py-2 rounded-full text-sm font-bold bg-red-500 text-white active:bg-red-600">
               Archive {selected.size}
             </button>
           )}
           <button type="button" onClick={() => setShowAddProp(true)}
-            className="ml-auto px-3 py-1.5 rounded-full text-xs font-medium bg-white/[0.06] text-white/55 active:bg-white/10">
+            className="ml-auto px-4 py-2 rounded-full text-sm font-medium bg-white/[0.06] text-white/60 active:bg-white/10">
             + Property
           </button>
         </div>
@@ -695,7 +697,7 @@ export default function DatabaseView({ dbId, client }: { dbId: string; client: N
       {view === 'timeline' && dateKey  && <TimelineView rows={rows} schema={schema} client={client} dateKey={dateKey} />}
       {view === 'gallery'  && <GalleryView rows={rows} schema={schema} client={client} />}
 
-      <p className="text-[10px] text-white/25 text-center pt-2">{rows.length} row{rows.length === 1 ? '' : 's'}</p>
+      <p className="text-xs text-white/25 text-center pt-2">{rows.length} row{rows.length === 1 ? '' : 's'}</p>
 
       {showAddProp && (
         <AddPropertySheet
@@ -795,14 +797,14 @@ function AddPropertySheet({
 
           <div className="flex flex-col gap-4">
             <label className="flex flex-col gap-2">
-              <span className="text-[11px] text-white/35 uppercase tracking-wider">Name</span>
+              <span className="text-[13px] text-white/35 uppercase tracking-wider">Name</span>
               <TouchInput value={name} onChange={setName} commitOn="change"
                 placeholder="Property name…"
                 ariaLabel="Property name"
                 className="bg-white/10 text-white rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-green-400" />
             </label>
             <div className="flex flex-col gap-2">
-              <span className="text-[11px] text-white/35 uppercase tracking-wider">Type</span>
+              <span className="text-[13px] text-white/35 uppercase tracking-wider">Type</span>
               <div className="flex flex-wrap gap-1.5">
                 {TYPES.map(t => (
                   <button key={t.id} type="button" onClick={() => setType(t.id)}

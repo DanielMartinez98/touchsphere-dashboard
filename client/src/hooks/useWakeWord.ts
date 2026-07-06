@@ -86,19 +86,18 @@ const SAMPLE_RATE  = 16_000   // Vosk small-en wants 16 kHz mono PCM.
 const COOLDOWN_MS  = 3_000    // Ignore further wakes for this long after a hit.
 
 // Phrases that should trigger the assistant. We check substring match so that
-// "hey touch sphere", "ok touchsphere", or "touch sphere" all fire the same
-// callback. Vosk's small-en model has a fixed vocab and "touchsphere" isn't
-// in it — it tends to transcribe as two words, and "sphere" is often misheard
-// as "fear", "fair", "spear", or "spear". Include common variants.
+// "yo martin", "hey martin", or "martin" all fire the same callback. Vosk's
+// small-en model has a fixed vocab, so "martin" is often misheard as "martian",
+// "marten", or "martini". Include common variants.
 const WAKE_PATTERNS = [
-  'touch sphere',
-  'touchsphere',
-  'touch fear',
-  'touch fair',
-  'touch spear',
-  'touch share',
-  'touch sphere',
-  'touched sphere',
+  'yo martin',
+  'yo martini',
+  'yo martian',
+  'yo marten',
+  'hey martin',
+  'martin',
+  'martini',
+  'martian',
 ]
 
 export type WakeStatus =

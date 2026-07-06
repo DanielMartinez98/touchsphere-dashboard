@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { RotateCw, MoreHorizontal, ChevronRight, ChevronDown, ArrowUp, ArrowDown, X, Pencil, Palette, FolderOpen, Database, FileText } from 'lucide-react'
 import type { NotionClient } from '../../../hooks/useNotionClient'
 import { useNotionGroups } from '../../../hooks/useNotionGroups'
 import type { NotionGroup } from '../../../hooks/useNotionGroups'
@@ -86,14 +87,14 @@ function GroupSettings({
         </div>
       ) : (
         <button type="button" onClick={() => { setDraft(group.name); setRenaming(true) }}
-          className="text-left text-sm text-white/80 px-3 py-2 rounded-lg active:bg-white/[0.06]">✏️ Rename</button>
+          className="flex items-center gap-2 text-left text-sm text-white/80 px-3 py-2.5 rounded-lg active:bg-white/[0.06]"><Pencil size={15} /> Rename</button>
       )}
 
       <button type="button" onClick={() => setPickIcon(true)}
-        className="text-left text-sm text-white/80 px-3 py-2 rounded-lg active:bg-white/[0.06]">🎨 Change icon</button>
+        className="flex items-center gap-2 text-left text-sm text-white/80 px-3 py-2.5 rounded-lg active:bg-white/[0.06]"><Palette size={15} /> Change icon</button>
 
       <div className="flex flex-col gap-1.5 px-1">
-        <span className="text-[10px] text-white/35 uppercase tracking-wider">Color</span>
+        <span className="text-xs text-white/45 uppercase tracking-wider">Color</span>
         <div className="flex flex-wrap gap-1.5">
           {PALETTE.map(c => (
             <button key={c} type="button" onClick={() => void api.setColor(group.id, c)}
@@ -109,9 +110,9 @@ function GroupSettings({
 
       <div className="flex gap-2">
         <button type="button" disabled={isFirst} onClick={() => void api.moveGroup(group.id, group.order - 1)}
-          className="flex-1 h-10 rounded-lg bg-white/[0.06] text-white/70 text-sm active:bg-white/10 disabled:opacity-25">↑ Up</button>
+          className="flex-1 h-11 rounded-lg bg-white/[0.06] text-white/70 text-sm active:bg-white/10 disabled:opacity-25 flex items-center justify-center gap-1.5"><ArrowUp size={15} /> Up</button>
         <button type="button" disabled={isLast} onClick={() => void api.moveGroup(group.id, group.order + 1)}
-          className="flex-1 h-10 rounded-lg bg-white/[0.06] text-white/70 text-sm active:bg-white/10 disabled:opacity-25">↓ Down</button>
+          className="flex-1 h-11 rounded-lg bg-white/[0.06] text-white/70 text-sm active:bg-white/10 disabled:opacity-25 flex items-center justify-center gap-1.5"><ArrowDown size={15} /> Down</button>
       </div>
 
       {confirm ? (
@@ -155,16 +156,16 @@ function GroupSection({
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2 px-1">
         <button type="button" onClick={() => void api.toggleCollapse(group.id)}
-          className="flex-1 flex items-center gap-2 py-1.5 active:opacity-70">
+          className="flex-1 flex items-center gap-2 py-2 active:opacity-70">
           <span className="text-base flex-shrink-0">{group.icon ?? '📁'}</span>
-          <span className="text-sm font-semibold flex-1 text-left truncate" style={{ color: fg }}>{group.name}</span>
-          <span className="text-[10px] text-white/30 tabular-nums">{group.items.length}</span>
-          <span className="text-white/40 text-sm">{group.collapsed ? '▸' : '▾'}</span>
+          <span className="text-[15px] font-semibold flex-1 text-left truncate" style={{ color: fg }}>{group.name}</span>
+          <span className="text-xs text-white/40 tabular-nums">{group.items.length}</span>
+          <span className="text-white/40">{group.collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}</span>
         </button>
         <button type="button" onClick={() => setMenuOpen(o => !o)}
           aria-label="Group settings"
-          className={`w-8 h-8 rounded-full flex items-center justify-center active:scale-90
-            ${menuOpen ? 'bg-white/15 text-white' : 'bg-white/[0.06] text-white/50'}`}>⋯</button>
+          className={`w-10 h-10 rounded-full flex items-center justify-center active:scale-90
+            ${menuOpen ? 'bg-white/15 text-white' : 'bg-white/[0.06] text-white/50'}`}><MoreHorizontal size={18} /></button>
       </div>
 
       {menuOpen && (
@@ -174,19 +175,19 @@ function GroupSection({
       {!group.collapsed && (
         <div className="flex flex-col gap-1.5">
           {group.items.length === 0 ? (
-            <p className="text-[11px] text-white/30 italic px-3 py-2">No items. Long-press tiles in Browse to add.</p>
+            <p className="text-[13px] text-white/45 italic px-3 py-2">No items. Long-press tiles in Browse to add.</p>
           ) : group.items.map((it, idx) => (
             <div key={it.refId} className="flex items-stretch gap-1.5">
               <button type="button"
                 onClick={() => client.navigate(it.kind === 'database' ? { kind: 'database', id: it.refId } : { kind: 'page', id: it.refId })}
                 className="flex-1 text-left flex items-center gap-3 rounded-xl px-3 py-3 active:scale-[0.99] transition-all border"
                 style={{ background: bg, borderColor: colorBg(group.color ?? 'default', 0.35) }}>
-                <span className="text-lg flex-shrink-0">{it.icon ?? (it.kind === 'database' ? '🗄️' : '📄')}</span>
+                <span className="text-lg flex-shrink-0 text-white/60">{it.icon ?? (it.kind === 'database' ? <Database size={18} /> : <FileText size={18} />)}</span>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm text-white truncate">{it.title}</p>
-                  <p className="text-[10px] text-white/40 uppercase tracking-wider">{it.kind}</p>
+                  <p className="text-[15px] text-white truncate">{it.title}</p>
+                  <p className="text-xs text-white/40 uppercase tracking-wider">{it.kind}</p>
                 </div>
-                <span className="text-white/30 text-sm">›</span>
+                <ChevronRight size={16} className="text-white/30 flex-shrink-0" />
               </button>
               <div className="flex flex-col gap-1">
                 <button type="button" disabled={idx === 0}
@@ -196,7 +197,7 @@ function GroupSection({
                     void api.reorderItems(group.id, order)
                   }}
                   aria-label="Move up"
-                  className="w-7 flex-1 rounded-md bg-white/[0.04] text-white/55 text-xs active:bg-white/10 disabled:opacity-25">↑</button>
+                  className="w-9 flex-1 rounded-md bg-white/[0.04] text-white/55 flex items-center justify-center active:bg-white/10 disabled:opacity-25"><ArrowUp size={14} /></button>
                 <button type="button" disabled={idx === group.items.length - 1}
                   onClick={() => {
                     const order = group.items.map(x => x.refId)
@@ -204,11 +205,11 @@ function GroupSection({
                     void api.reorderItems(group.id, order)
                   }}
                   aria-label="Move down"
-                  className="w-7 flex-1 rounded-md bg-white/[0.04] text-white/55 text-xs active:bg-white/10 disabled:opacity-25">↓</button>
+                  className="w-9 flex-1 rounded-md bg-white/[0.04] text-white/55 flex items-center justify-center active:bg-white/10 disabled:opacity-25"><ArrowDown size={14} /></button>
               </div>
               <button type="button" onClick={() => void api.removeItem(group.id, it.refId)}
                 aria-label="Remove from group"
-                className="w-8 rounded-md bg-red-500/10 text-red-300/70 text-xs active:bg-red-500/25">×</button>
+                className="w-10 rounded-md bg-red-500/10 text-red-300/70 flex items-center justify-center active:bg-red-500/25"><X size={15} /></button>
             </div>
           ))}
         </div>
@@ -230,16 +231,16 @@ export default function GroupsView({ client }: { client: NotionClient }) {
   return (
     <div className="flex flex-col gap-4 px-1">
       <div className="flex items-center gap-2">
-        <h2 className="text-xl font-bold text-white flex-1">Groups</h2>
-        <button type="button" onClick={() => void api.refresh()}
-          className="w-9 h-9 rounded-full bg-white/10 text-white/50 text-xl flex items-center justify-center active:scale-90">↺</button>
+        <h2 className="text-xl font-bold font-display text-white flex-1">Groups</h2>
+        <button type="button" onClick={() => void api.refresh()} aria-label="Refresh"
+          className="w-11 h-11 rounded-full bg-glass-2 text-white/60 flex items-center justify-center active:scale-90"><RotateCw size={18} /></button>
       </div>
 
       {api.groups.length === 0 && !creating && (
         <div className="flex flex-col items-center gap-2 py-8 px-4 text-center">
-          <span className="text-4xl">📁</span>
-          <p className="text-sm text-white/65 font-medium">No groups yet</p>
-          <p className="text-xs text-white/40 leading-relaxed">
+          <FolderOpen size={40} className="text-white/40" />
+          <p className="text-base text-white/70 font-medium">No groups yet</p>
+          <p className="text-sm text-white/50 leading-relaxed">
             Create groups to organize your pages and databases the way you think about them.
             Long-press any tile in Browse to add it to a group.
           </p>

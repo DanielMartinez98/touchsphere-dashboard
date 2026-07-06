@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 import type { NotionClient } from '../../../hooks/useNotionClient'
 import type { DatabaseSchema } from './notion-types'
 import { colorBg, colorFg } from './notion-colors'
@@ -59,17 +60,17 @@ export default function TimelineView({
   return (
     <div className="flex flex-col gap-2 bg-white/[0.02] rounded-xl p-2 border border-white/[0.05]">
       <div className="flex items-center gap-2">
-        <button type="button" onClick={() => setAnchorMs(m => m - 7 * DAY_MS)}
-          className="w-9 h-9 rounded-full bg-white/10 text-white text-xl flex items-center justify-center active:scale-90">‹</button>
-        <span className="text-xs text-white/55 flex-1 text-center tabular-nums">
+        <button type="button" onClick={() => setAnchorMs(m => m - 7 * DAY_MS)} aria-label="Back one week"
+          className="w-11 h-11 rounded-full bg-glass-2 text-white flex items-center justify-center active:scale-90"><ChevronLeft size={20} /></button>
+        <span className="text-sm text-white/60 flex-1 text-center tabular-nums">
           {new Date(anchorMs).toLocaleDateString([], { month: 'short', day: 'numeric' })}
           {' → '}
           {new Date(anchorMs + (days - 1) * DAY_MS).toLocaleDateString([], { month: 'short', day: 'numeric' })}
         </span>
         <button type="button" onClick={() => setAnchorMs(today.getTime() - 7 * DAY_MS)}
-          className="px-2 py-1 rounded-full text-[10px] bg-white/[0.06] text-white/55 active:bg-white/10">Today</button>
-        <button type="button" onClick={() => setAnchorMs(m => m + 7 * DAY_MS)}
-          className="w-9 h-9 rounded-full bg-white/10 text-white text-xl flex items-center justify-center active:scale-90">›</button>
+          className="px-3 py-2 rounded-full text-xs bg-white/[0.06] text-white/60 active:bg-white/10">Today</button>
+        <button type="button" onClick={() => setAnchorMs(m => m + 7 * DAY_MS)} aria-label="Forward one week"
+          className="w-11 h-11 rounded-full bg-glass-2 text-white flex items-center justify-center active:scale-90"><ChevronRight size={20} /></button>
       </div>
 
       <div className="overflow-x-auto">
@@ -100,7 +101,7 @@ export default function TimelineView({
                 <div key={row.id} className="relative h-8" style={{ width: days * DAY_PX }}>
                   <button type="button"
                     onClick={() => client.navigate({ kind: 'page', id: row.id })}
-                    className="absolute h-full rounded-md px-2 flex items-center text-[11px] truncate active:scale-[0.98] border"
+                    className="absolute h-full rounded-md px-2 flex items-center text-[13px] truncate active:scale-[0.98] border"
                     style={{
                       left:        left * DAY_PX,
                       width:       width * DAY_PX - 4,

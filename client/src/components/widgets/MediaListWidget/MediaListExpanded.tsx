@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Shuffle, Dices, Star, Plus, X, Circle, Play, Check, ChevronDown, ChevronRight, Trash2, Undo2 } from 'lucide-react'
 import type { MediaItem, MediaStatus, MediaType } from '../../../types'
 import { statusesFor } from '../../../types'
 import { MediaTypeIcon } from './MediaTypeIcon'
@@ -11,16 +12,16 @@ const STATUS_LABEL: Record<MediaStatus, string> = {
   dropped:     'Dropped',
 }
 
-const STATUS_GLYPH: Record<MediaStatus, string> = {
-  not_started: '○',
-  in_progress: '▶',
-  done:        '✓',
-  dropped:     '✕',
+const STATUS_ICON: Record<MediaStatus, React.ReactElement> = {
+  not_started: <Circle size={15} />,
+  in_progress: <Play size={15} />,
+  done:        <Check size={16} />,
+  dropped:     <X size={15} />,
 }
 
-// Tailwind class fragments per status — used on the cycle button so the
-// current state is visible at a glance.
-const STATUS_BTN_CLASS: Record<MediaStatus, string> = {
+// Tailwind class fragments per status — used on the row pill so the current
+// state is visible at a glance.
+const STATUS_PILL_CLASS: Record<MediaStatus, string> = {
   not_started: 'bg-white/10 text-white/60',
   in_progress: 'bg-cyan-400/25 text-cyan-200',
   done:        'bg-emerald-500/25 text-emerald-300',
@@ -34,6 +35,99 @@ const TYPE_LABEL: Record<MediaType, string> = {
   game: 'Game',
   show: 'Show',
   movie: 'Movie',
+}
+
+// ── Generated cover art ──────────────────────────────────────────────────────
+// Every item gets a stable gradient tile derived from its title, so the list
+// has visual identity without any artwork lookup (kiosk stays offline-capable).
+
+function hueFromTitle(title: string): number {
+  let h = 0
+  for (let i = 0; i < title.length; i++) h = (h * 31 + title.charCodeAt(i)) >>> 0
+  return h % 360
+}
+
+function MediaCover({ item, className = 'w-12 h-12 rounded-xl' }: { item: MediaItem; className?: string }) {
+  const hue = hueFromTitle(item.title)
+  return (
+    <div
+      className={`${className} flex items-center justify-center shrink-0 text-white/90`}
+      style={{ background: `linear-gradient(135deg, hsl(${hue} 60% 40%), hsl(${(hue + 45) % 360} 70% 24%))` }}
+    >
+      <MediaTypeIcon type={item.type} className="text-xl" />
+    </div>
+  )
+}
+
+// ── Bottom sheet: status / star / delete for one item ────────────────────────
+
+function ItemSheet({
+  item, onClose, onSetStatus, onToggleStar, onDelete,
+}: {
+  item:         MediaItem
+  onClose:      () => void
+  onSetStatus:  (status: MediaStatus) => void
+  onToggleStar: () => void
+  onDelete:     () => void
+}) {
+  return (
+    <div className="absolute inset-0 z-40 flex flex-col justify-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60" />
+      <div className="relative bg-[#0e1117] border-t border-hairline rounded-t-3xl notion-sheet"
+           onClick={e => e.stopPropagation()}>
+        <div className="px-5 pt-3 pb-8">
+          <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-4" />
+
+          <div className="flex items-center gap-3 mb-5">
+            <MediaCover item={item} />
+            <div className="flex-1 min-w-0">
+              <p className="text-base font-semibold text-white truncate">{item.title}</p>
+              <p className="text-xs uppercase tracking-wider text-white/50 mt-0.5">{TYPE_LABEL[item.type]}</p>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2 mb-5">
+            {statusesFor(item.type).map(s => (
+              <button key={s} type="button"
+                onClick={() => { onSetStatus(s); onClose() }}
+                className={`flex items-center gap-3 h-13 px-4 py-3.5 rounded-xl text-sm font-semibold transition-colors
+                  ${item.status === s
+                    ? STATUS_PILL_CLASS[s] + ' ring-1 ring-white/20'
+                    : 'bg-white/[0.05] text-white/60 active:bg-white/10'}`}>
+                {STATUS_ICON[s]}
+                {STATUS_LABEL[s]}
+                {item.status === s && <span className="ml-auto text-xs font-medium opacity-70">Current</span>}
+              </button>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" onClick={() => { onToggleStar(); onClose() }}
+              className={`h-13 py-3.5 rounded-xl text-sm font-semibold flex items-center justify-center gap-2
+                ${item.starred ? 'bg-amber-400/25 text-amber-300' : 'bg-white/[0.06] text-white/70 active:bg-white/10'}`}>
+              <Star size={16} fill={item.starred ? 'currentColor' : 'none'} />
+              {item.starred ? 'Unstar' : 'Star'}
+            </button>
+            <button type="button" onClick={onDelete}
+              className="h-13 py-3.5 rounded-xl text-sm font-semibold bg-red-500/15 text-red-400 active:bg-red-500/25 flex items-center justify-center gap-2">
+              <Trash2 size={16} /> Remove
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Section header ───────────────────────────────────────────────────────────
+
+function SectionHeader({ label, count }: { label: string; count: number }) {
+  return (
+    <div className="flex items-center gap-2 px-1 pt-2">
+      <span className="text-xs font-medium uppercase tracking-[0.14em] text-white/50">{label}</span>
+      <span className="text-xs text-white/35 tabular-nums">{count}</span>
+    </div>
+  )
 }
 
 interface Props {
@@ -59,6 +153,45 @@ export default function MediaListExpanded({
   const [filter, setFilter] = useState<Filter>('all')
   const [shuffleSeed, setShuffleSeed] = useState(0)
   const [recommendedId, setRecommendedId] = useState<string | null>(null)
+  const [sheetItemId, setSheetItemId] = useState<string | null>(null)
+  const [showFinished, setShowFinished] = useState(false)
+
+  // Pending delete — the item is hidden immediately but only removed on the
+  // server after a 5s undo window. Deleting a second item commits the first.
+  const [pendingDelete, setPendingDelete] = useState<MediaItem | null>(null)
+  const pendingTimer = useRef<number | null>(null)
+
+  function commitPendingDelete() {
+    if (pendingTimer.current !== null) {
+      window.clearTimeout(pendingTimer.current)
+      pendingTimer.current = null
+    }
+    setPendingDelete(prev => {
+      if (prev) removeItem(prev.id)
+      return null
+    })
+  }
+
+  function requestDelete(item: MediaItem) {
+    commitPendingDelete()
+    setPendingDelete(item)
+    setSheetItemId(null)
+    pendingTimer.current = window.setTimeout(() => {
+      pendingTimer.current = null
+      setPendingDelete(prev => {
+        if (prev) removeItem(prev.id)
+        return null
+      })
+    }, 5000)
+  }
+
+  function undoDelete() {
+    if (pendingTimer.current !== null) {
+      window.clearTimeout(pendingTimer.current)
+      pendingTimer.current = null
+    }
+    setPendingDelete(null)
+  }
 
   // Detect a fine pointer (mouse) — on desktop the user wants to type with
   // their physical keyboard rather than tap the on-screen one.
@@ -98,19 +231,21 @@ export default function MediaListExpanded({
     return arr
   }, [items, filter, shuffleSeed])
 
-  // Display order: starred first, then the (possibly shuffled) rest. Done and
-  // dropped sink to the bottom so the active queue stays clean.
-  const ordered = useMemo(() => {
-    const isInactive = (i: MediaItem) => i.status === 'done' || i.status === 'dropped'
-    const active = filtered.filter(i => !isInactive(i))
-    const inactive = filtered.filter(isInactive)
-    const starred = active.filter(i => i.starred)
-    const rest = active.filter(i => !i.starred)
-    return [...starred, ...rest, ...inactive]
-  }, [filtered])
+  // Sections: Continue (in progress) → Up next (not started, starred first)
+  // → Finished (done/dropped, collapsed behind a header). The item awaiting
+  // undo is hidden everywhere.
+  const sections = useMemo(() => {
+    const visible = pendingDelete ? filtered.filter(i => i.id !== pendingDelete.id) : filtered
+    const starFirst = (arr: MediaItem[]) => [...arr.filter(i => i.starred), ...arr.filter(i => !i.starred)]
+    return {
+      cont:     starFirst(visible.filter(i => i.status === 'in_progress')),
+      upNext:   starFirst(visible.filter(i => i.status === 'not_started')),
+      finished: visible.filter(i => i.status === 'done' || i.status === 'dropped'),
+    }
+  }, [filtered, pendingDelete])
 
   const recommend = () => {
-    const pool = filtered.filter(i => i.status !== 'done' && i.status !== 'dropped')
+    const pool = [...sections.cont, ...sections.upNext]
     if (pool.length === 0) {
       setRecommendedId(null)
       return
@@ -123,6 +258,8 @@ export default function MediaListExpanded({
     ? items.find(i => i.id === recommendedId) ?? null
     : null
 
+  const sheetItem = sheetItemId ? items.find(i => i.id === sheetItemId) ?? null : null
+
   const filterTabs: { key: Filter; label: string }[] = [
     { key: 'all',   label: 'All' },
     { key: 'game',  label: 'Games' },
@@ -130,11 +267,62 @@ export default function MediaListExpanded({
     { key: 'movie', label: 'Movies' },
   ]
 
+  const renderRow = (item: MediaItem) => {
+    const isRecommended = item.id === recommendedId
+    const isInactive = item.status === 'done' || item.status === 'dropped'
+    return (
+      <div
+        key={item.id}
+        onClick={() => setSheetItemId(item.id)}
+        className={`flex items-center gap-3 rounded-xl p-2.5 border transition-colors cursor-pointer active:scale-[0.99] ${
+          isRecommended
+            ? 'bg-[var(--accent,#06b6d4)]/10 border-[var(--accent,#06b6d4)]/40'
+            : item.starred && !isInactive
+              ? 'bg-amber-400/10 border-amber-400/30'
+              : 'bg-glass border-transparent'
+        } ${isInactive ? 'opacity-50' : ''}`}
+      >
+        <MediaCover item={item} />
+        <div className="flex-1 min-w-0">
+          <div
+            className={`text-base font-semibold leading-tight truncate ${
+              item.status === 'done'    ? 'line-through text-white/40' :
+              item.status === 'dropped' ? 'line-through text-white/30' :
+                                          'text-white'
+            }`}
+          >
+            {item.title}
+          </div>
+          <div className="text-xs uppercase tracking-wider text-white/50 mt-1">
+            {TYPE_LABEL[item.type]}
+          </div>
+        </div>
+        <button
+          onClick={e => { e.stopPropagation(); toggleStar(item.id) }}
+          aria-label={item.starred ? 'Unstar' : 'Star'}
+          className={`w-11 h-11 rounded-full flex items-center justify-center active:scale-90 shrink-0 ${
+            item.starred
+              ? 'bg-amber-400/30 text-amber-300'
+              : 'bg-glass text-white/40'
+          }`}
+        >
+          <Star size={19} fill={item.starred ? 'currentColor' : 'none'} />
+        </button>
+        <span className={`h-9 px-3 rounded-full flex items-center gap-1.5 text-xs font-semibold shrink-0 ${STATUS_PILL_CLASS[item.status]}`}>
+          {STATUS_ICON[item.status]}
+          <span className="hidden min-[400px]:inline">{STATUS_LABEL[item.status]}</span>
+        </span>
+      </div>
+    )
+  }
+
+  const nothingVisible = sections.cont.length === 0 && sections.upNext.length === 0 && sections.finished.length === 0
+
   return (
-    <div className="flex flex-col h-full p-4 pt-16 gap-3">
+    <div className="relative flex flex-col h-full p-4 pt-16 gap-3">
       <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold text-white/80">Watch / Play List</h2>
-        <span className="text-xs text-white/40">{items.length} total</span>
+        <h2 className="text-2xl font-bold font-display text-white/85">Watch / Play List</h2>
+        <span className="text-sm text-ink-dim tabular-nums">{items.length} total</span>
       </div>
 
       {/* Add form */}
@@ -149,9 +337,9 @@ export default function MediaListExpanded({
           onClick={hasMouse ? undefined : () => setShowKeyboard(true)}
           onPointerDown={hasMouse ? undefined : () => setShowKeyboard(true)}
           placeholder="Add title..."
-          className={`flex-1 bg-white/10 text-white placeholder-white/30 rounded-xl px-4 py-3 text-sm outline-none ${hasMouse ? '' : 'cursor-pointer'}`}
+          className={`flex-1 bg-glass-2 text-white placeholder-white/35 rounded-xl px-4 py-3 text-base outline-none ${hasMouse ? '' : 'cursor-pointer'}`}
         />
-        <div className="flex rounded-xl overflow-hidden border border-white/20">
+        <div className="flex rounded-xl overflow-hidden border border-hairline">
           {TYPES.map(t => (
             <button
               key={t}
@@ -169,23 +357,24 @@ export default function MediaListExpanded({
         </div>
         <button
           onPointerDown={handleAdd}
-          className="px-4 py-2 bg-[var(--accent,#06b6d4)] text-black font-bold rounded-xl active:scale-95 touch-manipulation"
+          aria-label="Add item"
+          className="px-4 bg-[var(--accent,#06b6d4)] text-black font-bold rounded-xl active:scale-95 touch-manipulation flex items-center justify-center"
         >
-          +
+          <Plus size={24} strokeWidth={2.5} />
         </button>
       </div>
 
       {/* Filter + actions */}
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex rounded-xl overflow-hidden border border-white/15">
+        <div className="flex rounded-xl overflow-hidden border border-hairline">
           {filterTabs.map(t => (
             <button
               key={t.key}
               onClick={() => setFilter(t.key)}
-              className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
+              className={`px-4 py-2.5 text-sm font-semibold transition-colors ${
                 filter === t.key
                   ? 'bg-white/25 text-white'
-                  : 'bg-white/5 text-white/60 hover:bg-white/15'
+                  : 'bg-glass text-white/55 hover:bg-white/15'
               }`}
             >
               {t.label}
@@ -194,121 +383,114 @@ export default function MediaListExpanded({
         </div>
         <button
           onClick={() => setShuffleSeed(Date.now() & 0xffffffff)}
-          className="px-3 py-1.5 rounded-xl bg-white/10 text-white text-xs font-semibold hover:bg-white/20 active:scale-95"
+          className="px-4 py-2.5 rounded-xl bg-glass-2 text-white text-sm font-semibold hover:bg-white/20 active:scale-95 flex items-center gap-2"
         >
-          🔀 Shuffle
+          <Shuffle size={16} /> Shuffle
         </button>
         {shuffleSeed !== 0 && (
           <button
             onClick={() => setShuffleSeed(0)}
-            className="px-2 py-1.5 rounded-xl bg-white/5 text-white/60 text-xs hover:bg-white/15"
+            className="px-3 py-2.5 rounded-xl bg-glass text-white/60 text-sm hover:bg-white/15"
           >
             Reset
           </button>
         )}
         <button
           onClick={recommend}
-          className="px-3 py-1.5 rounded-xl bg-[var(--accent,#06b6d4)]/20 text-[var(--accent,#06b6d4)] text-xs font-semibold border border-[var(--accent,#06b6d4)]/30 hover:bg-[var(--accent,#06b6d4)]/30 active:scale-95"
+          className="px-4 py-2.5 rounded-xl bg-[var(--accent,#06b6d4)]/20 text-[var(--accent,#06b6d4)] text-sm font-semibold border border-[var(--accent,#06b6d4)]/30 hover:bg-[var(--accent,#06b6d4)]/30 active:scale-95 flex items-center gap-2"
         >
-          🎲 Recommend
+          <Dices size={16} /> Recommend
         </button>
       </div>
 
       {/* Recommendation banner */}
       {recommended && (
         <div className="flex items-center gap-3 rounded-xl border border-[var(--accent,#06b6d4)]/40 bg-[var(--accent,#06b6d4)]/10 p-3">
-          <MediaTypeIcon type={recommended.type} className="text-2xl text-[var(--accent,#06b6d4)]" />
+          <MediaCover item={recommended} />
           <div className="flex-1 min-w-0">
-            <div className="text-[10px] uppercase tracking-wider text-[var(--accent,#06b6d4)] font-bold">
+            <div className="text-xs uppercase tracking-wider text-[var(--accent,#06b6d4)] font-bold">
               Tonight's pick · {TYPE_LABEL[recommended.type]}
             </div>
-            <div className="text-sm font-semibold text-white truncate">{recommended.title}</div>
+            <div className="text-base font-semibold text-white truncate">{recommended.title}</div>
           </div>
           <button
             onClick={recommend}
-            className="px-2 py-1 rounded-lg bg-white/10 text-white/80 text-xs hover:bg-white/20"
+            className="px-3 py-2 rounded-lg bg-glass-2 text-white/80 text-sm hover:bg-white/20"
           >
             Re-roll
           </button>
           <button
             onClick={() => setRecommendedId(null)}
-            className="w-7 h-7 rounded-full bg-white/10 text-white/60 flex items-center justify-center text-xs hover:bg-white/20"
+            className="w-10 h-10 rounded-full bg-glass-2 text-white/60 flex items-center justify-center hover:bg-white/20"
             aria-label="Dismiss recommendation"
           >
-            ✕
+            <X size={18} />
           </button>
         </div>
       )}
 
-      {/* List */}
-      <div className={`flex-1 overflow-auto flex flex-col gap-2 ${showKeyboard ? 'pb-64' : ''}`}>
-        {ordered.length === 0 && (
-          <p className="text-white/30 text-sm text-center mt-8">
+      {/* Sections */}
+      <div className={`flex-1 overflow-auto flex flex-col gap-2 ${showKeyboard ? 'pb-64' : 'pb-16'}`}>
+        {nothingVisible && (
+          <p className="text-white/45 text-base text-center mt-8">
             {items.length === 0 ? 'Nothing added yet' : 'No items match this filter'}
           </p>
         )}
-        {ordered.map(item => {
-          const isRecommended = item.id === recommendedId
-          const cycle = statusesFor(item.type)
-          const nextStatus = cycle[(cycle.indexOf(item.status) + 1) % cycle.length]!
-          const isInactive = item.status === 'done' || item.status === 'dropped'
-          return (
-            <div
-              key={item.id}
-              className={`flex items-center gap-3 rounded-xl p-3 border transition-colors ${
-                isRecommended
-                  ? 'bg-[var(--accent,#06b6d4)]/10 border-[var(--accent,#06b6d4)]/40'
-                  : item.starred
-                    ? 'bg-amber-400/10 border-amber-400/30'
-                    : 'bg-white/5 border-transparent'
-              } ${isInactive ? 'opacity-50' : ''}`}
+
+        {sections.cont.length > 0 && (
+          <>
+            <SectionHeader label="Continue" count={sections.cont.length} />
+            {sections.cont.map(renderRow)}
+          </>
+        )}
+
+        {sections.upNext.length > 0 && (
+          <>
+            <SectionHeader label="Up next" count={sections.upNext.length} />
+            {sections.upNext.map(renderRow)}
+          </>
+        )}
+
+        {sections.finished.length > 0 && (
+          <>
+            <button
+              type="button"
+              onClick={() => setShowFinished(v => !v)}
+              className="flex items-center gap-2 px-1 pt-2 pb-1 active:opacity-70"
             >
-              <MediaTypeIcon type={item.type} className="text-2xl text-white/80 shrink-0" />
-              <div className="flex-1 min-w-0">
-                <div
-                  className={`text-base font-semibold leading-tight ${
-                    item.status === 'done'    ? 'line-through text-white/40' :
-                    item.status === 'dropped' ? 'line-through text-white/30' :
-                                                'text-white'
-                  }`}
-                >
-                  {item.title}
-                </div>
-                <div className="text-[10px] uppercase tracking-wider text-white/40 mt-0.5 flex items-center gap-1.5">
-                  <span>{TYPE_LABEL[item.type]}</span>
-                  <span className="text-white/20">·</span>
-                  <span>{STATUS_LABEL[item.status]}</span>
-                </div>
-              </div>
-              <button
-                onClick={() => toggleStar(item.id)}
-                aria-label={item.starred ? 'Unstar' : 'Star'}
-                className={`w-9 h-9 rounded-full flex items-center justify-center text-lg active:scale-90 ${
-                  item.starred
-                    ? 'bg-amber-400/30 text-amber-300'
-                    : 'bg-white/5 text-white/40 hover:bg-white/15'
-                }`}
-              >
-                {item.starred ? '★' : '☆'}
-              </button>
-              <button
-                onClick={() => setStatus(item.id, nextStatus)}
-                aria-label={`Status: ${STATUS_LABEL[item.status]}. Tap for ${STATUS_LABEL[nextStatus]}.`}
-                title={`${STATUS_LABEL[item.status]} → ${STATUS_LABEL[nextStatus]}`}
-                className={`min-w-[2.25rem] h-9 px-2 rounded-full flex items-center justify-center text-sm font-bold active:scale-90 ${STATUS_BTN_CLASS[item.status]}`}
-              >
-                {STATUS_GLYPH[item.status]}
-              </button>
-              <button
-                onClick={() => removeItem(item.id)}
-                className="w-9 h-9 rounded-full bg-red-500/20 text-red-400 flex items-center justify-center text-sm active:scale-90"
-              >
-                ✕
-              </button>
-            </div>
-          )
-        })}
+              {showFinished ? <ChevronDown size={15} className="text-white/40" /> : <ChevronRight size={15} className="text-white/40" />}
+              <span className="text-xs font-medium uppercase tracking-[0.14em] text-white/50">Finished</span>
+              <span className="text-xs text-white/35 tabular-nums">{sections.finished.length}</span>
+            </button>
+            {showFinished && sections.finished.map(renderRow)}
+          </>
+        )}
       </div>
+
+      {/* Undo toast — visible for 5s after a delete */}
+      {pendingDelete && (
+        <div className="absolute bottom-5 left-4 right-4 z-30 flex items-center gap-3 bg-[#16181d] border border-hairline rounded-2xl px-4 py-3 shadow-2xl">
+          <Trash2 size={17} className="text-red-400/80 shrink-0" />
+          <span className="flex-1 text-sm text-white/80 truncate">Removed “{pendingDelete.title}”</span>
+          <button
+            type="button"
+            onClick={undoDelete}
+            className="flex items-center gap-1.5 text-[var(--accent,#06b6d4)] font-semibold text-sm px-4 py-2.5 rounded-full bg-[var(--accent,#06b6d4)]/10 active:bg-[var(--accent,#06b6d4)]/25"
+          >
+            <Undo2 size={15} /> Undo
+          </button>
+        </div>
+      )}
+
+      {sheetItem && (
+        <ItemSheet
+          item={sheetItem}
+          onClose={() => setSheetItemId(null)}
+          onSetStatus={s => setStatus(sheetItem.id, s)}
+          onToggleStar={() => toggleStar(sheetItem.id)}
+          onDelete={() => requestDelete(sheetItem)}
+        />
+      )}
 
       {showKeyboard && !hasMouse && (
         <TouchKeyboard

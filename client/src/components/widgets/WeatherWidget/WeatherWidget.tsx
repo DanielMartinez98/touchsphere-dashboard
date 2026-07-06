@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Thermometer } from 'lucide-react'
 import { useWeather } from '../../../hooks/useWeather'
 import { useCloudLayers, nearestCloudSlot } from '../../../hooks/useCloudLayers'
 
@@ -19,7 +20,7 @@ export function WeatherCollapsed() {
     <>
       <div className="flex items-center gap-2">
         {iconError ? (
-          <span className="w-10 h-10 flex items-center justify-center text-2xl">🌡️</span>
+          <span className="w-10 h-10 flex items-center justify-center text-sky-300"><Thermometer size={28} /></span>
         ) : (
           <img
             src={ICON_URL(weather.icon)}
@@ -28,10 +29,10 @@ export function WeatherCollapsed() {
             onError={() => setIconError(true)}
           />
         )}
-        <span className="text-3xl font-bold text-white">{Math.round(weather.temp)}°</span>
+        <span className="text-3xl font-bold font-display tabular-nums text-white">{Math.round(weather.temp)}°</span>
       </div>
-      <span className="text-xs text-white/50 capitalize">{weather.description}</span>
-      <span className="text-xs text-white/40">{weather.city}, {weather.country}</span>
+      <span className="text-sm text-ink-mid capitalize leading-tight">{weather.description}</span>
+      <span className="text-[13px] text-ink-dim">{weather.city}, {weather.country}</span>
 
       {/* Cloud altitude mini-bars — only shown when Open-Meteo data is available */}
       {cSlot && (
@@ -42,7 +43,7 @@ export function WeatherCollapsed() {
             { label: 'L', value: cSlot.cloud_low,  color: '#cbd5e1' },
           ].map(({ label, value, color }) => (
             <div key={label} className="flex items-center gap-1">
-              <span className="text-[8px] text-white/30 w-3 shrink-0">{label}</span>
+              <span className="text-[10px] text-white/40 w-3 shrink-0">{label}</span>
               <div className="flex-1 h-1 rounded-full bg-white/10 overflow-hidden">
                 <div
                   className="h-full rounded-full transition-all duration-500"

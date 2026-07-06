@@ -35,8 +35,8 @@ const SYNTH_TIMEOUT_MS = 15_000     // kill runaway processes / slow API calls
 
 // ── Config ───────────────────────────────────────────────────────────────────
 const EL_KEY      = process.env['ELEVENLABS_API_KEY'] ?? ''
-// "Rachel" is the default ElevenLabs demo voice. Override with ELEVENLABS_VOICE_ID.
-const EL_VOICE_ID = process.env['ELEVENLABS_VOICE_ID'] ?? '21m00Tcm4TlvDq8ikWAM'
+// Override with ELEVENLABS_VOICE_ID.
+const EL_VOICE_ID = process.env['ELEVENLABS_VOICE_ID'] ?? 'yT5srFl9OYVb0uSht5Pd'
 // "eleven_turbo_v2_5" is fast + cheap. Use "eleven_multilingual_v2" for max quality.
 const EL_MODEL_ID = process.env['ELEVENLABS_MODEL_ID'] ?? 'eleven_turbo_v2_5'
 

@@ -1,4 +1,5 @@
 import { useRef } from 'react'
+import { Database, FileText, Folder, ChevronRight } from 'lucide-react'
 
 // Shared row tile used by Browse / Groups / Search / Trash. A long-press
 // (~500 ms) fires `onLongPress` so the caller can open Add-to-Group without
@@ -70,22 +71,22 @@ export default function Tile({
       onMouseMove={e => pressMove(e.clientX, e.clientY)}
       onMouseUp={pressEnd}
       onMouseLeave={pressCancel}
-      className="w-full text-left flex items-center gap-3 bg-white/[0.04] rounded-xl px-3 py-3 active:bg-white/[0.09] active:scale-[0.99] transition-all">
-      <span className="text-lg flex-shrink-0">
+      className="w-full text-left flex items-center gap-3 bg-white/[0.04] rounded-xl px-3 py-3.5 active:bg-white/[0.09] active:scale-[0.99] transition-all">
+      <span className="text-lg flex-shrink-0 text-white/60">
         {icon?.type === 'emoji' ? icon.value
           : icon?.type === 'url' ? <img src={icon.value} alt="" className="w-5 h-5 rounded inline" />
-          : kind === 'database' ? '🗄️' : '📄'}
+          : kind === 'database' ? <Database size={19} /> : <FileText size={19} />}
       </span>
       <div className="flex-1 min-w-0">
-        <p className="text-sm text-white truncate">{title}</p>
-        <p className="text-[10px] text-white/30 uppercase tracking-wider">{subtitle ?? kind}</p>
+        <p className="text-[15px] text-white truncate">{title}</p>
+        <p className="text-xs text-white/40 uppercase tracking-wider">{subtitle ?? kind}</p>
       </div>
       {inGroupCount !== undefined && inGroupCount > 0 && (
-        <span className="text-[10px] text-yellow-300/80 bg-yellow-500/10 rounded-full px-2 py-0.5 mr-1" title={`In ${inGroupCount} group${inGroupCount === 1 ? '' : 's'}`}>
-          📁 {inGroupCount}
+        <span className="flex items-center gap-1 text-xs text-yellow-300/80 bg-yellow-500/10 rounded-full px-2 py-1 mr-1 tabular-nums" title={`In ${inGroupCount} group${inGroupCount === 1 ? '' : 's'}`}>
+          <Folder size={12} /> {inGroupCount}
         </span>
       )}
-      <span className="text-white/20 text-sm">›</span>
+      <ChevronRight size={16} className="text-white/25 flex-shrink-0" />
     </button>
   )
 }

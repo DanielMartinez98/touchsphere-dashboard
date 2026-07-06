@@ -1,5 +1,9 @@
 import { StrictMode, Component, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
+// Self-hosted variable fonts (offline kiosk — no CDN at runtime).
+// Inter for body text, Space Grotesk for display/numerals.
+import '@fontsource-variable/inter/index.css'
+import '@fontsource-variable/space-grotesk/index.css'
 import './index.css'
 import App from './App.tsx'
 // Eagerly import data singletons so fetching starts before any widget mounts

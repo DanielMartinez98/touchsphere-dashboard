@@ -26,19 +26,19 @@ export function NotionCollapsed({ tasks, loading, error }: Props) {
 
   return (
     <>
-      <span className="text-xs text-white/40 uppercase tracking-wider">Tasks</span>
+      <span className="text-xs font-medium text-white/50 uppercase tracking-[0.14em]">Tasks</span>
 
       {loading ? (
         <span className="w-4 h-4 rounded-full border-2 border-white/20 border-t-green-400 animate-spin" />
       ) : error ? (
-        <span className="text-xs text-white/40 leading-tight">Not configured</span>
+        <span className="text-sm text-ink-dim leading-tight">Not configured</span>
       ) : pending.length === 0 ? (
         <span className="text-sm font-semibold text-green-400">All done!</span>
       ) : (
         <>
-          <span className="text-2xl font-bold text-white leading-none">{pending.length}</span>
+          <span className="text-2xl font-bold font-display tabular-nums text-white leading-none">{pending.length}</span>
           {next && (
-            <span className="text-xs text-white/55 leading-snug truncate w-full">
+            <span className="text-[13px] text-ink-mid leading-snug truncate w-full">
               {next.title}
             </span>
           )}

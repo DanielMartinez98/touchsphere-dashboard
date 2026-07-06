@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { RotateCw } from 'lucide-react'
 import type { NotionClient } from '../../../hooks/useNotionClient'
 import type { Workspace, WorkspaceItem } from './notion-types'
 import Tile from './Tile'
@@ -51,18 +52,18 @@ export default function BrowseView({ client }: { client: NotionClient }) {
   return (
     <div className="flex flex-col gap-3 px-1">
       <div className="flex items-center gap-2">
-        <h2 className="text-xl font-bold text-white flex-1">Workspace</h2>
-        <button type="button" onClick={() => load(true)}
-          className="w-9 h-9 rounded-full bg-white/10 text-white/50 text-xl flex items-center justify-center active:scale-90">↺</button>
+        <h2 className="text-xl font-bold font-display text-white flex-1">Workspace</h2>
+        <button type="button" onClick={() => load(true)} aria-label="Refresh"
+          className="w-11 h-11 rounded-full bg-glass-2 text-white/60 flex items-center justify-center active:scale-90"><RotateCw size={18} /></button>
       </div>
 
-      <p className="text-[10px] text-white/30 px-1">Long-press any item to add it to a group.</p>
+      <p className="text-sm text-white/45 px-1">Long-press any item to add it to a group.</p>
 
       <div className="flex gap-1.5">
         {(['all', 'databases', 'pages'] as const).map(t => (
           <button key={t} type="button" onClick={() => setTab(t)}
-            className={`flex-1 py-1.5 rounded-full text-xs font-medium transition-colors
-              ${tab === t ? 'bg-green-500 text-black' : 'bg-white/[0.07] text-white/45 active:bg-white/15'}`}>
+            className={`flex-1 py-2.5 rounded-full text-sm font-medium transition-colors
+              ${tab === t ? 'bg-green-500 text-black' : 'bg-white/[0.07] text-white/50 active:bg-white/15'}`}>
             {t === 'all' ? `All (${ws.databases.length + rootPages.length})`
               : t === 'databases' ? `Databases (${ws.databases.length})`
               : `Pages (${rootPages.length})`}
@@ -72,7 +73,7 @@ export default function BrowseView({ client }: { client: NotionClient }) {
 
       {showDbs && ws.databases.length > 0 && (
         <div className="flex flex-col gap-1.5">
-          {tab === 'all' && <p className="text-[11px] text-white/30 uppercase tracking-wider px-1 mt-2">Databases</p>}
+          {tab === 'all' && <p className="text-xs font-medium text-white/45 uppercase tracking-[0.14em] px-1 mt-2">Databases</p>}
           {ws.databases.map(d => (
             <Tile key={d.id} title={d.title} icon={d.icon} kind="database"
                   inGroupCount={groups.groupsContaining(d.id).length}
@@ -84,7 +85,7 @@ export default function BrowseView({ client }: { client: NotionClient }) {
 
       {showPages && rootPages.length > 0 && (
         <div className="flex flex-col gap-1.5">
-          {tab === 'all' && <p className="text-[11px] text-white/30 uppercase tracking-wider px-1 mt-2">Pages</p>}
+          {tab === 'all' && <p className="text-xs font-medium text-white/45 uppercase tracking-[0.14em] px-1 mt-2">Pages</p>}
           {rootPages.map(p => (
             <Tile key={p.id} title={p.title} icon={p.icon} kind="page"
                   inGroupCount={groups.groupsContaining(p.id).length}
@@ -95,10 +96,10 @@ export default function BrowseView({ client }: { client: NotionClient }) {
       )}
 
       {showPages && tab === 'pages' && rootPages.length === 0 && (
-        <p className="text-sm text-white/30 italic text-center py-6">No top-level pages shared with this integration.</p>
+        <p className="text-base text-white/45 italic text-center py-6">No top-level pages shared with this integration.</p>
       )}
 
-      <p className="text-[10px] text-white/25 text-center pt-3">
+      <p className="text-xs text-white/35 text-center pt-3">
         Share more pages or databases with your integration in Notion to see them here.
       </p>
 

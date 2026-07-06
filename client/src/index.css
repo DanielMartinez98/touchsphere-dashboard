@@ -15,8 +15,29 @@
    resolve to the bundled font. (Tailwind v4 already lists it last by default;
    pinned here so it survives any future theme change.) */
 @theme {
-  --font-sans: ui-sans-serif, system-ui, sans-serif,
+  /* Typography — Inter for body, Space Grotesk for display text & numerals.
+     Both are bundled woff2 (imported in main.tsx) so the kiosk stays offline. */
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif,
     'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+  --font-display: 'Space Grotesk Variable', 'Inter Variable', ui-sans-serif, system-ui,
+    sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+
+  /* Design tokens — text tiers, glass surfaces, hairline borders.
+     text-ink → primary · text-ink-mid → secondary · text-ink-dim → tertiary
+     bg-glass / bg-glass-2 → resting / raised surfaces · border-hairline */
+  --color-ink:      rgba(255, 255, 255, 0.95);
+  --color-ink-mid:  rgba(255, 255, 255, 0.64);
+  --color-ink-dim:  rgba(255, 255, 255, 0.45);
+  --color-hairline: rgba(255, 255, 255, 0.12);
+  --color-glass:    rgba(255, 255, 255, 0.06);
+  --color-glass-2:  rgba(255, 255, 255, 0.11);
+}
+
+@layer base {
+  body {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
 }
 
 /* Time scrubber slider */

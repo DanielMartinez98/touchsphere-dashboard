@@ -109,13 +109,15 @@ export function useMediaList() {
   }, [])
 
   const toggleStar = useCallback((id: string) => {
-    let nextStarred = false
-    setItems(prev => prev.map(i => {
-      if (i.id !== id) return i
-      nextStarred = !i.starred
-      console.log(`[MediaList] TOGGLE star id=${id} "${i.title}" → ${nextStarred}`)
-      return { ...i, starred: nextStarred }
-    }))
+    // Compute the next value from current state BEFORE setItems: an updater
+    // only runs synchronously when React's queue is empty (eager evaluation),
+    // so assigning inside it and reading afterwards raced — the PATCH below
+    // sometimes sent the stale `false` and the star silently un-toggled.
+    const current = items.find(i => i.id === id)
+    if (!current) return
+    const nextStarred = !current.starred
+    console.log(`[MediaList] TOGGLE star id=${id} "${current.title}" → ${nextStarred}`)
+    setItems(prev => prev.map(i => i.id === id ? { ...i, starred: nextStarred } : i))
     fetch(`${API}/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -135,7 +137,7 @@ export function useMediaList() {
           .then(setItems)
           .catch(() => {})
       })
-  }, [])
+  }, [items])
 
   const markDone = useCallback((id: string) => {
     // Optimistic update

@@ -1,3 +1,4 @@
+import { ChevronLeft, Search, Folders, LayoutList, Home } from 'lucide-react'
 import type { NotionTask, NotionSchema, TaskFields, ProjectRef } from '../../../hooks/useNotion'
 import { useNotionClient } from '../../../hooks/useNotionClient'
 import HomeView     from './HomeView'
@@ -40,28 +41,28 @@ export default function NotionExpanded({
       <div className="flex-shrink-0 px-4 pb-3 flex items-center gap-2">
         {client.canGoBack ? (
           <button type="button" onClick={client.back}
-            className="w-9 h-9 rounded-full bg-white/10 text-white/70 text-lg flex items-center justify-center active:scale-90"
-            aria-label="Back">‹</button>
+            className="w-11 h-11 rounded-full bg-glass-2 text-white/70 flex items-center justify-center active:scale-90"
+            aria-label="Back"><ChevronLeft size={22} /></button>
         ) : (
-          <div className="w-9 h-9" />
+          <div className="w-11 h-11" />
         )}
-        <span className="text-xs uppercase tracking-wider text-white/35 flex-1 truncate">{title}</span>
+        <span className="text-sm font-medium uppercase tracking-[0.14em] text-white/50 flex-1 truncate">{title}</span>
         <button type="button" onClick={() => client.replace({ kind: 'search' })}
-          className={`w-9 h-9 rounded-full text-lg flex items-center justify-center active:scale-90
-            ${view.kind === 'search' ? 'bg-green-500/30 text-green-300' : 'bg-white/10 text-white/60'}`}
-          aria-label="Search">🔍</button>
+          className={`w-11 h-11 rounded-full flex items-center justify-center active:scale-90
+            ${view.kind === 'search' ? 'bg-green-500/30 text-green-300' : 'bg-glass-2 text-white/60'}`}
+          aria-label="Search"><Search size={19} /></button>
         <button type="button" onClick={() => client.replace({ kind: 'groups' })}
-          className={`w-9 h-9 rounded-full text-lg flex items-center justify-center active:scale-90
-            ${view.kind === 'groups' ? 'bg-green-500/30 text-green-300' : 'bg-white/10 text-white/60'}`}
-          aria-label="Groups">📁</button>
+          className={`w-11 h-11 rounded-full flex items-center justify-center active:scale-90
+            ${view.kind === 'groups' ? 'bg-green-500/30 text-green-300' : 'bg-glass-2 text-white/60'}`}
+          aria-label="Groups"><Folders size={19} /></button>
         <button type="button" onClick={() => client.replace({ kind: 'browse' })}
-          className={`w-9 h-9 rounded-full text-lg flex items-center justify-center active:scale-90
-            ${view.kind === 'browse' ? 'bg-green-500/30 text-green-300' : 'bg-white/10 text-white/60'}`}
-          aria-label="Browse">☰</button>
+          className={`w-11 h-11 rounded-full flex items-center justify-center active:scale-90
+            ${view.kind === 'browse' ? 'bg-green-500/30 text-green-300' : 'bg-glass-2 text-white/60'}`}
+          aria-label="Browse"><LayoutList size={19} /></button>
         <button type="button" onClick={client.goHome}
-          className={`w-9 h-9 rounded-full text-lg flex items-center justify-center active:scale-90
-            ${view.kind === 'home' ? 'bg-green-500/30 text-green-300' : 'bg-white/10 text-white/60'}`}
-          aria-label="Home">⌂</button>
+          className={`w-11 h-11 rounded-full flex items-center justify-center active:scale-90
+            ${view.kind === 'home' ? 'bg-green-500/30 text-green-300' : 'bg-glass-2 text-white/60'}`}
+          aria-label="Home"><Home size={19} /></button>
       </div>
 
       {/* Active view */}

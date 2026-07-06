@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion, AnimatePresence, useDragControls } from 'framer-motion'
 import { createPortal } from 'react-dom'
+import { X } from 'lucide-react'
 import type { WidgetPosition } from '../../types'
 
 interface WidgetProps {
@@ -28,6 +29,10 @@ const expandOrigin: Record<WidgetPosition, string> = {
 }
 
 export default function Widget({ position, collapsed, expanded, isOpen, onToggle, accent }: WidgetProps) {
+  // Swipe-down-to-close: the drag is initiated only from the grab handle at the
+  // top of the overlay so it never fights with scrolling content below.
+  const dragControls = useDragControls()
+
   // Close on Escape key
   useEffect(() => {
     if (!isOpen) return
@@ -45,7 +50,7 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
         onClick={onToggle}
         className={`
           relative flex flex-col gap-1.5 p-5
-          bg-black/65 backdrop-blur-md border-2 border-white/85
+          bg-black/60 backdrop-blur-md border border-hairline
           rounded-3xl cursor-pointer active:scale-95
           transition-colors hover:bg-white/10
           ${position === 'top-right' || position === 'bottom-right' ? 'items-end' : 'items-start'}
@@ -55,8 +60,11 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
         style={{
           minWidth: 230,
           maxWidth: 290,
+          // Hairline accent edge + one soft halo — calmer than a full neon bloom
+          // but keeps each corner's colour identity.
+          borderColor: accent ? `${accent}59` : undefined,
           boxShadow: accent
-            ? `0 0 28px 2px ${accent}99, 0 0 60px 6px ${accent}55, inset 0 0 18px ${accent}22`
+            ? `0 0 24px 0 ${accent}40, inset 0 0 16px ${accent}14`
             : undefined,
         }}
         whileTap={{ scale: 0.95 }}
@@ -76,13 +84,32 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.85 }}
               transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+              drag="y"
+              dragListener={false}
+              dragControls={dragControls}
+              dragConstraints={{ top: 0, bottom: 0 }}
+              dragElastic={{ top: 0, bottom: 0.55 }}
+              onDragEnd={(_, info) => {
+                if (info.offset.y > 140 || info.velocity.y > 900) onToggle()
+              }}
             >
+              {/* Grab handle — swipe down anywhere on it to dismiss */}
+              <div
+                onPointerDown={e => dragControls.start(e)}
+                className="absolute top-0 left-1/2 -translate-x-1/2 w-44 h-9 z-[9500] flex items-start justify-center pt-2.5 touch-none cursor-grab active:cursor-grabbing"
+                aria-hidden
+              >
+                <div className="w-12 h-1.5 rounded-full bg-white/20" />
+              </div>
+
               {/* Close button — above Leaflet panes (z ~600) */}
               <button
+                type="button"
                 onClick={onToggle}
-                className="absolute top-4 right-4 z-[9999] w-12 h-12 rounded-full bg-white/20 border border-white/30 flex items-center justify-center text-white text-2xl font-bold active:scale-90"
+                aria-label="Close"
+                className="absolute top-3 right-3 z-[9999] w-14 h-14 rounded-full bg-glass-2 border border-hairline flex items-center justify-center text-white/80 active:scale-90 active:bg-white/25 transition-colors"
               >
-                ✕
+                <X size={26} strokeWidth={2.25} />
               </button>
               <div className="flex-1 overflow-auto">
                 {expanded}
