@@ -2,6 +2,12 @@ services:
   # ── TouchSphere dashboard (internal only — Caddy proxies it) ──────────────
   app:
     image: ghcr.io/mmdan/touchsphere-dashboard:latest
+    # Allow building the image locally from the repo's Dockerfile (e.g. on the
+    # server) instead of pulling the prebuilt image from GHCR. Run:
+    #   docker compose build app && docker compose up -d app
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: touchsphere
     restart: on-failure
     # Port 3001 is NOT exposed to the host anymore — Caddy reaches it over the
