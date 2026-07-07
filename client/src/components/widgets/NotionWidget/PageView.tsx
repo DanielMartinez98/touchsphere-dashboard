@@ -23,7 +23,7 @@ function TitleInput({ value, onSave }: { value: string; onSave: (t: string) => v
   )
 }
 
-export default function PageView({ pageId, client }: { pageId: string; client: NotionClient }) {
+export default function PageView({ pageId, client, onTitle }: { pageId: string; client: NotionClient; onTitle?: (t: string) => void }) {
   const [page,        setPage]        = useState<NotionPage | null>(null)
   const [loading,     setLoading]     = useState(true)
   const [error,       setError]       = useState<string | null>(null)
@@ -45,6 +45,11 @@ export default function PageView({ pageId, client }: { pageId: string; client: N
   }, [pageId, client])
 
   useEffect(() => { void load() }, [load])
+
+  // Surface the real title in the widget's fixed header.
+  useEffect(() => {
+    if (page) onTitle?.(page.title || 'Untitled')
+  }, [page?.title]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Record visit in recents once the page is loaded.
   useEffect(() => {

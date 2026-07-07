@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { motion } from 'framer-motion'
 import { Shuffle, Dices, Star, Plus, X, Circle, Play, Check, ChevronDown, ChevronRight, Trash2, Undo2 } from 'lucide-react'
 import type { MediaItem, MediaStatus, MediaType } from '../../../types'
 import { statusesFor } from '../../../types'
@@ -153,8 +154,15 @@ export default function MediaListExpanded({
   const [filter, setFilter] = useState<Filter>('all')
   const [shuffleSeed, setShuffleSeed] = useState(0)
   const [recommendedId, setRecommendedId] = useState<string | null>(null)
+  const [rolling, setRolling] = useState(false)
+  const rollTimer = useRef<number | null>(null)
   const [sheetItemId, setSheetItemId] = useState<string | null>(null)
   const [showFinished, setShowFinished] = useState(false)
+
+  // Stop a roulette mid-spin if the widget unmounts.
+  useEffect(() => () => {
+    if (rollTimer.current !== null) window.clearTimeout(rollTimer.current)
+  }, [])
 
   // Pending delete — the item is hidden immediately but only removed on the
   // server after a 5s undo window. Deleting a second item commits the first.
@@ -244,14 +252,38 @@ export default function MediaListExpanded({
     }
   }, [filtered, pendingDelete])
 
+  // Recommend with a short roulette: the banner flicks through candidates,
+  // decelerating before it lands. Pure timeouts — nothing to render off-screen.
   const recommend = () => {
     const pool = [...sections.cont, ...sections.upNext]
     if (pool.length === 0) {
       setRecommendedId(null)
       return
     }
-    const pick = pool[Math.floor(Math.random() * pool.length)]
-    setRecommendedId(pick.id)
+    if (rollTimer.current !== null) window.clearTimeout(rollTimer.current)
+    if (pool.length === 1) {
+      setRecommendedId(pool[0].id)
+      return
+    }
+    setRolling(true)
+    const steps = 9
+    let i = 0
+    const spin = () => {
+      setRecommendedId(prev => {
+        // Avoid landing on the same title twice in a row mid-spin.
+        let pick = pool[Math.floor(Math.random() * pool.length)]
+        if (pick.id === prev) pick = pool[(pool.indexOf(pick) + 1) % pool.length]
+        return pick.id
+      })
+      i++
+      if (i < steps) {
+        rollTimer.current = window.setTimeout(spin, 55 + i * i * 4)
+      } else {
+        rollTimer.current = null
+        setRolling(false)
+      }
+    }
+    spin()
   }
 
   const recommended = recommendedId
@@ -267,12 +299,21 @@ export default function MediaListExpanded({
     { key: 'movie', label: 'Movies' },
   ]
 
-  const renderRow = (item: MediaItem) => {
+  const renderRow = (item: MediaItem, idx: number) => {
     const isRecommended = item.id === recommendedId
     const isInactive = item.status === 'done' || item.status === 'dropped'
     return (
-      <div
+      <motion.div
         key={item.id}
+        layoutId={item.id}
+        layout
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{
+          layout:  { type: 'spring', stiffness: 420, damping: 34 },
+          opacity: { duration: 0.2, delay: Math.min(idx * 0.03, 0.24) },
+          y:       { duration: 0.2, delay: Math.min(idx * 0.03, 0.24) },
+        }}
         onClick={() => setSheetItemId(item.id)}
         className={`flex items-center gap-3 rounded-xl p-2.5 border transition-colors cursor-pointer active:scale-[0.99] ${
           isRecommended
@@ -312,7 +353,7 @@ export default function MediaListExpanded({
           {STATUS_ICON[item.status]}
           <span className="hidden min-[400px]:inline">{STATUS_LABEL[item.status]}</span>
         </span>
-      </div>
+      </motion.div>
     )
   }
 
@@ -403,34 +444,48 @@ export default function MediaListExpanded({
         </button>
       </div>
 
-      {/* Recommendation banner */}
+      {/* Tonight's pick — the payoff card. While rolling it flicks through
+          candidates; on landing it settles with a soft accent glow. */}
       {recommended && (
-        <div className="flex items-center gap-3 rounded-xl border border-[var(--accent,#06b6d4)]/40 bg-[var(--accent,#06b6d4)]/10 p-3">
-          <MediaCover item={recommended} />
+        <motion.div
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0, scale: rolling ? 0.99 : 1 }}
+          className="flex items-center gap-3 rounded-2xl border border-[var(--accent,#06b6d4)]/40 bg-[var(--accent,#06b6d4)]/10 p-3.5"
+          style={{ boxShadow: rolling ? 'none' : '0 0 30px 0 color-mix(in srgb, var(--accent, #06b6d4) 28%, transparent)' }}
+        >
+          <motion.div key={recommended.id} initial={{ opacity: 0.4, scale: 0.92 }} animate={{ opacity: 1, scale: 1 }}>
+            <MediaCover item={recommended} className="w-14 h-14 rounded-2xl" />
+          </motion.div>
           <div className="flex-1 min-w-0">
             <div className="text-xs uppercase tracking-wider text-[var(--accent,#06b6d4)] font-bold">
-              Tonight's pick · {TYPE_LABEL[recommended.type]}
+              {rolling ? 'Rolling…' : `Tonight's pick · ${TYPE_LABEL[recommended.type]}`}
             </div>
-            <div className="text-base font-semibold text-white truncate">{recommended.title}</div>
+            <motion.div key={recommended.id + (rolling ? '-r' : '')}
+              initial={{ opacity: 0.35 }} animate={{ opacity: 1 }}
+              className="text-lg font-semibold font-display text-white truncate">
+              {recommended.title}
+            </motion.div>
           </div>
           <button
             onClick={recommend}
-            className="px-3 py-2 rounded-lg bg-glass-2 text-white/80 text-sm hover:bg-white/20"
+            disabled={rolling}
+            className="px-3 py-2.5 rounded-lg bg-glass-2 text-white/80 text-sm hover:bg-white/20 disabled:opacity-40"
           >
             Re-roll
           </button>
           <button
             onClick={() => setRecommendedId(null)}
-            className="w-10 h-10 rounded-full bg-glass-2 text-white/60 flex items-center justify-center hover:bg-white/20"
+            disabled={rolling}
+            className="w-10 h-10 rounded-full bg-glass-2 text-white/60 flex items-center justify-center hover:bg-white/20 disabled:opacity-40"
             aria-label="Dismiss recommendation"
           >
             <X size={18} />
           </button>
-        </div>
+        </motion.div>
       )}
 
       {/* Sections */}
-      <div className={`flex-1 overflow-auto flex flex-col gap-2 ${showKeyboard ? 'pb-64' : 'pb-16'}`}>
+      <div className={`flex-1 overflow-auto scroll-fade-y flex flex-col gap-2 ${showKeyboard ? 'pb-64' : 'pb-16'}`}>
         {nothingVisible && (
           <p className="text-white/45 text-base text-center mt-8">
             {items.length === 0 ? 'Nothing added yet' : 'No items match this filter'}

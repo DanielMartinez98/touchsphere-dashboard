@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Layers, SlidersHorizontal, MoreHorizontal, RotateCw, ChevronLeft, ChevronRight, CheckSquare, X, FileText, List, Columns3, CalendarDays, ChartGantt, LayoutGrid } from 'lucide-react'
+import { SlidersHorizontal, MoreHorizontal, RotateCw, ChevronLeft, ChevronRight, CheckSquare, X, FileText, List, Columns3, CalendarDays, ChartGantt, LayoutGrid } from 'lucide-react'
 import type { NotionClient } from '../../../hooks/useNotionClient'
 import type { DatabaseSchema } from './notion-types'
 import { PropertyValue } from './PropertyEditor'
@@ -432,7 +432,7 @@ function GalleryView({
 
 // ── Top-level DatabaseView ───────────────────────────────────────────────────
 
-export default function DatabaseView({ dbId, client }: { dbId: string; client: NotionClient }) {
+export default function DatabaseView({ dbId, client, onTitle }: { dbId: string; client: NotionClient; onTitle?: (t: string) => void }) {
   const [schema,  setSchema]  = useState<DatabaseSchema | null>(null)
   const [rows,    setRows]    = useState<any[]>([])
   const [loading, setLoading] = useState(true)
@@ -443,10 +443,13 @@ export default function DatabaseView({ dbId, client }: { dbId: string; client: N
 
   const [selectMode, setSelectMode]     = useState(false)
   const [selected,   setSelected]       = useState<Set<string>>(new Set())
-  const [showFilterBar, setShowFilterBar] = useState(false)
+  const [showViewSheet, setShowViewSheet] = useState(false)
   const [showAddProp,   setShowAddProp]   = useState(false)
   const [showSettings,  setShowSettings]  = useState(false)
-  const [showSavedViews, setShowSavedViews] = useState(false)
+  // Inline name form for saving the current view (a browser prompt() would be
+  // unusable on the touch kiosk).
+  const [saveOpen, setSaveOpen] = useState(false)
+  const [viewName, setViewName] = useState('')
 
   const [sorts,   setSorts]   = useState<SortKey[]>(EMPTY_SORT)
   const [filter,  setFilter]  = useState<FilterModel>(EMPTY_FILTER)
@@ -499,6 +502,11 @@ export default function DatabaseView({ dbId, client }: { dbId: string; client: N
   }, [dbId, client, sorts, filter])
 
   useEffect(() => { void load() }, [load, reload])
+
+  // Surface the real title in the widget's fixed header.
+  useEffect(() => {
+    if (schema) onTitle?.(schema.title || 'Untitled')
+  }, [schema?.title]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) {
     return <div className="flex items-center justify-center py-12"><span className="w-8 h-8 rounded-full border-2 border-white/20 border-t-green-400 animate-spin" /></div>
@@ -555,16 +563,21 @@ export default function DatabaseView({ dbId, client }: { dbId: string; client: N
   }
 
   function saveCurrentView() {
-    const name = prompt('Save view as…')
-    if (!name?.trim()) return
-    savedViews.createView({ name: name.trim(), view, filter, sorts, groupBy })
+    const name = viewName.trim()
+    if (!name) return
+    savedViews.createView({ name, view, filter, sorts, groupBy })
+    setViewName('')
+    setSaveOpen(false)
   }
   function applySavedView(id: string) {
     const v = savedViews.views.find(x => x.id === id)
     if (!v) return
     setView(v.view); setFilter(v.filter); setSorts(v.sorts); setGroupBy(v.groupBy)
-    setShowSavedViews(false)
+    setShowViewSheet(false)
   }
+
+  // Dot on the View button when anything diverges from the default view.
+  const viewCustomized = filter.conditions.length > 0 || sorts.length > 0 || groupBy !== null
 
   return (
     <div className="flex flex-col gap-3 px-1">
@@ -574,12 +587,11 @@ export default function DatabaseView({ dbId, client }: { dbId: string; client: N
           ? <span className="text-2xl">{schema.icon.value}</span>
           : schema.icon?.type === 'url' && <img src={schema.icon.value} alt="" className="w-7 h-7 rounded" />}
         <h2 className="text-xl font-bold font-display text-white truncate flex-1">{schema.title}</h2>
-        <button type="button" onClick={() => setShowSavedViews(o => !o)}
-          aria-label="Saved views"
-          className={`w-11 h-11 rounded-full flex items-center justify-center active:scale-90 ${showSavedViews ? 'bg-blue-500/30 text-blue-200' : 'bg-glass-2 text-white/60'}`}><Layers size={18} /></button>
-        <button type="button" onClick={() => setShowFilterBar(o => !o)}
-          aria-label="Filter and sort"
-          className={`w-11 h-11 rounded-full flex items-center justify-center active:scale-90 ${showFilterBar || filter.conditions.length > 0 ? 'bg-green-500/30 text-green-300' : 'bg-glass-2 text-white/60'}`}><SlidersHorizontal size={18} /></button>
+        <button type="button" onClick={() => setShowViewSheet(true)}
+          aria-label="View options"
+          className={`h-11 px-4 rounded-full flex items-center justify-center gap-1.5 text-sm font-medium active:scale-95 ${viewCustomized ? 'bg-green-500/30 text-green-300' : 'bg-glass-2 text-white/60'}`}>
+          <SlidersHorizontal size={16} /> View
+        </button>
         <button type="button" onClick={() => setShowSettings(true)}
           aria-label="Database settings"
           className="w-11 h-11 rounded-full bg-glass-2 text-white/60 flex items-center justify-center active:scale-90"><MoreHorizontal size={18} /></button>
@@ -588,61 +600,6 @@ export default function DatabaseView({ dbId, client }: { dbId: string; client: N
           className="w-11 h-11 rounded-full bg-glass-2 text-white/60 flex items-center justify-center active:scale-90"><RotateCw size={18} /></button>
       </div>
       {schema.description && <p className="text-sm text-white/50">{schema.description}</p>}
-
-      {/* Saved views strip */}
-      {showSavedViews && (
-        <div className="flex flex-col gap-2 bg-white/[0.025] rounded-xl p-3 border border-white/[0.05]">
-          <div className="flex gap-1.5 flex-wrap">
-            {savedViews.views.length === 0 && (
-              <p className="text-[13px] text-white/35 italic">No saved views yet.</p>
-            )}
-            {savedViews.views.map(v => (
-              <div key={v.id} className="flex items-center gap-0.5">
-                <button type="button" onClick={() => applySavedView(v.id)}
-                  className="px-2.5 py-1 rounded-l-full text-[13px] bg-white/[0.06] text-white/75 active:bg-white/10">
-                  {v.name}
-                </button>
-                <button type="button" onClick={() => savedViews.deleteView(v.id)}
-                  aria-label={`Delete view ${v.name}`}
-                  className="w-8 h-8 rounded-r-full bg-red-500/20 text-red-300 flex items-center justify-center active:bg-red-500/40"><X size={13} /></button>
-              </div>
-            ))}
-          </div>
-          <button type="button" onClick={saveCurrentView}
-            className="self-start px-3 py-1.5 rounded-full text-[13px] font-medium bg-green-500/20 text-green-200 active:bg-green-500/35">
-            + Save current view
-          </button>
-        </div>
-      )}
-
-      {/* Filter / sort / group builders */}
-      {showFilterBar && (
-        <div className="flex flex-col gap-3 bg-white/[0.025] rounded-xl p-3 border border-white/[0.05]">
-          <div className="flex flex-col gap-1.5">
-            <span className="text-xs text-white/35 uppercase tracking-wider">Filter</span>
-            <FilterTree schema={schema} model={filter} onChange={setFilter} />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <span className="text-xs text-white/35 uppercase tracking-wider">Sort</span>
-            <MultiSort schema={schema} sorts={sorts} onChange={setSorts} />
-          </div>
-          {view === 'list' && groupCandidates.length > 0 && (
-            <div className="flex flex-col gap-1.5">
-              <span className="text-xs text-white/35 uppercase tracking-wider">Group by</span>
-              <div className="flex flex-wrap gap-1.5">
-                <button type="button" onClick={() => setGroupBy(null)}
-                  className={`px-2.5 py-1 rounded-full text-[13px] ${groupBy === null ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>None</button>
-                {groupCandidates.map(([name, p]) => (
-                  <button key={name} type="button" onClick={() => setGroupBy(name)}
-                    className={`px-2.5 py-1 rounded-full text-[13px] ${groupBy === name ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
-                    {name} <span className="opacity-50">·{p.type}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Assigned-to-me shortcut — only when the database has a people property */}
       {peopleKey && (
@@ -698,6 +655,85 @@ export default function DatabaseView({ dbId, client }: { dbId: string; client: N
       {view === 'gallery'  && <GalleryView rows={rows} schema={schema} client={client} />}
 
       <p className="text-xs text-white/25 text-center pt-2">{rows.length} row{rows.length === 1 ? '' : 's'}</p>
+
+      {/* View options sheet — saved views, filter, sort, group-by in one place */}
+      {showViewSheet && (
+        <div className="absolute inset-0 z-30 flex flex-col justify-end" onClick={() => setShowViewSheet(false)}>
+          <div className="absolute inset-0 bg-black/60" />
+          <div className="relative bg-[#0e1117] border-t border-white/10 rounded-t-3xl z-40 max-h-[88vh] overflow-y-auto notion-sheet"
+               onClick={e => e.stopPropagation()}>
+            <div className="px-5 pt-3 pb-8 flex flex-col gap-5">
+              <div className="w-10 h-1 rounded-full bg-white/15 mx-auto" />
+              <h3 className="text-base font-bold text-white">View options</h3>
+
+              <div className="flex flex-col gap-2">
+                <span className="text-xs text-white/45 uppercase tracking-wider">Saved views</span>
+                {savedViews.views.length === 0 && !saveOpen && (
+                  <p className="text-[13px] text-white/40 italic">No saved views yet — set up filters below, then save them.</p>
+                )}
+                {savedViews.views.length > 0 && (
+                  <div className="flex gap-1.5 flex-wrap">
+                    {savedViews.views.map(v => (
+                      <div key={v.id} className="flex items-center gap-0.5">
+                        <button type="button" onClick={() => applySavedView(v.id)}
+                          className="px-3 py-2 rounded-l-full text-[13px] bg-white/[0.06] text-white/75 active:bg-white/10">
+                          {v.name}
+                        </button>
+                        <button type="button" onClick={() => savedViews.deleteView(v.id)}
+                          aria-label={`Delete view ${v.name}`}
+                          className="w-9 h-9 rounded-r-full bg-red-500/20 text-red-300 flex items-center justify-center active:bg-red-500/40"><X size={13} /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {saveOpen ? (
+                  <div className="flex gap-2">
+                    <TouchInput value={viewName} onChange={setViewName} commitOn="change"
+                      placeholder="View name…" ariaLabel="View name"
+                      className="flex-1 bg-white/10 text-white rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-green-400" />
+                    <button type="button" onClick={saveCurrentView} disabled={!viewName.trim()}
+                      className="px-4 rounded-xl bg-green-500 text-black text-sm font-bold disabled:opacity-30 active:bg-green-400">Save</button>
+                  </div>
+                ) : (
+                  <button type="button" onClick={() => setSaveOpen(true)}
+                    className="self-start px-4 py-2 rounded-full text-[13px] font-medium bg-green-500/20 text-green-200 active:bg-green-500/35">
+                    + Save current view
+                  </button>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <span className="text-xs text-white/45 uppercase tracking-wider">Filter</span>
+                <FilterTree schema={schema} model={filter} onChange={setFilter} />
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <span className="text-xs text-white/45 uppercase tracking-wider">Sort</span>
+                <MultiSort schema={schema} sorts={sorts} onChange={setSorts} />
+              </div>
+
+              {view === 'list' && groupCandidates.length > 0 && (
+                <div className="flex flex-col gap-2">
+                  <span className="text-xs text-white/45 uppercase tracking-wider">Group by</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    <button type="button" onClick={() => setGroupBy(null)}
+                      className={`px-3 py-2 rounded-full text-[13px] ${groupBy === null ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>None</button>
+                    {groupCandidates.map(([name, p]) => (
+                      <button key={name} type="button" onClick={() => setGroupBy(name)}
+                        className={`px-3 py-2 rounded-full text-[13px] ${groupBy === name ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
+                        {name} <span className="opacity-50">·{p.type}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <button type="button" onClick={() => setShowViewSheet(false)}
+                className="h-12 rounded-xl bg-green-500 text-black text-sm font-bold active:bg-green-400">Done</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showAddProp && (
         <AddPropertySheet

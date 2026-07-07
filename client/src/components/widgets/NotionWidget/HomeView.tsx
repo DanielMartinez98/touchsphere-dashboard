@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { ArrowUpDown, RotateCw, Mic, Plus, Check, ChevronRight, ChevronUp, ChevronDown, CalendarDays } from 'lucide-react'
+import { motion } from 'framer-motion'
+import { ArrowUpDown, RotateCw, Mic, Plus, Check, ChevronRight, ChevronUp, ChevronDown, CalendarDays, TriangleAlert, Folder } from 'lucide-react'
 import type { NotionTask, NotionSchema, TaskFields, ProjectRef } from '../../../hooks/useNotion'
 import type { NotionClient } from '../../../hooks/useNotionClient'
 import { colorFg, colorBg } from './notion-colors'
@@ -45,6 +46,17 @@ function fmtDue(due: string): { label: string; overdue: boolean } {
   return { label: d.toLocaleDateString([], { month: 'short', day: 'numeric' }), overdue: false }
 }
 
+function isOverdueDate(due: string): boolean {
+  return new Date(due + 'T00:00').getTime() < new Date().setHours(0, 0, 0, 0)
+}
+
+// Local-date ISO string N days from today (toISOString would shift across UTC).
+function isoInDays(days: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() + days)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 // ── Task row ─────────────────────────────────────────────────────────────────
 
 function TaskRow({
@@ -65,7 +77,16 @@ function TaskRow({
   const taskProjects = task.projectIds.map(id => projects[id]).filter(Boolean) as ProjectRef[]
 
   return (
-    <div onClick={onTap}
+    <motion.div onClick={onTap}
+      layoutId={task.id}
+      layout
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{
+        layout:  { type: 'spring', stiffness: 420, damping: 34 },
+        opacity: { duration: 0.2 },
+        y:       { duration: 0.2 },
+      }}
       className={`flex items-start gap-3 rounded-2xl px-4 py-3.5 border transition-all cursor-pointer
         ${task.done
           ? 'bg-white/[0.025] border-white/[0.04] opacity-45'
@@ -116,7 +137,7 @@ function TaskRow({
         </div>
       </div>
       <ChevronRight size={16} className="text-white/20 mt-1 flex-shrink-0" />
-    </div>
+    </motion.div>
   )
 }
 
@@ -207,6 +228,20 @@ function CreateTaskSheet({
             {schema.dueKey && (
               <div className="flex flex-col gap-2">
                 <span className="text-[13px] text-white/35 uppercase tracking-wider font-medium">Due date</span>
+                <div className="flex gap-2">
+                  {[{ label: 'Today', days: 0 }, { label: 'Tomorrow', days: 1 }, { label: 'Next week', days: 7 }].map(({ label, days }) => {
+                    const iso = isoInDays(days)
+                    const active = due === iso
+                    return (
+                      <button key={label} type="button"
+                        onClick={() => { setDue(active ? '' : iso); setShowCal(false) }}
+                        className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-colors
+                          ${active ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/60 active:bg-white/10'}`}>
+                        {label}
+                      </button>
+                    )
+                  })}
+                </div>
                 <button type="button" onClick={() => setShowCal(v => !v)}
                   className="flex items-center gap-3 bg-white/[0.06] rounded-xl px-4 py-3.5 text-sm w-full active:bg-white/10">
                   <CalendarDays size={18} className="text-white/60" />
@@ -323,6 +358,8 @@ export default function HomeView({ schema, tasks, projects, loading, error, clie
   const [sort,          setSort]          = useState<SortMode>('priority')
   const [creating,      setCreating]      = useState(false)
   const [showDone,      setShowDone]      = useState(false)
+  const [overdueOnly,   setOverdueOnly]   = useState(false)
+  const [showProjects,  setShowProjects]  = useState(false)
   const pins   = useNotionPins()
   const groups = useNotionGroups()
   const voice  = useVoiceCapture()
@@ -352,14 +389,17 @@ export default function HomeView({ schema, tasks, projects, loading, error, clie
     onCreate({ title: text, status: defaultStatus })
   }
 
-  // Filter chain: status → project. Special sentinel "__none__" for tasks
-  // with no related project (so "Tasks not yet assigned to a project" stays
-  // reachable from the chip strip).
+  const overdueCount = tasks.filter(t => !t.done && t.due && isOverdueDate(t.due)).length
+
+  // Filter chain: status → project → overdue. Special sentinel "__none__" for
+  // tasks with no related project (so "Tasks not yet assigned to a project"
+  // stays reachable from the chip strip).
   const filtered  = tasks
     .filter(t => filter        === null ? true : t.status === filter)
     .filter(t => projectFilter === null ? true
               : projectFilter === '__none__' ? t.projectIds.length === 0
               : t.projectIds.includes(projectFilter))
+    .filter(t => !overdueOnly || (!t.done && !!t.due && isOverdueDate(t.due)))
   const pending   = sortedTasks(filtered.filter(t => !t.done), sort)
   const done      = sortedTasks(filtered.filter(t =>  t.done), sort)
   const allSorted = [...pending, ...done]
@@ -395,9 +435,30 @@ export default function HomeView({ schema, tasks, projects, loading, error, clie
           className="h-11 px-4 rounded-full bg-glass-2 text-white/60 text-sm font-medium active:bg-white/15 flex items-center gap-1.5">
           <ArrowUpDown size={15} /> {SORT_LABELS[sort]}
         </button>
+        {schema?.projectKey && (projectsInUse.list.length > 0 || projectsInUse.unassigned > 0) && (
+          <button type="button" onClick={() => setShowProjects(v => !v)} aria-label="Filter by project"
+            className={`w-11 h-11 rounded-full flex items-center justify-center active:scale-90
+              ${showProjects || projectFilter !== null ? 'bg-blue-500/30 text-blue-200' : 'bg-glass-2 text-white/60'}`}>
+            <Folder size={18} />
+          </button>
+        )}
         <button type="button" onClick={onRefresh} aria-label="Refresh"
           className="w-11 h-11 rounded-full bg-glass-2 text-white/60 flex items-center justify-center active:scale-90"><RotateCw size={18} /></button>
       </div>
+
+      {/* Overdue alert — the one thing a wall dashboard should surface loudly.
+          Tapping narrows the list to overdue tasks; tapping again clears it. */}
+      {!loading && !error && overdueCount > 0 && (
+        <button type="button" onClick={() => setOverdueOnly(v => !v)}
+          className={`flex items-center gap-2.5 rounded-xl px-4 py-3 border text-sm font-semibold transition-colors
+            ${overdueOnly
+              ? 'bg-red-500/25 border-red-500/50 text-red-200'
+              : 'bg-red-500/10 border-red-500/25 text-red-300/90 active:bg-red-500/20'}`}>
+          <TriangleAlert size={16} className="shrink-0" />
+          <span className="flex-1 text-left tabular-nums">{overdueCount} task{overdueCount === 1 ? '' : 's'} overdue</span>
+          <span className="text-xs font-medium opacity-70">{overdueOnly ? 'Show all' : 'Show'}</span>
+        </button>
+      )}
 
       {schema && schema.statusOptions.length > 0 && (
         <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
@@ -418,10 +479,10 @@ export default function HomeView({ schema, tasks, projects, loading, error, clie
         </div>
       )}
 
-      {/* Project filter — derived from the active task list. Hidden when
-          the task DB has no relation property (projectsInUse is empty and
-          there's nothing unassigned either). */}
-      {schema?.projectKey && (projectsInUse.list.length > 0 || projectsInUse.unassigned > 0) && (
+      {/* Project filter — derived from the active task list. Collapsed behind
+          the folder toggle in the header so the steady state stays one chip
+          row; forced visible while a project filter is active. */}
+      {(showProjects || projectFilter !== null) && schema?.projectKey && (projectsInUse.list.length > 0 || projectsInUse.unassigned > 0) && (
         <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
           <button type="button" onClick={() => setProjectFilter(null)}
             className={`flex-shrink-0 px-3 py-1.5 rounded-full text-[13px] font-medium
@@ -468,7 +529,7 @@ export default function HomeView({ schema, tasks, projects, loading, error, clie
         )}
         {!loading && !error && allSorted.length === 0 && (
           <div className="flex flex-col items-center gap-2 py-10">
-            {filter || projectFilter
+            {filter || projectFilter || overdueOnly
               ? <p className="text-white/45 text-base">No tasks match the current filter.</p>
               : <><Check size={40} className="text-green-400" /><p className="text-green-400 font-semibold mt-1">All done!</p></>}
           </div>

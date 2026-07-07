@@ -116,6 +116,16 @@ function App() {
             : 'bg-[radial-gradient(ellipse_at_center,#0a0f2e_0%,#000000_70%)]'
         }`}
       />
+      {/* Ambient drift — a second hue breathing in over ~90s so the backdrop
+          feels alive without costing the Pi anything (opacity-only animation) */}
+      <div
+        aria-hidden
+        className={`absolute inset-0 bg-drift ${
+          isRest
+            ? 'bg-[radial-gradient(ellipse_at_center,#2a0a3e_0%,transparent_70%)]'
+            : 'bg-[radial-gradient(ellipse_at_center,#062434_0%,transparent_70%)]'
+        }`}
+      />
 
       {/* Particle Sphere */}
       <ParticleSphere

@@ -111,7 +111,7 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
               >
                 <X size={26} strokeWidth={2.25} />
               </button>
-              <div className="flex-1 overflow-auto">
+              <div className="flex-1 overflow-auto scroll-fade-y">
                 {expanded}
               </div>
             </motion.div>

@@ -105,3 +105,22 @@
 .scrollbar-hide::-webkit-scrollbar {
   display: none;
 }
+
+/* Ambient background drift — a second gradient layer breathing in and out over
+   ~90s. Opacity-only, so it stays on the compositor (cheap on the Pi 5, which
+   is already running the Three.js sphere). */
+@keyframes tsBgDrift {
+  0%, 100% { opacity: 0; }
+  50%      { opacity: 1; }
+}
+.bg-drift {
+  animation: tsBgDrift 90s ease-in-out infinite;
+}
+
+/* Scroll-edge fades — content dissolves at the top/bottom of a scroll viewport
+   instead of clipping hard. Asymmetric on purpose: the bottom ramp stays under
+   12px so sticky FABs (offset bottom-3) sit fully above it. */
+.scroll-fade-y {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 24px, #000 calc(100% - 12px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 24px, #000 calc(100% - 12px), transparent 100%);
+}
