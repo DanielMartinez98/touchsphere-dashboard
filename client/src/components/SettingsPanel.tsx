@@ -1,12 +1,14 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
+import { Check, X as XIcon, RotateCw, ClipboardCopy, MessageSquare, Trash2 } from 'lucide-react'
 import { useAudioDevices } from '../hooks/useAudioDevices'
 import { useDevice } from '../hooks/useDevice'
 import { playSound, playRecordChime } from '../utils/sound'
 import { useVolume, setVolume, getEffectiveGain, type VolumeCategory } from '../hooks/useVolume'
 import { useWakeWordEnabled, setWakeWordEnabled, useWakeWordTranscript, useWakeWordStatus } from '../hooks/useWakeWord'
 import { useAutoSchedule, fireBedtimeAlert } from '../hooks/useAutoSchedule'
+import { useDebugLog, clearDebugLog, getDebugLog } from '../utils/debugLog'
 
-type Tab = 'sounds' | 'hardware' | 'schedule' | 'system'
+type Tab = 'sounds' | 'hardware' | 'schedule' | 'system' | 'debug'
 
 type SoundCategory = 'sfx' | 'music' | 'voice'
 
@@ -322,6 +324,7 @@ export function SettingsPanel() {
     { id: 'hardware', label: 'Hardware' },
     { id: 'schedule', label: 'Schedule' },
     { id: 'system',   label: 'System'   },
+    { id: 'debug',    label: 'Debug'    },
   ]
 
   const { schedule, updateSchedule } = useAutoSchedule()
@@ -918,6 +921,9 @@ export function SettingsPanel() {
               </div>
             )}
 
+            {/* Debug tab — config visibility, endpoint checks, error log */}
+            {tab === 'debug' && <DebugTab />}
+
           </div>
         </div>
       )}
@@ -953,6 +959,345 @@ function VolumeSlider({ category, label, accent, track }: VolumeSliderProps) {
         aria-label={`${label} volume`}
         className={`w-full h-2 ${track} cursor-pointer`}
       />
+    </div>
+  )
+}
+
+// ── Debug tab ─────────────────────────────────────────────────────────────────
+// Kiosk-friendly diagnostics: what config the server actually sees, whether
+// each backend integration responds (and how fast), an LLM round-trip test,
+// client environment facts, and the recent runtime error log.
+
+const DEBUG_API = (import.meta.env.VITE_AUDIO_API as string | undefined) ?? ''
+
+interface ServerDebug {
+  uptimeSec: number
+  node:      string
+  platform:  string
+  nodeEnv:   string
+  cacheDir:  string
+  config:    Record<string, boolean>
+  ollama:    { url: string; model: string }
+}
+
+interface CheckResult { state: 'ok' | 'fail'; ms: number; detail?: string }
+
+// Display order for the checks list. Paths are resolved at run time because
+// weather/air need coordinates (from the geoip check, same as the app itself)
+// and calendar needs the current month.
+const CHECK_LABELS: { id: string; label: string }[] = [
+  { id: 'health',   label: 'Server health' },
+  { id: 'geoip',    label: 'Location (GeoIP)' },
+  { id: 'weather',  label: 'Weather (OpenWeather)' },
+  { id: 'calendar', label: 'Calendar (iCal)' },
+  { id: 'air',      label: 'Air quality' },
+  { id: 'notion',   label: 'Notion tasks' },
+  { id: 'device',   label: 'Device stats (Pi)' },
+]
+
+const CONFIG_LABELS: Record<string, string> = {
+  OPENWEATHER_API_KEY: 'OpenWeather key',
+  CALENDAR_ICAL_URL:   'Calendar iCal URL',
+  ELEVENLABS_API_KEY:  'ElevenLabs key',
+  NOTION_API_KEY:      'Notion key',
+  NOTION_DATABASE_ID:  'Notion database ID',
+  OLLAMA_API_KEY:      'Ollama API key',
+  DEFAULT_LAT_LON:     'Default coordinates',
+}
+
+async function timedFetch(path: string, init?: RequestInit, timeoutMs = 10_000): Promise<{ result: CheckResult; json?: any }> {
+  const t0 = performance.now()
+  const ctrl = new AbortController()
+  const to = window.setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const res = await fetch(`${DEBUG_API}${path}`, { ...init, signal: ctrl.signal })
+    const ms = Math.round(performance.now() - t0)
+    if (res.ok) {
+      let json: any
+      try { json = await res.json() } catch { /* non-JSON body is fine */ }
+      return { result: { state: 'ok', ms }, json }
+    }
+    let detail = `HTTP ${res.status}`
+    try {
+      const j = await res.json() as { error?: string }
+      if (j.error) detail += ` — ${j.error}`
+    } catch { /* body wasn't JSON */ }
+    return { result: { state: 'fail', ms, detail } }
+  } catch (err) {
+    const ms = Math.round(performance.now() - t0)
+    const aborted = err instanceof DOMException && err.name === 'AbortError'
+    return { result: { state: 'fail', ms, detail: aborted ? `Timeout after ${timeoutMs / 1000}s` : (err instanceof Error ? err.message : String(err)) } }
+  } finally {
+    window.clearTimeout(to)
+  }
+}
+
+function StatusChip({ result }: { result: CheckResult | undefined }) {
+  if (!result) return <span className="w-4 h-4 rounded-full border-2 border-white/20 border-t-white/60 animate-spin shrink-0" />
+  return result.state === 'ok'
+    ? <span className="flex items-center gap-1.5 text-emerald-400 text-sm tabular-nums shrink-0"><Check size={15} /> {result.ms}ms</span>
+    : <span className="flex items-center gap-1.5 text-red-400 text-sm shrink-0"><XIcon size={15} /> failed</span>
+}
+
+function BoolChip({ ok }: { ok: boolean }) {
+  return ok
+    ? <span className="flex items-center gap-1 text-emerald-400 text-sm"><Check size={14} /> set</span>
+    : <span className="flex items-center gap-1 text-white/35 text-sm"><XIcon size={14} /> not set</span>
+}
+
+function DebugTab() {
+  const [server,    setServer]    = useState<ServerDebug | null>(null)
+  const [serverErr, setServerErr] = useState<string | null>(null)
+  const [checks,    setChecks]    = useState<Record<string, CheckResult>>({})
+  const [checking,  setChecking]  = useState(false)
+  const [llm,       setLlm]       = useState<{ state: 'idle' | 'running' | 'done' | 'fail'; ms?: number; text?: string }>({ state: 'idle' })
+  const [copied,    setCopied]    = useState<string | null>(null)
+  const errors = useDebugLog()
+
+  async function loadServer() {
+    setServerErr(null)
+    try {
+      const res = await fetch(`${DEBUG_API}/api/system/debug`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}${res.status === 404 ? ' — server predates this endpoint; rebuild the container' : ''}`)
+      setServer(await res.json() as ServerDebug)
+    } catch (err) {
+      setServerErr(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function runChecks() {
+    if (checking) return
+    setChecking(true)
+    setChecks({})
+
+    // GeoIP first — its coordinates feed the weather/air probes, exactly like
+    // the widgets do. Falls back to 0,0 so the OpenWeather key still gets
+    // exercised even when geoip is down.
+    const geo = await timedFetch('/api/geoip')
+    setChecks(prev => ({ ...prev, geoip: geo.result }))
+    const lat = typeof geo.json?.lat === 'number' ? geo.json.lat : 0
+    const lon = typeof geo.json?.lon === 'number' ? geo.json.lon : 0
+    const now = new Date()
+
+    const endpoints: { id: string; path: string }[] = [
+      { id: 'health',   path: '/api/health' },
+      { id: 'weather',  path: `/api/weather?lat=${lat}&lon=${lon}` },
+      { id: 'calendar', path: `/api/calendar/month?year=${now.getFullYear()}&month=${now.getMonth() + 1}` },
+      { id: 'air',      path: `/api/airquality?lat=${lat}&lon=${lon}` },
+      { id: 'notion',   path: '/api/notion/tasks' },
+      { id: 'device',   path: '/api/device' },
+    ]
+    await Promise.all(endpoints.map(async ep => {
+      const { result } = await timedFetch(ep.path)
+      setChecks(prev => ({ ...prev, [ep.id]: result }))
+    }))
+    setChecking(false)
+  }
+
+  useEffect(() => {
+    void loadServer()
+    void runChecks()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function testLlm() {
+    if (llm.state === 'running') return
+    setLlm({ state: 'running' })
+    const t0 = performance.now()
+    try {
+      const ctrl = new AbortController()
+      const to = window.setTimeout(() => ctrl.abort(), 60_000)
+      const res = await fetch(`${DEBUG_API}/api/chat`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ messages: [{ role: 'user', content: 'Reply with exactly one word: pong' }] }),
+        signal:  ctrl.signal,
+      })
+      window.clearTimeout(to)
+      const ms = Math.round(performance.now() - t0)
+      if (!res.ok) {
+        const detail = await res.text().catch(() => '')
+        setLlm({ state: 'fail', ms, text: `HTTP ${res.status} ${detail.slice(0, 160)}` })
+        return
+      }
+      const json = await res.json() as { reply?: string }
+      setLlm({ state: 'done', ms, text: (json.reply ?? '').trim().slice(0, 160) || '(empty reply)' })
+    } catch (err) {
+      const ms = Math.round(performance.now() - t0)
+      const aborted = err instanceof DOMException && err.name === 'AbortError'
+      setLlm({ state: 'fail', ms, text: aborted ? 'Timeout after 60s' : (err instanceof Error ? err.message : String(err)) })
+    }
+  }
+
+  async function copyDiagnostics() {
+    const payload = {
+      at:     new Date().toISOString(),
+      server: serverErr ? { error: serverErr } : server,
+      checks,
+      llm,
+      client: {
+        secureContext: window.isSecureContext,
+        online:        navigator.onLine,
+        viewport:      `${window.innerWidth}×${window.innerHeight} @${window.devicePixelRatio}x`,
+        userAgent:     navigator.userAgent,
+        audioApi:      DEBUG_API || '(same origin)',
+      },
+      recentErrors: getDebugLog().slice(-20),
+    }
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2))
+      setCopied('Copied to clipboard')
+    } catch {
+      setCopied('Clipboard unavailable — needs HTTPS')
+    }
+    window.setTimeout(() => setCopied(null), 2500)
+  }
+
+  const rowClass = 'flex items-center justify-between gap-3 px-5 py-3.5'
+
+  return (
+    <div className="space-y-4 max-w-lg mx-auto">
+      {/* ── Server configuration ── */}
+      <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Server configuration</span>
+      <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden divide-y divide-white/8">
+        {serverErr && (
+          <p className="px-5 py-4 text-sm text-red-400">{serverErr}</p>
+        )}
+        {!serverErr && !server && (
+          <p className="px-5 py-4 text-sm text-white/40">Loading…</p>
+        )}
+        {server && (
+          <>
+            <div className={rowClass}>
+              <span className="text-sm text-white/70">Server uptime</span>
+              <span className="text-sm text-white/60 tabular-nums">{formatUptime(server.uptimeSec)} · {server.nodeEnv}</span>
+            </div>
+            <div className={rowClass}>
+              <span className="text-sm text-white/70">Runtime</span>
+              <span className="text-sm text-white/60">{server.node} · {server.platform}</span>
+            </div>
+            {Object.entries(server.config).map(([key, ok]) => (
+              <div key={key} className={rowClass}>
+                <span className="text-sm text-white/70">{CONFIG_LABELS[key] ?? key}</span>
+                <BoolChip ok={ok} />
+              </div>
+            ))}
+            <div className={rowClass}>
+              <span className="text-sm text-white/70 shrink-0">Ollama</span>
+              <span className="text-sm text-white/60 text-right break-all">{server.ollama.model}<br /><span className="text-white/40 text-xs">{server.ollama.url}</span></span>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* ── Endpoint checks ── */}
+      <div className="flex items-center justify-between mt-6 mb-2">
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Connection checks</span>
+        <button
+          onClick={() => { void loadServer(); void runChecks() }}
+          disabled={checking}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 text-white/60 text-xs font-medium active:bg-white/20 disabled:opacity-40"
+        >
+          <RotateCw size={13} className={checking ? 'animate-spin' : ''} /> Re-run
+        </button>
+      </div>
+      <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden divide-y divide-white/8">
+        {CHECK_LABELS.map(ep => {
+          const result = checks[ep.id]
+          return (
+            <div key={ep.id} className="px-5 py-3.5">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-white/70">{ep.label}</span>
+                <StatusChip result={result} />
+              </div>
+              {result?.state === 'fail' && result.detail && (
+                <p className="text-xs text-red-400/80 mt-1 break-all">{result.detail}</p>
+              )}
+            </div>
+          )
+        })}
+        {/* LLM round-trip — separate button because it costs an inference call */}
+        <div className="px-5 py-3.5">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-sm text-white/70">LLM chat (Ollama)</span>
+            {llm.state === 'idle' && (
+              <button onClick={() => void testLlm()}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-500/20 text-blue-300 text-xs font-medium active:bg-blue-500/35">
+                <MessageSquare size={13} /> Test
+              </button>
+            )}
+            {llm.state === 'running' && <span className="w-4 h-4 rounded-full border-2 border-white/20 border-t-blue-400 animate-spin" />}
+            {llm.state === 'done' && <span className="flex items-center gap-1.5 text-emerald-400 text-sm tabular-nums"><Check size={15} /> {llm.ms}ms</span>}
+            {llm.state === 'fail' && (
+              <button onClick={() => void testLlm()} className="flex items-center gap-1.5 text-red-400 text-sm active:opacity-70">
+                <XIcon size={15} /> failed — retry
+              </button>
+            )}
+          </div>
+          {llm.text && llm.state !== 'running' && (
+            <p className={`text-xs mt-1 break-all ${llm.state === 'fail' ? 'text-red-400/80' : 'text-white/50'}`}>
+              {llm.state === 'done' ? `Reply: “${llm.text}”` : llm.text}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* ── Client environment ── */}
+      <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">This screen</span>
+      <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden divide-y divide-white/8">
+        <div className={rowClass}>
+          <span className="text-sm text-white/70">Secure context (mic/camera)</span>
+          <BoolChip ok={window.isSecureContext} />
+        </div>
+        <div className={rowClass}>
+          <span className="text-sm text-white/70">Network</span>
+          <span className={`text-sm ${navigator.onLine ? 'text-emerald-400' : 'text-red-400'}`}>{navigator.onLine ? 'online' : 'offline'}</span>
+        </div>
+        <div className={rowClass}>
+          <span className="text-sm text-white/70">Viewport</span>
+          <span className="text-sm text-white/60 tabular-nums">{window.innerWidth}×{window.innerHeight} @{window.devicePixelRatio}x</span>
+        </div>
+        <div className={rowClass}>
+          <span className="text-sm text-white/70 shrink-0">Audio API base</span>
+          <span className="text-sm text-white/60 break-all text-right">{DEBUG_API || '(same origin)'}</span>
+        </div>
+        <div className="px-5 py-3.5">
+          <span className="text-sm text-white/70 block mb-1">User agent</span>
+          <span className="text-xs text-white/40 break-all">{navigator.userAgent}</span>
+        </div>
+      </div>
+
+      {/* ── Runtime errors ── */}
+      <div className="flex items-center justify-between mt-6 mb-2">
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Runtime errors ({errors.length})</span>
+        {errors.length > 0 && (
+          <button onClick={clearDebugLog}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 text-white/60 text-xs font-medium active:bg-white/20">
+            <Trash2 size={13} /> Clear
+          </button>
+        )}
+      </div>
+      <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden divide-y divide-white/8 max-h-64 overflow-y-auto">
+        {errors.length === 0 && (
+          <p className="px-5 py-4 text-sm text-white/35">No errors captured since load.</p>
+        )}
+        {[...errors].reverse().map((e, i) => (
+          <div key={`${e.ts}-${i}`} className="px-5 py-3">
+            <div className="flex items-center gap-2">
+              <span className={`text-[11px] font-semibold uppercase tracking-wider ${e.kind === 'console' ? 'text-amber-400/80' : 'text-red-400/80'}`}>{e.kind}</span>
+              <span className="text-xs text-white/35 tabular-nums">{new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+            </div>
+            <p className="text-xs text-white/60 mt-1 break-all">{e.message}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Copy diagnostics ── */}
+      <button
+        onClick={() => void copyDiagnostics()}
+        className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl bg-white/10 border border-white/10 text-white/70 text-sm font-medium active:bg-white/20 mt-4"
+      >
+        <ClipboardCopy size={16} /> {copied ?? 'Copy full diagnostics'}
+      </button>
     </div>
   )
 }

@@ -23,6 +23,32 @@ router.get('/events', (req: Request, res: Response) => {
   })
 })
 
+// GET /api/system/debug — runtime + config summary for the in-app Debug panel.
+// Secrets are reported as booleans only; never echo key material.
+router.get('/debug', (_req: Request, res: Response) => {
+  const env = process.env
+  res.json({
+    uptimeSec: Math.floor(process.uptime()),
+    node:      process.version,
+    platform:  `${process.platform}/${process.arch}`,
+    nodeEnv:   env['NODE_ENV'] ?? 'development',
+    cacheDir:  env['CACHE_DIR'] ?? '(default)',
+    config: {
+      OPENWEATHER_API_KEY: !!env['OPENWEATHER_API_KEY'],
+      CALENDAR_ICAL_URL:   !!env['CALENDAR_ICAL_URL'],
+      ELEVENLABS_API_KEY:  !!env['ELEVENLABS_API_KEY'],
+      NOTION_API_KEY:      !!env['NOTION_API_KEY'],
+      NOTION_DATABASE_ID:  !!env['NOTION_DATABASE_ID'],
+      OLLAMA_API_KEY:      !!env['OLLAMA_API_KEY'],
+      DEFAULT_LAT_LON:     !!(env['DEFAULT_LAT'] && env['DEFAULT_LON']),
+    },
+    ollama: {
+      url:   env['OLLAMA_URL']   ?? 'http://host.docker.internal:11434 (default)',
+      model: env['OLLAMA_MODEL'] ?? 'gemma3 (default)',
+    },
+  })
+})
+
 // POST /api/system/restart  — broadcast reload event to all connected clients.
 // The server itself keeps running; each browser tab reloads itself.
 router.post('/restart', (_req: Request, res: Response) => {

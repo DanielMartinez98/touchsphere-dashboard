@@ -10,6 +10,10 @@ import App from './App.tsx'
 import './hooks/useWeather'
 import './hooks/useAirQuality'
 import './hooks/useForecast'
+// Capture runtime errors early so Settings → Debug can display them
+import { installDebugLog } from './utils/debugLog'
+
+installDebugLog()
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
   constructor(props: { children: ReactNode }) {
