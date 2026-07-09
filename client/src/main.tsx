@@ -12,8 +12,11 @@ import './hooks/useAirQuality'
 import './hooks/useForecast'
 // Capture runtime errors early so Settings → Debug can display them
 import { installDebugLog } from './utils/debugLog'
+// Suppress the phantom tap that a scroll gesture fires when the finger lifts
+import { installTapGuard } from './utils/tapGuard'
 
 installDebugLog()
+installTapGuard()
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
   constructor(props: { children: ReactNode }) {

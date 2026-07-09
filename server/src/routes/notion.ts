@@ -35,40 +35,89 @@ function cacheDir(): string {
   return dir
 }
 
+const clean = (arr: unknown): string[] =>
+  Array.isArray(arr) ? Array.from(new Set(arr.map(String).map(s => s.trim()).filter(Boolean))) : []
+
 function envTaskDbIds(): string[] {
-  return (process.env['NOTION_DATABASE_ID'] ?? '')
-    .split(',').map(s => s.trim()).filter(Boolean)
+  return clean((process.env['NOTION_DATABASE_ID'] ?? '').split(','))
 }
 
-function readTaskDbIds(): string[] {
+// The effective task-DB set is auto-discovered (every task-like database the
+// integration can see) plus the env seed, minus anything the user has hidden
+// via the Browse "Show in Tasks" toggle, plus anything they've explicitly added
+// that discovery didn't catch. Only these two overrides are persisted.
+interface TaskDbStore { included: string[]; excluded: string[] }
+
+function readStore(): TaskDbStore {
   const p = path.join(cacheDir(), TASK_DBS_FILE)
   try {
     if (fs.existsSync(p)) {
-      const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as { ids?: unknown }
-      if (Array.isArray(parsed.ids)) {
-        return Array.from(new Set(parsed.ids.map(String).map(s => s.trim()).filter(Boolean)))
-      }
+      const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as { included?: unknown; excluded?: unknown; ids?: unknown }
+      // Migrate the earlier `{ ids }` shape → explicit includes.
+      return { included: clean(parsed.included ?? parsed.ids), excluded: clean(parsed.excluded) }
     }
   } catch (err) {
-    console.error('[notion] failed to read task-db list:', err)
+    console.error('[notion] failed to read task-db store:', err)
   }
-  // First run (or unreadable file): fall back to the env seed.
-  return envTaskDbIds()
+  return { included: [], excluded: [] }
 }
 
-function writeTaskDbIds(ids: string[]): string[] {
-  const clean = Array.from(new Set(ids.map(s => s.trim()).filter(Boolean)))
+function writeStore(store: TaskDbStore): void {
   try {
-    fs.writeFileSync(path.join(cacheDir(), TASK_DBS_FILE), JSON.stringify({ ids: clean }, null, 2), 'utf8')
+    fs.writeFileSync(
+      path.join(cacheDir(), TASK_DBS_FILE),
+      JSON.stringify({ included: clean(store.included), excluded: clean(store.excluded) }, null, 2),
+      'utf8',
+    )
   } catch (err) {
-    console.error('[notion] failed to write task-db list:', err)
+    console.error('[notion] failed to write task-db store:', err)
     throw err
   }
-  return clean
+}
+
+// A database looks like a task list if it has a status/state property or a
+// done-style checkbox. Cheap enough to run over search results (which already
+// carry each DB's properties) — no per-DB fetch needed.
+function isTaskDb(props: Record<string, any>): boolean {
+  return findProp(props, ['status', 'state'], ['status', 'select']) != null
+      || findProp(props, ['done', 'complete', 'completed', 'finished'], ['checkbox']) != null
+}
+
+// Enumerate every task-like database the integration can access. Cached briefly
+// so a burst of /tasks + /schema calls doesn't re-search the workspace.
+let discoverCache: { ids: string[]; ts: number } | null = null
+async function discoverTaskDbIds(force = false): Promise<string[]> {
+  if (!force && discoverCache && Date.now() - discoverCache.ts < SCHEMA_TTL) return discoverCache.ids
+  const ids: string[] = []
+  let cursor: string | undefined
+  let safety = 0
+  do {
+    const { data } = await axios.post(
+      `${NOTION_API}/search`,
+      { page_size: 100, filter: { property: 'object', value: 'database' }, ...(cursor ? { start_cursor: cursor } : {}) },
+      { headers: notionHeaders() },
+    )
+    for (const r of data.results as any[]) {
+      if (!r.archived && isTaskDb(r.properties ?? {})) ids.push(r.id)
+    }
+    cursor = data.has_more ? data.next_cursor : undefined
+    safety++
+  } while (cursor && safety < 10)
+  discoverCache = { ids, ts: Date.now() }
+  return ids
+}
+
+// The resolved list of databases whose rows appear in the Home task section.
+async function getTaskDbIds(): Promise<string[]> {
+  const store = readStore()
+  const auto  = await discoverTaskDbIds().catch(() => [])   // tolerate search failure
+  const set   = new Set<string>([...auto, ...envTaskDbIds(), ...store.included])
+  for (const ex of store.excluded) set.delete(ex)
+  return Array.from(set)
 }
 
 function tasksConfigured(): boolean {
-  return !!process.env['NOTION_API_KEY'] && readTaskDbIds().length > 0
+  return !!process.env['NOTION_API_KEY']
 }
 
 // Centralised error response. Notion's API errors carry useful messages we surface.
@@ -317,7 +366,8 @@ function buildTaskProperties(
 router.get('/schema', async (_req, res) => {
   if (!tasksConfigured()) { res.status(503).json({ error: 'Notion task DB not configured — set NOTION_API_KEY and NOTION_DATABASE_ID' }); return }
   try {
-    const schemas = await Promise.all(readTaskDbIds().map(id => getSchema(id)))
+    const ids = await getTaskDbIds()
+    const schemas = await Promise.all(ids.map(id => getSchema(id)))
     res.json(mergeSchemas(schemas))
   } catch (err) { notionError(res, err, 'Failed to fetch schema') }
 })
@@ -349,7 +399,7 @@ async function queryTaskPages(dbId: string): Promise<any[]> {
 router.get('/tasks', async (_req, res) => {
   if (!tasksConfigured()) { res.status(503).json({ error: 'Notion task DB not configured' }); return }
   try {
-    const dbIds = readTaskDbIds()
+    const dbIds = await getTaskDbIds()
 
     // Fetch every task database in parallel, tagging each row with its source
     // DB. A single failing DB (deleted, unshared) is skipped rather than
@@ -389,8 +439,8 @@ router.get('/tasks', async (_req, res) => {
 
 // Pick the database a mutation targets. Callers pass `dbId`; if it's missing or
 // not a known task DB we fall back to the first configured one.
-function resolveTaskDb(dbId?: string): string | null {
-  const ids = readTaskDbIds()
+async function resolveTaskDb(dbId?: string): Promise<string | null> {
+  const ids = await getTaskDbIds()
   if (dbId && ids.includes(dbId)) return dbId
   return ids[0] ?? null
 }
@@ -399,7 +449,7 @@ router.post('/tasks', async (req, res) => {
   if (!tasksConfigured()) { res.status(503).json({ error: 'Notion task DB not configured' }); return }
   const { title, status, priority, due, dbId } = req.body as { title?: string; status?: string; priority?: string; due?: string; dbId?: string }
   if (!title?.trim()) { res.status(400).json({ error: 'title is required' }); return }
-  const targetDb = resolveTaskDb(dbId)
+  const targetDb = await resolveTaskDb(dbId)
   if (!targetDb) { res.status(400).json({ error: 'no task database configured' }); return }
   try {
     const schema     = await getSchema(targetDb)
@@ -475,11 +525,12 @@ router.get('/tasks/:id/content', async (req, res) => {
 // Which databases feed the aggregated task widget. The list is user-editable
 // from the Browse view ("Show in Tasks") and persisted server-side.
 
-// GET → the current task databases with fresh title/icon for the UI.
+// GET → the effective task databases (auto-discovered + overrides) with fresh
+// title/icon for the UI.
 router.get('/task-dbs', async (_req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   try {
-    const ids = readTaskDbIds()
+    const ids = await getTaskDbIds()
     const dbs = await Promise.all(ids.map(async id => {
       try { const e = await getDb(id); return { id, title: e.title, icon: e.icon } }
       catch { return { id, title: 'Unavailable', icon: null } }
@@ -488,25 +539,33 @@ router.get('/task-dbs', async (_req, res) => {
   } catch (err) { notionError(res, err, 'Failed to list task databases') }
 })
 
-// POST { id } → add a database to the task set (idempotent).
+// POST { id } → force a database into the task set (un-exclude / include).
 router.post('/task-dbs', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   const { id } = req.body as { id?: string }
-  if (!id?.trim()) { res.status(400).json({ error: 'id is required' }); return }
+  const target = id?.trim()
+  if (!target) { res.status(400).json({ error: 'id is required' }); return }
   try {
-    const ids = writeTaskDbIds([...readTaskDbIds(), id.trim()])
-    dbCache.delete(id.trim())
-    res.status(201).json({ ids })
+    const store = readStore()
+    store.excluded = store.excluded.filter(x => x !== target)
+    if (!store.included.includes(target)) store.included.push(target)
+    writeStore(store)
+    dbCache.delete(target)
+    res.status(201).json({ ids: await getTaskDbIds() })
   } catch { res.status(500).json({ error: 'Failed to persist task databases' }) }
 })
 
-// DELETE :id → remove a database from the task set.
-router.delete('/task-dbs/:id', (req, res) => {
+// DELETE :id → hide a database from the task set (exclude, even if discovery
+// would otherwise auto-include it).
+router.delete('/task-dbs/:id', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   const target = req.params['id']!
   try {
-    const ids = writeTaskDbIds(readTaskDbIds().filter(x => x !== target))
-    res.json({ ids })
+    const store = readStore()
+    store.included = store.included.filter(x => x !== target)
+    if (!store.excluded.includes(target)) store.excluded.push(target)
+    writeStore(store)
+    res.json({ ids: await getTaskDbIds() })
   } catch { res.status(500).json({ error: 'Failed to persist task databases' }) }
 })
 
