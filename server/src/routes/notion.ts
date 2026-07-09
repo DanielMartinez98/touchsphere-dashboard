@@ -1,5 +1,7 @@
 import { Router, Request, Response } from 'express'
 import axios from 'axios'
+import fs from 'fs'
+import path from 'path'
 
 const router = Router()
 
@@ -18,8 +20,55 @@ function configured(): boolean {
   return !!process.env['NOTION_API_KEY']
 }
 
+// ── Task database list ────────────────────────────────────────────────────────
+// The task widget aggregates one *or more* Notion databases. The set of task
+// databases is persisted server-side (a JSON file in CACHE_DIR) so it survives
+// restarts and is shared across devices. It's seeded once from the
+// NOTION_DATABASE_ID env var — which now accepts a comma-separated list — and
+// thereafter the persisted file is authoritative (so a DB added or removed from
+// the on-screen picker sticks even if the env var never changes).
+const TASK_DBS_FILE = 'notion-task-dbs.json'
+
+function cacheDir(): string {
+  const dir = process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache'
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+function envTaskDbIds(): string[] {
+  return (process.env['NOTION_DATABASE_ID'] ?? '')
+    .split(',').map(s => s.trim()).filter(Boolean)
+}
+
+function readTaskDbIds(): string[] {
+  const p = path.join(cacheDir(), TASK_DBS_FILE)
+  try {
+    if (fs.existsSync(p)) {
+      const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as { ids?: unknown }
+      if (Array.isArray(parsed.ids)) {
+        return Array.from(new Set(parsed.ids.map(String).map(s => s.trim()).filter(Boolean)))
+      }
+    }
+  } catch (err) {
+    console.error('[notion] failed to read task-db list:', err)
+  }
+  // First run (or unreadable file): fall back to the env seed.
+  return envTaskDbIds()
+}
+
+function writeTaskDbIds(ids: string[]): string[] {
+  const clean = Array.from(new Set(ids.map(s => s.trim()).filter(Boolean)))
+  try {
+    fs.writeFileSync(path.join(cacheDir(), TASK_DBS_FILE), JSON.stringify({ ids: clean }, null, 2), 'utf8')
+  } catch (err) {
+    console.error('[notion] failed to write task-db list:', err)
+    throw err
+  }
+  return clean
+}
+
 function tasksConfigured(): boolean {
-  return !!(process.env['NOTION_API_KEY'] && process.env['NOTION_DATABASE_ID'])
+  return !!process.env['NOTION_API_KEY'] && readTaskDbIds().length > 0
 }
 
 // Centralised error response. Notion's API errors carry useful messages we surface.
@@ -94,21 +143,39 @@ export interface NotionSchema {
   projectDbId:      string | null
 }
 
-let schemaCache: NotionSchema | null = null
-let schemaCacheTs = 0
+// Per-database cache. Each entry holds the derived task schema plus the DB's
+// display title/icon (so the aggregated /tasks response can label each source
+// without an extra round-trip). Keyed by database id.
+interface DbEntry { schema: NotionSchema; title: string; icon: string | null; ts: number }
+const dbCache = new Map<string, DbEntry>()
 const SCHEMA_TTL = 5 * 60 * 1000
 
 const DONE_NAMES = new Set(['done', 'completed', 'complete', 'finished', 'closed'])
 
-async function getSchema(force = false): Promise<NotionSchema> {
-  if (!force && schemaCache && Date.now() - schemaCacheTs < SCHEMA_TTL) return schemaCache
-
+// Fetch + cache a single task database's schema and metadata.
+async function getDb(dbId: string, force = false): Promise<DbEntry> {
+  const hit = dbCache.get(dbId)
+  if (!force && hit && Date.now() - hit.ts < SCHEMA_TTL) return hit
   const { data } = await axios.get(
-    `${NOTION_API}/databases/${process.env['NOTION_DATABASE_ID']}`,
+    `${NOTION_API}/databases/${dbId}`,
     { headers: notionHeaders() },
   )
-  const props = data.properties as Record<string, any>
+  const entry: DbEntry = {
+    schema: buildSchema(data.properties as Record<string, any>),
+    title:  dbTitle(data),
+    icon:   iconOf(data)?.value ?? null,
+    ts:     Date.now(),
+  }
+  dbCache.set(dbId, entry)
+  return entry
+}
 
+async function getSchema(dbId: string, force = false): Promise<NotionSchema> {
+  return (await getDb(dbId, force)).schema
+}
+
+// Derive our task schema from a database's raw property definitions.
+function buildSchema(props: Record<string, any>): NotionSchema {
   const titleKey    = Object.keys(props).find(k => props[k].type === 'title') ?? 'Name'
   const statusEntry = findProp(props, ['status', 'state'], ['status', 'select'])
   const statusKey   = statusEntry?.[0] ?? null
@@ -156,12 +223,48 @@ async function getSchema(force = false): Promise<NotionSchema> {
     projectDbId = relationEntry[1]?.relation?.database_id ?? null
   }
 
-  schemaCache   = { titleKey, statusKey, statusType, statusOptions, doneStatusNames, todoStatusNames, priorityKey, priorityOptions, dueKey, projectKey, projectDbId }
-  schemaCacheTs = Date.now()
-  return schemaCache
+  return { titleKey, statusKey, statusType, statusOptions, doneStatusNames, todoStatusNames, priorityKey, priorityOptions, dueKey, projectKey, projectDbId }
 }
 
-function extractTask(page: any, schema: NotionSchema) {
+// Fold several task-DB schemas into one for the generic Home UI (status/priority
+// filter chips, colour lookups, create-form field gating). Options are unioned
+// by name (first colour wins); done/todo name sets and the boolean-ish keys are
+// unioned too. Per-DB actions that must use a specific DB's valid options
+// (toggle-done, create) resolve the individual schema instead of this merge.
+const EMPTY_SCHEMA: NotionSchema = {
+  titleKey: 'Name', statusKey: null, statusType: null, statusOptions: [],
+  doneStatusNames: [], todoStatusNames: [], priorityKey: null, priorityOptions: [],
+  dueKey: null, projectKey: null, projectDbId: null,
+}
+
+function mergeSchemas(list: NotionSchema[]): NotionSchema {
+  if (list.length === 0) return EMPTY_SCHEMA
+  if (list.length === 1) return list[0]!
+  const mergeOpts = (pick: (s: NotionSchema) => SchemaOption[]): SchemaOption[] => {
+    const byName = new Map<string, SchemaOption>()
+    for (const s of list) for (const o of pick(s)) if (!byName.has(o.name)) byName.set(o.name, o)
+    return Array.from(byName.values())
+  }
+  const uniq = (arr: string[]) => Array.from(new Set(arr))
+  const first = <T>(pick: (s: NotionSchema) => T | null): T | null =>
+    list.map(pick).find(v => v != null) ?? null
+
+  return {
+    titleKey:        list[0]!.titleKey,
+    statusKey:       first(s => s.statusKey),
+    statusType:      first(s => s.statusType),
+    statusOptions:   mergeOpts(s => s.statusOptions),
+    doneStatusNames: uniq(list.flatMap(s => s.doneStatusNames)),
+    todoStatusNames: uniq(list.flatMap(s => s.todoStatusNames)),
+    priorityKey:     first(s => s.priorityKey),
+    priorityOptions: mergeOpts(s => s.priorityOptions),
+    dueKey:          first(s => s.dueKey),
+    projectKey:      first(s => s.projectKey),
+    projectDbId:     first(s => s.projectDbId),
+  }
+}
+
+function extractTask(page: any, schema: NotionSchema, dbId: string) {
   const props   = page.properties as Record<string, any>
   const doneSet = new Set(schema.doneStatusNames.map(n => n.toLowerCase()))
 
@@ -185,7 +288,7 @@ function extractTask(page: any, schema: NotionSchema) {
     ? ((props[schema.projectKey]?.relation ?? []) as any[]).map(r => r.id)
     : []
 
-  return { id: page.id, title, status, priority, due, done, createdAt: page.created_time, projectIds }
+  return { id: page.id, title, status, priority, due, done, createdAt: page.created_time, projectIds, dbId }
 }
 
 function buildTaskProperties(
@@ -213,37 +316,60 @@ function buildTaskProperties(
 
 router.get('/schema', async (_req, res) => {
   if (!tasksConfigured()) { res.status(503).json({ error: 'Notion task DB not configured — set NOTION_API_KEY and NOTION_DATABASE_ID' }); return }
-  try { res.json(await getSchema()) }
-  catch (err) { notionError(res, err, 'Failed to fetch schema') }
+  try {
+    const schemas = await Promise.all(readTaskDbIds().map(id => getSchema(id)))
+    res.json(mergeSchemas(schemas))
+  } catch (err) { notionError(res, err, 'Failed to fetch schema') }
 })
+
+// Query one task database's pages (paginated, newest first, non-archived).
+async function queryTaskPages(dbId: string): Promise<any[]> {
+  const pages: any[] = []
+  let cursor: string | undefined
+  let safety = 0
+  // Cap at 10 pages (~1000 tasks) per DB to avoid hammering the API on
+  // pathological databases — well above any realistic personal task list.
+  do {
+    const { data } = await axios.post(
+      `${NOTION_API}/databases/${dbId}/query`,
+      {
+        page_size: 100,
+        sorts: [{ timestamp: 'created_time', direction: 'descending' }],
+        ...(cursor ? { start_cursor: cursor } : {}),
+      },
+      { headers: notionHeaders() },
+    )
+    for (const r of data.results as any[]) if (!r.archived) pages.push(r)
+    cursor = data.has_more ? data.next_cursor : undefined
+    safety++
+  } while (cursor && safety < 10)
+  return pages
+}
 
 router.get('/tasks', async (_req, res) => {
   if (!tasksConfigured()) { res.status(503).json({ error: 'Notion task DB not configured' }); return }
   try {
-    const schema = await getSchema()
+    const dbIds = readTaskDbIds()
 
-    // Walk every page of the task DB. Cap at 10 pages (~1000 tasks) to avoid
-    // hammering the API on pathological DBs — well above any realistic
-    // personal task list. Older Phase-1 code stopped at the first page.
-    const all: any[] = []
-    let cursor: string | undefined
-    let safety = 0
-    do {
-      const { data } = await axios.post(
-        `${NOTION_API}/databases/${process.env['NOTION_DATABASE_ID']}/query`,
-        {
-          page_size: 100,
-          sorts: [{ timestamp: 'created_time', direction: 'descending' }],
-          ...(cursor ? { start_cursor: cursor } : {}),
-        },
-        { headers: notionHeaders() },
-      )
-      for (const r of data.results as any[]) if (!r.archived) all.push(r)
-      cursor = data.has_more ? data.next_cursor : undefined
-      safety++
-    } while (cursor && safety < 10)
-
-    const tasks = all.map(p => extractTask(p, schema))
+    // Fetch every task database in parallel, tagging each row with its source
+    // DB. A single failing DB (deleted, unshared) is skipped rather than
+    // failing the whole list. Each DB's derived schema is returned so the
+    // client can toggle-done / create with that DB's valid options.
+    const schemas: Record<string, NotionSchema> = {}
+    const dbs: { id: string; title: string; icon: string | null }[] = []
+    const perDb = await Promise.all(dbIds.map(async dbId => {
+      try {
+        const entry = await getDb(dbId)
+        schemas[dbId] = entry.schema
+        dbs.push({ id: dbId, title: entry.title, icon: entry.icon })
+        const pages = await queryTaskPages(dbId)
+        return pages.map(p => extractTask(p, entry.schema, dbId))
+      } catch (err: any) {
+        console.error(`[notion] task DB ${dbId} failed, skipping:`, err?.response?.data ?? err?.message)
+        return []
+      }
+    }))
+    const tasks = perDb.flat()
 
     // Resolve project titles once per unique id so the client can label rows
     // without an N+1 round-trip. Tolerant of failures (a stale relation just
@@ -257,31 +383,49 @@ router.get('/tasks', async (_req, res) => {
       } catch { /* tolerate */ }
     }))
 
-    res.json({ tasks, projects })
+    res.json({ tasks, projects, schemas, dbs, merged: mergeSchemas(Object.values(schemas)) })
   } catch (err) { notionError(res, err, 'Failed to fetch tasks') }
 })
 
+// Pick the database a mutation targets. Callers pass `dbId`; if it's missing or
+// not a known task DB we fall back to the first configured one.
+function resolveTaskDb(dbId?: string): string | null {
+  const ids = readTaskDbIds()
+  if (dbId && ids.includes(dbId)) return dbId
+  return ids[0] ?? null
+}
+
 router.post('/tasks', async (req, res) => {
   if (!tasksConfigured()) { res.status(503).json({ error: 'Notion task DB not configured' }); return }
-  const { title, status, priority, due } = req.body as { title?: string; status?: string; priority?: string; due?: string }
+  const { title, status, priority, due, dbId } = req.body as { title?: string; status?: string; priority?: string; due?: string; dbId?: string }
   if (!title?.trim()) { res.status(400).json({ error: 'title is required' }); return }
+  const targetDb = resolveTaskDb(dbId)
+  if (!targetDb) { res.status(400).json({ error: 'no task database configured' }); return }
   try {
-    const schema     = await getSchema()
+    const schema     = await getSchema(targetDb)
     const properties = buildTaskProperties(schema, { title: title.trim(), status, priority, due: due ?? null })
     const { data }   = await axios.post(
       `${NOTION_API}/pages`,
-      { parent: { database_id: process.env['NOTION_DATABASE_ID'] }, properties },
+      { parent: { database_id: targetDb }, properties },
       { headers: notionHeaders() },
     )
-    res.status(201).json(extractTask(data, schema))
+    res.status(201).json(extractTask(data, schema, targetDb))
   } catch (err) { notionError(res, err, 'Failed to create task') }
 })
 
 router.patch('/tasks/:id', async (req, res) => {
   if (!tasksConfigured()) { res.status(503).json({ error: 'Notion task DB not configured' }); return }
-  const fields = req.body as { title?: string; status?: string | null; priority?: string | null; due?: string | null }
+  const { dbId, ...fields } = req.body as { dbId?: string; title?: string; status?: string | null; priority?: string | null; due?: string | null }
   try {
-    const schema     = await getSchema()
+    // Resolve which DB's schema to build properties against: prefer the dbId the
+    // client sends (it has it on the task), else look up the page's parent DB.
+    let schemaDbId = dbId
+    if (!schemaDbId) {
+      const { data: page } = await axios.get(`${NOTION_API}/pages/${req.params['id']}`, { headers: notionHeaders() })
+      schemaDbId = page.parent?.database_id
+    }
+    if (!schemaDbId) { res.status(400).json({ error: 'could not resolve task database' }); return }
+    const schema     = await getSchema(schemaDbId)
     const properties = buildTaskProperties(schema, fields)
     if (Object.keys(properties).length > 0)
       await axios.patch(`${NOTION_API}/pages/${req.params['id']}`, { properties }, { headers: notionHeaders() })
@@ -325,6 +469,45 @@ router.get('/tasks/:id/content', async (req, res) => {
     }).filter(Boolean)
     res.json({ text: lines.join('\n') })
   } catch (err) { notionError(res, err, 'Failed to fetch content') }
+})
+
+// ── Task database management ──────────────────────────────────────────────────
+// Which databases feed the aggregated task widget. The list is user-editable
+// from the Browse view ("Show in Tasks") and persisted server-side.
+
+// GET → the current task databases with fresh title/icon for the UI.
+router.get('/task-dbs', async (_req, res) => {
+  if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
+  try {
+    const ids = readTaskDbIds()
+    const dbs = await Promise.all(ids.map(async id => {
+      try { const e = await getDb(id); return { id, title: e.title, icon: e.icon } }
+      catch { return { id, title: 'Unavailable', icon: null } }
+    }))
+    res.json({ ids, dbs })
+  } catch (err) { notionError(res, err, 'Failed to list task databases') }
+})
+
+// POST { id } → add a database to the task set (idempotent).
+router.post('/task-dbs', async (req, res) => {
+  if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
+  const { id } = req.body as { id?: string }
+  if (!id?.trim()) { res.status(400).json({ error: 'id is required' }); return }
+  try {
+    const ids = writeTaskDbIds([...readTaskDbIds(), id.trim()])
+    dbCache.delete(id.trim())
+    res.status(201).json({ ids })
+  } catch { res.status(500).json({ error: 'Failed to persist task databases' }) }
+})
+
+// DELETE :id → remove a database from the task set.
+router.delete('/task-dbs/:id', (req, res) => {
+  if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
+  const target = req.params['id']!
+  try {
+    const ids = writeTaskDbIds(readTaskDbIds().filter(x => x !== target))
+    res.json({ ids })
+  } catch { res.status(500).json({ error: 'Failed to persist task databases' }) }
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -862,7 +1045,7 @@ router.patch('/databases/:id', async (req, res) => {
       { headers: notionHeaders() },
     )
     // Invalidate the legacy schema cache in case the task DB was edited.
-    schemaCache = null
+    dbCache.clear()
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to update database') }
 })
@@ -892,7 +1075,7 @@ router.patch('/databases/:id/properties/:name', async (req, res) => {
       { properties: { [req.params['name']!]: propBody } },
       { headers: notionHeaders() },
     )
-    schemaCache = null
+    dbCache.clear()
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to edit property') }
 })
@@ -905,7 +1088,7 @@ router.delete('/databases/:id/properties/:name', async (req, res) => {
       { properties: { [req.params['name']!]: null } },
       { headers: notionHeaders() },
     )
-    schemaCache = null
+    dbCache.clear()
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to delete property') }
 })
@@ -932,7 +1115,7 @@ router.post('/databases/:id/properties', async (req, res) => {
       { properties: { [name.trim()]: propDef } },
       { headers: notionHeaders() },
     )
-    schemaCache = null  // legacy cache invalidate
+    dbCache.clear()  // task-schema cache invalidate
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to add property') }
 })

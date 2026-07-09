@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { motion, AnimatePresence, useDragControls } from 'framer-motion'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
+import { useRipple } from '../../hooks/useRipple'
 import type { WidgetPosition } from '../../types'
 
 interface WidgetProps {
@@ -33,6 +34,10 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
   // top of the overlay so it never fights with scrolling content below.
   const dragControls = useDragControls()
 
+  // Press ripple tinted to this corner's accent colour, so the tap flare
+  // reinforces each widget's identity instead of a generic white flash.
+  const { onPointerDown, rippleLayer } = useRipple(accent ? `${accent}4d` : undefined)
+
   // Close on Escape key
   useEffect(() => {
     if (!isOpen) return
@@ -48,6 +53,7 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
       {/* Collapsed pill — always visible */}
       <motion.button
         onClick={onToggle}
+        onPointerDown={onPointerDown}
         className={`
           relative flex flex-col gap-1.5 p-5
           bg-black/60 backdrop-blur-md border border-hairline
@@ -69,6 +75,7 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
         }}
         whileTap={{ scale: 0.95 }}
       >
+        {rippleLayer}
         {collapsed}
       </motion.button>
 

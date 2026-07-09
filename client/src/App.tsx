@@ -40,10 +40,15 @@ const ACCENT = {
 
 function App() {
   const [open, setOpen] = useState<OpenWidget>(null)
+  // Bumped on each orb tap; used as a React key so the burst ring remounts and
+  // replays its one-shot animation every time.
+  const [orbBurst, setOrbBurst] = useState(0)
   const toggle = (w: OpenWidget) => setOpen(prev => prev === w ? null : w)
   const { items, nextItem, addItem, removeItem, markDone, toggleStar, setStatus } = useMediaList()
   const {
     schema:      notionSchema,
+    schemas:     notionSchemas,
+    taskDbs:     notionTaskDbs,
     tasks:       notionTasks,
     projects:    notionProjects,
     loading:     notionLoading,
@@ -98,6 +103,10 @@ function App() {
    * (a generated C-major arpeggio — see `utils/sound.ts`).
    */
   async function handleSphereTap() {
+    // Fire a one-shot ring the instant the orb is tapped. The mic-permission /
+    // getUserMedia round-trip adds latency before the listening ring appears,
+    // so this burst confirms the primary voice trigger landed right away.
+    setOrbBurst(n => n + 1)
     if (!startupPlayedRef.current) {
       startupPlayedRef.current = true
       try { await playStartupSound() } catch { /* ignore audio errors */ }
@@ -143,6 +152,16 @@ function App() {
         className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10 w-[360px] h-[360px] max-w-[60vmin] max-h-[60vmin] rounded-full bg-transparent active:scale-95 transition-transform focus:outline-none"
       />
 
+      {/* Orb tap burst — one-shot ring in the active accent, replays per tap */}
+      {orbBurst > 0 && (
+        <span
+          key={orbBurst}
+          aria-hidden
+          className="orb-burst absolute left-1/2 top-1/2 z-10 w-40 h-40 rounded-full border-2 pointer-events-none"
+          style={{ borderColor: 'var(--accent)' }}
+        />
+      )}
+
       {/* Top-Left — Weather (blue glow) */}
       <Widget
         position="top-left"
@@ -174,6 +193,8 @@ function App() {
           expanded={
             <NotionExpanded
               schema={notionSchema}
+              schemas={notionSchemas}
+              taskDbs={notionTaskDbs}
               tasks={notionTasks}
               projects={notionProjects}
               loading={notionLoading}

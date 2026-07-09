@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { ArrowUpDown, RotateCw, Mic, Plus, Check, ChevronRight, ChevronUp, ChevronDown, CalendarDays, TriangleAlert, Folder } from 'lucide-react'
-import type { NotionTask, NotionSchema, TaskFields, ProjectRef } from '../../../hooks/useNotion'
+import type { NotionTask, NotionSchema, TaskFields, ProjectRef, TaskDbRef } from '../../../hooks/useNotion'
 import type { NotionClient } from '../../../hooks/useNotionClient'
 import { colorFg, colorBg } from './notion-colors'
 import MiniCalendar from './MiniCalendar'
@@ -60,11 +60,13 @@ function isoInDays(days: number): string {
 // ── Task row ─────────────────────────────────────────────────────────────────
 
 function TaskRow({
-  task, schema, projects, onTap, onToggleDone, onTapProject,
+  task, schema, projects, sourceTitle, onTap, onToggleDone, onTapProject,
 }: {
   task:         NotionTask
   schema:       NotionSchema
   projects:     Record<string, ProjectRef>
+  // Source database name, shown as a chip only when several DBs are aggregated.
+  sourceTitle:  string | null
   onTap:        () => void
   onToggleDone: () => void
   onTapProject: (projectId: string) => void
@@ -106,6 +108,11 @@ function TaskRow({
           {task.title}
         </p>
         <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+          {sourceTitle && (
+            <span className="text-[13px] font-medium px-2 py-0.5 rounded-full bg-white/[0.06] text-white/45 max-w-[9rem] truncate">
+              {sourceTitle}
+            </span>
+          )}
           {statusOpt && (
             <span className="text-[13px] font-medium px-2 py-0.5 rounded-full"
               style={{ color: colorFg(statusOpt.color), background: colorBg(statusOpt.color, 0.25) }}>
@@ -182,23 +189,38 @@ function ChipRow({
 }
 
 function CreateTaskSheet({
-  schema, onSave, onClose,
+  schema, schemas, taskDbs, onSave, onClose,
 }: {
   schema:  NotionSchema
-  onSave:  (fields: { title: string; status?: string; priority?: string; due?: string }) => void
+  schemas: Record<string, NotionSchema>
+  taskDbs: TaskDbRef[]
+  onSave:  (fields: { title: string; status?: string; priority?: string; due?: string; dbId?: string }) => void
   onClose: () => void
 }) {
-  const defaultStatus = schema.statusOptions.find(o => schema.todoStatusNames.includes(o.name))?.name ?? schema.statusOptions[0]?.name
+  // Which database the new task lands in. Defaults to the first; the picker only
+  // shows when more than one DB feeds the list. The active schema (that DB's
+  // valid options) drives the status/priority/due fields below.
+  const [dbId, setDbId] = useState<string | undefined>(taskDbs[0]?.id)
+  const activeSchema = (dbId && schemas[dbId]) || schema
+
+  const defaultStatus = activeSchema.statusOptions.find(o => activeSchema.todoStatusNames.includes(o.name))?.name ?? activeSchema.statusOptions[0]?.name
   const [title,    setTitle]    = useState('')
   const [status,   setStatus]   = useState<string | undefined>(defaultStatus)
   const [priority, setPriority] = useState<string | undefined>(undefined)
   const [due,      setDue]      = useState('')
   const [showCal,  setShowCal]  = useState(false)
 
+  // Switching DB resets status to that DB's default (its options differ).
+  function pickDb(id: string) {
+    setDbId(id)
+    const sch = schemas[id]
+    setStatus(sch?.statusOptions.find(o => sch.todoStatusNames.includes(o.name))?.name ?? sch?.statusOptions[0]?.name)
+  }
+
   function save() {
     const t = title.trim()
     if (!t) return
-    onSave({ title: t, status, priority, due: due || undefined })
+    onSave({ title: t, status, priority, due: due || undefined, dbId })
     onClose()
   }
 
@@ -212,6 +234,23 @@ function CreateTaskSheet({
           <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-4" />
           <h2 className="text-base font-bold text-white mb-5">New Task</h2>
           <div className="flex flex-col gap-5">
+            {taskDbs.length > 1 && (
+              <div className="flex flex-col gap-2">
+                <span className="text-[13px] text-white/35 uppercase tracking-wider font-medium">List</span>
+                <div className="flex gap-2 overflow-x-auto pb-0.5 scrollbar-hide">
+                  {taskDbs.map(db => (
+                    <button type="button" key={db.id} onClick={() => pickDb(db.id)}
+                      className={`flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-all active:scale-95
+                        ${dbId === db.id
+                          ? 'bg-green-500/20 text-green-200 border-green-500/40'
+                          : 'bg-white/[0.04] text-white/40 border-transparent active:bg-white/10'}`}>
+                      {db.icon && <span>{db.icon}</span>}
+                      <span className="truncate max-w-[9rem]">{db.title}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <label className="flex flex-col gap-2">
               <span className="text-[13px] text-white/35 uppercase tracking-wider font-medium">Title</span>
               <TouchInput value={title} onChange={setTitle} commitOn="change"
@@ -219,13 +258,13 @@ function CreateTaskSheet({
                 ariaLabel="Task title"
                 className="bg-white/10 text-white placeholder-white/20 rounded-xl px-4 py-4 text-sm outline-none focus:ring-2 focus:ring-green-400" />
             </label>
-            {schema.statusKey && schema.statusOptions.length > 0 && (
-              <ChipRow label="Status" options={schema.statusOptions} value={status ?? null} onChange={v => setStatus(v ?? undefined)} />
+            {activeSchema.statusKey && activeSchema.statusOptions.length > 0 && (
+              <ChipRow label="Status" options={activeSchema.statusOptions} value={status ?? null} onChange={v => setStatus(v ?? undefined)} />
             )}
-            {schema.priorityKey && schema.priorityOptions.length > 0 && (
-              <ChipRow label="Priority" options={schema.priorityOptions} value={priority ?? null} onChange={v => setPriority(v ?? undefined)} allowNone />
+            {activeSchema.priorityKey && activeSchema.priorityOptions.length > 0 && (
+              <ChipRow label="Priority" options={activeSchema.priorityOptions} value={priority ?? null} onChange={v => setPriority(v ?? undefined)} allowNone />
             )}
-            {schema.dueKey && (
+            {activeSchema.dueKey && (
               <div className="flex flex-col gap-2">
                 <span className="text-[13px] text-white/35 uppercase tracking-wider font-medium">Due date</span>
                 <div className="flex gap-2">
@@ -268,13 +307,15 @@ function CreateTaskSheet({
 
 interface Props {
   schema:    NotionSchema | null
+  schemas:   Record<string, NotionSchema>
+  taskDbs:   TaskDbRef[]
   tasks:     NotionTask[]
   projects:  Record<string, ProjectRef>
   loading:   boolean
   error:     string | null
   client:    NotionClient
   onUpdate:  (id: string, fields: TaskFields) => void
-  onCreate:  (fields: { title: string; status?: string; priority?: string; due?: string }) => void
+  onCreate:  (fields: { title: string; status?: string; priority?: string; due?: string; dbId?: string }) => void
   onRefresh: () => void
 }
 
@@ -352,7 +393,10 @@ function GroupsAndRecents({
   )
 }
 
-export default function HomeView({ schema, tasks, projects, loading, error, client, onUpdate, onCreate, onRefresh }: Props) {
+export default function HomeView({ schema, schemas, taskDbs, tasks, projects, loading, error, client, onUpdate, onCreate, onRefresh }: Props) {
+  // Show a source chip on rows only when more than one DB is aggregated.
+  const dbTitleById = Object.fromEntries(taskDbs.map(d => [d.id, d.title]))
+  const showSource  = taskDbs.length > 1
   const [filter,        setFilter]        = useState<string | null>(null)
   const [projectFilter, setProjectFilter] = useState<string | null>(null)
   const [sort,          setSort]          = useState<SortMode>('priority')
@@ -410,12 +454,15 @@ export default function HomeView({ schema, tasks, projects, loading, error, clie
   }
 
   function toggleDone(task: NotionTask) {
-    if (!schema) return
+    // Use the task's own DB schema so we set a status that database actually
+    // has (its done/todo option names may differ from other task DBs).
+    const sch = schemas[task.dbId] ?? schema
+    if (!sch) return
     if (task.done) {
-      const revert = schema.todoStatusNames[0] ?? null
+      const revert = sch.todoStatusNames[0] ?? null
       onUpdate(task.id, { status: revert })
     } else {
-      const doneStatus = schema.doneStatusNames[0] ?? 'Done'
+      const doneStatus = sch.doneStatusNames[0] ?? 'Done'
       onUpdate(task.id, { status: doneStatus })
     }
   }
@@ -540,6 +587,7 @@ export default function HomeView({ schema, tasks, projects, loading, error, clie
             task={task}
             schema={schema}
             projects={projects}
+            sourceTitle={showSource ? (dbTitleById[task.dbId] ?? null) : null}
             onTap={() => client.navigate({ kind: 'page', id: task.id })}
             onToggleDone={() => toggleDone(task)}
             onTapProject={id => setProjectFilter(projectFilter === id ? null : id)}
@@ -562,6 +610,7 @@ export default function HomeView({ schema, tasks, projects, loading, error, clie
                 task={task}
                 schema={schema}
                 projects={projects}
+                sourceTitle={showSource ? (dbTitleById[task.dbId] ?? null) : null}
                 onTap={() => client.navigate({ kind: 'page', id: task.id })}
                 onToggleDone={() => toggleDone(task)}
                 onTapProject={id => setProjectFilter(projectFilter === id ? null : id)}
@@ -600,7 +649,7 @@ export default function HomeView({ schema, tasks, projects, loading, error, clie
       )}
 
       {creating && schema && (
-        <CreateTaskSheet schema={schema} onSave={onCreate} onClose={() => setCreating(false)} />
+        <CreateTaskSheet schema={schema} schemas={schemas} taskDbs={taskDbs} onSave={onCreate} onClose={() => setCreating(false)} />
       )}
     </div>
   )

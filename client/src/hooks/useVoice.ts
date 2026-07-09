@@ -32,6 +32,9 @@ export interface VoiceState {
   volume: number
   startListening: () => void
   stopListening: () => void
+  // Interrupt the assistant mid-reply and end the conversation. Wired to the
+  // on-screen "Stop" button that shows while it's talking.
+  stopSpeaking: () => void
 }
 
 // Server base URL (Vite env var). Same one used by the audio recorder so the
@@ -446,6 +449,24 @@ export function useVoice(): VoiceState {
     stopRecording()
   }, [stopRecording])
 
+  // Interrupt an in-flight spoken reply and end the conversation. Pausing
+  // currentAudio means its onended never fires, so we replicate the end-of-turn
+  // teardown here: silence the thinking loop, drop out of speaking/thinking,
+  // reset the volume meter, and clear history so the mic doesn't reopen for a
+  // follow-up and the next wake-word starts fresh.
+  const stopSpeaking = useCallback(() => {
+    if (currentAudio) {
+      try { currentAudio.pause() } catch { /* ignore */ }
+      currentAudio = null
+    }
+    stopThinkingSound()
+    setIsSpeaking(false)
+    setIsThinking(false)
+    setVolume(0)
+    volumeRef.current = 0
+    historyRef.current = []
+  }, [])
+
   // The TTS onEnd callback needs to call startListening, but startListening is
   // declared after the recorder's onstop closes over it. Use a ref to break
   // the chicken-and-egg, and keep it in sync after every render.
@@ -486,5 +507,5 @@ export function useVoice(): VoiceState {
     return () => window.clearTimeout(t)
   }, [error])
 
-  return { isListening, isSpeaking, isTranscribing, isThinking, transcript, reply, error, volume, startListening, stopListening }
+  return { isListening, isSpeaking, isTranscribing, isThinking, transcript, reply, error, volume, startListening, stopListening, stopSpeaking }
 }

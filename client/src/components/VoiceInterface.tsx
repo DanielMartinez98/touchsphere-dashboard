@@ -5,7 +5,7 @@ interface Props {
 }
 
 export function VoiceInterface({ voice }: Props) {
-  const { isListening, isTranscribing, isThinking, transcript, reply, error } = voice
+  const { isListening, isSpeaking, isTranscribing, isThinking, transcript, reply, error, stopSpeaking } = voice
 
   return (
     <>
@@ -56,6 +56,22 @@ export function VoiceInterface({ voice }: Props) {
                 {reply}
               </p>
             </div>
+          )}
+          {/* Stop button — shows only while the assistant is talking so a spoken
+              reply can be cut off with one tap. Sits just under the reply and
+              well clear of the settings gear below. */}
+          {isSpeaking && (
+            <button
+              type="button"
+              onClick={stopSpeaking}
+              aria-label="Stop talking"
+              className="voice-stop pointer-events-auto flex items-center gap-2 rounded-full bg-red-500/25 backdrop-blur-md border border-red-400/45 px-6 py-3 text-red-100 text-[15px] font-medium active:scale-95 transition-transform shadow-lg"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                <rect x="6" y="6" width="12" height="12" rx="2.5" />
+              </svg>
+              Stop
+            </button>
           )}
         </div>
       )}

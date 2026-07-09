@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useRipple } from '../hooks/useRipple'
 import type { AppMode } from '../hooks/useAppMode'
 
 const PIN_LEN = 4
@@ -62,6 +63,7 @@ export function StatusBar({ mode, hasCred, setMode, createPassword }: Props) {
   const [pw, setPw] = useState('')
   const [pwConfirm, setPwConfirm] = useState('')
   const [error, setError] = useState('')
+  const { onPointerDown: pillPointerDown, rippleLayer: pillRipple } = useRipple()
 
   function closePicker() {
     setStep('idle')
@@ -122,8 +124,10 @@ export function StatusBar({ mode, hasCred, setMode, createPassword }: Props) {
       {/* Pill — large, prominent top-center status badge */}
       <button
         onClick={() => setStep(s => s === 'idle' ? 'picker' : 'idle')}
-        className={`absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 px-7 py-3.5 rounded-full border-2 text-lg font-semibold backdrop-blur-md transition-colors active:scale-95 shadow-lg ${MODE_COLORS[mode]}`}
+        onPointerDown={pillPointerDown}
+        className={`absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 px-7 py-3.5 rounded-full border-2 text-lg font-semibold backdrop-blur-md transition-colors active:scale-95 shadow-lg overflow-hidden ${MODE_COLORS[mode]}`}
       >
+        {pillRipple}
         {MODE_ICON[mode]}
         <span className="tracking-wide">{MODE_LABEL[mode]}</span>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">

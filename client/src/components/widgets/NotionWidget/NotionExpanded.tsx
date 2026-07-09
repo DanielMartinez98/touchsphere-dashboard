@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ChevronLeft, Search, Folders, LayoutList, Home } from 'lucide-react'
-import type { NotionTask, NotionSchema, TaskFields, ProjectRef } from '../../../hooks/useNotion'
+import type { NotionTask, NotionSchema, TaskFields, ProjectRef, TaskDbRef } from '../../../hooks/useNotion'
 import { useNotionClient } from '../../../hooks/useNotionClient'
 import HomeView     from './HomeView'
 import BrowseView   from './BrowseView'
@@ -11,12 +11,14 @@ import GroupsView   from './GroupsView'
 
 interface Props {
   schema:     NotionSchema | null
+  schemas:    Record<string, NotionSchema>
+  taskDbs:    TaskDbRef[]
   tasks:      NotionTask[]
   projects:   Record<string, ProjectRef>
   loading:    boolean
   error:      string | null
   onUpdate:   (id: string, fields: TaskFields) => void
-  onCreate:   (fields: { title: string; status?: string; priority?: string; due?: string }) => void
+  onCreate:   (fields: { title: string; status?: string; priority?: string; due?: string; dbId?: string }) => void
   onRefresh:  () => void
 }
 
@@ -28,7 +30,7 @@ const TABS: { kind: 'home' | 'groups' | 'browse' | 'search'; label: string; icon
 ]
 
 export default function NotionExpanded({
-  schema, tasks, projects, loading, error, onUpdate, onCreate, onRefresh,
+  schema, schemas, taskDbs, tasks, projects, loading, error, onUpdate, onCreate, onRefresh,
 }: Props) {
   const client = useNotionClient()
   const view   = client.current
@@ -81,6 +83,8 @@ export default function NotionExpanded({
         {view.kind === 'home' && (
           <HomeView
             schema={schema}
+            schemas={schemas}
+            taskDbs={taskDbs}
             tasks={tasks}
             projects={projects}
             loading={loading}

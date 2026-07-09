@@ -1,6 +1,8 @@
 import { useState } from 'react'
+import { ListChecks } from 'lucide-react'
 import type { WorkspaceItem, NotionColor } from './notion-types'
 import type { NotionGroupsApi } from '../../../hooks/useNotionGroups'
+import { useTaskDbs } from '../../../hooks/useTaskDbs'
 import { TouchInput } from '../../TouchInput'
 import { colorBg, colorFg } from './notion-colors'
 
@@ -22,6 +24,8 @@ export default function AddToGroupSheet({ item, kind, groups, onClose }: Props) 
   const [name,     setName]     = useState('')
   const [icon,     setIcon]     = useState('📁')
   const [color,    setColor]    = useState<NotionColor>('blue')
+  const taskDbs = useTaskDbs()
+  const inTasks = kind === 'database' && taskDbs.has(item.id)
 
   // The icon we cache with the item — a string (emoji or url) the home/groups
   // views can render without re-resolving the WorkspaceItem.
@@ -69,6 +73,22 @@ export default function AddToGroupSheet({ item, kind, groups, onClose }: Props) 
           <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-3" />
           <h3 className="text-sm font-bold text-white mb-1">Add to group</h3>
           <p className="text-xs text-white/45 mb-4 truncate">{item.title}</p>
+
+          {/* Databases only: toggle whether this DB feeds the Home task list. */}
+          {kind === 'database' && (
+            <button type="button" onClick={() => void taskDbs.toggle(item.id)}
+              className={`flex items-center gap-3 w-full px-3 py-3 rounded-xl mb-4 border transition-colors
+                ${inTasks
+                  ? 'bg-green-500/15 border-green-500/40 active:bg-green-500/20'
+                  : 'bg-white/[0.04] border-transparent active:bg-white/[0.08]'}`}>
+              <ListChecks size={18} className={inTasks ? 'text-green-300' : 'text-white/55'} />
+              <span className="flex-1 text-left text-sm text-white">Show in Tasks</span>
+              <span className={`flex-shrink-0 w-6 h-6 rounded-md border-2 flex items-center justify-center text-xs
+                ${inTasks ? 'bg-green-500/30 border-green-500/60 text-green-300' : 'border-white/30'}`}>
+                {inTasks && '✓'}
+              </span>
+            </button>
+          )}
 
           <div className="flex flex-col gap-1.5 mb-4">
             {groups.groups.length === 0 && !creating && (

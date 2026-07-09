@@ -28,9 +28,19 @@ export interface NotionTask {
   createdAt:  string
   // Ids of related project pages (length matches the Notion relation property).
   projectIds: string[]
+  // Which task database this row came from — used to resolve the correct schema
+  // for toggle-done and to badge the row when several DBs are aggregated.
+  dbId:       string
 }
 
 export interface ProjectRef {
+  id:    string
+  title: string
+  icon:  string | null
+}
+
+// A task database feeding the aggregated Home list.
+export interface TaskDbRef {
   id:    string
   title: string
   icon:  string | null
@@ -59,51 +69,70 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
 interface TasksResponse {
   tasks:    NotionTask[]
   projects: Record<string, ProjectRef>
+  // Per-database schemas keyed by db id (for DB-specific actions), the source
+  // DBs (for the picker/badges), and a merged schema for the generic UI.
+  schemas:  Record<string, NotionSchema>
+  dbs:      TaskDbRef[]
+  merged:   NotionSchema
 }
 
 export function useNotion() {
   const [schema,   setSchema]   = useState<NotionSchema | null>(null)
+  const [schemas,  setSchemas]  = useState<Record<string, NotionSchema>>({})
+  const [taskDbs,  setTaskDbs]  = useState<TaskDbRef[]>([])
   const [tasks,    setTasks]    = useState<NotionTask[]>([])
   const [projects, setProjects] = useState<Record<string, ProjectRef>>({})
   const [loading,  setLoading]  = useState(true)
   const [error,    setError]    = useState<string | null>(null)
 
+  // A single /tasks call now returns everything: aggregated tasks, per-DB and
+  // merged schemas, and the source DB list. Applied together on load & refresh.
+  const applyTasks = useCallback((t: TasksResponse) => {
+    setTasks(t.tasks)
+    setProjects(t.projects)
+    setSchemas(t.schemas)
+    setTaskDbs(t.dbs)
+    setSchema(t.merged)
+  }, [])
+
   const loadAll = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const [s, t] = await Promise.all([
-        apiFetch<NotionSchema>('/api/notion/schema'),
-        apiFetch<TasksResponse>('/api/notion/tasks'),
-      ])
-      setSchema(s)
-      setTasks(t.tasks)
-      setProjects(t.projects)
+      applyTasks(await apiFetch<TasksResponse>('/api/notion/tasks'))
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to load')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [applyTasks])
 
   const refreshTasks = useCallback(async () => {
     try {
-      const t = await apiFetch<TasksResponse>('/api/notion/tasks')
-      setTasks(t.tasks)
-      setProjects(t.projects)
+      applyTasks(await apiFetch<TasksResponse>('/api/notion/tasks'))
     } catch { /* silent background refresh */ }
-  }, [])
+  }, [applyTasks])
 
   useEffect(() => { void loadAll() }, [loadAll])
 
-  // Compute done flag client-side (mirrors server logic) for optimistic updates
-  function computeDone(status: string | null): boolean {
-    if (!status || !schema) return false
-    const doneSet = new Set(schema.doneStatusNames.map(n => n.toLowerCase()))
+  // Refetch when the set of task databases changes (Browse → "Show in Tasks").
+  useEffect(() => {
+    const onChange = () => { void refreshTasks() }
+    window.addEventListener('ts:task-dbs-changed', onChange)
+    return () => window.removeEventListener('ts:task-dbs-changed', onChange)
+  }, [refreshTasks])
+
+  // Compute done flag client-side (mirrors server logic) for optimistic updates.
+  // Uses the task's own DB schema so a status valid in one DB isn't mis-scored
+  // against another's done set.
+  function computeDone(status: string | null, dbId: string): boolean {
+    const sch = schemas[dbId]
+    if (!status || !sch) return false
+    const doneSet = new Set(sch.doneStatusNames.map(n => n.toLowerCase()))
     return doneSet.has(status.toLowerCase())
   }
 
-  async function createTask(fields: { title: string; status?: string; priority?: string; due?: string }) {
+  async function createTask(fields: { title: string; status?: string; priority?: string; due?: string; dbId?: string }) {
     const task = await apiFetch<NotionTask>('/api/notion/tasks', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -114,18 +143,20 @@ export function useNotion() {
   }
 
   async function updateTask(id: string, fields: TaskFields) {
-    // Optimistic update
+    // Optimistic update. Also send the task's dbId so the server builds
+    // properties against the right database's schema.
+    const target = tasks.find(t => t.id === id)
     setTasks(prev => prev.map(t => {
       if (t.id !== id) return t
       const next = { ...t, ...fields }
-      if ('status' in fields) next.done = computeDone(fields.status ?? null)
+      if ('status' in fields) next.done = computeDone(fields.status ?? null, t.dbId)
       return next
     }))
     try {
       await apiFetch(`/api/notion/tasks/${id}`, {
         method:  'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(fields),
+        body:    JSON.stringify({ ...fields, dbId: target?.dbId }),
       })
     } catch {
       void refreshTasks() // revert via server state
@@ -152,6 +183,8 @@ export function useNotion() {
 
   return {
     schema,
+    schemas,
+    taskDbs,
     tasks,
     projects,
     loading,

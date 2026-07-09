@@ -34,9 +34,30 @@
 }
 
 @layer base {
+  html, body {
+    /* Kiosk: kill the page-level rubber-band / pull-to-refresh so a stray drag
+       on the fixed 720×1280 canvas never bounces the whole viewport. */
+    overscroll-behavior: none;
+  }
   body {
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+    /* Kiosk: drop the legacy 300ms double-tap-zoom delay so taps register
+       instantly, without disabling pinch-zoom (keeps the a11y escape hatch). */
+    touch-action: manipulation;
+    /* Kiosk touch hygiene, applied once so every tappable surface behaves the
+       same: no blue tap-flash rectangle, no iOS long-press callout, and no
+       accidental text selection when a tap lingers a beat too long. Genuinely
+       editable fields opt back into selection just below. */
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  /* The only surfaces where a finger should place a caret / select text. */
+  input, textarea {
+    -webkit-user-select: text;
+    user-select: text;
   }
 }
 
@@ -89,6 +110,36 @@
   animation: voice-ping 1s cubic-bezier(0, 0, 0.2, 1) infinite;
 }
 
+/* Tap ripple — expanding circle from the finger position on any touch control.
+   Driven by useRipple(); one shared animation keeps every control consistent. */
+@keyframes tap-ripple {
+  from { transform: scale(0);   opacity: 0.55; }
+  to   { transform: scale(1);   opacity: 0;    }
+}
+.tap-ripple {
+  transform: scale(0);
+  animation: tap-ripple 0.6s cubic-bezier(0.2, 0.6, 0.2, 1) forwards;
+}
+
+/* Orb tap burst — a single ring that fires off the sphere the instant it's
+   tapped, confirming the primary voice trigger before the mic even opens. */
+@keyframes orb-burst {
+  from { transform: translate(-50%, -50%) scale(0.55); opacity: 0.7; }
+  to   { transform: translate(-50%, -50%) scale(2.3);  opacity: 0;   }
+}
+.orb-burst {
+  animation: orb-burst 0.55s cubic-bezier(0, 0, 0.2, 1) forwards;
+}
+
+/* Voice interface — "Stop" button fades up as the assistant starts talking. */
+@keyframes voice-stop-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.voice-stop {
+  animation: voice-stop-in 0.2s ease-out;
+}
+
 /* Notion widget — bottom sheet slide-up animation */
 @keyframes tsSlideUp {
   from { transform: translateY(100%); }
@@ -104,6 +155,31 @@
 }
 .scrollbar-hide::-webkit-scrollbar {
   display: none;
+}
+
+/* ─── Touch-scroll standardization ──────────────────────────────────────────
+   The kiosk runs full-screen Chromium on a Pi 7" touchscreen with lots of
+   nested scroll regions (bottom sheets, board columns, timelines, chip rows).
+   Two behaviours make those usable under a finger, and every scroll region
+   needs them — so rather than repeat the classes at 30+ call sites we augment
+   Tailwind's own overflow utilities once, here:
+
+     • overscroll-behavior: contain — a scroll that reaches the end of an inner
+       list stops there instead of chaining out and dragging the sheet/page.
+     • touch-action — a horizontal-only row (overflow-x-auto) declares pan-x, so
+       a vertical finger drag falls through to the vertical scroller behind it
+       instead of being swallowed. (No element scrolls both axes, so pan-x here
+       never steals a legitimate vertical scroll.) */
+@layer utilities {
+  .overflow-y-auto,
+  .overflow-y-scroll,
+  .overflow-auto {
+    overscroll-behavior: contain;
+  }
+  .overflow-x-auto {
+    overscroll-behavior-x: contain;
+    touch-action: pan-x;
+  }
 }
 
 /* Ambient background drift — a second gradient layer breathing in and out over
