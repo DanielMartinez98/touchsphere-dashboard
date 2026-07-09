@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { getEffectiveGain } from './useVolume'
+import { getMuted, subscribeMuted } from './useMuted'
 import { startThinkingSound, stopThinkingSound } from '../utils/sound'
 
 // Fallback replies if /api/chat fails or returns nothing usable. We still want
@@ -31,7 +32,13 @@ export interface VoiceState {
   error: string
   volume: number
   startListening: () => void
+  // End the capture and submit what was recorded for transcription. Wired to
+  // the orb tap, which reads as "I'm done talking, go answer."
   stopListening: () => void
+  // Abandon the capture without transcribing it, and end the conversation.
+  // Wired to the on-screen "Stop listening" button that shows while the mic is
+  // open — tapping it means "stop hearing me", so the audio is discarded.
+  cancelListening: () => void
   // Interrupt the assistant mid-reply and end the conversation. Wired to the
   // on-screen "Stop" button that shows while it's talking.
   stopSpeaking: () => void
@@ -220,6 +227,14 @@ export function useVoice(): VoiceState {
 
   const startListening = useCallback(async (isFollowUp = false) => {
     if (isListening || isTranscribing || isThinking || isSpeaking) return
+    // Virtual mute — never open the mic. Read from the store (not the hook's
+    // `muted` binding) so the check reflects the value at call time even if the
+    // caller is holding a stale closure (e.g. the follow-up timer below).
+    if (getMuted()) {
+      console.log('[voice] mic is muted — ignoring start request')
+      setError('Microphone is muted — tap Unmute to talk.')
+      return
+    }
     if (!navigator.mediaDevices?.getUserMedia) {
       console.warn('[voice] getUserMedia unavailable — page must be HTTPS.')
       setError('Microphone needs a secure (HTTPS) connection.')
@@ -449,6 +464,13 @@ export function useVoice(): VoiceState {
     stopRecording()
   }, [stopRecording])
 
+  // `aborted` = true short-circuits the recorder's onstop handler: the blob is
+  // dropped, nothing is uploaded, and history is cleared so the next wake word
+  // starts a fresh conversation.
+  const cancelListening = useCallback(() => {
+    stopRecording(true)
+  }, [stopRecording])
+
   // Interrupt an in-flight spoken reply and end the conversation. Pausing
   // currentAudio means its onended never fires, so we replicate the end-of-turn
   // teardown here: silence the thinking loop, drop out of speaking/thinking,
@@ -466,6 +488,17 @@ export function useVoice(): VoiceState {
     volumeRef.current = 0
     historyRef.current = []
   }, [])
+
+  // Muting mid-utterance kills the live capture immediately. `aborted` skips
+  // transcription and the LLM round-trip entirely, so nothing the mic already
+  // picked up ever leaves the device — that's the point of a privacy mute.
+  // `stoppedRef` guards against a recorder that's already winding down.
+  useEffect(() => subscribeMuted((isMuted) => {
+    if (!isMuted) return
+    if (!recorderRef.current || stoppedRef.current) return
+    console.log('[voice] muted while listening — aborting capture')
+    stopRecording(true)
+  }), [stopRecording])
 
   // The TTS onEnd callback needs to call startListening, but startListening is
   // declared after the recorder's onstop closes over it. Use a ref to break
@@ -507,5 +540,5 @@ export function useVoice(): VoiceState {
     return () => window.clearTimeout(t)
   }, [error])
 
-  return { isListening, isSpeaking, isTranscribing, isThinking, transcript, reply, error, volume, startListening, stopListening, stopSpeaking }
+  return { isListening, isSpeaking, isTranscribing, isThinking, transcript, reply, error, volume, startListening, stopListening, cancelListening, stopSpeaking }
 }

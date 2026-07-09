@@ -16,6 +16,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { createModel, type KaldiRecognizer, type Model } from 'vosk-browser'
+import { useMuted } from './useMuted'
 
 // localStorage keys.
 const LS_INPUT_KEY   = 'ts_audio_input_device'
@@ -102,6 +103,7 @@ const WAKE_PATTERNS = [
 
 export type WakeStatus =
   | 'idle'        // disabled
+  | 'muted'      // enabled, but the virtual mic mute is engaged
   | 'loading'    // fetching/decompressing the model
   | 'listening' // mic is open, recognizer is running
   | 'cooldown'  // just woke; ignoring further hits briefly
@@ -127,8 +129,14 @@ interface UseWakeWordOptions {
 
 export function useWakeWord({ onWake, pause }: UseWakeWordOptions): UseWakeWordReturn {
   const enabled = useWakeWordEnabled()
+  const muted   = useMuted()
   const { status, error } = useWakeWordStatus()
   const [lastHit, setLastHit] = useState<string | null>(null)
+
+  // The listener only runs when the user has opted in *and* the mic isn't
+  // muted. Muting takes the whole pipeline down (see the effect below) rather
+  // than merely gating the callbacks, so the mic device is genuinely released.
+  const active = enabled && !muted
 
   // Status updates go through the shared store so the Settings panel sees them.
   // We capture both fields together to avoid intermediate inconsistent states.
@@ -173,9 +181,9 @@ export function useWakeWord({ onWake, pause }: UseWakeWordOptions): UseWakeWordR
   }, [])
 
   useEffect(() => {
-    if (!enabled) {
+    if (!active) {
       teardown()
-      setStatus('idle')
+      setStatus(muted ? 'muted' : 'idle')
       setTranscript({ partial: '', final: '' })
       return
     }
@@ -238,7 +246,7 @@ export function useWakeWord({ onWake, pause }: UseWakeWordOptions): UseWakeWordR
           setStatus('cooldown')
           window.setTimeout(() => {
             // Only restore "listening" if the hook is still active.
-            if (!cancelled && enabled) setStatus('listening')
+            if (!cancelled && active) setStatus('listening')
           }, COOLDOWN_MS)
           try { onWakeRef.current() } catch (err) {
             console.warn('[wake] onWake handler threw:', err)
@@ -306,8 +314,8 @@ export function useWakeWord({ onWake, pause }: UseWakeWordOptions): UseWakeWordR
     }
     // We deliberately don't depend on `pause` here — pause is read live via
     // pauseRef inside the audio callbacks, so toggling it doesn't tear down
-    // the whole pipeline.
-  }, [enabled, teardown])
+    // the whole pipeline. `muted`, by contrast, *should* tear it down.
+  }, [active, muted, teardown])
 
   return { enabled, status, error, lastHit, setEnabled }
 }

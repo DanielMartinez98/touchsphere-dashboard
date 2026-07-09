@@ -5,7 +5,7 @@ interface Props {
 }
 
 export function VoiceInterface({ voice }: Props) {
-  const { isListening, isSpeaking, isTranscribing, isThinking, transcript, reply, error, stopSpeaking } = voice
+  const { isListening, isSpeaking, isTranscribing, isThinking, transcript, reply, error, stopSpeaking, cancelListening } = voice
 
   return (
     <>
@@ -83,6 +83,28 @@ export function VoiceInterface({ voice }: Props) {
         </div>
       )}
 
+      {/* ── "Stop listening" — shows only while the mic is open, so the user can
+             shut it up mid-sentence. Discards the capture rather than sending
+             it. Sits in the same slot as the speaking "Stop" button, which is
+             never on screen at the same time. ── */}
+      {isListening && (
+        <div className="absolute left-1/2 -translate-x-1/2 bottom-28 z-30 flex justify-center">
+          <button
+            type="button"
+            onClick={cancelListening}
+            aria-label="Stop listening"
+            className="voice-stop flex items-center gap-2 rounded-full bg-green-500/20 backdrop-blur-md border border-green-400/45 px-6 py-3 text-green-100 text-[15px] font-medium active:scale-95 transition-transform shadow-lg whitespace-nowrap"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <line x1="2" y1="2" x2="22" y2="22" />
+              <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+              <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23" />
+              <line x1="12" y1="19" x2="12" y2="23" />
+            </svg>
+            Stop listening
+          </button>
+        </div>
+      )}
     </>
   )
 }

@@ -21,10 +21,12 @@ import { useStopwatch } from './hooks/useStopwatch'
 import { StatusBar } from './components/StatusBar'
 import { LockScreen } from './components/LockScreen'
 import { SettingsPanel } from './components/SettingsPanel'
+import { MicMuteButton } from './components/MicMuteButton'
 import { VoiceInterface } from './components/VoiceInterface'
 import { BedtimeBanner } from './components/BedtimeBanner'
 import { TimersOverlay } from './components/TimersOverlay'
 import { useAutoMode } from './hooks/useAutoSchedule'
+import { useMuted } from './hooks/useMuted'
 import { playStartupSound } from './utils/sound'
 
 type OpenWidget = 'calendar' | 'clock' | 'weather' | 'media' | 'notion' | null
@@ -59,6 +61,7 @@ function App() {
   } = useNotion()
   const { mode, hasCred, setMode, createPassword, verifyPassword, unlock } = useAppMode()
   const voice = useVoice()
+  const muted = useMuted()
   const timers = useTimers()
   const stopwatch = useStopwatch()
   const startupPlayedRef = useRef(false)
@@ -107,6 +110,12 @@ function App() {
     // getUserMedia round-trip adds latency before the listening ring appears,
     // so this burst confirms the primary voice trigger landed right away.
     setOrbBurst(n => n + 1)
+    // Muted — startListening() will surface the "mic is muted" toast for us.
+    // Bail before the startup chime so a tap that can't do anything stays quiet.
+    if (muted) {
+      voice.startListening()
+      return
+    }
     if (!startupPlayedRef.current) {
       startupPlayedRef.current = true
       try { await playStartupSound() } catch { /* ignore audio errors */ }
@@ -234,8 +243,9 @@ function App() {
         createPassword={createPassword}
       />
 
-      {/* Bottom-Center — Settings */}
+      {/* Bottom-Center — Settings, with the virtual mic mute beside it */}
       <SettingsPanel />
+      <MicMuteButton />
 
       {/* Voice interface — transcript + reply overlays (mic button removed; tap the orb) */}
       <VoiceInterface voice={voice} />

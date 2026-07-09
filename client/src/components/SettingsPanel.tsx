@@ -333,11 +333,12 @@ export function SettingsPanel() {
 
   return (
     <>
-      {/* Settings gear button — bottom center, enlarged */}
+      {/* Settings gear button — bottom center, enlarged. Offset half a slot left
+          so the gear + mic-mute pair reads as centered (see MicMuteButton). */}
       <button
         onClick={() => setOpen(true)}
         onPointerDown={gearPointerDown}
-        className="absolute bottom-5 left-1/2 -translate-x-1/2 z-20 w-16 h-16 rounded-full bg-white/10 border-2 border-white/40 flex items-center justify-center text-white/70 hover:bg-white/20 hover:text-white active:scale-90 transition-all backdrop-blur-md shadow-lg overflow-hidden"
+        className="absolute bottom-5 left-[calc(50%-38px)] -translate-x-1/2 z-20 w-16 h-16 rounded-full bg-white/10 border-2 border-white/40 flex items-center justify-center text-white/70 hover:bg-white/20 hover:text-white active:scale-90 transition-all backdrop-blur-md shadow-lg overflow-hidden"
         aria-label="Settings"
       >
         {gearRipple}
@@ -567,12 +568,14 @@ export function SettingsPanel() {
                         wakeStatus.status === 'cooldown'  ? 'bg-cyan-500/15    text-cyan-300'    :
                         wakeStatus.status === 'loading'   ? 'bg-amber-500/15  text-amber-300 animate-pulse' :
                         wakeStatus.status === 'error'     ? 'bg-red-500/15    text-red-300'     :
+                        wakeStatus.status === 'muted'     ? 'bg-red-500/15    text-red-300'     :
                                                             'bg-white/8       text-white/40'
                       }`}>
                         {wakeStatus.status === 'listening' ? '● listening'  :
                          wakeStatus.status === 'cooldown'  ? '● woke!'        :
                          wakeStatus.status === 'loading'   ? 'loading model…' :
                          wakeStatus.status === 'error'     ? 'error'           :
+                         wakeStatus.status === 'muted'     ? 'muted'           :
                                                              'idle'}
                       </span>
                     </div>
