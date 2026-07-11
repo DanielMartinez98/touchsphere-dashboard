@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect } from 'react'
-import { Check, X as XIcon, RotateCw, ClipboardCopy, MessageSquare, Trash2 } from 'lucide-react'
+import { Check, X as XIcon, RotateCw, ClipboardCopy, MessageSquare, Trash2, Volume2 } from 'lucide-react'
 import { useAudioDevices } from '../hooks/useAudioDevices'
 import { useDevice } from '../hooks/useDevice'
 import { playSound, playRecordChime } from '../utils/sound'
 import { useVolume, setVolume, getEffectiveGain, type VolumeCategory } from '../hooks/useVolume'
 import { useWakeWordEnabled, setWakeWordEnabled, useWakeWordTranscript, useWakeWordStatus } from '../hooks/useWakeWord'
-import { ASSISTANT_PROFILES, ASSISTANT_ORDER, setAssistantId, useAssistant } from '../config/assistant'
+import { ASSISTANT_PROFILES, ASSISTANT_ORDER, setAssistantId, useAssistant, type AssistantId } from '../config/assistant'
+import { playVoicePreview } from '../utils/voicePreview'
 import { useAutoSchedule, fireBedtimeAlert } from '../hooks/useAutoSchedule'
 import { useRipple } from '../hooks/useRipple'
 import { useDebugLog, clearDebugLog, getDebugLog } from '../utils/debugLog'
@@ -296,6 +297,17 @@ export function SettingsPanel() {
   const wakeTranscript  = useWakeWordTranscript()
   const wakeStatus      = useWakeWordStatus()
   const assistant       = useAssistant()
+  const [previewingId, setPreviewingId] = useState<AssistantId | null>(null)
+
+  // Select an assistant AND play a short in-character clip so the user hears the
+  // voice + personality. The clip's onEnded clears the "playing" indicator.
+  const handlePickAssistant = (id: AssistantId) => {
+    setAssistantId(id)
+    setPreviewingId(id)
+    playVoicePreview(id, ASSISTANT_PROFILES[id].sampleLine, () =>
+      setPreviewingId(cur => (cur === id ? null : cur)),
+    )
+  }
 
   const {
     inputDevices,
@@ -527,7 +539,7 @@ export function SettingsPanel() {
                       <button
                         key={id}
                         type="button"
-                        onClick={() => setAssistantId(id)}
+                        onClick={() => handlePickAssistant(id)}
                         aria-pressed={active}
                         className={`w-full text-left rounded-xl px-4 py-3 border transition-colors flex items-center justify-between gap-3 ${
                           active ? 'bg-cyan-500/15 border-cyan-500/40' : 'bg-white/5 border-white/8 active:bg-white/10'
@@ -537,7 +549,11 @@ export function SettingsPanel() {
                           <span className="block text-white/85 text-sm font-medium">{p.name}</span>
                           <span className="block text-white/40 text-xs mt-0.5 leading-relaxed">{p.tagline}</span>
                         </span>
-                        {active && <Check size={18} className="text-cyan-300 flex-shrink-0" />}
+                        {previewingId === id
+                          ? <Volume2 size={18} className="text-cyan-300 flex-shrink-0 animate-pulse" />
+                          : active
+                            ? <Check size={18} className="text-cyan-300 flex-shrink-0" />
+                            : null}
                       </button>
                     )
                   })}

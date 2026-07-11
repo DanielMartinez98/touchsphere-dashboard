@@ -4,7 +4,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
-import { getSelectedProfile } from '../config/assistant'
+import { getSelectedProfile, ASSISTANT_PROFILES, type AssistantId } from '../config/assistant'
 
 // GET /api/tts?text=hello[&voice=...]
 //
@@ -48,6 +48,13 @@ console.log(`[tts] provider=${PROVIDER}${PROVIDER === 'elevenlabs' ? ` voice=${E
 router.get('/', async (req, res) => {
   const text = String(req.query['text'] ?? '').trim()
   const voiceParam = String(req.query['voice'] ?? '')
+  // ?as=<assistantId> voices a SPECIFIC profile (used by the Settings preview),
+  // independent of whichever assistant is currently selected. Falls back to the
+  // selected profile when absent/unknown.
+  const asParam = String(req.query['as'] ?? '')
+  const profile = asParam && asParam in ASSISTANT_PROFILES
+    ? ASSISTANT_PROFILES[asParam as AssistantId]
+    : getSelectedProfile()
 
   if (!text) {
     return res.status(400).json({ error: 'missing text' })
@@ -67,10 +74,10 @@ router.get('/', async (req, res) => {
       const voiceId =
         voiceParam && /^[a-zA-Z0-9]+$/.test(voiceParam) ? voiceParam
         : EL_VOICE_ENV && /^[a-zA-Z0-9]+$/.test(EL_VOICE_ENV) ? EL_VOICE_ENV
-        : getSelectedProfile().elevenVoiceId
+        : profile.elevenVoiceId
       await synthesizeElevenLabs(text, voiceId, res)
     } else {
-      const lang = voiceParam || getSelectedProfile().espeakVoice || 'en-us'
+      const lang = voiceParam || profile.espeakVoice || 'en-us'
       if (!/^[a-z]{2}(-[a-z0-9]+)?$/i.test(lang)) {
         return res.status(400).json({ error: 'invalid voice (espeak expects e.g. "en-us")' })
       }

@@ -26,6 +26,8 @@ export interface AssistantProfile {
   wakePatterns: string[]
   /** Canonical spoken prompt shown in the UI, e.g. "Hey Martin". */
   wakePhrase: string
+  /** A short in-character line spoken as a preview when the profile is selected. */
+  sampleLine: string
 }
 
 export const ASSISTANT_PROFILES: Record<AssistantId, AssistantProfile> = {
@@ -35,6 +37,7 @@ export const ASSISTANT_PROFILES: Record<AssistantId, AssistantProfile> = {
     tagline: 'Annoyed, tipsy wizard stuck in the 90s — grumbles, then helps.',
     wakePatterns: ['yo martin', 'yo martini', 'yo martian', 'yo marten'],
     wakePhrase: 'Yo Martin',
+    sampleLine: "Ugh, what now? *hic* ...Yeah, I'm Martin. Back in my day we had real magic — and dial-up. What d'you want?",
   },
   jarvis: {
     id: 'jarvis',
@@ -42,6 +45,7 @@ export const ASSISTANT_PROFILES: Record<AssistantId, AssistantProfile> = {
     tagline: 'Refined British AI butler — dry wit, ruthless efficiency.',
     wakePatterns: ['jarvis', 'hey jarvis', 'yo jarvis', 'jervis', 'harvest'],
     wakePhrase: 'Hey Jarvis',
+    sampleLine: "Good day. Jarvis at your service — efficient, discreet, and only mildly judgmental.",
   },
   touchsphere: {
     id: 'touchsphere',
@@ -49,6 +53,7 @@ export const ASSISTANT_PROFILES: Record<AssistantId, AssistantProfile> = {
     tagline: 'Bright, upbeat futuristic helper.',
     wakePatterns: ['touchsphere', 'touch sphere', 'hey touchsphere', 'hey sphere', 'the sphere', 'sphere'],
     wakePhrase: 'Hey Sphere',
+    sampleLine: "Hey there! TouchSphere here, powered up and ready to help you take on the day!",
   },
   merlin: {
     id: 'merlin',
@@ -56,6 +61,7 @@ export const ASSISTANT_PROFILES: Record<AssistantId, AssistantProfile> = {
     tagline: 'Whimsical wizard of old — theatrical, arcane flair.',
     wakePatterns: ['excuse me merlin', 'excuse me marlin', 'excuse me murlin', 'excuse me berlin'],
     wakePhrase: 'Excuse me Merlin',
+    sampleLine: "Ahh, greetings! Merlin — weaver of spells and keeper of ancient wisdom — at thy service.",
   },
   jess: {
     id: 'jess',
@@ -63,6 +69,7 @@ export const ASSISTANT_PROFILES: Record<AssistantId, AssistantProfile> = {
     tagline: 'Sassy and easily annoyed — helps anyway, with an eye-roll.',
     wakePatterns: ['yo jess', 'yo jessie', 'yo jes', 'yo jazz'],
     wakePhrase: 'Yo Jess',
+    sampleLine: "Ugh, fine, I'm Jess. What do you want? ...I'll help. I always do. Doesn't mean I have to like it.",
   },
 }
 
