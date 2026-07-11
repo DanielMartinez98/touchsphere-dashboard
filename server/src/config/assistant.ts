@@ -80,7 +80,7 @@ export const ASSISTANT_PROFILES: Record<AssistantId, AssistantProfile> = {
       "You're sarcastic, blunt, and quick with an eye-roll, and you make it known when a question is beneath you — " +
       "but, grumbling all the way, you still give the user a correct and genuinely useful answer. " +
       "Keep the attitude playful, never actually mean or hurtful.",
-    elevenVoiceId: 'st7NwhTPEzqo2riw7qWC',
+    elevenVoiceId: 'e0mqm571SOnRI6afpjhB',
     espeakVoice: 'en-us',
   },
 }
