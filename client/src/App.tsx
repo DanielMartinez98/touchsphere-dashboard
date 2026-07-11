@@ -27,6 +27,7 @@ import { BedtimeBanner } from './components/BedtimeBanner'
 import { TimersOverlay } from './components/TimersOverlay'
 import { useAutoMode } from './hooks/useAutoSchedule'
 import { useMuted } from './hooks/useMuted'
+import { loadAssistantFromServer } from './config/assistant'
 import { playStartupSound } from './utils/sound'
 
 type OpenWidget = 'calendar' | 'clock' | 'weather' | 'media' | 'notion' | null
@@ -71,7 +72,8 @@ function App() {
   useAutoMode(mode, setMode)
 
   // Wake-word listener — fully offline, runs in a Web Worker. When the user
-  // says "jarvis" the orb starts listening just like a manual tap. Paused
+  // says the wake word ("Martin" — see config/assistant.ts) the orb starts
+  // listening just like a manual tap. Paused
   // while the assistant itself is talking or already capturing audio so we
   // don't trigger on the TTS reply or fight for the mic device.
   useWakeWord({
@@ -84,6 +86,10 @@ function App() {
       voice.startListening()
     },
   })
+
+  // Reconcile the selected assistant (name/wake word/persona/voice) with the
+  // server on mount — the server is the source of truth across devices/reloads.
+  useEffect(() => { loadAssistantFromServer() }, [])
 
   // Listen for server-sent reload event and refresh the page
   useEffect(() => {

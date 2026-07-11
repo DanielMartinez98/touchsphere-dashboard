@@ -122,6 +122,19 @@ export function useNotion() {
     return () => window.removeEventListener('ts:task-dbs-changed', onChange)
   }, [refreshTasks])
 
+  // Refetch when a voice/chat tool creates or edits a task. The chat route tags
+  // its reply with the touched state slices and the voice hook fans them out as
+  // a ts:state-changed event; we only care about the 'notion' slice (but a
+  // missing slice list is treated as "refresh to be safe").
+  useEffect(() => {
+    const onChange = (e: Event) => {
+      const slices = (e as CustomEvent<{ slices?: string[] }>).detail?.slices
+      if (!slices || slices.includes('notion')) void refreshTasks()
+    }
+    window.addEventListener('ts:state-changed', onChange)
+    return () => window.removeEventListener('ts:state-changed', onChange)
+  }, [refreshTasks])
+
   // Compute done flag client-side (mirrors server logic) for optimistic updates.
   // Uses the task's own DB schema so a status valid in one DB isn't mis-scored
   // against another's done set.

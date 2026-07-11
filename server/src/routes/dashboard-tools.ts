@@ -411,6 +411,40 @@ async function setAppMode(mode: string): Promise<string> {
   }
 }
 
+// ── Notion tasks ───────────────────────────────────────────────────────────────
+// Create a task in the user's Notion task database via the existing loopback
+// route (the same one the widget POSTs to), so a voice-created task is identical
+// to a touch-created one. `due` accepts the same natural-language dates as the
+// calendar tools ("today", "tomorrow", "next friday", "+3", or YYYY-MM-DD) and is
+// normalized to YYYY-MM-DD before it's sent. Server picks the default task DB.
+async function addNotionTask(title: string, due: string): Promise<string> {
+  const t = title.trim()
+  if (!t) return 'Error: a task title is required.'
+  let dueDate: Date | null = null
+  if (due.trim()) {
+    dueDate = parseDateInput(due)
+    if (!dueDate) return `Error: I couldn't understand the due date "${due}". Try "today", "tomorrow", a weekday, or YYYY-MM-DD.`
+  }
+  try {
+    const res = await fetch(`${LOOPBACK}/api/notion/tasks`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: t, ...(dueDate ? { due: ymdKey(dueDate) } : {}) }),
+    })
+    if (res.status === 503) return "Error: Notion tasks aren't configured on this device."
+    if (!res.ok) return `Error: failed to add the task (${res.status}).`
+    console.log(`[chat:tool] add_notion_task → "${t}"${dueDate ? ` due ${ymdKey(dueDate)}` : ''}`)
+    if (dueDate) {
+      const label = dueDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+      return `Added "${t}" to your tasks, due ${label}.`
+    }
+    return `Added "${t}" to your tasks.`
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return `Error adding task: ${msg}`
+  }
+}
+
 interface CalEvent { id?: string; title: string; start: string; end: string; allDay: boolean }
 
 // Parse a date the model may pass us. Accepts:
@@ -1058,6 +1092,26 @@ export const DASHBOARD_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'add_notion_task',
+      description:
+        "Add a to-do / task to the user's Notion task list. Use this whenever the user wants to capture, " +
+        'jot down, remember, or be reminded of something they need to DO (an errand, a work item, a follow-up, ' +
+        'a chore) — e.g. "add email the landlord to my tasks", "remind me to book the dentist tomorrow", ' +
+        '"put finish the report on my list for Friday". This is for actionable to-dos; for games, shows, or ' +
+        'movies to play or watch, use add_media_item instead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'The task text — what needs doing.' },
+          due:   { type: 'string', description: 'Optional due date: "today", "tomorrow", a weekday like "next friday", a relative offset like "+3", or YYYY-MM-DD. Omit if the user gave no date.' },
+        },
+        required: ['title'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'get_weather_forecast',
       description:
         'Get the upcoming weather forecast for the dashboard\'s location. Returns a temperature range, peak ' +
@@ -1218,6 +1272,7 @@ export async function runDashboardTool(
     }
     case 'recommend_media_item': return recommendMedia(str('type'))
     case 'set_app_mode':         return setAppMode(str('mode'))
+    case 'add_notion_task':      return addNotionTask(str('title'), str('due'))
     case 'get_weather':        return getWeather()
     case 'get_weather_forecast': {
       const h = typeof args['hours'] === 'number' ? String(args['hours']) : str('hours')
@@ -1252,6 +1307,7 @@ export const MUTATING_TOOLS = new Set([
   'set_media_status',
   'star_media_item',
   'set_app_mode',
+  'add_notion_task',
   'remember',
   'forget',
   'set_timer',
@@ -1262,9 +1318,10 @@ export const MUTATING_TOOLS = new Set([
 // Maps a mutating tool to the client-side state slice it touches, so the chat
 // route can tell exactly which widgets/hooks should refetch.
 export const TOOL_SLICE: Record<string, string> = {
-  set_app_mode: 'mode',
-  set_timer:    'timers',
-  set_alarm:    'timers',
-  cancel_timer: 'timers',
+  set_app_mode:    'mode',
+  add_notion_task: 'notion',
+  set_timer:       'timers',
+  set_alarm:       'timers',
+  cancel_timer:    'timers',
   // everything else defaults to 'media'
 }

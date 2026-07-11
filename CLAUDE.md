@@ -56,13 +56,15 @@ A full-screen kiosk SPA (720×1280 portrait on Raspberry Pi 5 / 7" touchscreen) 
 - **[components/ParticleSphere/ParticleSphere.tsx](client/src/components/ParticleSphere/ParticleSphere.tsx)** — Three.js sphere; color/scale/spin react to voice state (green = listening, amber = speaking)
 - **[components/widgets/](client/src/components/widgets/)** — each widget has collapsed (icon only) and expanded states; `Widget.tsx` is the generic wrapper
 - **[hooks/useVoice.ts](client/src/hooks/useVoice.ts)** — core voice loop: SpeechRecognition → `/api/stt` → `/api/chat` → `/api/tts` playback
-- **[hooks/useWakeWord.ts](client/src/hooks/useWakeWord.ts)** — offline wake-word "sphere" via Vosk running in a Web Worker
+- **[hooks/useWakeWord.ts](client/src/hooks/useWakeWord.ts)** — offline wake-word via Vosk running in a Web Worker; the wake phrases come from the selected assistant profile
+- **[config/assistant.ts](client/src/config/assistant.ts)** — client half of the **selectable assistant** system: the profile table (name, `wakePatterns`, `wakePhrase`, tagline) + a reactive store (`useAssistant`, `setAssistantId`). Four profiles: **Martin** (default), **Jarvis**, **TouchSphere**, **Merlin**. The user picks one in Settings; the id is persisted via `POST /api/state/assistant` so the server's persona + voice follow. The server half (personality + TTS voice) is [server/src/config/assistant.ts](server/src/config/assistant.ts) — keep ids/names in sync. **This is the AI's identity** — the product/app is still "TouchSphere".
 - **[hooks/useAppMode.ts](client/src/hooks/useAppMode.ts)** — `work` / `rest` / `locked` mode; lock credential hashed client-side
 
 ### Backend (`server/src/`)
 
 - **[index.ts](server/src/index.ts)** — Express 5 app; Helmet security headers (CSP disabled for Vite), rate limiting (60/min data, 600/min tiles), CORS, request timing logs
-- **[routes/chat.ts](server/src/routes/chat.ts)** — `POST /api/chat` → Ollama LLM with conversation history
+- **[routes/chat.ts](server/src/routes/chat.ts)** — `POST /api/chat` → Ollama LLM with conversation history; the system-prompt personality is built per-request from the selected assistant profile ([config/assistant.ts](server/src/config/assistant.ts) → `getSelectedProfile()`). `ASSISTANT_NAME` env seeds the default profile
+- **[config/assistant.ts](server/src/config/assistant.ts)** — server half of the selectable-assistant system: per-profile `persona` (chat personality) + `elevenVoiceId`/`espeakVoice` (TTS). Reads the selected id from `assistant.json` in `$CACHE_DIR`; consumed by chat.ts (persona) and tts.ts (voice)
 - **[routes/tts.ts](server/src/routes/tts.ts)** — `GET /api/tts?text=` → ElevenLabs WAV or `espeak-ng` fallback
 - **[routes/stt.ts](server/src/routes/stt.ts)** — `POST /api/stt` → Vosk or Whisper transcription
 - **[routes/state.ts](server/src/routes/state.ts)** — `POST /api/state/*` persists media list, mode, lock credential as JSON in `$CACHE_DIR` (Docker volume `/data/cache`)

@@ -31,6 +31,7 @@
 import { Router, type Request, type Response } from 'express'
 import { DASHBOARD_TOOLS, MUTATING_TOOLS, TOOL_SLICE, runDashboardTool } from './dashboard-tools'
 import { addMemory, formatForPrompt as formatMemoryForPrompt } from '../memory'
+import { getSelectedProfile, type AssistantProfile } from '../config/assistant'
 
 const router = Router()
 
@@ -49,11 +50,11 @@ const WEB_SEARCH_ENABLED = (() => {
   return /ollama\.com/i.test(OLLAMA_URL) && OLLAMA_API_KEY.length > 0
 })()
 
-const SYSTEM_PROMPT =
-  "You are TouchSphere, a friendly desktop voice assistant living on the user's dashboard. " +
-  "You have the persona of a wise, whimsical magician wizard \u2014 think pointy hat, spellbooks, and a twinkle in the eye. " +
-  "Speak with a touch of magical flair (occasional playful references to spells, potions, enchantments, or the arcane arts), " +
-  "but stay genuinely helpful and concise \u2014 the magic is seasoning, not a substitute for a clear answer. " +
+// Everything after the persona is identical across assistants. The persona
+// (name + personality) is prepended per-request from the user's selected
+// profile \u2014 see buildSystemPrompt below.
+const SYSTEM_PROMPT_BODY =
+  "You are a voice assistant living on the user's dashboard. " +
   "Reply in 1-2 short, natural-sounding sentences. " +
   "Avoid lists, markdown, code blocks, and emoji \u2014 your reply will be spoken aloud. " +
   "TURN CONTROL \u2014 you decide explicitly when the conversation ends. " +
@@ -81,6 +82,9 @@ const SYSTEM_PROMPT =
   "star_media_item to pin priorities to the top, recommend_media_item when they ask what to play/watch next. " +
   "Note: movies only support \"not_started\" or \"done\" \u2014 never use in_progress or dropped on a movie), " +
   "set_app_mode (switch between work and rest modes \u2014 use when the user says \"switch to rest\", \"back to work\", etc.), " +
+  "add_notion_task (add an actionable to-do to the user's Notion task list \u2014 errands, work items, reminders, chores, follow-ups; " +
+  "pass an optional natural-language due date like \"today\", \"tomorrow\", or \"next friday\". " +
+  "IMPORTANT: use add_notion_task for things the user needs to DO, and add_media_item only for games, shows, or movies to play or watch \u2014 never mix them up), " +
   "set_timer / set_alarm / list_timers / cancel_timer " +
   "(set_timer for relative countdowns \u2014 \"timer for 10 minutes\", pass the duration in the hours/minutes/seconds fields; " +
   "set_alarm for an absolute clock time \u2014 \"wake me at 7:30 am\"; the dashboard rings and shows the countdown automatically, " +
@@ -101,6 +105,12 @@ const SYSTEM_PROMPT =
       "or anything you don't reliably know. If a search snippet looks promising but lacks the exact " +
       "answer, call web_fetch on that URL to read the full page."
     : "")
+
+// Compose the full system prompt for a given assistant: its personality up
+// front, then the shared behaviour/tool instructions.
+function buildSystemPrompt(profile: AssistantProfile): string {
+  return `${profile.persona} ${SYSTEM_PROMPT_BODY}`
+}
 
 const MAX_PROMPT_LEN     = 1000
 const MAX_HISTORY_MSGS   = 20      // user+assistant turns kept per request
@@ -421,8 +431,10 @@ router.post('/', async (req: Request, res: Response) => {
 
   // Inject persistent memory into the system message so the assistant treats
   // remembered facts as background knowledge without having to call list_memories.
+  const profile = getSelectedProfile()
   const memoryBlock = formatMemoryForPrompt()
-  const systemContent = memoryBlock ? `${SYSTEM_PROMPT}\n${memoryBlock}` : SYSTEM_PROMPT
+  const basePrompt = buildSystemPrompt(profile)
+  const systemContent = memoryBlock ? `${basePrompt}\n${memoryBlock}` : basePrompt
   const messages: ChatMessage[] = [
     { role: 'system', content: systemContent },
     ...history,
@@ -430,7 +442,7 @@ router.post('/', async (req: Request, res: Response) => {
 
   const preview = last.content.slice(0, 80)
   console.log(
-    `[chat] → ${OLLAMA_URL} model=${OLLAMA_MODEL} turns=${history.length} ` +
+    `[chat] → ${OLLAMA_URL} model=${OLLAMA_MODEL} as=${profile.id} turns=${history.length} ` +
     `tools=dashboard${WEB_SEARCH_ENABLED ? '+web' : ''} prompt=\"${preview}${last.content.length > 80 ? '\u2026' : ''}\"`,
   )
 

@@ -4,6 +4,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
+import { getSelectedProfile } from '../config/assistant'
 
 // GET /api/tts?text=hello[&voice=...]
 //
@@ -35,13 +36,14 @@ const SYNTH_TIMEOUT_MS = 15_000     // kill runaway processes / slow API calls
 
 // ── Config ───────────────────────────────────────────────────────────────────
 const EL_KEY      = process.env['ELEVENLABS_API_KEY'] ?? ''
-// Override with ELEVENLABS_VOICE_ID.
-const EL_VOICE_ID = process.env['ELEVENLABS_VOICE_ID'] ?? 'yT5srFl9OYVb0uSht5Pd'
+// A global voice override. When set it wins for every assistant profile;
+// when unset, each assistant uses the voice from its profile (config/assistant.ts).
+const EL_VOICE_ENV = process.env['ELEVENLABS_VOICE_ID']?.trim() || ''
 // "eleven_turbo_v2_5" is fast + cheap. Use "eleven_multilingual_v2" for max quality.
 const EL_MODEL_ID = process.env['ELEVENLABS_MODEL_ID'] ?? 'eleven_turbo_v2_5'
 
 const PROVIDER = (process.env['TTS_PROVIDER'] ?? (EL_KEY ? 'elevenlabs' : 'espeak')).toLowerCase()
-console.log(`[tts] provider=${PROVIDER}${PROVIDER === 'elevenlabs' ? ` voice=${EL_VOICE_ID} model=${EL_MODEL_ID}` : ''}`)
+console.log(`[tts] provider=${PROVIDER}${PROVIDER === 'elevenlabs' ? ` voice=${EL_VOICE_ENV || 'per-assistant'} model=${EL_MODEL_ID}` : ''}`)
 
 router.get('/', async (req, res) => {
   const text = String(req.query['text'] ?? '').trim()
@@ -59,12 +61,16 @@ router.get('/', async (req, res) => {
       if (!EL_KEY) {
         return res.status(500).json({ error: 'ELEVENLABS_API_KEY not set' })
       }
-      // Optional override via ?voice=<voiceId>. Whitelisted to alphanumerics
-      // (ElevenLabs voice IDs are 20-char base62 strings).
-      const voiceId = voiceParam && /^[a-zA-Z0-9]+$/.test(voiceParam) ? voiceParam : EL_VOICE_ID
+      // Voice precedence: explicit ?voice= override → global env override →
+      // the selected assistant's profile voice. All whitelisted to alphanumerics
+      // (ElevenLabs voice IDs are ~20-char base62 strings).
+      const voiceId =
+        voiceParam && /^[a-zA-Z0-9]+$/.test(voiceParam) ? voiceParam
+        : EL_VOICE_ENV && /^[a-zA-Z0-9]+$/.test(EL_VOICE_ENV) ? EL_VOICE_ENV
+        : getSelectedProfile().elevenVoiceId
       await synthesizeElevenLabs(text, voiceId, res)
     } else {
-      const lang = voiceParam || 'en-us'
+      const lang = voiceParam || getSelectedProfile().espeakVoice || 'en-us'
       if (!/^[a-z]{2}(-[a-z0-9]+)?$/i.test(lang)) {
         return res.status(400).json({ error: 'invalid voice (espeak expects e.g. "en-us")' })
       }

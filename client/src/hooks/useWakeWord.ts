@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { createModel, type KaldiRecognizer, type Model } from 'vosk-browser'
 import { useMuted } from './useMuted'
+import { useAssistant } from '../config/assistant'
 
 // localStorage keys.
 const LS_INPUT_KEY   = 'ts_audio_input_device'
@@ -86,20 +87,9 @@ const MODEL_URL    = '/vosk-model-small-en-us-0.15.zip'
 const SAMPLE_RATE  = 16_000   // Vosk small-en wants 16 kHz mono PCM.
 const COOLDOWN_MS  = 3_000    // Ignore further wakes for this long after a hit.
 
-// Phrases that should trigger the assistant. We check substring match so that
-// "yo martin", "hey martin", or "martin" all fire the same callback. Vosk's
-// small-en model has a fixed vocab, so "martin" is often misheard as "martian",
-// "marten", or "martini". Include common variants.
-const WAKE_PATTERNS = [
-  'yo martin',
-  'yo martini',
-  'yo martian',
-  'yo marten',
-  'hey martin',
-  'martin',
-  'martini',
-  'martian',
-]
+// Wake phrases live in the shared assistant config (client/src/config/assistant.ts)
+// so the name + call words are defined in exactly one place. We substring-match
+// them below so "yo martin", "hey martin", or a bare "martin" all fire.
 
 export type WakeStatus =
   | 'idle'        // disabled
@@ -130,6 +120,7 @@ interface UseWakeWordOptions {
 export function useWakeWord({ onWake, pause }: UseWakeWordOptions): UseWakeWordReturn {
   const enabled = useWakeWordEnabled()
   const muted   = useMuted()
+  const assistant = useAssistant()
   const { status, error } = useWakeWordStatus()
   const [lastHit, setLastHit] = useState<string | null>(null)
 
@@ -156,10 +147,15 @@ export function useWakeWord({ onWake, pause }: UseWakeWordOptions): UseWakeWordR
   const onWakeRef       = useRef(onWake)
   const pauseRef        = useRef(pause)
   const lastWakeAtRef   = useRef<number>(0)
+  // Wake patterns for the selected assistant. Kept in a ref and read live inside
+  // the audio callbacks so switching assistants updates matching WITHOUT tearing
+  // down and rebuilding the recognizer pipeline.
+  const wakePatternsRef = useRef<readonly string[]>(assistant.wakePatterns)
 
-  // Keep latest callback / pause flag without retriggering effect.
+  // Keep latest callback / pause flag / wake patterns without retriggering effect.
   useEffect(() => { onWakeRef.current = onWake }, [onWake])
   useEffect(() => { pauseRef.current  = pause  }, [pause])
+  useEffect(() => { wakePatternsRef.current = assistant.wakePatterns }, [assistant])
 
   const setEnabled = useCallback((v: boolean) => {
     setWakeWordEnabled(v)
@@ -236,7 +232,7 @@ export function useWakeWord({ onWake, pause }: UseWakeWordOptions): UseWakeWordR
         const handleHit = (text: string, source: 'partial' | 'final') => {
           if (pauseRef.current) return
           const lower = text.toLowerCase()
-          const matched = WAKE_PATTERNS.find(p => lower.includes(p))
+          const matched = wakePatternsRef.current.find(p => lower.includes(p))
           if (!matched) return
           const now = performance.now()
           if (now - lastWakeAtRef.current < COOLDOWN_MS) return
@@ -297,7 +293,7 @@ export function useWakeWord({ onWake, pause }: UseWakeWordOptions): UseWakeWordR
 
         if (cancelled) { teardown(); return }
         setStatus('listening')
-        console.log('[wake] listening for:', WAKE_PATTERNS.join(', '))
+        console.log('[wake] listening for:', wakePatternsRef.current.join(', '))
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         console.error('[wake] startup failed:', msg)

@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express'
 import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
+import { ASSISTANT_PROFILES, DEFAULT_ASSISTANT_ID, type AssistantId } from '../config/assistant'
 
 const router = Router()
 
@@ -114,6 +115,35 @@ router.post('/mode', (req: Request, res: Response) => {
     res.json({ mode })
   } catch {
     res.status(500).json({ error: 'Failed to persist mode' })
+  }
+})
+
+// ── Assistant profile ─────────────────────────────────────────────────────────
+// Which assistant (name + personality + voice) is active. The id is the single
+// piece of state; the profile tables live in config/assistant.ts (server) and
+// client/src/config/assistant.ts (client).
+// GET /api/state/assistant → { id }
+router.get('/assistant', (_req: Request, res: Response) => {
+  const stored = readJSON<{ id?: string }>('assistant.json', { id: DEFAULT_ASSISTANT_ID })
+  const id = stored.id && stored.id in ASSISTANT_PROFILES ? stored.id : DEFAULT_ASSISTANT_ID
+  console.log(`[state] GET assistant → ${id}`)
+  res.json({ id })
+})
+
+// POST /api/state/assistant  { id: AssistantId }
+router.post('/assistant', (req: Request, res: Response) => {
+  const { id } = req.body as { id?: string }
+  if (!id || !(id in ASSISTANT_PROFILES)) {
+    console.warn(`[state] POST assistant — invalid id: ${JSON.stringify(id)}`)
+    res.status(400).json({ error: `id must be one of ${Object.keys(ASSISTANT_PROFILES).join(' | ')}` })
+    return
+  }
+  console.log(`[state] POST assistant → ${id}`)
+  try {
+    writeJSON('assistant.json', { id: id as AssistantId })
+    res.json({ id })
+  } catch {
+    res.status(500).json({ error: 'Failed to persist assistant' })
   }
 })
 

@@ -5,6 +5,7 @@ import { useDevice } from '../hooks/useDevice'
 import { playSound, playRecordChime } from '../utils/sound'
 import { useVolume, setVolume, getEffectiveGain, type VolumeCategory } from '../hooks/useVolume'
 import { useWakeWordEnabled, setWakeWordEnabled, useWakeWordTranscript, useWakeWordStatus } from '../hooks/useWakeWord'
+import { ASSISTANT_PROFILES, ASSISTANT_ORDER, setAssistantId, useAssistant } from '../config/assistant'
 import { useAutoSchedule, fireBedtimeAlert } from '../hooks/useAutoSchedule'
 import { useRipple } from '../hooks/useRipple'
 import { useDebugLog, clearDebugLog, getDebugLog } from '../utils/debugLog'
@@ -294,6 +295,7 @@ export function SettingsPanel() {
   const wakeWordEnabled = useWakeWordEnabled()
   const wakeTranscript  = useWakeWordTranscript()
   const wakeStatus      = useWakeWordStatus()
+  const assistant       = useAssistant()
 
   const {
     inputDevices,
@@ -513,10 +515,42 @@ export function SettingsPanel() {
                   </p>
                 </div>
 
+                {/* Assistant picker — selects the AI's name, wake word,
+                    personality, and voice all at once. The choice is persisted
+                    server-side so the chat persona and TTS voice follow it. */}
+                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Assistant</span>
+                <div className="bg-white/5 rounded-2xl p-3 space-y-2 border border-white/8">
+                  {ASSISTANT_ORDER.map(id => {
+                    const p = ASSISTANT_PROFILES[id]
+                    const active = assistant.id === id
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setAssistantId(id)}
+                        aria-pressed={active}
+                        className={`w-full text-left rounded-xl px-4 py-3 border transition-colors flex items-center justify-between gap-3 ${
+                          active ? 'bg-cyan-500/15 border-cyan-500/40' : 'bg-white/5 border-white/8 active:bg-white/10'
+                        }`}
+                      >
+                        <span className="min-w-0">
+                          <span className="block text-white/85 text-sm font-medium">{p.name}</span>
+                          <span className="block text-white/40 text-xs mt-0.5 leading-relaxed">{p.tagline}</span>
+                        </span>
+                        {active && <Check size={18} className="text-cyan-300 flex-shrink-0" />}
+                      </button>
+                    )
+                  })}
+                  <p className="text-white/30 text-xs leading-relaxed px-1 pt-1">
+                    Switches the assistant's name, wake word, personality, and voice together.
+                  </p>
+                </div>
+
                 {/* Wake word — always-on offline detection via Vosk WASM. When
-                    enabled, saying “Hey TouchSphere” activates the assistant
-                    just like tapping the orb. The model file (~40 MB) must be
-                    present at /vosk-model-small-en-us-0.15.zip in public. */}
+                    enabled, saying the selected assistant's wake phrase (e.g.
+                    “Hey Martin”) activates it just like tapping the orb. The
+                    model file (~40 MB) must be present at
+                    /vosk-model-small-en-us-0.15.zip in public. */}
                 <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Wake Word</span>
                 <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
                   <div className="flex items-center justify-between gap-4">
@@ -528,7 +562,7 @@ export function SettingsPanel() {
                         <line x1="15" y1="9" x2="15.01" y2="9" />
                       </svg>
                       <div className="min-w-0">
-                        <p className="text-white/70 text-sm font-medium">Always listen for “Hey TouchSphere”</p>
+                        <p className="text-white/70 text-sm font-medium">Always listen for “{assistant.wakePhrase}”</p>
                         <p className="text-white/30 text-xs mt-0.5">Runs locally — audio never leaves the device until the wake word fires.</p>
                       </div>
                     </div>
@@ -612,7 +646,7 @@ export function SettingsPanel() {
                     </div>
 
                     <p className="text-white/30 text-xs leading-relaxed">
-                      Audio is processed locally and never sent over the network. Say “Hey TouchSphere” to trigger the assistant.
+                      Audio is processed locally and never sent over the network. Say “{assistant.wakePhrase}” to trigger the assistant.
                     </p>
                   </div>
                 )}
