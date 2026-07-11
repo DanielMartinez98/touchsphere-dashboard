@@ -1108,6 +1108,8 @@ function DebugTab() {
   const [checks,    setChecks]    = useState<Record<string, CheckResult>>({})
   const [checking,  setChecking]  = useState(false)
   const [llm,       setLlm]       = useState<{ state: 'idle' | 'running' | 'done' | 'fail'; ms?: number; text?: string }>({ state: 'idle' })
+  const [voices,    setVoices]    = useState<Record<string, CheckResult>>({})
+  const [testingVoices, setTestingVoices] = useState(false)
   const [copied,    setCopied]    = useState<string | null>(null)
   const errors = useDebugLog()
 
@@ -1185,12 +1187,44 @@ function DebugTab() {
     }
   }
 
+  // Synthesize a 1-word clip for each assistant to see which voices actually
+  // work. Surfaces the exact TTS error (e.g. an unavailable ElevenLabs voice)
+  // per profile. Sequential so we don't fire five ElevenLabs calls at once.
+  async function testVoices() {
+    if (testingVoices) return
+    setTestingVoices(true)
+    setVoices({})
+    for (const id of ASSISTANT_ORDER) {
+      const t0 = performance.now()
+      try {
+        const res = await fetch(`${DEBUG_API}/api/tts?as=${id}&text=hi`)
+        const ms = Math.round(performance.now() - t0)
+        if (res.ok) {
+          setVoices(prev => ({ ...prev, [id]: { state: 'ok', ms } }))
+        } else {
+          let detail = `HTTP ${res.status}`
+          try {
+            const j = await res.json() as { error?: string; detail?: string }
+            if (j.detail) detail += ` — ${j.detail}`
+            else if (j.error) detail += ` — ${j.error}`
+          } catch { /* non-JSON body */ }
+          setVoices(prev => ({ ...prev, [id]: { state: 'fail', ms, detail } }))
+        }
+      } catch (err) {
+        const ms = Math.round(performance.now() - t0)
+        setVoices(prev => ({ ...prev, [id]: { state: 'fail', ms, detail: err instanceof Error ? err.message : String(err) } }))
+      }
+    }
+    setTestingVoices(false)
+  }
+
   async function copyDiagnostics() {
     const payload = {
       at:     new Date().toISOString(),
       server: serverErr ? { error: serverErr } : server,
       checks,
       llm,
+      voices,
       client: {
         secureContext: window.isSecureContext,
         online:        navigator.onLine,
@@ -1297,6 +1331,37 @@ function DebugTab() {
           )}
         </div>
       </div>
+
+      {/* ── Voices (TTS) ── */}
+      <div className="flex items-center justify-between mt-6 mb-2">
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Voices (TTS)</span>
+        <button onClick={() => void testVoices()} disabled={testingVoices}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-500/20 text-blue-300 text-xs font-medium active:bg-blue-500/35 disabled:opacity-50">
+          <Volume2 size={13} className={testingVoices ? 'animate-pulse' : ''} /> {testingVoices ? 'Testing…' : 'Test voices'}
+        </button>
+      </div>
+      {(testingVoices || Object.keys(voices).length > 0) ? (
+        <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden divide-y divide-white/8">
+          {ASSISTANT_ORDER.map(id => {
+            const result = voices[id]
+            return (
+              <div key={id} className="px-5 py-3.5">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm text-white/70">{ASSISTANT_PROFILES[id].name} <span className="text-white/30 font-mono text-xs">{id}</span></span>
+                  <StatusChip result={result} />
+                </div>
+                {result?.state === 'fail' && result.detail && (
+                  <p className="text-xs text-red-400/80 mt-1 break-all font-mono">{result.detail}</p>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      ) : (
+        <p className="text-white/30 text-xs leading-relaxed bg-white/5 rounded-2xl border border-white/8 px-5 py-4">
+          Synthesizes a one-word clip for each assistant to check its voice. Reveals TTS errors — e.g. an ElevenLabs voice that isn't available to this server's account.
+        </p>
+      )}
 
       {/* ── Client environment ── */}
       <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">This screen</span>
