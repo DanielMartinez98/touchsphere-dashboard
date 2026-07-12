@@ -36,7 +36,7 @@ function coversDir(): string {
 }
 
 // ── TMDB (movies + shows) ─────────────────────────────────────────────────────
-async function searchTmdb(type: 'movie' | 'show', query: string): Promise<ArtworkResult[]> {
+async function searchTmdb(type: 'movie' | 'show', query: string, limit = 8): Promise<ArtworkResult[]> {
   const apiKey = process.env['TMDB_API_KEY']
   if (!apiKey) {
     console.warn('[artwork] TMDB_API_KEY not set — skipping movie/show lookup')
@@ -54,7 +54,7 @@ async function searchTmdb(type: 'movie' | 'show', query: string): Promise<Artwor
 
   return (data.results ?? [])
     .filter(r => r.poster_path)
-    .slice(0, 8)
+    .slice(0, limit)
     .map(r => {
       // TMDB names the fields differently for movies vs TV.
       const date: string = r.release_date ?? r.first_air_date ?? ''
@@ -99,13 +99,13 @@ async function igdbAccessToken(): Promise<string | null> {
   return igdbToken.value
 }
 
-async function searchIgdb(query: string): Promise<ArtworkResult[]> {
+async function searchIgdb(query: string, limit = 8): Promise<ArtworkResult[]> {
   const token    = await igdbAccessToken()
   const clientId = process.env['IGDB_CLIENT_ID']
   if (!token || !clientId) return []
 
   // IGDB takes an Apicalypse query as a raw text body, not JSON.
-  const body = `search "${query.replace(/"/g, '')}"; fields name,first_release_date,cover.image_id; where cover != null; limit 8;`
+  const body = `search "${query.replace(/"/g, '')}"; fields name,first_release_date,cover.image_id; where cover != null; limit ${limit};`
   const { data } = await axios.post<any[]>('https://api.igdb.com/v4/games', body, {
     headers: {
       'Client-ID':     clientId,
@@ -129,9 +129,9 @@ async function searchIgdb(query: string): Promise<ArtworkResult[]> {
 // ── Public helpers (also used by routes/state.ts) ──────────────────────────────
 
 /** Search the provider that covers `type`. Returns [] when unconfigured or on failure. */
-export async function searchArtwork(type: MediaType, query: string): Promise<ArtworkResult[]> {
+export async function searchArtwork(type: MediaType, query: string, limit = 8): Promise<ArtworkResult[]> {
   try {
-    const results = type === 'game' ? await searchIgdb(query) : await searchTmdb(type, query)
+    const results = (type === 'game' ? await searchIgdb(query, limit) : await searchTmdb(type, query, limit))
     console.log(`[artwork] search ${type} "${query}" → ${results.length} result(s)`)
     return results
   } catch (err: any) {
@@ -175,11 +175,111 @@ export async function cacheCover(imageUrl: string): Promise<string | null> {
   }
 }
 
+/** Loose title key: case/punctuation/spacing-insensitive, so "Spider-Man 2" == "spider man 2". */
+function titleKey(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '')
+}
+
+export interface CoverLookup {
+  /** Cached filename of the poster we attached, or null if nothing was found. */
+  cover:       string | null
+  /** The result we attached the cover from. */
+  match:       ArtworkResult | null
+  /** True when the match's title is effectively identical to what was asked for. */
+  exact:       boolean
+  /** Other candidates, for "did you mean…?" when the match is loose or absent. */
+  suggestions: ArtworkResult[]
+}
+
+/**
+ * Look up a cover and report how confident the match is. A misspelled title
+ * ("Eldn Ring") usually still returns the right game — but silently attaching
+ * art for a title the user didn't type is how you end up with a wrong poster
+ * nobody notices, so callers get `exact` and can ask before trusting it.
+ */
+export async function findCover(type: MediaType, title: string): Promise<CoverLookup> {
+  const results = await searchArtwork(type, title)
+
+  if (results.length > 0) {
+    // Providers rank by popularity, not by title, so the top hit for "Elden Ring"
+    // is "Elden Ring Nightreign". Always prefer a result whose title actually
+    // matches what was asked for; only fall back to the top hit otherwise.
+    const key   = titleKey(title)
+    const hit   = results.find(r => titleKey(r.title) === key)
+    const match = hit ?? results[0]!
+    const exact = hit != null
+    const cover = await cacheCover(match.imageUrl)
+    console.log(`[artwork] matched ${type} "${title}" → "${match.title}" (${exact ? 'exact' : 'LOOSE'})`)
+    return { cover, match, exact, suggestions: results.slice(0, 5) }
+  }
+
+  // Nothing matched — the title is probably misspelled. These APIs don't correct
+  // typos and don't match partial words, so the only lever is to drop the words
+  // most likely to be mangled and search on what's left ("Blade Runer 2049" →
+  // "Blade"). That returns a popularity-ranked pool that may not contain the
+  // right title near the top, so we pull a wide pool and re-rank it *locally*
+  // by how close each title is to what the user actually typed. Suggestions
+  // only — art is never auto-attached from a guess.
+  const pool = new Map<string, ArtworkResult>()
+  for (const probe of probesFor(title)) {
+    for (const r of await searchArtwork(type, probe, 30)) pool.set(r.id, r)
+    if (pool.size >= 30) break
+  }
+
+  if (pool.size === 0) {
+    console.log(`[artwork] no match and no suggestions for ${type} "${title}"`)
+    return { cover: null, match: null, exact: false, suggestions: [] }
+  }
+
+  const suggestions = Array.from(pool.values())
+    .map(r => ({ r, d: distance(titleKey(title), titleKey(r.title)) }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 5)
+    .map(x => x.r)
+
+  console.log(`[artwork] no match for ${type} "${title}" — closest of ${pool.size}: "${suggestions[0]!.title}"`)
+  return { cover: null, match: null, exact: false, suggestions }
+}
+
+/**
+ * Fallback queries for a title that returned nothing, best first. Any single
+ * word may be the misspelled one, so each probe drops a different part: all but
+ * the last word ("Blade Runer 2049" → "Blade"), then the first word, then the
+ * last ("Cyberpunck 2077" → "2077", which still finds the game). Each probe is
+ * a live API call, so the list stays short and only runs on the failure path.
+ */
+function probesFor(title: string): string[] {
+  const words = title.trim().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return []
+  if (words.length === 1) return [words[0]!]
+  return Array.from(new Set([
+    words.slice(0, -1).join(' '),
+    words[0]!,
+    words[words.length - 1]!,
+  ])).filter(p => p.length >= 2)
+}
+
+/** Levenshtein distance — ranks candidates by closeness to the typed title. */
+function distance(a: string, b: string): number {
+  if (a === b) return 0
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    const curr = [i]
+    for (let j = 1; j <= b.length; j++) {
+      curr[j] = Math.min(
+        prev[j]! + 1,
+        curr[j - 1]! + 1,
+        prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1),
+      )
+    }
+    prev = curr
+  }
+  return prev[b.length]!
+}
+
 /** Best-effort cover for a freshly added item: top search hit, cached to disk. */
 export async function autoCover(type: MediaType, title: string): Promise<string | null> {
-  const [top] = await searchArtwork(type, title)
-  if (!top) return null
-  return cacheCover(top.imageUrl)
+  return (await findCover(type, title)).cover
 }
 
 // ── Routes ────────────────────────────────────────────────────────────────────
@@ -199,7 +299,10 @@ router.get('/search', async (req: Request, res: Response) => {
     return
   }
 
-  res.json(await searchArtwork(type, q))
+  // Fall back to near-matches when the title finds nothing, so the cover picker
+  // can still offer "did you mean…?" for a misspelled item instead of a dead end.
+  const results = await searchArtwork(type, q)
+  res.json(results.length > 0 ? results : (await findCover(type, q)).suggestions)
 })
 
 // GET /api/artwork/cover/:file — serve a cached poster off the volume.

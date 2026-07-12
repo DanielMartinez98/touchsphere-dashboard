@@ -47,7 +47,7 @@ function App() {
   // replays its one-shot animation every time.
   const [orbBurst, setOrbBurst] = useState(0)
   const toggle = (w: OpenWidget) => setOpen(prev => prev === w ? null : w)
-  const { items, nextItem, addItem, removeItem, markDone, toggleStar, setStatus, setCover } = useMediaList()
+  const { items, nextItem, addItem, removeItem, markDone, toggleStar, setStatus, setCover, renameItem } = useMediaList()
   const {
     schema:      notionSchema,
     schemas:     notionSchemas,
@@ -227,7 +227,7 @@ function App() {
           isOpen={open === 'media'}
           onToggle={() => toggle('media')}
           collapsed={<MediaCollapsed nextItem={nextItem} />}
-          expanded={<MediaListExpanded items={items} addItem={addItem} removeItem={removeItem} markDone={markDone} toggleStar={toggleStar} setStatus={setStatus} setCover={setCover} />}
+          expanded={<MediaListExpanded items={items} addItem={addItem} removeItem={removeItem} markDone={markDone} toggleStar={toggleStar} setStatus={setStatus} setCover={setCover} renameItem={renameItem} />}
         />
       )}
 

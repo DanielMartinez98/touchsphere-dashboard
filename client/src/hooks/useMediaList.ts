@@ -160,6 +160,34 @@ export function useMediaList() {
       .catch(err => console.error(`[MediaList] setCover ${id} failed:`, err))
   }, [])
 
+  // Rename an item. The server re-runs the artwork lookup on the new title —
+  // that's the whole point, since a title usually gets corrected precisely
+  // because the cover lookup failed on the misspelling.
+  const renameItem = useCallback((id: string, title: string) => {
+    console.log(`[MediaList] RENAME id=${id} → "${title}"`)
+    setItems(prev => prev.map(i => i.id === id ? { ...i, title } : i))
+    fetch(`${API}/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    })
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        return res.json() as Promise<MediaItem>
+      })
+      .then(updated => {
+        setItems(prev => prev.map(i => i.id === id ? updated : i))
+        console.log(`[MediaList] renamed id=${id} cover=${updated.cover ?? 'none'}`)
+      })
+      .catch(err => {
+        console.error(`[MediaList] renameItem ${id} failed — restoring:`, err)
+        fetch(API)
+          .then(r => r.json() as Promise<MediaItem[]>)
+          .then(setItems)
+          .catch(() => {})
+      })
+  }, [])
+
   const markDone = useCallback((id: string) => {
     // Optimistic update
     setItems(prev => prev.map(i => {
@@ -193,6 +221,6 @@ export function useMediaList() {
     items.find(isActive) ??
     null
 
-  return { items, nextItem, isLoading, addItem, removeItem, markDone, toggleStar, setStatus, setCover }
+  return { items, nextItem, isLoading, addItem, removeItem, markDone, toggleStar, setStatus, setCover, renameItem }
 }
 

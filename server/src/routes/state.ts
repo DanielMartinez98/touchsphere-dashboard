@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
 import { ASSISTANT_PROFILES, DEFAULT_ASSISTANT_ID, type AssistantId } from '../config/assistant'
-import { autoCover, cacheCover } from './artwork'
+import { autoCover, cacheCover, findCover } from './artwork'
 
 const router = Router()
 
@@ -307,14 +307,32 @@ router.patch('/media/:id', async (req: Request, res: Response) => {
     return
   }
   const body = (req.body ?? {}) as {
-    done?: boolean; starred?: boolean; status?: MediaStatus; coverUrl?: string
+    done?: boolean; starred?: boolean; status?: MediaStatus; coverUrl?: string; title?: string
   }
   const hasField =
     typeof body.done     === 'boolean' ||
     typeof body.starred  === 'boolean' ||
     typeof body.status   === 'string'  ||
-    typeof body.coverUrl === 'string'
+    typeof body.coverUrl === 'string'  ||
+    typeof body.title    === 'string'
   const next = { ...items[idx] }
+
+  // Rename. A title is usually corrected *because* the artwork lookup failed on
+  // the misspelling, so re-run it. A failed re-lookup leaves the existing cover
+  // alone rather than blanking a poster the user may have picked by hand.
+  if (typeof body.title === 'string') {
+    const title = body.title.trim()
+    if (!title) {
+      res.status(400).json({ error: 'title cannot be empty' })
+      return
+    }
+    if (title !== next.title) {
+      next.title = title
+      const { cover } = await findCover(next.type, title)
+      if (cover) next.cover = cover
+    }
+  }
+
   if (typeof body.coverUrl === 'string') {
     const cover = await cacheCover(body.coverUrl)
     if (!cover) {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Shuffle, Dices, Star, Plus, X, Circle, Play, Check, ChevronDown, ChevronRight, Trash2, Undo2, Image as ImageIcon } from 'lucide-react'
+import { Shuffle, Dices, Star, Plus, X, Circle, Play, Check, ChevronDown, ChevronRight, Trash2, Undo2, Image as ImageIcon, Pencil } from 'lucide-react'
 import type { ArtworkResult, MediaItem, MediaStatus, MediaType } from '../../../types'
 import { statusesFor } from '../../../types'
 import { MediaTypeIcon } from './MediaTypeIcon'
@@ -158,10 +158,61 @@ function CoverPicker({
   )
 }
 
+// ── Rename sheet ─────────────────────────────────────────────────────────────
+// A misspelled title is the usual reason an item has no cover, so renaming is
+// also the fix-up path for artwork: the server re-runs the lookup on save.
+
+function RenameSheet({
+  item, onClose, onSave,
+}: {
+  item:    MediaItem
+  onClose: () => void
+  onSave:  (title: string) => void
+}) {
+  const [value, setValue] = useState(item.title)
+
+  const commit = () => {
+    const trimmed = value.trim()
+    if (trimmed && trimmed !== item.title) onSave(trimmed)
+    onClose()
+  }
+
+  return (
+    <div className="absolute inset-0 z-50 flex flex-col justify-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60" />
+      <div className="relative bg-[#0e1117] border-t border-hairline rounded-t-3xl notion-sheet"
+           onClick={e => e.stopPropagation()}>
+        <div className="px-5 pt-3 pb-4">
+          <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-4" />
+
+          <p className="text-base font-semibold text-white mb-1">Rename</p>
+          <p className="text-xs text-white/45 mb-3">Fixing the spelling re-fetches the cover art.</p>
+
+          <div className="flex gap-2">
+            <input
+              type="text"
+              inputMode="none"
+              readOnly
+              value={value}
+              className="flex-1 bg-glass-2 text-white rounded-xl px-4 py-3 text-base outline-none"
+            />
+            <button type="button" onClick={commit}
+              className="px-5 bg-[var(--accent,#06b6d4)] text-black font-bold rounded-xl active:scale-95">
+              Save
+            </button>
+          </div>
+        </div>
+
+        <TouchKeyboard value={value} onChange={setValue} onDone={commit} />
+      </div>
+    </div>
+  )
+}
+
 // ── Bottom sheet: status / star / delete for one item ────────────────────────
 
 function ItemSheet({
-  item, onClose, onSetStatus, onToggleStar, onDelete, onChangeCover,
+  item, onClose, onSetStatus, onToggleStar, onDelete, onChangeCover, onRename,
 }: {
   item:          MediaItem
   onClose:       () => void
@@ -169,6 +220,7 @@ function ItemSheet({
   onToggleStar:  () => void
   onDelete:      () => void
   onChangeCover: () => void
+  onRename:      () => void
 }) {
   return (
     <div className="absolute inset-0 z-40 flex flex-col justify-end" onClick={onClose}>
@@ -201,10 +253,16 @@ function ItemSheet({
             ))}
           </div>
 
-          <button type="button" onClick={onChangeCover}
-            className="w-full h-13 py-3.5 mb-2 rounded-xl text-sm font-semibold bg-white/[0.06] text-white/70 active:bg-white/10 flex items-center justify-center gap-2">
-            <ImageIcon size={16} /> Change cover
-          </button>
+          <div className="grid grid-cols-2 gap-2 mb-2">
+            <button type="button" onClick={onRename}
+              className="h-13 py-3.5 rounded-xl text-sm font-semibold bg-white/[0.06] text-white/70 active:bg-white/10 flex items-center justify-center gap-2">
+              <Pencil size={16} /> Rename
+            </button>
+            <button type="button" onClick={onChangeCover}
+              className="h-13 py-3.5 rounded-xl text-sm font-semibold bg-white/[0.06] text-white/70 active:bg-white/10 flex items-center justify-center gap-2">
+              <ImageIcon size={16} /> Cover
+            </button>
+          </div>
 
           <div className="grid grid-cols-2 gap-2">
             <button type="button" onClick={() => { onToggleStar(); onClose() }}
@@ -243,6 +301,7 @@ interface Props {
   toggleStar: (id: string) => void
   setStatus: (id: string, status: MediaStatus) => void
   setCover: (id: string, coverUrl: string) => void
+  renameItem: (id: string, title: string) => void
 }
 
 export default function MediaListExpanded({
@@ -253,6 +312,7 @@ export default function MediaListExpanded({
   toggleStar,
   setStatus,
   setCover,
+  renameItem,
 }: Props) {
   const [title, setTitle] = useState('')
   const [type, setType] = useState<MediaType>('show')
@@ -264,6 +324,7 @@ export default function MediaListExpanded({
   const rollTimer = useRef<number | null>(null)
   const [sheetItemId, setSheetItemId] = useState<string | null>(null)
   const [coverItemId, setCoverItemId] = useState<string | null>(null)
+  const [renameItemId, setRenameItemId] = useState<string | null>(null)
   const [showFinished, setShowFinished] = useState(false)
 
   // Stop a roulette mid-spin if the widget unmounts.
@@ -398,7 +459,8 @@ export default function MediaListExpanded({
     : null
 
   const sheetItem = sheetItemId ? items.find(i => i.id === sheetItemId) ?? null : null
-  const coverItem = coverItemId ? items.find(i => i.id === coverItemId) ?? null : null
+  const coverItem  = coverItemId  ? items.find(i => i.id === coverItemId)  ?? null : null
+  const renameTarget = renameItemId ? items.find(i => i.id === renameItemId) ?? null : null
 
   const filterTabs: { key: Filter; label: string }[] = [
     { key: 'all',   label: 'All' },
@@ -653,6 +715,7 @@ export default function MediaListExpanded({
           onToggleStar={() => toggleStar(sheetItem.id)}
           onDelete={() => requestDelete(sheetItem)}
           onChangeCover={() => { setCoverItemId(sheetItem.id); setSheetItemId(null) }}
+          onRename={() => { setRenameItemId(sheetItem.id); setSheetItemId(null) }}
         />
       )}
 
@@ -661,6 +724,14 @@ export default function MediaListExpanded({
           item={coverItem}
           onClose={() => setCoverItemId(null)}
           onPick={url => setCover(coverItem.id, url)}
+        />
+      )}
+
+      {renameTarget && (
+        <RenameSheet
+          item={renameTarget}
+          onClose={() => setRenameItemId(null)}
+          onSave={title => renameItem(renameTarget.id, title)}
         />
       )}
 

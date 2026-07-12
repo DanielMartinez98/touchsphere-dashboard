@@ -14,6 +14,7 @@ import path from 'path'
 import crypto from 'crypto'
 import { addMemory, loadMemories, removeMemories } from '../memory'
 import { nextRecurringFireAt, sanitizeRepeatDays } from './timers'
+import { findCover } from './artwork'
 
 // ── State file helpers (mirror state.ts) ─────────────────────────────────────
 function stateDir(): string {
@@ -75,10 +76,14 @@ interface MediaItem {
   done: boolean
   status: MediaStatus
   starred?: boolean
+  cover?: string
 }
 
 // Mirror the server's normalizer so legacy items (no `status`) read sanely
-// even before they're rewritten.
+// even before they're rewritten. Every field an item can carry MUST be copied
+// through: this normalizer runs on read and the result is written straight back
+// on the next mutation, so anything omitted here is silently destroyed for the
+// whole list (that's how `cover` got wiped by any AI edit).
 function normalize(raw: Partial<MediaItem> & { type: MediaType }): MediaItem {
   const done = raw.done === true
   let status = raw.status
@@ -90,6 +95,7 @@ function normalize(raw: Partial<MediaItem> & { type: MediaType }): MediaItem {
     done:  status === 'done',
     status,
     ...(raw.starred ? { starred: true } : {}),
+    ...(raw.cover ? { cover: raw.cover } : {}),
   }
 }
 
@@ -122,7 +128,14 @@ function listMedia(): string {
   return parts.join('\n\n')
 }
 
-function addMedia(title: string, type: string): string {
+// Render a candidate list for the model to read back to the user.
+function suggestionList(suggestions: { title: string; year: number | null }[]): string {
+  return suggestions
+    .map(s => `"${s.title}"${s.year ? ` (${s.year})` : ''}`)
+    .join(', ')
+}
+
+async function addMedia(title: string, type: string): Promise<string> {
   const t = title.trim()
   if (!t) return 'Error: title is required.'
   if (type !== 'game' && type !== 'show' && type !== 'movie') {
@@ -134,17 +147,70 @@ function addMedia(title: string, type: string): string {
     i.type === type && i.title.toLowerCase() === t.toLowerCase(),
   )
   if (dupe) return `Already on the list: "${dupe.title}" (${dupe.type}).`
+
+  // Look the cover up before saving so the item lands complete. The result also
+  // tells us whether the title was good enough to trust — a spoken title is
+  // often misheard or misspelled, and a wrong poster is worse than none.
+  const { cover, match, exact, suggestions } = await findCover(type as MediaType, t)
+
   const item: MediaItem = {
     id: crypto.randomUUID(),
     title: t,
     type: type as MediaType,
     done: false,
     status: 'not_started',
+    ...(cover ? { cover } : {}),
   }
   items.push(item)
   writeMedia(items)
-  console.log(`[chat:tool] add_media_item → "${item.title}" (${item.type})`)
-  return `Added "${item.title}" to the ${item.type} list.`
+  console.log(`[chat:tool] add_media_item → "${item.title}" (${item.type}) cover=${cover ?? 'none'} exact=${exact}`)
+
+  if (cover && exact) {
+    return `Added "${item.title}" to the ${item.type} list, with cover art.`
+  }
+
+  if (cover && match) {
+    // We attached art for a title that isn't quite what was asked for.
+    return `Added "${item.title}" to the ${item.type} list, but the closest artwork match was ` +
+           `"${match.title}"${match.year ? ` (${match.year})` : ''}, not an exact title match. ` +
+           `Ask the user whether they meant "${match.title}" — if they say yes, call rename_media_item ` +
+           `to correct the title. Other candidates: ${suggestionList(suggestions.slice(1))}.`
+  }
+
+  if (suggestions.length > 0) {
+    return `Added "${item.title}" to the ${item.type} list, but no artwork matches that exact title — ` +
+           `it is probably misspelled. The closest titles are: ${suggestionList(suggestions)}. ` +
+           `Ask the user which one they meant, then call rename_media_item with it. ` +
+           `If none are right, leave the item as-is.`
+  }
+
+  return `Added "${item.title}" to the ${item.type} list, but no cover art was found and no similar ` +
+         `titles either. Ask the user to spell the title, then call rename_media_item to fix it ` +
+         `(renaming re-runs the artwork lookup).`
+}
+
+// Rename an item and re-run the artwork lookup. This is the fix-up path for a
+// title that was misheard or misspelled badly enough that no cover was found.
+async function renameMedia(title: string, newTitle: string): Promise<string> {
+  const t = newTitle.trim()
+  if (!t) return 'Error: new_title is required.'
+  const items = readMedia()
+  const hit = findByTitle(items, title)
+  if (!hit) return `Not on the list: "${title}".`
+
+  const old = hit.title
+  hit.title = t
+
+  const { cover, match, exact } = await findCover(hit.type, t)
+  if (cover) hit.cover = cover
+
+  writeMedia(items)
+  console.log(`[chat:tool] rename_media_item → "${old}" → "${t}" cover=${cover ?? 'unchanged'}`)
+
+  if (cover && exact)  return `Renamed "${old}" to "${t}" and updated the cover art.`
+  if (cover && match)  return `Renamed "${old}" to "${t}" and attached artwork for "${match.title}". ` +
+                              `Confirm with the user that this is the right one.`
+  return `Renamed "${old}" to "${t}", but still no cover art was found for that title.`
 }
 
 function findByTitle(items: MediaItem[], title: string): MediaItem | undefined {
@@ -905,7 +971,10 @@ export const DASHBOARD_TOOLS = [
       description:
         "Add a game, show, or movie to the user's playlist. Use this whenever the user " +
         'asks to add, remember, queue, save, or jot down something to play or watch. ' +
-        'Pick the type that best fits (game / show / movie).',
+        'Pick the type that best fits (game / show / movie). Cover art is fetched automatically. ' +
+        'If the result says the artwork match was not exact, or that no artwork was found, the title ' +
+        'is probably misheard or misspelled — ask the user to confirm the correct title and then call ' +
+        'rename_media_item. Do not silently accept a wrong title.',
       parameters: {
         type: 'object',
         properties: {
@@ -913,6 +982,24 @@ export const DASHBOARD_TOOLS = [
           type:  { type: 'string', enum: ['game', 'show', 'movie'], description: 'Kind of media.' },
         },
         required: ['title', 'type'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'rename_media_item',
+      description:
+        'Correct the title of an item already on the playlist, and re-fetch its cover art. ' +
+        'Use this after add_media_item reports a loose match or no artwork and the user has ' +
+        'confirmed the right title, or whenever the user says an entry is spelled wrong.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title:     { type: 'string', description: 'Current title of the item (substring match).' },
+          new_title: { type: 'string', description: 'The corrected title.' },
+        },
+        required: ['title', 'new_title'],
       },
     },
   },
@@ -1260,6 +1347,7 @@ export async function runDashboardTool(
     case 'get_time':           return getTime(str('location'))
     case 'list_media_items':   return listMedia()
     case 'add_media_item':     return addMedia(str('title'), str('type'))
+    case 'rename_media_item':  return renameMedia(str('title'), str('new_title'))
     case 'remove_media_item':  return removeMedia(str('title'))
     case 'mark_media_done': {
       const done = typeof args['done'] === 'boolean' ? (args['done'] as boolean) : true
@@ -1302,6 +1390,7 @@ export async function runDashboardTool(
 // chat route to tell the client which slices to refetch.
 export const MUTATING_TOOLS = new Set([
   'add_media_item',
+  'rename_media_item',
   'remove_media_item',
   'mark_media_done',
   'set_media_status',
