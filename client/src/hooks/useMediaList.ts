@@ -139,6 +139,27 @@ export function useMediaList() {
       })
   }, [items])
 
+  // Pin a poster the user picked in the cover sheet. The server downloads it
+  // and answers with the updated item, so there's nothing optimistic to do —
+  // the image only exists once it's cached.
+  const setCover = useCallback((id: string, coverUrl: string) => {
+    console.log(`[MediaList] SET cover id=${id} ← ${coverUrl}`)
+    fetch(`${API}/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ coverUrl }),
+    })
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        return res.json() as Promise<MediaItem>
+      })
+      .then(updated => {
+        setItems(prev => prev.map(i => i.id === id ? updated : i))
+        console.log(`[MediaList] cover set for id=${id} → ${updated.cover}`)
+      })
+      .catch(err => console.error(`[MediaList] setCover ${id} failed:`, err))
+  }, [])
+
   const markDone = useCallback((id: string) => {
     // Optimistic update
     setItems(prev => prev.map(i => {
@@ -172,6 +193,6 @@ export function useMediaList() {
     items.find(isActive) ??
     null
 
-  return { items, nextItem, isLoading, addItem, removeItem, markDone, toggleStar, setStatus }
+  return { items, nextItem, isLoading, addItem, removeItem, markDone, toggleStar, setStatus, setCover }
 }
 

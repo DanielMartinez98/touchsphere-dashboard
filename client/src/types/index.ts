@@ -61,4 +61,16 @@ export interface MediaItem {
   done: boolean
   status: MediaStatus
   starred?: boolean
+  // Cached poster filename, served by /api/artwork/cover/<cover>. Looked up on
+  // add (TMDB for movies/shows, IGDB for games) and correctable in the item
+  // sheet. Absent when nothing matched — the UI falls back to a gradient tile.
+  cover?: string
+}
+
+/** One candidate poster from /api/artwork/search. */
+export interface ArtworkResult {
+  id: string
+  title: string
+  year: number | null
+  imageUrl: string
 }

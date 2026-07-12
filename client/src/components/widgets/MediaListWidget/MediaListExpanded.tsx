@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Shuffle, Dices, Star, Plus, X, Circle, Play, Check, ChevronDown, ChevronRight, Trash2, Undo2 } from 'lucide-react'
-import type { MediaItem, MediaStatus, MediaType } from '../../../types'
+import { Shuffle, Dices, Star, Plus, X, Circle, Play, Check, ChevronDown, ChevronRight, Trash2, Undo2, Image as ImageIcon } from 'lucide-react'
+import type { ArtworkResult, MediaItem, MediaStatus, MediaType } from '../../../types'
 import { statusesFor } from '../../../types'
 import { MediaTypeIcon } from './MediaTypeIcon'
 import { TouchKeyboard } from '../../TouchKeyboard'
@@ -38,9 +38,11 @@ const TYPE_LABEL: Record<MediaType, string> = {
   movie: 'Movie',
 }
 
-// ── Generated cover art ──────────────────────────────────────────────────────
-// Every item gets a stable gradient tile derived from its title, so the list
-// has visual identity without any artwork lookup (kiosk stays offline-capable).
+// ── Cover art ────────────────────────────────────────────────────────────────
+// Real posters come from the server (TMDB for movies/shows, IGDB for games),
+// cached to disk on add so they render offline. Anything without one — no
+// match, or added while the Pi had no WAN — keeps the old gradient tile derived
+// from the title, so the list is never a row of broken images.
 
 function hueFromTitle(title: string): number {
   let h = 0
@@ -48,8 +50,25 @@ function hueFromTitle(title: string): number {
   return h % 360
 }
 
-function MediaCover({ item, className = 'w-12 h-12 rounded-xl' }: { item: MediaItem; className?: string }) {
+// Posters are 2:3 — a square crop throws away most of the artwork.
+const COVER_SIZE = 'w-[52px] h-[78px] rounded-lg'
+
+function MediaCover({ item, className = COVER_SIZE }: { item: MediaItem; className?: string }) {
+  // A cached file can still 404 if the volume was wiped under a stale media.json.
+  const [broken, setBroken] = useState(false)
   const hue = hueFromTitle(item.title)
+
+  if (item.cover && !broken) {
+    return (
+      <img
+        src={`/api/artwork/cover/${item.cover}`}
+        alt=""
+        onError={() => setBroken(true)}
+        className={`${className} shrink-0 object-cover bg-white/5`}
+      />
+    )
+  }
+
   return (
     <div
       className={`${className} flex items-center justify-center shrink-0 text-white/90`}
@@ -60,16 +79,96 @@ function MediaCover({ item, className = 'w-12 h-12 rounded-xl' }: { item: MediaI
   )
 }
 
+// ── Cover picker ─────────────────────────────────────────────────────────────
+// The auto-match takes the provider's top hit, which is wrong often enough for
+// ambiguous titles ("Dune", "The Office", numbered sequels). This sheet shows
+// the other candidates so a bad guess is a two-tap fix rather than a dead end.
+
+function CoverPicker({
+  item, onClose, onPick,
+}: {
+  item:    MediaItem
+  onClose: () => void
+  onPick:  (imageUrl: string) => void
+}) {
+  const [results, setResults] = useState<ArtworkResult[] | null>(null)
+  const [failed, setFailed]   = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    fetch(`/api/artwork/search?type=${item.type}&q=${encodeURIComponent(item.title)}`)
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        return res.json() as Promise<ArtworkResult[]>
+      })
+      .then(data => { if (!cancelled) setResults(data) })
+      .catch(err => {
+        console.error('[MediaList] cover search failed:', err)
+        if (!cancelled) setFailed(true)
+      })
+    return () => { cancelled = true }
+  }, [item.type, item.title])
+
+  return (
+    <div className="absolute inset-0 z-50 flex flex-col justify-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60" />
+      <div className="relative bg-[#0e1117] border-t border-hairline rounded-t-3xl notion-sheet"
+           onClick={e => e.stopPropagation()}>
+        <div className="px-5 pt-3 pb-8">
+          <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-4" />
+
+          <div className="flex items-center justify-between mb-4">
+            <div className="min-w-0">
+              <p className="text-base font-semibold text-white truncate">Choose cover</p>
+              <p className="text-xs text-white/50 mt-0.5 truncate">{item.title}</p>
+            </div>
+            <button type="button" onClick={onClose} aria-label="Close"
+              className="w-11 h-11 shrink-0 rounded-full bg-glass-2 text-white/60 flex items-center justify-center active:scale-90">
+              <X size={18} />
+            </button>
+          </div>
+
+          {results === null && !failed && (
+            <p className="text-white/45 text-sm text-center py-10">Searching…</p>
+          )}
+          {failed && (
+            <p className="text-white/45 text-sm text-center py-10">Couldn’t reach the artwork service</p>
+          )}
+          {results?.length === 0 && (
+            <p className="text-white/45 text-sm text-center py-10">No artwork found for this title</p>
+          )}
+
+          {results && results.length > 0 && (
+            <div className="grid grid-cols-3 gap-3 max-h-[46vh] overflow-auto scroll-fade-y">
+              {results.map(r => (
+                <button key={r.id} type="button"
+                  onClick={() => { onPick(r.imageUrl); onClose() }}
+                  className="flex flex-col gap-1.5 active:scale-95 transition-transform">
+                  <img src={r.imageUrl} alt=""
+                    className="w-full aspect-[2/3] object-cover rounded-lg bg-white/5" />
+                  <span className="text-xs text-white/70 leading-tight line-clamp-2 text-left">{r.title}</span>
+                  {r.year && <span className="text-[11px] text-white/40 text-left -mt-1">{r.year}</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Bottom sheet: status / star / delete for one item ────────────────────────
 
 function ItemSheet({
-  item, onClose, onSetStatus, onToggleStar, onDelete,
+  item, onClose, onSetStatus, onToggleStar, onDelete, onChangeCover,
 }: {
-  item:         MediaItem
-  onClose:      () => void
-  onSetStatus:  (status: MediaStatus) => void
-  onToggleStar: () => void
-  onDelete:     () => void
+  item:          MediaItem
+  onClose:       () => void
+  onSetStatus:   (status: MediaStatus) => void
+  onToggleStar:  () => void
+  onDelete:      () => void
+  onChangeCover: () => void
 }) {
   return (
     <div className="absolute inset-0 z-40 flex flex-col justify-end" onClick={onClose}>
@@ -101,6 +200,11 @@ function ItemSheet({
               </button>
             ))}
           </div>
+
+          <button type="button" onClick={onChangeCover}
+            className="w-full h-13 py-3.5 mb-2 rounded-xl text-sm font-semibold bg-white/[0.06] text-white/70 active:bg-white/10 flex items-center justify-center gap-2">
+            <ImageIcon size={16} /> Change cover
+          </button>
 
           <div className="grid grid-cols-2 gap-2">
             <button type="button" onClick={() => { onToggleStar(); onClose() }}
@@ -138,6 +242,7 @@ interface Props {
   markDone: (id: string) => void
   toggleStar: (id: string) => void
   setStatus: (id: string, status: MediaStatus) => void
+  setCover: (id: string, coverUrl: string) => void
 }
 
 export default function MediaListExpanded({
@@ -147,6 +252,7 @@ export default function MediaListExpanded({
   markDone: _markDone,
   toggleStar,
   setStatus,
+  setCover,
 }: Props) {
   const [title, setTitle] = useState('')
   const [type, setType] = useState<MediaType>('show')
@@ -157,6 +263,7 @@ export default function MediaListExpanded({
   const [rolling, setRolling] = useState(false)
   const rollTimer = useRef<number | null>(null)
   const [sheetItemId, setSheetItemId] = useState<string | null>(null)
+  const [coverItemId, setCoverItemId] = useState<string | null>(null)
   const [showFinished, setShowFinished] = useState(false)
 
   // Stop a roulette mid-spin if the widget unmounts.
@@ -291,6 +398,7 @@ export default function MediaListExpanded({
     : null
 
   const sheetItem = sheetItemId ? items.find(i => i.id === sheetItemId) ?? null : null
+  const coverItem = coverItemId ? items.find(i => i.id === coverItemId) ?? null : null
 
   const filterTabs: { key: Filter; label: string }[] = [
     { key: 'all',   label: 'All' },
@@ -454,7 +562,7 @@ export default function MediaListExpanded({
           style={{ boxShadow: rolling ? 'none' : '0 0 30px 0 color-mix(in srgb, var(--accent, #06b6d4) 28%, transparent)' }}
         >
           <motion.div key={recommended.id} initial={{ opacity: 0.4, scale: 0.92 }} animate={{ opacity: 1, scale: 1 }}>
-            <MediaCover item={recommended} className="w-14 h-14 rounded-2xl" />
+            <MediaCover item={recommended} className="w-[68px] h-[102px] rounded-xl" />
           </motion.div>
           <div className="flex-1 min-w-0">
             <div className="text-xs uppercase tracking-wider text-[var(--accent,#06b6d4)] font-bold">
@@ -544,6 +652,15 @@ export default function MediaListExpanded({
           onSetStatus={s => setStatus(sheetItem.id, s)}
           onToggleStar={() => toggleStar(sheetItem.id)}
           onDelete={() => requestDelete(sheetItem)}
+          onChangeCover={() => { setCoverItemId(sheetItem.id); setSheetItemId(null) }}
+        />
+      )}
+
+      {coverItem && (
+        <CoverPicker
+          item={coverItem}
+          onClose={() => setCoverItemId(null)}
+          onPick={url => setCover(coverItem.id, url)}
         />
       )}
 

@@ -3,6 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
 import { ASSISTANT_PROFILES, DEFAULT_ASSISTANT_ID, type AssistantId } from '../config/assistant'
+import { autoCover, cacheCover } from './artwork'
 
 const router = Router()
 
@@ -73,6 +74,10 @@ interface MediaItem {
   done: boolean
   status: MediaStatus
   starred?: boolean
+  // Filename of a poster cached under $CACHE_DIR/covers, served by
+  // GET /api/artwork/cover/:file. Absent when no artwork was found — the
+  // client falls back to a gradient tile generated from the title.
+  cover?: string
 }
 
 // Normalize a raw item (possibly written before `status` existed) so callers
@@ -90,6 +95,7 @@ function normalizeMediaItem(raw: Partial<MediaItem> & { type: MediaType }): Medi
     done:    status === 'done',
     status,
     ...(raw.starred ? { starred: true } : {}),
+    ...(raw.cover ? { cover: raw.cover } : {}),
   }
 }
 
@@ -223,7 +229,11 @@ router.get('/media', (_req: Request, res: Response) => {
 })
 
 // POST /api/state/media  { title, type }
-router.post('/media', (req: Request, res: Response) => {
+// The poster lookup is awaited so the item comes back with its cover already
+// pinned to disk — one add is a deliberate tap, and a second of latency beats
+// a tile that pops in later. A failed or unconfigured lookup just yields no
+// cover; it never blocks the add.
+router.post('/media', async (req: Request, res: Response) => {
   const { title, type } = req.body as { title?: string; type?: string }
   if (!title || typeof title !== 'string' || title.trim() === '') {
     console.warn('[state] POST media — missing title')
@@ -242,6 +252,8 @@ router.post('/media', (req: Request, res: Response) => {
     done: false,
     status: 'not_started',
   }
+  const cover = await autoCover(item.type, item.title)
+  if (cover) item.cover = cover
   const items = readMediaList()
   items.push(item)
   try {
@@ -253,10 +265,39 @@ router.post('/media', (req: Request, res: Response) => {
   }
 })
 
+// POST /api/state/media/backfill-covers
+// One-shot pass over items added before artwork existed (or whose lookup failed
+// while offline). Serialized with a small delay — IGDB allows only 4 req/s.
+router.post('/media/backfill-covers', async (_req: Request, res: Response) => {
+  const items = readMediaList()
+  const missing = items.filter(i => !i.cover)
+  console.log(`[state] backfill-covers — ${missing.length} of ${items.length} item(s) without a cover`)
+
+  let found = 0
+  for (const item of missing) {
+    const cover = await autoCover(item.type, item.title)
+    if (cover) {
+      item.cover = cover
+      found++
+    }
+    await new Promise(r => setTimeout(r, 300))
+  }
+
+  try {
+    saveMediaList(items)
+    console.log(`[state] backfill-covers — resolved ${found}/${missing.length}`)
+    res.json({ scanned: missing.length, found, items })
+  } catch {
+    res.status(500).json({ error: 'Failed to persist media list' })
+  }
+})
+
 // PATCH /api/state/media/:id
-//   no body                       → toggle done (back-compat)
-//   { done?, starred?, status? }  → set explicit values
-router.patch('/media/:id', (req: Request, res: Response) => {
+//   no body                                 → toggle done (back-compat)
+//   { done?, starred?, status?, coverUrl? } → set explicit values
+// coverUrl is a remote poster picked in the cover sheet; it's downloaded into
+// the cache volume here and stored as a filename.
+router.patch('/media/:id', async (req: Request, res: Response) => {
   const { id } = req.params
   const items = readMediaList()
   const idx = items.findIndex(i => i.id === id)
@@ -265,12 +306,23 @@ router.patch('/media/:id', (req: Request, res: Response) => {
     res.status(404).json({ error: 'Item not found' })
     return
   }
-  const body = (req.body ?? {}) as { done?: boolean; starred?: boolean; status?: MediaStatus }
+  const body = (req.body ?? {}) as {
+    done?: boolean; starred?: boolean; status?: MediaStatus; coverUrl?: string
+  }
   const hasField =
-    typeof body.done    === 'boolean' ||
-    typeof body.starred === 'boolean' ||
-    typeof body.status  === 'string'
+    typeof body.done     === 'boolean' ||
+    typeof body.starred  === 'boolean' ||
+    typeof body.status   === 'string'  ||
+    typeof body.coverUrl === 'string'
   const next = { ...items[idx] }
+  if (typeof body.coverUrl === 'string') {
+    const cover = await cacheCover(body.coverUrl)
+    if (!cover) {
+      res.status(502).json({ error: 'Failed to fetch cover image' })
+      return
+    }
+    next.cover = cover
+  }
   if (!hasField) {
     next.status = next.status === 'done' ? 'not_started' : 'done'
     next.done   = next.status === 'done'

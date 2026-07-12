@@ -71,6 +71,7 @@ A full-screen kiosk SPA (720×1280 portrait on Raspberry Pi 5 / 7" touchscreen) 
 - **[routes/device.ts](server/src/routes/device.ts)** — `GET /api/device` reads `/sys/class/thermal/thermal_zone0/temp` and `/proc/meminfo` (Pi-specific)
 - **[routes/weather.ts](server/src/routes/weather.ts)** — weather + forecast + cloud-layer tiles via OpenWeatherMap
 - **[routes/tiles.ts](server/src/routes/tiles.ts)** — proxies OWM cloud tile requests (rate-limited separately)
+- **[routes/artwork.ts](server/src/routes/artwork.ts)** — cover art for the Watch/Play list. `GET /api/artwork/search?type=&q=` hits TMDB (movies/shows) or IGDB (games); the chosen poster is downloaded once into `$CACHE_DIR/covers` and served by `GET /api/artwork/cover/:file`, so the list renders offline. `state.ts` looks up a cover on add (`autoCover`) and re-caches on `PATCH /api/state/media/:id { coverUrl }` when the user corrects a wrong match. IGDB authenticates via Twitch client-credentials (`IGDB_CLIENT_ID` + `IGDB_CLIENT_SECRET`); both providers are optional — without keys, items fall back to a gradient tile
 
 ### Data Flow
 

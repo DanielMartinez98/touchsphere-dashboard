@@ -18,6 +18,7 @@ import sttRouter from './routes/stt'
 import chatRouter from './routes/chat'
 import notionRouter from './routes/notion'
 import timersRouter from './routes/timers'
+import artworkRouter from './routes/artwork'
 
 dotenv.config()
 
@@ -105,6 +106,12 @@ app.use('/api/stt', dataLimiter, sttRouter)
 app.use('/api/chat', dataLimiter, chatRouter)
 app.use('/api/notion', dataLimiter, notionRouter)
 app.use('/api/timers', dataLimiter, timersRouter)
+// Artwork is split across both limiters. Cached covers are served off local
+// disk and a full list fetches one per item, so they need the tile budget —
+// but /search calls TMDB/IGDB upstream, so it stays on the strict data budget
+// and can't be used to burn our API quota.
+app.use('/api/artwork/search', dataLimiter)
+app.use('/api/artwork', tileLimiter, artworkRouter)
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true })
