@@ -38,6 +38,11 @@ function loadCubismCore(): Promise<void> {
     el.onerror = () => reject(new Error(`failed to load ${CUBISM_CORE_SRC}`))
     document.head.appendChild(el)
   })
+  // Cache the success, but never the failure: a rejected promise kept here would
+  // mean one bad fetch (dev server not yet serving the file, a flaky network)
+  // poisons every later attempt for the life of the page, so toggling the avatar
+  // off and on again could never recover.
+  corePromise.catch(() => { corePromise = null })
   return corePromise
 }
 
