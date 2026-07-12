@@ -39,6 +39,10 @@ Thumbs.db
 client/public/avatar.vrm
 client/public/live2d/
 vtuber models/
+# Bind-mounted into the container at /data/avatar (see docker-compose.yml) and
+# served at the web root by server/src/index.ts. Copy this folder to the server
+# host; it never travels through git or the Docker image.
+/avatar/
 
 # Live2D Cubism Core — proprietary redistributable from Live2D Inc, fetched from
 # cubism.live2d.com. Not ours to commit. See:

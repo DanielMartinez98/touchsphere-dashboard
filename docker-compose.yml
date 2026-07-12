@@ -20,6 +20,11 @@ services:
       NODE_ENV: production
     volumes:
       - touchsphere-cache:/data/cache   # persist cache across restarts
+      # Avatar assets (Live2D model + Cubism runtime). Licensed files that are
+      # deliberately kept out of git and out of the image, so they're mounted
+      # from the host — drop them in ./avatar next to this file. Optional: with
+      # no ./avatar directory the dashboard just shows the particle sphere.
+      - ./avatar:/data/avatar:ro
     dns:
       - 8.8.8.8
       - 8.8.4.4

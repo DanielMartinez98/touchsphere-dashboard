@@ -4,6 +4,7 @@ import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
 import dotenv from 'dotenv'
 import path from 'path'
+import fs from 'fs'
 import weatherRouter from './routes/weather'
 import calendarRouter from './routes/calendar'
 import airQualityRouter from './routes/airquality'
@@ -118,6 +119,29 @@ app.get('/api/health', (_req, res) => {
 })
 
 // /api/config removed — never expose API keys to the client
+
+// ── Avatar assets (Live2D model + Cubism Core runtime) ───────────────────────
+// Licensed art and a proprietary Live2D runtime. Deliberately NOT committed (see
+// .gitignore) and therefore NOT baked into the image — they're bind-mounted from
+// the host instead, which also means the model can be swapped without a rebuild.
+//
+// Serves the same paths the client already asks for in dev (where Vite serves
+// them out of client/public):
+//   /live2dcubismcore.min.js
+//   /live2d/<model>/<model>.model3.json  (+ .moc3, textures)
+//   /avatar.vrm
+//
+// Registered before the SPA catch-all, or index.html would swallow these and the
+// client would try to parse HTML as a .moc3. If the directory isn't mounted we
+// simply don't serve it: the client's load fails, and the UI falls back to the
+// particle sphere — the correct behaviour on a host with no model installed.
+const AVATAR_DIR = process.env['AVATAR_DIR'] ?? '/data/avatar'
+if (fs.existsSync(AVATAR_DIR)) {
+  app.use(express.static(AVATAR_DIR, { maxAge: '1h' }))
+  console.log(`[startup] avatar assets      : serving from ${AVATAR_DIR}`)
+} else {
+  console.log(`[startup] avatar assets      : none at ${AVATAR_DIR} — dashboard will use the sphere`)
+}
 
 // Serve the Vite-built React app in production
 // The client dist folder is copied into the image at /app/client/dist
