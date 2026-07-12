@@ -38,6 +38,45 @@ function cacheDir(): string {
 const clean = (arr: unknown): string[] =>
   Array.isArray(arr) ? Array.from(new Set(arr.map(String).map(s => s.trim()).filter(Boolean))) : []
 
+// ── "Me" — whose tasks the widget shows ───────────────────────────────────────
+// Task databases are often shared, so an unfiltered query returns the whole
+// team's rows. The user picks themselves once in Settings (from /users) and we
+// persist the Notion user id here; /tasks then filters every DB that has a
+// people property down to rows assigned to them. With nobody picked the widget
+// behaves as before (everyone's tasks) rather than showing an empty list.
+const ME_FILE = 'notion-me.json'
+
+interface NotionMe { id: string; name: string }
+
+function readMe(): NotionMe | null {
+  const p = path.join(cacheDir(), ME_FILE)
+  try {
+    if (!fs.existsSync(p)) return null
+    const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as Partial<NotionMe>
+    if (!parsed.id) return null
+    return { id: String(parsed.id), name: String(parsed.name ?? '') }
+  } catch (err) {
+    console.error('[notion] failed to read me store:', err)
+    return null
+  }
+}
+
+function writeMe(me: NotionMe | null): void {
+  const p = path.join(cacheDir(), ME_FILE)
+  try {
+    if (me === null) {
+      if (fs.existsSync(p)) fs.unlinkSync(p)
+      console.log('[notion] cleared "me" — task widget will show everyone\'s tasks')
+      return
+    }
+    fs.writeFileSync(p, JSON.stringify(me, null, 2), 'utf8')
+    console.log(`[notion] set "me" → ${me.name} (${me.id})`)
+  } catch (err) {
+    console.error('[notion] failed to write me store:', err)
+    throw err
+  }
+}
+
 function envTaskDbIds(): string[] {
   return clean((process.env['NOTION_DATABASE_ID'] ?? '').split(','))
 }
@@ -190,6 +229,10 @@ export interface NotionSchema {
   // and the id of the related DB so the client can navigate or fetch titles.
   projectKey:       string | null
   projectDbId:      string | null
+  // People property used to decide whose task a row is. null when the DB has no
+  // people property at all — such a DB can't express ownership, so every row in
+  // it counts as the user's.
+  peopleKey:        string | null
 }
 
 // Per-database cache. Each entry holds the derived task schema plus the DB's
@@ -272,7 +315,13 @@ function buildSchema(props: Record<string, any>): NotionSchema {
     projectDbId = relationEntry[1]?.relation?.database_id ?? null
   }
 
-  return { titleKey, statusKey, statusType, statusOptions, doneStatusNames, todoStatusNames, priorityKey, priorityOptions, dueKey, projectKey, projectDbId }
+  // Assignee — prefer the conventional names, else fall back to the first people
+  // property whatever it's called.
+  const peopleEntry = findProp(props, ['assignee', 'assignees', 'owner', 'assigned to', 'person', 'people'], ['people'])
+                   ?? Object.entries(props).find(([, p]) => p.type === 'people') as [string, any] | undefined ?? null
+  const peopleKey = peopleEntry?.[0] ?? null
+
+  return { titleKey, statusKey, statusType, statusOptions, doneStatusNames, todoStatusNames, priorityKey, priorityOptions, dueKey, projectKey, projectDbId, peopleKey }
 }
 
 // Fold several task-DB schemas into one for the generic Home UI (status/priority
@@ -283,7 +332,7 @@ function buildSchema(props: Record<string, any>): NotionSchema {
 const EMPTY_SCHEMA: NotionSchema = {
   titleKey: 'Name', statusKey: null, statusType: null, statusOptions: [],
   doneStatusNames: [], todoStatusNames: [], priorityKey: null, priorityOptions: [],
-  dueKey: null, projectKey: null, projectDbId: null,
+  dueKey: null, projectKey: null, projectDbId: null, peopleKey: null,
 }
 
 function mergeSchemas(list: NotionSchema[]): NotionSchema {
@@ -310,6 +359,7 @@ function mergeSchemas(list: NotionSchema[]): NotionSchema {
     dueKey:          first(s => s.dueKey),
     projectKey:      first(s => s.projectKey),
     projectDbId:     first(s => s.projectDbId),
+    peopleKey:       first(s => s.peopleKey),
   }
 }
 
@@ -373,7 +423,15 @@ router.get('/schema', async (_req, res) => {
 })
 
 // Query one task database's pages (paginated, newest first, non-archived).
-async function queryTaskPages(dbId: string): Promise<any[]> {
+// When the user has identified themselves and this DB has a people property, the
+// filter is pushed down to Notion so a shared board only ever returns their
+// rows — cheaper than fetching the team's tasks and discarding them here.
+async function queryTaskPages(dbId: string, schema: NotionSchema): Promise<any[]> {
+  const me = readMe()
+  const mineOnly = me && schema.peopleKey
+    ? { filter: { property: schema.peopleKey, people: { contains: me.id } } }
+    : {}
+
   const pages: any[] = []
   let cursor: string | undefined
   let safety = 0
@@ -385,6 +443,7 @@ async function queryTaskPages(dbId: string): Promise<any[]> {
       {
         page_size: 100,
         sorts: [{ timestamp: 'created_time', direction: 'descending' }],
+        ...mineOnly,
         ...(cursor ? { start_cursor: cursor } : {}),
       },
       { headers: notionHeaders() },
@@ -412,7 +471,7 @@ router.get('/tasks', async (_req, res) => {
         const entry = await getDb(dbId)
         schemas[dbId] = entry.schema
         dbs.push({ id: dbId, title: entry.title, icon: entry.icon })
-        const pages = await queryTaskPages(dbId)
+        const pages = await queryTaskPages(dbId, entry.schema)
         return pages.map(p => extractTask(p, entry.schema, dbId))
       } catch (err: any) {
         console.error(`[notion] task DB ${dbId} failed, skipping:`, err?.response?.data ?? err?.message)
@@ -454,6 +513,11 @@ router.post('/tasks', async (req, res) => {
   try {
     const schema     = await getSchema(targetDb)
     const properties = buildTaskProperties(schema, { title: title.trim(), status, priority, due: due ?? null })
+    // Assign new tasks to the user. Without this the row comes back unassigned
+    // and the "only my tasks" filter would hide it the moment the list refreshes
+    // — the task would look like it failed to save.
+    const me = readMe()
+    if (me && schema.peopleKey) properties[schema.peopleKey] = { people: [{ object: 'user', id: me.id }] }
     const { data }   = await axios.post(
       `${NOTION_API}/pages`,
       { parent: { database_id: targetDb }, properties },
@@ -796,6 +860,39 @@ router.delete('/blocks/:id', async (req, res) => {
     await axios.delete(`${NOTION_API}/blocks/${req.params['id']}`, { headers: notionHeaders() })
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to delete block') }
+})
+
+// ── Who am I ──────────────────────────────────────────────────────────────────
+// GET  /api/notion/me → { me: { id, name } | null }
+// POST /api/notion/me { id, name } → pin the user; { id: null } → clear it.
+// Notion's own /users/me returns the *integration bot*, not the human, so the
+// user has to tell us which workspace member they are.
+router.get('/me', (_req: Request, res: Response) => {
+  const me = readMe()
+  console.log(`[notion] GET me → ${me ? `${me.name} (${me.id})` : 'not set'}`)
+  res.json({ me })
+})
+
+router.post('/me', (req: Request, res: Response) => {
+  const { id, name } = (req.body ?? {}) as { id?: string | null; name?: string }
+  try {
+    if (id === null || id === '') {
+      writeMe(null)
+      res.json({ me: null })
+      return
+    }
+    if (!id || typeof id !== 'string') {
+      res.status(400).json({ error: 'id is required (or null to clear)' })
+      return
+    }
+    const me: NotionMe = { id, name: typeof name === 'string' ? name : '' }
+    writeMe(me)
+    // Task rows are filtered per-DB using the cached schema; the schema itself
+    // is unaffected by who "me" is, so there's no cache to bust here.
+    res.json({ me })
+  } catch {
+    res.status(500).json({ error: 'Failed to persist Notion user' })
+  }
 })
 
 // List workspace users — needed for people-property pickers.

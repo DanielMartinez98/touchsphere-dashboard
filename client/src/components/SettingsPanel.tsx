@@ -935,6 +935,8 @@ export function SettingsPanel() {
             {/* System tab */}
             {tab === 'system' && (
               <div className="space-y-4 max-w-lg mx-auto">
+                <NotionMePicker />
+
                 <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Actions</span>
 
                 <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden">
@@ -994,6 +996,113 @@ interface VolumeSliderProps {
   label:    string
   accent:   string  // Tailwind text color for the label/value (e.g. "text-amber-400")
   track:    string  // Tailwind accent-* class for the native slider thumb/track
+}
+
+// ── Notion "who am I" picker ──────────────────────────────────────────────────
+// Task databases are often shared, so without this the widget lists the whole
+// team's rows. Notion's /users/me returns the integration bot rather than the
+// human, so the user has to point at themselves once. The choice is persisted
+// server-side (notion-me.json) and shared across devices.
+
+interface NotionUser { id: string; name: string; type: string; avatarUrl: string | null }
+
+function NotionMePicker() {
+  const [users, setUsers]   = useState<NotionUser[] | null>(null)
+  const [meId, setMeId]     = useState<string | null>(null)
+  const [error, setError]   = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([
+      fetch(`${DEBUG_API}/api/notion/users`).then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))),
+      fetch(`${DEBUG_API}/api/notion/me`).then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))),
+    ])
+      .then(([u, m]: [{ users: NotionUser[] }, { me: { id: string } | null }]) => {
+        if (cancelled) return
+        // Bot users are integrations, not people — never a valid "me".
+        setUsers(u.users.filter(x => x.type === 'person'))
+        setMeId(m.me?.id ?? null)
+      })
+      .catch(err => { if (!cancelled) setError(String(err.message ?? err)) })
+    return () => { cancelled = true }
+  }, [])
+
+  function pick(user: NotionUser | null) {
+    setSaving(true)
+    const prev = meId
+    setMeId(user?.id ?? null)
+    fetch(`${DEBUG_API}/api/notion/me`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(user ? { id: user.id, name: user.name } : { id: null }),
+    })
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) })
+      // The task list filters server-side, so it has to refetch to reflect this.
+      .then(() => window.dispatchEvent(new CustomEvent('ts:task-dbs-changed')))
+      .catch(err => {
+        console.error('[Settings] failed to set Notion user:', err)
+        setMeId(prev)
+      })
+      .finally(() => setSaving(false))
+  }
+
+  // Notion isn't configured on this server — say nothing rather than show a
+  // broken control.
+  if (error) return null
+
+  return (
+    <div className="mb-6">
+      <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Notion tasks</span>
+      <div className="bg-white/5 rounded-2xl border border-white/8 p-5 space-y-3">
+        <div>
+          <p className="text-white/80 text-sm font-medium">Show only my tasks</p>
+          <p className="text-white/40 text-xs mt-0.5">
+            Pick yourself and the task widget lists only rows assigned to you. Databases with no
+            assignee property stay fully visible.
+          </p>
+        </div>
+
+        {users === null && <p className="text-white/40 text-sm py-2">Loading…</p>}
+
+        {users?.length === 0 && (
+          <p className="text-white/40 text-sm py-2">No workspace members visible to the integration.</p>
+        )}
+
+        {users && users.length > 0 && (
+          <div className="flex flex-col gap-2">
+            {users.map(u => (
+              <button
+                key={u.id}
+                type="button"
+                disabled={saving}
+                onClick={() => pick(u.id === meId ? null : u)}
+                className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors disabled:opacity-50 ${
+                  u.id === meId
+                    ? 'bg-[var(--accent,#06b6d4)]/20 text-[var(--accent,#06b6d4)] ring-1 ring-[var(--accent,#06b6d4)]/40'
+                    : 'bg-white/[0.06] text-white/70 active:bg-white/10'
+                }`}
+              >
+                {u.avatarUrl
+                  ? <img src={u.avatarUrl} alt="" className="w-7 h-7 rounded-full shrink-0" />
+                  : <span className="w-7 h-7 rounded-full bg-white/10 flex items-center justify-center text-xs shrink-0">
+                      {u.name?.[0]?.toUpperCase() ?? '?'}
+                    </span>}
+                <span className="truncate">{u.name || 'Unnamed'}</span>
+                {u.id === meId && <span className="ml-auto text-xs opacity-70">That’s me</span>}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {meId === null && users && users.length > 0 && (
+          <p className="text-amber-300/70 text-xs">
+            Nobody selected — the widget is showing everyone’s tasks.
+          </p>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function VolumeSlider({ category, label, accent, track }: VolumeSliderProps) {
