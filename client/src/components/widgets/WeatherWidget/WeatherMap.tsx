@@ -1,15 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useWeather } from '../../../hooks/useWeather'
 import { useAirQuality } from '../../../hooks/useAirQuality'
-import { useForecast, nearestSlot } from '../../../hooks/useForecast'
-import { useCloudLayers, nearestCloudSlot } from '../../../hooks/useCloudLayers'
+import { useTimeline, nearestTimelineSlot, wmoDescription } from '../../../hooks/useTimeline'
 import { useRainviewer, nearestRvFrame } from '../../../hooks/useRainviewer'
 
 declare const L: any
 
-// 42-hour window: -6h (past) → +36h (future)
-const MIN_OFFSET = -360
-const MAX_OFFSET = 2160
+// Scrub window: 2 days back → 5 days ahead. Both halves are real data, served as
+// one continuous hourly series by /api/weather/timeline (Open-Meteo). OpenWeather
+// can't do the past at all — history sits behind a paid One Call subscription.
+const MIN_OFFSET = -2880   // -48 h
+const MAX_OFFSET = 7200    // +120 h
+
+// Map imagery is a different story from map *data*. Nothing gives us free cloud
+// or radar imagery across a whole week: RainViewer covers roughly the last 2 h
+// plus a 30-min nowcast, and the OWM cloud tile is always a live snapshot (Maps
+// 1.0 has no date parameter). Outside that window we show no overlay and say so,
+// rather than painting current clouds over a timestamp they don't belong to.
+const IMAGERY_NOW_TOLERANCE_MIN = 30
 
 // Apple Weather aesthetic: satellite base + soft white cloud overlay.
 // OWM tiles are RGBA — cloud pixels are white/grey, clear sky is transparent.
@@ -30,6 +38,11 @@ function windDir(deg: number): string {
 function offsetLabel(min: number): string {
   if (min === 0) return 'Now'
   const h = Math.round(min / 60)
+  // The window spans days now, so hours alone stop being readable past a day.
+  if (Math.abs(h) >= 24) {
+    const d = Math.round(h / 24)
+    return d > 0 ? `+${d}d` : `${d}d`
+  }
   return h > 0 ? `+${h}h` : `${h}h`
 }
 
@@ -67,8 +80,7 @@ export default function WeatherMap() {
   const sliderRef = useRef<HTMLInputElement>(null)
   const { weather } = useWeather()
   const { aqi } = useAirQuality()
-  const { forecasts } = useForecast()
-  const { cloudLayers } = useCloudLayers()
+  const { timeline } = useTimeline()
   const { frames: rvFrames, nowcast: rvNowcast } = useRainviewer()
   // Combine past + nowcast frames for frame lookup
   const allRvFrames = useMemo(() => [...rvFrames, ...rvNowcast], [rvFrames, rvNowcast])
@@ -129,24 +141,43 @@ export default function WeatherMap() {
   }, [])
 
   // Layer switching: loads the correct tile layer whenever committedOffset changes.
-  //  • Past ≤ 0 min, within last 2h  → real RainViewer radar frame for that exact timestamp
-  //  • Future or older than 2h       → OWM live cloud tile (always current snapshot)
+  //  • A RainViewer frame exists for this time (≈ last 2h, or the 30-min nowcast)
+  //      → real radar imagery for that exact timestamp
+  //  • Offset is essentially "now"  → OWM live cloud tile (a true current snapshot)
+  //  • Anything else                → NO overlay. The old code fell back to the OWM
+  //    tile here, which paints *current* clouds while the UI claims to be showing
+  //    yesterday or Thursday. Showing nothing is the honest answer.
   // RainViewer frames are cached by path (immutable hashes); OWM is always fresh.
   useEffect(() => {
     const map = mapInstanceRef.current
     if (!map || !mapReady || typeof L === 'undefined') return
 
-    const nowSec   = Math.floor(Date.now() / 1000)
+    const nowSec    = Math.floor(Date.now() / 1000)
     const targetSec = nowSec + committedOffset * 60
 
-    // Pick a RainViewer frame only for past offsets
-    const rvFrame  = committedOffset <= 0 ? nearestRvFrame(allRvFrames, targetSec) : null
-    const targetKey = rvFrame ? rvFrame.path : 'owm'
+    const rvFrame = nearestRvFrame(allRvFrames, targetSec)
+    const isNow   = Math.abs(committedOffset) <= IMAGERY_NOW_TOLERANCE_MIN
+    const targetKey = rvFrame ? rvFrame.path : (isNow ? 'owm' : 'none')
 
     if (targetKey === activeKeyRef.current) return
     activeKeyRef.current = targetKey
 
     const prev = cloudLayerRef.current
+
+    const fadeOutPrev = () => {
+      if (!prev) return
+      prev.setOpacity(0)
+      setTimeout(() => {
+        if (cloudLayerRef.current !== prev && map.hasLayer(prev)) map.removeLayer(prev)
+      }, 600)
+    }
+
+    // No imagery for this time — drop the overlay entirely, leaving the satellite base.
+    if (targetKey === 'none') {
+      fadeOutPrev()
+      cloudLayerRef.current = null
+      return
+    }
 
     // Get or create the target Leaflet layer
     let next: any
@@ -176,12 +207,7 @@ export default function WeatherMap() {
       committed = true
       next.setOpacity(CLOUD_OPACITY)
       cloudLayerRef.current = next
-      if (prev && prev !== next) {
-        prev.setOpacity(0)
-        setTimeout(() => {
-          if (cloudLayerRef.current !== prev && map.hasLayer(prev)) map.removeLayer(prev)
-        }, 600)
-      }
+      if (prev && prev !== next) fadeOutPrev()
     }
     const fallback = setTimeout(activate, 4000)
     next.once('load', () => { clearTimeout(fallback); activate() })
@@ -218,40 +244,28 @@ export default function WeatherMap() {
   }, [weather])
 
 
-  // Pick the data source for the stats bar. The cloud tile on the map is always
-  // "now" (OWM Maps 1.0 free tier has no date parameter). The stats bar and the
-  // cloud-layer timeline DO update with the scrubber via the forecast API.
-  const fcastSlot = rawOffset > 0 ? nearestSlot(forecasts, rawOffset) : null
-  const isForecast = fcastSlot !== null
+  // Every value in the strip comes from the one timeline series — including at
+  // "now". Mixing OWM's current reading with Open-Meteo's series put a visible
+  // seam at offset 0 (the two providers disagree, sometimes wildly: OWM has been
+  // seen reporting 1% humidity against Open-Meteo's 95%). One source, one story.
+  const slot = nearestTimelineSlot(timeline, rawOffset)
+  const era: 'past' | 'now' | 'future' =
+    rawOffset < -IMAGERY_NOW_TOLERANCE_MIN ? 'past' :
+    rawOffset >  IMAGERY_NOW_TOLERANCE_MIN ? 'future' : 'now'
 
-  // Cloud-layer breakdown (Open-Meteo): always pick the slot nearest to rawOffset
-  const cloudSlot = nearestCloudSlot(cloudLayers, rawOffset)
+  const cloudSlot = slot   // the timeline carries the low/mid/high breakdown too
 
-  const stats: { label: string; value: string }[] = isForecast
+  const stats: { label: string; value: string }[] = slot
     ? [
-        { label: 'Temp', value: `${Math.round(fcastSlot!.temp)}°C` },
-        { label: 'Feels Like', value: `${Math.round(fcastSlot!.feels_like)}°C` },
-        { label: 'Rain Chance', value: `${Math.round(fcastSlot!.rain_chance * 100)}%` },
-        { label: 'Rain (3h)', value: fcastSlot!.rain_3h > 0 ? `${fcastSlot!.rain_3h.toFixed(1)} mm` : 'None' },
-        { label: 'Humidity', value: `${fcastSlot!.humidity}%` },
-        { label: 'Wind', value: `${Math.round(fcastSlot!.wind_speed * 3.6)} km/h ${windDir(fcastSlot!.wind_deg)}` },
-        { label: 'Pressure', value: `${fcastSlot!.pressure} hPa` },
-        ...(fcastSlot!.visibility !== null
-          ? [{ label: 'Visibility', value: `${(fcastSlot!.visibility / 1000).toFixed(1)} km` }]
-          : []),
-        { label: 'Sky', value: fcastSlot!.description },
-      ]
-    : weather
-    ? [
-        { label: 'Temp', value: `${Math.round(weather.temp)}°C` },
-        { label: 'Feels Like', value: `${Math.round(weather.feels_like)}°C` },
-        { label: 'Rain Chance', value: `${Math.round(weather.rain_chance * 100)}%` },
-        { label: 'Rain (1h)', value: weather.rain_1h > 0 ? `${weather.rain_1h} mm` : 'None' },
-        { label: 'Humidity', value: `${weather.humidity}%` },
-        { label: 'Wind', value: `${Math.round(weather.wind_speed * 3.6)} km/h ${windDir(weather.wind_deg)}` },
-        { label: 'Pressure', value: `${weather.pressure} hPa` },
-        { label: 'Visibility', value: `${(weather.visibility / 1000).toFixed(1)} km` },
-        { label: 'Sky', value: weather.description },
+        { label: 'Temp', value: `${Math.round(slot.temp)}°C` },
+        { label: 'Feels Like', value: `${Math.round(slot.feels_like)}°C` },
+        { label: era === 'past' ? 'Rain Chance (fc)' : 'Rain Chance', value: `${Math.round(slot.rain_chance * 100)}%` },
+        { label: 'Rain (1h)', value: slot.precip > 0 ? `${slot.precip.toFixed(1)} mm` : 'None' },
+        { label: 'Humidity', value: `${slot.humidity}%` },
+        { label: 'Wind', value: `${Math.round(slot.wind_speed * 3.6)} km/h ${windDir(slot.wind_deg)}` },
+        { label: 'Pressure', value: `${slot.pressure} hPa` },
+        { label: 'Cloud', value: `${slot.clouds}%` },
+        { label: 'Sky', value: wmoDescription(slot.weather_code) },
       ]
     : []
 
@@ -261,16 +275,27 @@ export default function WeatherMap() {
       <div className="relative flex-1 min-h-0">
         {/* touch-none passes pinch gestures to Leaflet */}
         <div ref={mapRef} className="absolute inset-0 bg-[#111] touch-none" />
-        {/* Layer source badge — RADAR (RainViewer, past 2h) or LIVE CLOUDS (OWM) */}
+        {/* Imagery badge. States the truth about what's painted on the map:
+            real radar for that timestamp, a live cloud snapshot at "now", or
+            nothing at all — because no free source has cloud imagery for last
+            Tuesday or next Friday. The stats below still have real data. */}
         {(() => {
-          const nowSec  = Math.floor(Date.now() / 1000)
-          const rvF     = rawOffset <= 0 ? nearestRvFrame(allRvFrames, nowSec + rawOffset * 60) : null
-          const label   = rvF
-            ? `RADAR · ${new Date(rvF.time * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`
-            : 'LIVE CLOUDS'
+          const nowSec = Math.floor(Date.now() / 1000)
+          const rvF    = nearestRvFrame(allRvFrames, nowSec + rawOffset * 60)
+          const isNow  = Math.abs(rawOffset) <= IMAGERY_NOW_TOLERANCE_MIN
+
+          const { label, dot } = rvF
+            ? {
+                label: `RADAR · ${new Date(rvF.time * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}`,
+                dot:   'bg-amber-400',
+              }
+            : isNow
+              ? { label: 'LIVE CLOUDS', dot: 'bg-green-400 animate-pulse' }
+              : { label: 'NO IMAGERY · DATA ONLY', dot: 'bg-white/30' }
+
           return (
             <div className="absolute top-2 right-2 z-[1000] flex items-center gap-1 bg-black/60 backdrop-blur-sm border border-white/15 rounded-full px-2 py-0.5 pointer-events-none">
-              <span className={`w-1.5 h-1.5 rounded-full ${rvF ? 'bg-amber-400' : 'bg-green-400 animate-pulse'}`} />
+              <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
               <span className="text-[10px] text-white/70 font-medium tracking-wide">{label}</span>
             </div>
           )
@@ -280,14 +305,17 @@ export default function WeatherMap() {
       {/* Scrollable info strip — weather + air quality */}
       <div className="flex-shrink-0 bg-black/80 border-t border-white/10 px-2 py-2 overflow-x-auto">
         <div className="flex gap-2 w-max">
-          {/* Source badge — shows whether values are current or forecast */}
-          {(isForecast || weather) && (
+          {/* Source badge — whether these values are observed past, now, or forecast */}
+          {slot && (
             <div className={`flex flex-col items-center justify-center border rounded-xl px-3 py-2 min-w-[64px] ${
-              isForecast
-                ? 'text-sky-400 border-sky-500/40 bg-sky-500/10'
-                : 'text-green-400 border-green-500/40 bg-green-500/10'
+              era === 'future' ? 'text-sky-400 border-sky-500/40 bg-sky-500/10'   :
+              era === 'past'   ? 'text-amber-400 border-amber-500/40 bg-amber-500/10' :
+                                 'text-green-400 border-green-500/40 bg-green-500/10'
             }`}>
-              <span className="font-bold text-[11px] leading-tight">{isForecast ? 'FORECAST' : 'CURRENT'}</span>
+              <span className="font-bold text-[11px] leading-tight">
+                {era === 'future' ? 'FORECAST' : era === 'past' ? 'PAST' : 'CURRENT'}
+              </span>
+              <span className="text-[9px] opacity-70 leading-tight mt-0.5">{offsetLabel(rawOffset)}</span>
             </div>
           )}
 
@@ -363,64 +391,89 @@ export default function WeatherMap() {
         </div>
       </div>
 
-      {/* Time scrubber — hidden for now */}
-      <div className="hidden">
+      {/* Time scrubber — 2 days back → 5 days ahead, all of it real data */}
+      <div className="flex-shrink-0 bg-black/80 border-t border-white/10 px-3 pt-2 pb-3">
 
-        {/* Cloud layer timeline — 3 altitude bands plotted across the 42 h window */}
-        {cloudLayers.length > 0 && (() => {
-          // Only render slots that fall inside the scrubber's [-6h, +36h] window
-          const visible = cloudLayers.filter(
-            s => s.offset_min >= MIN_OFFSET && s.offset_min <= MAX_OFFSET
-          )
+        {/* Temperature trace + rain-chance shading across the window. The "now"
+            line splits observed past (left) from forecast (right). */}
+        {timeline.length > 0 && (() => {
+          const visible = timeline.filter(s => s.offset_min >= MIN_OFFSET && s.offset_min <= MAX_OFFSET)
+          if (visible.length < 2) return null
+
           const range = MAX_OFFSET - MIN_OFFSET
+          const temps = visible.map(s => s.temp)
+          const min   = Math.min(...temps)
+          const max   = Math.max(...temps)
+          const span  = Math.max(1, max - min)
+
+          const x = (s: typeof visible[0]) => ((s.offset_min - MIN_OFFSET) / range) * 100
+          const y = (s: typeof visible[0]) => 100 - ((s.temp - min) / span) * 100
+          const line = visible.map(s => `${x(s).toFixed(2)},${y(s).toFixed(2)}`).join(' ')
+          const nowPct = ((-MIN_OFFSET) / range) * 100
+
           return (
-            <div className="mb-2 flex flex-col gap-px">
-              {[
-                { key: 'high', label: 'High', color: '#7dd3fc', getter: (s: typeof visible[0]) => s.cloud_high },
-                { key: 'mid',  label: 'Mid',  color: '#60a5fa', getter: (s: typeof visible[0]) => s.cloud_mid  },
-                { key: 'low',  label: 'Low',  color: '#cbd5e1', getter: (s: typeof visible[0]) => s.cloud_low  },
-              ].map(band => (
-                <div key={band.key} className="flex items-center gap-1.5 h-4">
-                  <span className="text-[9px] text-white/30 w-6 shrink-0 text-right">{band.label}</span>
-                  <div className="relative flex-1 h-3 rounded-sm overflow-hidden bg-white/5">
-                    {visible.map((s, i) => {
-                      const pct = ((s.offset_min - MIN_OFFSET) / range) * 100
-                      const nextOffset = visible[i + 1]?.offset_min ?? MAX_OFFSET
-                      const width = ((nextOffset - s.offset_min) / range) * 100
-                      const opacity = band.getter(s) / 100
-                      return (
-                        <div
-                          key={s.dt}
-                          className="absolute top-0 h-full"
-                          style={{
-                            left: `${pct.toFixed(2)}%`,
-                            width: `${width.toFixed(2)}%`,
-                            backgroundColor: band.color,
-                            opacity: Math.max(0.05, opacity),
-                          }}
-                        />
-                      )
-                    })}
-                    {/* "Now" tick */}
+            <div className="relative h-14 mb-1.5">
+              {/* Rain probability as vertical shading behind the temp trace */}
+              <div className="absolute inset-0 flex">
+                {visible.map((s, i) => {
+                  const next  = visible[i + 1]?.offset_min ?? MAX_OFFSET
+                  const width = ((next - s.offset_min) / range) * 100
+                  return (
                     <div
-                      className="absolute top-0 h-full w-px bg-white/50"
-                      style={{ left: `${((-MIN_OFFSET) / range * 100).toFixed(2)}%` }}
+                      key={s.dt}
+                      className="h-full bg-sky-400"
+                      style={{
+                        position: 'absolute',
+                        left: `${x(s).toFixed(2)}%`,
+                        width: `${width.toFixed(2)}%`,
+                        opacity: s.rain_chance * 0.5,
+                      }}
                     />
-                  </div>
-                </div>
-              ))}
+                  )
+                })}
+              </div>
+
+              <svg className="absolute inset-0 w-full h-full overflow-visible" viewBox="0 0 100 100" preserveAspectRatio="none">
+                <polyline
+                  points={line}
+                  fill="none"
+                  stroke="rgba(255,255,255,0.85)"
+                  strokeWidth="1.5"
+                  vectorEffect="non-scaling-stroke"
+                  strokeLinejoin="round"
+                />
+              </svg>
+
+              {/* Past is dimmed so the eye reads "this already happened" */}
+              <div
+                className="absolute inset-y-0 left-0 bg-black/35 pointer-events-none"
+                style={{ width: `${nowPct.toFixed(2)}%` }}
+              />
+              {/* NOW divider */}
+              <div className="absolute inset-y-0 w-px bg-green-400/80" style={{ left: `${nowPct.toFixed(2)}%` }} />
+              {/* Scrub position */}
+              <div
+                className="absolute inset-y-0 w-px bg-white"
+                style={{ left: `${(((rawOffset - MIN_OFFSET) / range) * 100).toFixed(2)}%` }}
+              />
+
+              <span className="absolute left-0 top-0 text-[9px] text-white/40 leading-none">{Math.round(max)}°</span>
+              <span className="absolute left-0 bottom-0 text-[9px] text-white/40 leading-none">{Math.round(min)}°</span>
             </div>
           )
         })()}
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-white/35 text-[11px]">−6h</span>
+
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="text-white/35 text-[11px]">−2d</span>
           <div className="flex items-baseline gap-2">
-            <span className={`font-semibold text-sm ${rawOffset === 0 ? 'text-green-400' : rawOffset < 0 ? 'text-amber-400' : 'text-sky-400'}`}>
+            <span className={`font-semibold text-sm ${
+              era === 'now' ? 'text-green-400' : era === 'past' ? 'text-amber-400' : 'text-sky-400'
+            }`}>
               {offsetLabel(rawOffset)}
             </span>
             <span className="text-white/45 text-[11px]">{absTime(rawOffset)}</span>
           </div>
-          <span className="text-white/35 text-[11px]">+36h</span>
+          <span className="text-white/35 text-[11px]">+5d</span>
         </div>
 
         <input
@@ -431,16 +484,19 @@ export default function WeatherMap() {
           step={60}
           value={rawOffset}
           onChange={e => handleScrub(Number(e.target.value))}
-          aria-label="Cloud cover time scrubber"
+          aria-label="Weather time scrubber — past to forecast"
           className="time-scrubber w-full"
         />
 
-        {/* Now tick indicator — fixed at 14.286% (360/2520 of the 42h range) */}
-        <div className="relative mt-1 h-3">
-          <div className="absolute left-[14.286%] -translate-x-1/2 flex flex-col items-center">
-            <div className="w-px h-2 bg-white/30" />
-            <span className="text-white/30 text-[9px] leading-none">NOW</span>
-          </div>
+        <div className="flex justify-center mt-1">
+          <button
+            type="button"
+            onClick={() => handleScrub(0)}
+            disabled={rawOffset === 0}
+            className="text-[11px] px-4 py-1.5 rounded-full bg-white/8 text-white/70 active:bg-white/15 disabled:opacity-30"
+          >
+            Back to now
+          </button>
         </div>
       </div>
     </div>

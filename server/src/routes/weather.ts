@@ -238,4 +238,94 @@ router.get('/cloud-layers', async (req: Request, res: Response) => {
   }
 })
 
+// ── GET /api/weather/timeline — one contiguous hourly series: past → now → future
+// OpenWeather cannot serve the past at all: history lives behind One Call 3.0,
+// which our key is not subscribed to (401). Open-Meteo gives past and future in
+// a single keyless request, so the whole timeline comes from one source and the
+// series is guaranteed continuous across "now" (no seam between two providers).
+//
+// Units are matched to the OWM shape the client already renders: wind in m/s,
+// temps in °C — so slots are interchangeable with the existing forecast slots.
+const TIMELINE_TTL_MS   = 30 * 60 * 1000   // 30 min — hourly data, hourly model runs
+const TIMELINE_PAST_DAYS     = 2           // Open-Meteo allows up to 92
+const TIMELINE_FORECAST_DAYS = 5           // …and up to 16
+
+interface TimelineCache { data: object[]; ts: number }
+const timelineCache = new Map<string, TimelineCache>()
+
+router.get('/timeline', async (req: Request, res: Response) => {
+  const { lat, lon } = req.query
+  const latNum = parseFloat(lat as string)
+  const lonNum = parseFloat(lon as string)
+
+  if (!lat || !lon || isNaN(latNum) || isNaN(lonNum) || latNum < -90 || latNum > 90 || lonNum < -180 || lonNum > 180) {
+    res.status(400).json({ error: 'Valid lat (-90–90) and lon (-180–180) are required' })
+    return
+  }
+
+  const key = cacheKey(latNum, lonNum)
+  const cached = timelineCache.get(key)
+  if (cached && Date.now() - cached.ts < TIMELINE_TTL_MS) {
+    console.log(`[timeline] cache hit for ${key}`)
+    res.json(cached.data)
+    return
+  }
+
+  try {
+    const response = await axios.get('https://api.open-meteo.com/v1/forecast', {
+      params: {
+        latitude:  latNum,
+        longitude: lonNum,
+        hourly: [
+          'temperature_2m', 'apparent_temperature', 'relative_humidity_2m',
+          'precipitation', 'precipitation_probability', 'weather_code',
+          'cloud_cover', 'cloud_cover_low', 'cloud_cover_mid', 'cloud_cover_high',
+          'wind_speed_10m', 'wind_direction_10m', 'surface_pressure', 'is_day',
+        ].join(','),
+        // Match the units the client already formats for (OWM shape).
+        wind_speed_unit: 'ms',
+        past_days:     TIMELINE_PAST_DAYS,
+        forecast_days: TIMELINE_FORECAST_DAYS,
+        timezone: 'auto',
+      },
+      timeout: 8000,
+    })
+
+    const now = Date.now()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const h = response.data.hourly as Record<string, any[]>
+    const slots = h.time.map((t: string, i: number) => {
+      const dt = new Date(t).getTime()
+      return {
+        dt,
+        offset_min:   Math.round((dt - now) / 60_000),
+        temp:         h.temperature_2m[i],
+        feels_like:   h.apparent_temperature[i],
+        humidity:     h.relative_humidity_2m[i],
+        precip:       h.precipitation[i] ?? 0,
+        // Open-Meteo reports probability 0–100; OWM's `pop` is 0–1. Normalise to
+        // OWM's scale so the client's existing formatters keep working.
+        rain_chance:  (h.precipitation_probability[i] ?? 0) / 100,
+        weather_code: h.weather_code[i] ?? 0,
+        clouds:       h.cloud_cover[i] ?? 0,
+        cloud_low:    h.cloud_cover_low[i] ?? 0,
+        cloud_mid:    h.cloud_cover_mid[i] ?? 0,
+        cloud_high:   h.cloud_cover_high[i] ?? 0,
+        wind_speed:   h.wind_speed_10m[i] ?? 0,
+        wind_deg:     h.wind_direction_10m[i] ?? 0,
+        pressure:     Math.round(h.surface_pressure[i] ?? 0),
+        is_day:       (h.is_day[i] ?? 1) === 1,
+      }
+    })
+
+    timelineCache.set(key, { data: slots, ts: now })
+    const first = slots[0], last = slots[slots.length - 1]
+    console.log(`[timeline] fetched fresh for ${key} — ${slots.length} slots (${first?.offset_min}min → ${last?.offset_min}min)`)
+    res.json(slots)
+  } catch (err) {
+    console.error('Timeline API error:', (err as any)?.response?.data ?? err)
+    res.status(502).json({ error: 'Failed to fetch weather timeline' })
+  }
+})
+
 export default router
