@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronDown, ChevronUp } from 'lucide-react'
 import { useWeather } from '../../../hooks/useWeather'
 import { useAirQuality } from '../../../hooks/useAirQuality'
 import { useTimeline, nearestTimelineSlot, wmoDescription } from '../../../hooks/useTimeline'
@@ -69,6 +70,21 @@ const AQI_COLORS: Record<number, string> = {
   5: 'text-red-400 border-red-500/40 bg-red-500/10',
 }
 
+// ── Simple vs detailed ───────────────────────────────────────────────────────
+// At arm's length on a kiosk, the full strip (9 stats + cloud bands + 6
+// pollutants) plus the timeline is a wall of numbers. Simple mode keeps only
+// what you'd actually glance at — how warm it is, how warm it feels, and
+// whether it'll rain — and hides the rest behind one tap. The choice sticks.
+const SIMPLE_STATS = ['Temp', 'Feels Like', 'Rain Chance'] as const
+const SIMPLE_KEY = 'ts_weather_simple'
+
+function loadSimple(): boolean {
+  try {
+    const raw = localStorage.getItem(SIMPLE_KEY)
+    return raw === null ? true : raw === '1'   // default: simple
+  } catch { return true }
+}
+
 export default function WeatherMap() {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<any>(null)
@@ -89,6 +105,18 @@ export default function WeatherMap() {
   const [rawOffset, setRawOffset] = useState(0)
   const [committedOffset, setCommittedOffset] = useState(0)
   const [mapReady, setMapReady] = useState(false)
+  const [simple, setSimple] = useState(loadSimple)
+
+  function toggleSimple() {
+    setSimple(prev => {
+      const next = !prev
+      try { localStorage.setItem(SIMPLE_KEY, next ? '1' : '0') } catch { /* ignore */ }
+      // Leaving detail mode with the scrubber parked in the past would strand the
+      // strip on a time the user can no longer see or change — snap back to now.
+      if (next && rawOffset !== 0) handleScrub(0)
+      return next
+    })
+  }
 
   // Initialize map once — tiles go through server proxy, no OWM key needed client-side
   useEffect(() => {
@@ -255,7 +283,25 @@ export default function WeatherMap() {
 
   const cloudSlot = slot   // the timeline carries the low/mid/high breakdown too
 
-  const stats: { label: string; value: string }[] = slot
+  // Fallback while the timeline is still loading (or if Open-Meteo is down): show
+  // OWM's current reading rather than an empty strip. Only valid at "now" — there
+  // is no OWM data for a scrubbed time, so the strip stays empty there and the
+  // badge already says the map has nothing to show.
+  const owmStats: { label: string; value: string }[] = weather
+    ? [
+        { label: 'Temp', value: `${Math.round(weather.temp)}°C` },
+        { label: 'Feels Like', value: `${Math.round(weather.feels_like)}°C` },
+        { label: 'Rain Chance', value: `${Math.round(weather.rain_chance * 100)}%` },
+        { label: 'Rain (1h)', value: weather.rain_1h > 0 ? `${weather.rain_1h} mm` : 'None' },
+        { label: 'Humidity', value: `${weather.humidity}%` },
+        { label: 'Wind', value: `${Math.round(weather.wind_speed * 3.6)} km/h ${windDir(weather.wind_deg)}` },
+        { label: 'Pressure', value: `${weather.pressure} hPa` },
+        { label: 'Cloud', value: `${weather.clouds}%` },
+        { label: 'Sky', value: weather.description },
+      ]
+    : []
+
+  const allStats: { label: string; value: string }[] = slot
     ? [
         { label: 'Temp', value: `${Math.round(slot.temp)}°C` },
         { label: 'Feels Like', value: `${Math.round(slot.feels_like)}°C` },
@@ -267,7 +313,18 @@ export default function WeatherMap() {
         { label: 'Cloud', value: `${slot.clouds}%` },
         { label: 'Sky', value: wmoDescription(slot.weather_code) },
       ]
-    : []
+    : era === 'now' ? owmStats : []
+
+  // In simple mode the rain-chance label keeps its plain name — the "(fc)"
+  // qualifier is a detail-mode nicety, not something to explain on a glance card.
+  const stats = simple
+    ? SIMPLE_STATS.flatMap(name => {
+        const s = allStats.find(x => x.label.startsWith(name))
+        return s ? [{ label: name, value: s.value }] : []
+      })
+    : allStats
+
+  const hasData = stats.length > 0
 
   return (
     <div className="flex flex-col h-full pt-16">
@@ -275,6 +332,18 @@ export default function WeatherMap() {
       <div className="relative flex-1 min-h-0">
         {/* touch-none passes pinch gestures to Leaflet */}
         <div ref={mapRef} className="absolute inset-0 bg-[#111] touch-none" />
+        {/* Simple ⇄ Details. Sits on the map (the strip below scrolls
+            horizontally, so a control in it would scroll out of reach). */}
+        <button
+          type="button"
+          onClick={toggleSimple}
+          aria-pressed={!simple}
+          className="absolute bottom-3 right-2 z-[1000] h-11 px-4 rounded-full bg-black/70 backdrop-blur-sm border border-white/20 text-white/80 text-xs font-semibold active:scale-95 flex items-center gap-1.5"
+        >
+          {simple ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          {simple ? 'Details' : 'Simple'}
+        </button>
+
         {/* Imagery badge. States the truth about what's painted on the map:
             real radar for that timestamp, a live cloud snapshot at "now", or
             nothing at all — because no free source has cloud imagery for last
@@ -306,7 +375,7 @@ export default function WeatherMap() {
       <div className="flex-shrink-0 bg-black/80 border-t border-white/10 px-2 py-2 overflow-x-auto">
         <div className="flex gap-2 w-max">
           {/* Source badge — whether these values are observed past, now, or forecast */}
-          {slot && (
+          {hasData && (
             <div className={`flex flex-col items-center justify-center border rounded-xl px-3 py-2 min-w-[64px] ${
               era === 'future' ? 'text-sky-400 border-sky-500/40 bg-sky-500/10'   :
               era === 'past'   ? 'text-amber-400 border-amber-500/40 bg-amber-500/10' :
@@ -331,7 +400,7 @@ export default function WeatherMap() {
           ))}
 
           {/* Cloud altitude breakdown — uses Open-Meteo data */}
-          {cloudSlot && (
+          {!simple && cloudSlot && (
             <>
               <div className="w-px self-stretch bg-white/15 mx-1" />
               {/* Three stacked bars in one compact card */}
@@ -358,12 +427,12 @@ export default function WeatherMap() {
           )}
 
           {/* Divider */}
-          {aqi && (
+          {!simple && aqi && (
             <div className="w-px self-stretch bg-white/15 mx-1" />
           )}
 
           {/* AQI index card */}
-          {aqi && (
+          {!simple && aqi && (
             <div className={`flex flex-col items-center border rounded-xl px-4 py-2 min-w-[88px] ${AQI_COLORS[aqi.aqi] ?? 'text-white/60 border-white/10 bg-white/5'}`}>
               <span className="text-[11px] leading-tight opacity-75">Air Quality</span>
               <span className="font-bold text-sm mt-0.5">{aqi.aqi_label}</span>
@@ -372,7 +441,7 @@ export default function WeatherMap() {
           )}
 
           {/* Individual pollutant cards */}
-          {aqi && ([
+          {!simple && aqi && ([
             { label: 'PM2.5', value: `${aqi.pm2_5.toFixed(1)} µg` },
             { label: 'PM10',  value: `${aqi.pm10.toFixed(1)} µg` },
             { label: 'O₃',    value: `${aqi.o3.toFixed(1)} µg` },
@@ -391,8 +460,9 @@ export default function WeatherMap() {
         </div>
       </div>
 
-      {/* Time scrubber — 2 days back → 5 days ahead, all of it real data */}
-      <div className="flex-shrink-0 bg-black/80 border-t border-white/10 px-3 pt-2 pb-3">
+      {/* Time scrubber — 2 days back → 5 days ahead, all of it real data.
+          Detail mode only: in simple mode the widget is a glance, not a tool. */}
+      <div className={`flex-shrink-0 bg-black/80 border-t border-white/10 px-3 pt-2 pb-3 ${simple ? 'hidden' : ''}`}>
 
         {/* Temperature trace + rain-chance shading across the window. The "now"
             line splits observed past (left) from forecast (right). */}

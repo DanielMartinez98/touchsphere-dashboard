@@ -45,8 +45,58 @@ const EL_MODEL_ID = process.env['ELEVENLABS_MODEL_ID'] ?? 'eleven_turbo_v2_5'
 const PROVIDER = (process.env['TTS_PROVIDER'] ?? (EL_KEY ? 'elevenlabs' : 'espeak')).toLowerCase()
 console.log(`[tts] provider=${PROVIDER}${PROVIDER === 'elevenlabs' ? ` voice=${EL_VOICE_ENV || 'per-assistant'} model=${EL_MODEL_ID}` : ''}`)
 
+// ── Stage directions vs. spelled-out sounds ──────────────────────────────────
+// The assistant is meant to PERFORM its noises, not narrate them. Two very
+// different things arrive wrapped in asterisks and they need opposite handling:
+//
+//   *hiccup*   → a DESCRIPTION of an action. The voice would say the word
+//                "hiccup", which is not a hiccup. Drop it entirely.
+//   *eehuuup*  → the SOUND itself, spelled phonetically. The voice pronouncing
+//                this actually sounds like a hiccup. Keep it — just unwrap the
+//                asterisks so they aren't read out as punctuation.
+//
+// The tell is simply whether the span names an action. A short list of action
+// verbs covers what models actually emit; anything else inside asterisks is
+// treated as onomatopoeia and spoken.
+const ACTION_WORDS = [
+  'hiccup', 'hiccups', 'hiccough', 'sigh', 'sighs', 'sighing', 'laugh', 'laughs', 'laughing',
+  'chuckle', 'chuckles', 'giggle', 'giggles', 'snort', 'snorts', 'burp', 'burps', 'belch', 'belches',
+  'cough', 'coughs', 'clears', 'clearing', 'throat', 'groan', 'groans', 'grumble', 'grumbles',
+  'mutter', 'mutters', 'mumbles', 'yawn', 'yawns', 'sniff', 'sniffs', 'slurp', 'slurps',
+  'sips', 'sipping', 'gulps', 'rolls', 'eyes', 'shrugs', 'grins', 'smirks', 'winks', 'nods',
+  'pauses', 'pause', 'beat', 'exhales', 'inhales', 'breathes', 'whispers', 'shouts', 'sarcastically',
+  'wheezes', 'wheeze', 'stumbles', 'slurs', 'slurred', 'hums', 'taps', 'sniffles',
+]
+const ACTION_RE = new RegExp(`\\b(?:${ACTION_WORDS.join('|')})\\b`, 'i')
+
+/** True when a bracketed span narrates an action rather than spelling a sound. */
+function isStageDirection(inner: string): boolean {
+  return ACTION_RE.test(inner)
+}
+
+export function stripStageDirections(input: string): string {
+  const handle = (_m: string, inner: string) =>
+    isStageDirection(inner) ? ' ' : ` ${inner.trim()} `
+
+  return input
+    .replace(/\*+([^*]*)\*+/g, handle)        // *hiccup* → gone;  *eehuuup* → spoken
+    .replace(/_([^_\n]{1,40})_/g, handle)     // _mutters_ / _uuuugh_
+    .replace(/\*/g, '')                       // stray unmatched asterisk
+    // Parentheticals: same rule, but only for short verb-ish asides. A longer
+    // aside — "(higher tonight)" — is a real remark and is left alone.
+    .replace(/\(([a-z]+(?:\s+[a-z]+){0,2})\)/gi, (m, inner: string) =>
+      isStageDirection(inner) ? ' ' : m)
+    .replace(/\s+([,.!?;:])/g, '$1')          // tidy the space a removed span left behind
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
 router.get('/', async (req, res) => {
-  const text = String(req.query['text'] ?? '').trim()
+  const raw = String(req.query['text'] ?? '').trim()
+  const text = stripStageDirections(raw)
+  if (text !== raw) {
+    console.log(`[tts] stripped stage directions: "${raw.slice(0, 80)}" → "${text.slice(0, 80)}"`)
+  }
   const voiceParam = String(req.query['voice'] ?? '')
   // ?as=<assistantId> voices a SPECIFIC profile (used by the Settings preview),
   // independent of whichever assistant is currently selected. Falls back to the
@@ -57,7 +107,9 @@ router.get('/', async (req, res) => {
     : getSelectedProfile()
 
   if (!text) {
-    return res.status(400).json({ error: 'missing text' })
+    // Either nothing was sent, or the whole reply was stage directions — in which
+    // case there is genuinely nothing to say, and silence beats narrating actions.
+    return res.status(400).json({ error: raw ? 'no speakable text' : 'missing text' })
   }
   if (text.length > MAX_TEXT_LEN) {
     return res.status(413).json({ error: `text too long (max ${MAX_TEXT_LEN})` })
