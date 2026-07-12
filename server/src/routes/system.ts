@@ -41,6 +41,11 @@ router.get('/debug', (_req: Request, res: Response) => {
       NOTION_DATABASE_ID:  !!env['NOTION_DATABASE_ID'],
       OLLAMA_API_KEY:      !!env['OLLAMA_API_KEY'],
       DEFAULT_LAT_LON:     !!(env['DEFAULT_LAT'] && env['DEFAULT_LON']),
+      // Cover art. TMDB drives movies/shows; IGDB (which needs BOTH the Twitch
+      // client id and secret) drives games. A missing IGDB secret is invisible
+      // otherwise: films still get posters, games silently get none.
+      TMDB_API_KEY:        !!env['TMDB_API_KEY'],
+      IGDB_CREDENTIALS:    !!(env['IGDB_CLIENT_ID'] && env['IGDB_CLIENT_SECRET']),
     },
     ollama: {
       url:   env['OLLAMA_URL']   ?? 'http://host.docker.internal:11434 (default)',

@@ -6,6 +6,7 @@ import { playSound, playRecordChime } from '../utils/sound'
 import { useVolume, setVolume, getEffectiveGain, type VolumeCategory } from '../hooks/useVolume'
 import { useWakeWordEnabled, setWakeWordEnabled, useWakeWordTranscript, useWakeWordStatus } from '../hooks/useWakeWord'
 import { ASSISTANT_PROFILES, ASSISTANT_ORDER, setAssistantId, useAssistant, type AssistantId } from '../config/assistant'
+import { useAvatarEnabled, setAvatarEnabled, useAvatarRuntime, useAvatarFps, AVATAR_MODEL_URL } from '../hooks/useAvatar'
 import { playVoicePreview } from '../utils/voicePreview'
 import { useAutoSchedule, fireBedtimeAlert } from '../hooks/useAutoSchedule'
 import { useRipple } from '../hooks/useRipple'
@@ -297,6 +298,9 @@ export function SettingsPanel() {
   const wakeTranscript  = useWakeWordTranscript()
   const wakeStatus      = useWakeWordStatus()
   const assistant       = useAssistant()
+  const avatarEnabled   = useAvatarEnabled()
+  const avatarRuntime   = useAvatarRuntime()
+  const avatarFps       = useAvatarFps()
   const [previewingId, setPreviewingId] = useState<AssistantId | null>(null)
 
   // Select an assistant AND play a short in-character clip so the user hears the
@@ -560,6 +564,71 @@ export function SettingsPanel() {
                   <p className="text-white/30 text-xs leading-relaxed px-1 pt-1">
                     Switches the assistant's name, wake word, personality, and voice together.
                   </p>
+                </div>
+
+                {/* Avatar — swaps the centre particle sphere for a 3D VRM model
+                    that lip-syncs to the reply. Off by default. Turning it off
+                    restores the sphere and leaves the audio path untouched. */}
+                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Avatar</span>
+                <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="text-white/70 text-sm font-medium">Show 3D avatar instead of the orb</p>
+                      <p className="text-white/30 text-xs mt-0.5">
+                        A VRM character that lip-syncs to {assistant.name}'s replies, blinks, and follows your touch.
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setAvatarEnabled(!avatarEnabled)}
+                      type="button"
+                      aria-label={avatarEnabled ? 'Disable 3D avatar' : 'Enable 3D avatar'}
+                      title={avatarEnabled ? 'Disable 3D avatar' : 'Enable 3D avatar'}
+                      className={`relative w-12 h-7 rounded-full transition-colors flex-shrink-0 ${
+                        avatarEnabled ? 'bg-cyan-500/70' : 'bg-white/15'
+                      }`}
+                    >
+                      <span
+                        className={`absolute top-1 left-1 w-5 h-5 rounded-full bg-white shadow-md transition-transform ${
+                          avatarEnabled ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  {avatarEnabled && avatarRuntime.status === 'loading' && (
+                    <p className="text-amber-300/80 text-xs leading-relaxed">Loading model…</p>
+                  )}
+
+                  {/* The model isn't bundled — this is the "you still need to add
+                      a .vrm" path, and the most likely thing a new user hits. */}
+                  {avatarEnabled && avatarRuntime.status === 'error' && (
+                    <div className="bg-black/30 rounded-xl px-4 py-3 border border-red-500/20 space-y-1">
+                      <p className="text-red-300/90 text-xs font-medium">No avatar model found — showing the orb.</p>
+                      <p className="text-white/40 text-xs leading-relaxed">
+                        Put a <span className="font-mono text-white/60">.vrm</span> file at{' '}
+                        <span className="font-mono text-white/60">client/public{AVATAR_MODEL_URL}</span> and reload.
+                        Make one free in VRoid Studio, or download one from VRoid Hub.
+                      </p>
+                      {avatarRuntime.detail && (
+                        <p className="text-white/30 text-xs font-mono break-words pt-1">{avatarRuntime.detail}</p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Live framerate — the honest answer to "can the Pi run this?".
+                      Anything below ~25 means turn it back off. */}
+                  {avatarEnabled && avatarRuntime.status === 'ready' && (
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-white/40 text-xs">Rendering at</span>
+                      <span className={`text-xs font-mono px-2 py-1 rounded-md ${
+                        avatarFps >= 40 ? 'bg-emerald-500/15 text-emerald-300' :
+                        avatarFps >= 25 ? 'bg-amber-500/15   text-amber-300'   :
+                                          'bg-red-500/15     text-red-300'
+                      }`}>
+                        {avatarFps} fps
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Wake word — always-on offline detection via Vosk WASM. When
@@ -1169,6 +1238,8 @@ const CONFIG_LABELS: Record<string, string> = {
   NOTION_DATABASE_ID:  'Notion database ID',
   OLLAMA_API_KEY:      'Ollama API key',
   DEFAULT_LAT_LON:     'Default coordinates',
+  TMDB_API_KEY:        'TMDB key (movie/show art)',
+  IGDB_CREDENTIALS:    'IGDB keys (game art)',
 }
 
 async function timedFetch(path: string, init?: RequestInit, timeoutMs = 10_000): Promise<{ result: CheckResult; json?: any }> {

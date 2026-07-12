@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { getEffectiveGain } from './useVolume'
 import { getMuted, subscribeMuted } from './useMuted'
+import { getAvatarEnabled } from './useAvatar'
+import { attachLipSync, resetLipSync } from '../utils/lipsync'
 import { startThinkingSound, stopThinkingSound } from '../utils/sound'
 
 // Fallback replies if /api/chat fails or returns nothing usable. We still want
@@ -84,22 +86,34 @@ async function speakText(text: string, onEnd: () => void) {
     audio.volume = Math.max(0, Math.min(1, getEffectiveGain('voice')))
     audio.onended = () => {
       if (currentAudio === audio) currentAudio = null
+      resetLipSync()
       onEnd()
     }
     audio.onerror = () => {
       console.warn('[voice] TTS audio error')
       if (currentAudio === audio) currentAudio = null
+      resetLipSync()
       onEnd()
     }
     currentAudio = audio
 
-    // Route to the user-selected speaker if supported.
-    type AudioWithSink = HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }
-    const a = audio as AudioWithSink
     const outId = localStorage.getItem(LS_OUTPUT_KEY) ?? 'default'
-    if (outId && outId !== 'default' && typeof a.setSinkId === 'function') {
-      try { await a.setSinkId(outId) } catch (err) {
-        console.warn('[voice] setSinkId failed, using default sink:', err)
+
+    // With the avatar on, playback is routed through a WebAudio analyser so the
+    // mouth can follow the waveform. That tap also takes over speaker selection
+    // (an element routed into WebAudio no longer honours its own setSinkId), so
+    // it only reports success when it can preserve the chosen output — otherwise
+    // we fall through to the untapped path below and simply don't lip-sync.
+    const tapped = getAvatarEnabled() ? await attachLipSync(audio, outId) : false
+
+    if (!tapped) {
+      // Route to the user-selected speaker if supported.
+      type AudioWithSink = HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }
+      const a = audio as AudioWithSink
+      if (outId && outId !== 'default' && typeof a.setSinkId === 'function') {
+        try { await a.setSinkId(outId) } catch (err) {
+          console.warn('[voice] setSinkId failed, using default sink:', err)
+        }
       }
     }
 
@@ -482,6 +496,7 @@ export function useVoice(): VoiceState {
       currentAudio = null
     }
     stopThinkingSound()
+    resetLipSync()
     setIsSpeaking(false)
     setIsThinking(false)
     setVolume(0)

@@ -14,7 +14,7 @@ import path from 'path'
 import crypto from 'crypto'
 import { addMemory, loadMemories, removeMemories } from '../memory'
 import { nextRecurringFireAt, sanitizeRepeatDays } from './timers'
-import { findCover } from './artwork'
+import { findCover, artworkConfigured } from './artwork'
 
 // ── State file helpers (mirror state.ts) ─────────────────────────────────────
 function stateDir(): string {
@@ -175,6 +175,16 @@ async function addMedia(title: string, type: string): Promise<string> {
            `"${match.title}"${match.year ? ` (${match.year})` : ''}, not an exact title match. ` +
            `Ask the user whether they meant "${match.title}" — if they say yes, call rename_media_item ` +
            `to correct the title. Other candidates: ${suggestionList(suggestions.slice(1))}.`
+  }
+
+  // Distinguish "the server has no key for this provider" from "that title doesn't
+  // exist". Blaming the user's spelling for a server misconfiguration wastes their
+  // time and they can't fix it by re-spelling anything.
+  if (!artworkConfigured(item.type)) {
+    const provider = item.type === 'game' ? 'IGDB' : 'TMDB'
+    return `Added "${item.title}" to the ${item.type} list. Cover art was skipped because the ${provider} ` +
+           `artwork provider is not configured on this server — this is a server setup issue, NOT a problem ` +
+           `with the title. Do not ask the user to re-spell it. Just confirm the item was added.`
   }
 
   if (suggestions.length > 0) {

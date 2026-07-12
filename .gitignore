@@ -33,3 +33,7 @@ Thumbs.db
 
 # TypeScript cache
 *.tsbuildinfo
+
+# Avatar model — a licensed art asset, not source. Drop your own .vrm here
+# (VRoid Studio / VRoid Hub) and it will be picked up at runtime.
+client/public/avatar.vrm

@@ -175,6 +175,18 @@ export async function cacheCover(imageUrl: string): Promise<string | null> {
   }
 }
 
+/**
+ * Whether the provider backing `type` actually has credentials. Without this,
+ * an unconfigured provider is indistinguishable from "no such title" — both
+ * return zero results — and callers end up telling the user their spelling is
+ * wrong when the real problem is a missing key on the server.
+ */
+export function artworkConfigured(type: MediaType): boolean {
+  return type === 'game'
+    ? !!(process.env['IGDB_CLIENT_ID'] && process.env['IGDB_CLIENT_SECRET'])
+    : !!process.env['TMDB_API_KEY']
+}
+
 /** Loose title key: case/punctuation/spacing-insensitive, so "Spider-Man 2" == "spider man 2". */
 function titleKey(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '')

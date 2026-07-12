@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import Widget from './components/widgets/Widget'
 import ParticleSphere from './components/ParticleSphere/ParticleSphere'
 import { CalendarCollapsed } from './components/widgets/CalendarWidget/CalendarWidget'
@@ -27,8 +27,14 @@ import { BedtimeBanner } from './components/BedtimeBanner'
 import { TimersOverlay } from './components/TimersOverlay'
 import { useAutoMode } from './hooks/useAutoSchedule'
 import { useMuted } from './hooks/useMuted'
+import { useAvatarEnabled, useAvatarRuntime, setAvatarRuntime, setAvatarFps } from './hooks/useAvatar'
 import { loadAssistantFromServer } from './config/assistant'
 import { playStartupSound } from './utils/sound'
+
+// The VRM avatar and its three-vrm dependency are a sizeable chunk that most
+// sessions never touch — the sphere is the default. Loading it lazily keeps it
+// out of the boot path entirely unless the setting is actually on.
+const Avatar = lazy(() => import('./components/Avatar/Avatar'))
 
 type OpenWidget = 'calendar' | 'clock' | 'weather' | 'media' | 'notion' | null
 
@@ -63,6 +69,8 @@ function App() {
   const { mode, hasCred, setMode, createPassword, verifyPassword, unlock } = useAppMode()
   const voice = useVoice()
   const muted = useMuted()
+  const avatarEnabled = useAvatarEnabled()
+  const avatarRuntime = useAvatarRuntime()
   const timers = useTimers()
   const stopwatch = useStopwatch()
   const startupPlayedRef = useRef(false)
@@ -151,13 +159,33 @@ function App() {
         }`}
       />
 
-      {/* Particle Sphere */}
-      <ParticleSphere
-        mode={mode}
-        voiceListening={voice.isListening}
-        voiceSpeaking={voice.isSpeaking}
-        voiceVolume={voice.volume}
-      />
+      {/* Centre visual — the VRM avatar when enabled in Settings, otherwise the
+          particle sphere. The sphere also stays up while the avatar is still
+          loading, and permanently if its model is missing or fails to parse, so
+          a bad/absent .vrm can never leave the kiosk staring at a blank centre.
+          Note the Avatar stays mounted on failure (it just stops rendering) —
+          unmounting it on 'error' would remount it and retry in a loop. */}
+      {avatarEnabled && (
+        <Suspense fallback={null}>
+          <Avatar
+            mode={mode}
+            voiceListening={voice.isListening}
+            voiceSpeaking={voice.isSpeaking}
+            voiceVolume={voice.volume}
+            onStatus={setAvatarRuntime}
+            onFps={setAvatarFps}
+          />
+        </Suspense>
+      )}
+
+      {(!avatarEnabled || avatarRuntime.status !== 'ready') && (
+        <ParticleSphere
+          mode={mode}
+          voiceListening={voice.isListening}
+          voiceSpeaking={voice.isSpeaking}
+          voiceVolume={voice.volume}
+        />
+      )}
 
       {/* Central tap target — invisible circle covering the orb that toggles voice */}
       <button
