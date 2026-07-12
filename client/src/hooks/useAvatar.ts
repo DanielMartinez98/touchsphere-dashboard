@@ -14,9 +14,47 @@
 import { useSyncExternalStore } from 'react'
 
 const LS_KEY = 'ts_avatar_enabled'
+const LS_BACKEND_KEY = 'ts_avatar_backend'
 
 /** Where the VRM model is served from. Drop a .vrm at client/public/avatar.vrm. */
 export const AVATAR_MODEL_URL = '/avatar.vrm'
+
+/** Where the Live2D model manifest is served from. */
+export const LIVE2D_MODEL_URL = '/live2d/Frieren/Frieren.model3.json'
+
+// Two very different avatar technologies, both valid:
+//   'live2d' — 2D rigged model (.moc3). What VTubers actually use. Much lighter
+//              on the GPU, which matters on the Pi.
+//   'vrm'    — 3D humanoid model (.vrm). Real depth, but a heavier scene.
+export type AvatarBackend = 'live2d' | 'vrm'
+
+let backendValue: AvatarBackend = (() => {
+  try {
+    const v = localStorage.getItem(LS_BACKEND_KEY)
+    if (v === 'live2d' || v === 'vrm') return v
+  } catch { /* ignore */ }
+  return 'live2d'
+})()
+
+const backendListeners = new Set<() => void>()
+
+export function setAvatarBackend(v: AvatarBackend) {
+  if (backendValue === v) return
+  backendValue = v
+  try { localStorage.setItem(LS_BACKEND_KEY, v) } catch { /* quota */ }
+  // Swapping renderers means a fresh load — clear the previous one's status.
+  setAvatarRuntime('loading')
+  setAvatarFps(0)
+  backendListeners.forEach(cb => cb())
+}
+
+export function useAvatarBackend(): AvatarBackend {
+  return useSyncExternalStore(
+    cb => { backendListeners.add(cb); return () => { backendListeners.delete(cb) } },
+    () => backendValue,
+    () => backendValue,
+  )
+}
 
 let enabledValue: boolean = (() => {
   try { return localStorage.getItem(LS_KEY) === '1' } catch { return false }

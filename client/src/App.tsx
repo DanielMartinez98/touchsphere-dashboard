@@ -27,14 +27,16 @@ import { BedtimeBanner } from './components/BedtimeBanner'
 import { TimersOverlay } from './components/TimersOverlay'
 import { useAutoMode } from './hooks/useAutoSchedule'
 import { useMuted } from './hooks/useMuted'
-import { useAvatarEnabled, useAvatarRuntime, setAvatarRuntime, setAvatarFps } from './hooks/useAvatar'
+import { useAvatarEnabled, useAvatarBackend, useAvatarRuntime, setAvatarRuntime, setAvatarFps } from './hooks/useAvatar'
 import { loadAssistantFromServer } from './config/assistant'
 import { playStartupSound } from './utils/sound'
 
-// The VRM avatar and its three-vrm dependency are a sizeable chunk that most
-// sessions never touch — the sphere is the default. Loading it lazily keeps it
-// out of the boot path entirely unless the setting is actually on.
+// Both avatar renderers pull in heavy, single-purpose dependencies (three-vrm;
+// PIXI + Live2D Cubism) that most sessions never touch — the sphere is the
+// default. Loading them lazily keeps both out of the boot path entirely unless
+// the setting is actually on.
 const Avatar = lazy(() => import('./components/Avatar/Avatar'))
+const Live2DAvatar = lazy(() => import('./components/Avatar/Live2DAvatar'))
 
 type OpenWidget = 'calendar' | 'clock' | 'weather' | 'media' | 'notion' | null
 
@@ -70,6 +72,7 @@ function App() {
   const voice = useVoice()
   const muted = useMuted()
   const avatarEnabled = useAvatarEnabled()
+  const avatarBackend = useAvatarBackend()
   const avatarRuntime = useAvatarRuntime()
   const timers = useTimers()
   const stopwatch = useStopwatch()
@@ -167,14 +170,29 @@ function App() {
           unmounting it on 'error' would remount it and retry in a loop. */}
       {avatarEnabled && (
         <Suspense fallback={null}>
-          <Avatar
-            mode={mode}
-            voiceListening={voice.isListening}
-            voiceSpeaking={voice.isSpeaking}
-            voiceVolume={voice.volume}
-            onStatus={setAvatarRuntime}
-            onFps={setAvatarFps}
-          />
+          {/* Keyed by backend so switching renderer tears the old scene down
+              rather than trying to reuse it. */}
+          {avatarBackend === 'live2d' ? (
+            <Live2DAvatar
+              key="live2d"
+              mode={mode}
+              voiceListening={voice.isListening}
+              voiceSpeaking={voice.isSpeaking}
+              voiceVolume={voice.volume}
+              onStatus={setAvatarRuntime}
+              onFps={setAvatarFps}
+            />
+          ) : (
+            <Avatar
+              key="vrm"
+              mode={mode}
+              voiceListening={voice.isListening}
+              voiceSpeaking={voice.isSpeaking}
+              voiceVolume={voice.volume}
+              onStatus={setAvatarRuntime}
+              onFps={setAvatarFps}
+            />
+          )}
         </Suspense>
       )}
 

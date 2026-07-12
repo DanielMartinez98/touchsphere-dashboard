@@ -6,7 +6,7 @@ import { playSound, playRecordChime } from '../utils/sound'
 import { useVolume, setVolume, getEffectiveGain, type VolumeCategory } from '../hooks/useVolume'
 import { useWakeWordEnabled, setWakeWordEnabled, useWakeWordTranscript, useWakeWordStatus } from '../hooks/useWakeWord'
 import { ASSISTANT_PROFILES, ASSISTANT_ORDER, setAssistantId, useAssistant, type AssistantId } from '../config/assistant'
-import { useAvatarEnabled, setAvatarEnabled, useAvatarRuntime, useAvatarFps, AVATAR_MODEL_URL } from '../hooks/useAvatar'
+import { useAvatarEnabled, setAvatarEnabled, useAvatarBackend, setAvatarBackend, useAvatarRuntime, useAvatarFps, AVATAR_MODEL_URL, LIVE2D_MODEL_URL } from '../hooks/useAvatar'
 import { playVoicePreview } from '../utils/voicePreview'
 import { useAutoSchedule, fireBedtimeAlert } from '../hooks/useAutoSchedule'
 import { useRipple } from '../hooks/useRipple'
@@ -299,6 +299,7 @@ export function SettingsPanel() {
   const wakeStatus      = useWakeWordStatus()
   const assistant       = useAssistant()
   const avatarEnabled   = useAvatarEnabled()
+  const avatarBackend   = useAvatarBackend()
   const avatarRuntime   = useAvatarRuntime()
   const avatarFps       = useAvatarFps()
   const [previewingId, setPreviewingId] = useState<AssistantId | null>(null)
@@ -595,6 +596,33 @@ export function SettingsPanel() {
                     </button>
                   </div>
 
+                  {/* Two different avatar technologies. Live2D is the format
+                      VTubers actually use and is far lighter on the Pi's GPU;
+                      VRM is a true 3D model. */}
+                  {avatarEnabled && (
+                    <div className="flex gap-2">
+                      {([
+                        { id: 'live2d' as const, label: 'Live2D', hint: '2D rigged — lighter' },
+                        { id: 'vrm'    as const, label: '3D (VRM)', hint: 'true 3D — heavier' },
+                      ]).map(b => (
+                        <button
+                          key={b.id}
+                          type="button"
+                          onClick={() => setAvatarBackend(b.id)}
+                          aria-pressed={avatarBackend === b.id}
+                          className={`flex-1 rounded-xl px-3 py-2.5 border text-left transition-colors ${
+                            avatarBackend === b.id
+                              ? 'bg-cyan-500/15 border-cyan-500/40'
+                              : 'bg-white/5 border-white/8 active:bg-white/10'
+                          }`}
+                        >
+                          <span className="block text-white/85 text-sm font-medium">{b.label}</span>
+                          <span className="block text-white/40 text-xs mt-0.5">{b.hint}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
                   {avatarEnabled && avatarRuntime.status === 'loading' && (
                     <p className="text-amber-300/80 text-xs leading-relaxed">Loading model…</p>
                   )}
@@ -603,11 +631,13 @@ export function SettingsPanel() {
                       a .vrm" path, and the most likely thing a new user hits. */}
                   {avatarEnabled && avatarRuntime.status === 'error' && (
                     <div className="bg-black/30 rounded-xl px-4 py-3 border border-red-500/20 space-y-1">
-                      <p className="text-red-300/90 text-xs font-medium">No avatar model found — showing the orb.</p>
+                      <p className="text-red-300/90 text-xs font-medium">Couldn’t load the avatar — showing the orb.</p>
                       <p className="text-white/40 text-xs leading-relaxed">
-                        Put a <span className="font-mono text-white/60">.vrm</span> file at{' '}
-                        <span className="font-mono text-white/60">client/public{AVATAR_MODEL_URL}</span> and reload.
-                        Make one free in VRoid Studio, or download one from VRoid Hub.
+                        {avatarBackend === 'live2d'
+                          ? <>Expected a Live2D model at <span className="font-mono text-white/60">client/public{LIVE2D_MODEL_URL}</span>.</>
+                          : <>Put a <span className="font-mono text-white/60">.vrm</span> file at{' '}
+                             <span className="font-mono text-white/60">client/public{AVATAR_MODEL_URL}</span> and reload.
+                             Make one free in VRoid Studio, or download one from VRoid Hub.</>}
                       </p>
                       {avatarRuntime.detail && (
                         <p className="text-white/30 text-xs font-mono break-words pt-1">{avatarRuntime.detail}</p>

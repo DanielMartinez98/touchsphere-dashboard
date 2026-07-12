@@ -34,6 +34,13 @@ Thumbs.db
 # TypeScript cache
 *.tsbuildinfo
 
-# Avatar model — a licensed art asset, not source. Drop your own .vrm here
-# (VRoid Studio / VRoid Hub) and it will be picked up at runtime.
+# Avatar models — licensed art assets, not source. Drop your own model in and it
+# gets picked up at runtime; the app falls back to the particle sphere without one.
 client/public/avatar.vrm
+client/public/live2d/
+vtuber models/
+
+# Live2D Cubism Core — proprietary redistributable from Live2D Inc, fetched from
+# cubism.live2d.com. Not ours to commit. See:
+# https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html
+client/public/live2dcubismcore.min.js
