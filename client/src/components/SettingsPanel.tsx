@@ -574,9 +574,9 @@ export function SettingsPanel() {
                 <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
                   <div className="flex items-center justify-between gap-4">
                     <div className="min-w-0">
-                      <p className="text-white/70 text-sm font-medium">Show 3D avatar instead of the orb</p>
+                      <p className="text-white/70 text-sm font-medium">Show avatar instead of the orb</p>
                       <p className="text-white/30 text-xs mt-0.5">
-                        A VRM character that lip-syncs to {assistant.name}'s replies, blinks, and follows your touch.
+                        A character that lip-syncs to {assistant.name}'s replies, blinks, and follows your touch.
                       </p>
                     </div>
                     <button
