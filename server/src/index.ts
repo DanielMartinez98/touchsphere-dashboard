@@ -148,8 +148,16 @@ if (fs.existsSync(AVATAR_DIR)) {
 if (isProd) {
   const clientDist = path.join(__dirname, '../../client/dist')
   app.use(express.static(clientDist))
-  // SPA fallback — any non-API path returns index.html
-  app.get('/{*path}', (_req, res) => {
+  // SPA fallback — any non-API path returns index.html so client-side routing
+  // works. But a request that plainly names a *file* (it has an extension) and
+  // wasn't matched by either static handler is a genuinely missing asset, and
+  // must 404. Serving index.html for it "succeeds" with a 200 full of HTML,
+  // which then blows up somewhere far away as a parse error — e.g. a missing
+  // /avatar.vrm surfacing as "Unexpected token '<'" inside the model loader.
+  app.get('/{*path}', (req, res) => {
+    if (/\.[a-z0-9]+$/i.test(req.path)) {
+      return res.status(404).json({ error: 'not found', path: req.path })
+    }
     res.sendFile(path.join(clientDist, 'index.html'))
   })
 }

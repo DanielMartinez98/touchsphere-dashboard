@@ -51,8 +51,10 @@ COPY --from=client-builder /build/client/dist ./client/dist
 # Create the cache directory the app user can write to
 RUN mkdir -p /data/cache && chown -R app:app /data
 
-# Startup script — fixes volume permissions then drops to app user
-RUN printf '#!/bin/sh\nchown -R app:app /data\nexec su-exec app node server/dist/index.js\n' > /entrypoint.sh \
+# Startup script — fixes volume permissions then drops to app user.
+# Only /data/cache is chowned: /data/avatar is a read-only bind mount of the
+# host's model files, and chowning it fails noisily on every boot for no reason.
+RUN printf '#!/bin/sh\nchown -R app:app /data/cache\nexec su-exec app node server/dist/index.js\n' > /entrypoint.sh \
     && chmod +x /entrypoint.sh
 
 # su-exec   — drop privileges (Alpine equivalent of gosu)
