@@ -72,54 +72,156 @@ const POST_TTS_GRACE_MS = 500
 // has no equivalent. The browser handles MP3/WAV decoding natively.
 let currentAudio: HTMLAudioElement | null = null
 
-async function speakText(text: string, onEnd: () => void) {
-  // Stop any in-flight playback so replies don't pile up.
+// Bumped whenever speech is superseded or cancelled. A playback loop compares
+// the token it started with against this; if they differ it bails immediately.
+// That's how "stop speaking" interrupts a queue of pending chunks rather than
+// just the clip that happens to be playing.
+let speakToken = 0
+
+function cancelSpeech() {
+  speakToken++
   if (currentAudio) {
     try { currentAudio.pause() } catch { /* ignore */ }
     currentAudio = null
   }
+}
 
-  try {
-    const url = `${API}/api/tts?text=${encodeURIComponent(text)}`
-    const audio = new Audio(url)
+// ── Chunking ─────────────────────────────────────────────────────────────────
+// Synthesis cost scales with the length of the text, and RVC voice conversion
+// (Miku) is a whole extra neural pass on CPU — a long reply took seconds before
+// a single word came out, because we waited for the ENTIRE clip.
+//
+// So speak it a sentence at a time: the first chunk starts playing as soon as
+// it's ready, while the rest are synthesised in the background. Time-to-first-
+// word then depends on the first sentence, not the whole reply.
+//
+// The FIRST chunk is deliberately small — it alone decides how long the user
+// waits before hearing anything, and that's the delay being fixed here. Later
+// chunks are allowed to be bigger: they're synthesised while she's already
+// talking, so their cost is hidden, and fewer requests means less overhead.
+const FIRST_CHUNK_CHARS = 25
+const LATER_CHUNK_CHARS = 90
+const MAX_CHUNK_CHARS   = 200
+
+/** Break an over-long run (no sentence punctuation to split on) at word gaps. */
+function hardWrap(s: string, max: number): string[] {
+  if (s.length <= max) return [s]
+  const out: string[] = []
+  let buf = ''
+  for (const word of s.split(/\s+/)) {
+    if (buf && buf.length + 1 + word.length > max) { out.push(buf); buf = word }
+    else buf = buf ? `${buf} ${word}` : word
+  }
+  if (buf) out.push(buf)
+  return out
+}
+
+export function splitForSpeech(text: string): string[] {
+  // Split after sentence-ending punctuation, keeping the punctuation.
+  const sentences = (text.match(/[^.!?…]+[.!?…]+["')\]]*\s*|[^.!?…]+$/g) ?? [text])
+    .flatMap(s => hardWrap(s.trim(), MAX_CHUNK_CHARS))
+    .filter(Boolean)
+
+  const chunks: string[] = []
+  let buf = ''
+  for (const s of sentences) {
+    // Emit as soon as the buffer is "big enough", where the bar is much lower
+    // for the first chunk than for the rest.
+    const floor = chunks.length === 0 ? FIRST_CHUNK_CHARS : LATER_CHUNK_CHARS
+
+    if (buf && buf.length + 1 + s.length > MAX_CHUNK_CHARS) {
+      chunks.push(buf)
+      buf = s
+    } else {
+      buf = buf ? `${buf} ${s}` : s
+    }
+
+    if (buf.length >= floor) {
+      chunks.push(buf)
+      buf = ''
+    }
+  }
+
+  if (buf) {
+    // Don't leave a stray fragment as its own request — gluing it to the previous
+    // chunk avoids a whole extra synthesis round-trip for a couple of words.
+    const last = chunks[chunks.length - 1]
+    if (last && last.length + 1 + buf.length <= MAX_CHUNK_CHARS) {
+      chunks[chunks.length - 1] = `${last} ${buf}`
+    } else {
+      chunks.push(buf)
+    }
+  }
+
+  return chunks.length ? chunks : [text]
+}
+
+async function speakText(text: string, onEnd: () => void) {
+  cancelSpeech()                    // supersede anything already talking
+  const myToken = speakToken
+
+  const chunks = splitForSpeech(text)
+  const outId = localStorage.getItem(LS_OUTPUT_KEY) ?? 'default'
+  const wantTap = getAvatarEnabled()
+
+  // preload='auto' makes the browser start fetching immediately, which is what
+  // lets chunk N+1 be synthesised on the server while chunk N is still playing.
+  const makeAudio = (chunk: string) => {
+    const audio = new Audio(`${API}/api/tts?text=${encodeURIComponent(chunk)}`)
     audio.preload = 'auto'
     audio.volume = Math.max(0, Math.min(1, getEffectiveGain('voice')))
-    audio.onended = () => {
-      if (currentAudio === audio) currentAudio = null
-      resetLipSync()
-      onEnd()
-    }
-    audio.onerror = () => {
-      console.warn('[voice] TTS audio error')
-      if (currentAudio === audio) currentAudio = null
-      resetLipSync()
-      onEnd()
-    }
-    currentAudio = audio
+    return audio
+  }
 
-    const outId = localStorage.getItem(LS_OUTPUT_KEY) ?? 'default'
+  try {
+    let next: HTMLAudioElement | null = makeAudio(chunks[0]!)
 
-    // With the avatar on, playback is routed through a WebAudio analyser so the
-    // mouth can follow the waveform. That tap also takes over speaker selection
-    // (an element routed into WebAudio no longer honours its own setSinkId), so
-    // it only reports success when it can preserve the chosen output — otherwise
-    // we fall through to the untapped path below and simply don't lip-sync.
-    const tapped = getAvatarEnabled() ? await attachLipSync(audio, outId) : false
+    for (let i = 0; i < chunks.length; i++) {
+      if (speakToken !== myToken) return       // interrupted
+      const audio = next!
 
-    if (!tapped) {
-      // Route to the user-selected speaker if supported.
-      type AudioWithSink = HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }
-      const a = audio as AudioWithSink
-      if (outId && outId !== 'default' && typeof a.setSinkId === 'function') {
-        try { await a.setSinkId(outId) } catch (err) {
-          console.warn('[voice] setSinkId failed, using default sink:', err)
+      // Kick off the NEXT chunk's synthesis before playing this one, so the
+      // server is working on it for the whole duration of this clip.
+      next = i + 1 < chunks.length ? makeAudio(chunks[i + 1]!) : null
+
+      // With the avatar on, playback is routed through a WebAudio analyser so the
+      // mouth can follow the waveform. That tap also takes over speaker selection
+      // (an element routed into WebAudio no longer honours its own setSinkId), so
+      // it only reports success when it can preserve the chosen output — otherwise
+      // we fall through to the untapped path below and simply don't lip-sync.
+      const tapped = wantTap ? await attachLipSync(audio, outId) : false
+      if (!tapped && outId && outId !== 'default') {
+        type AudioWithSink = HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }
+        const a = audio as AudioWithSink
+        if (typeof a.setSinkId === 'function') {
+          try { await a.setSinkId(outId) } catch (err) {
+            console.warn('[voice] setSinkId failed, using default sink:', err)
+          }
         }
       }
+
+      if (speakToken !== myToken) return
+      currentAudio = audio
+
+      await new Promise<void>((resolve) => {
+        audio.onended = () => resolve()
+        audio.onerror = () => { console.warn('[voice] TTS chunk failed'); resolve() }
+        audio.play().catch((err) => {
+          console.warn('[voice] TTS playback failed:', err)
+          resolve()
+        })
+      })
     }
 
-    await audio.play()
+    if (speakToken !== myToken) return          // interrupted during the last clip
+    currentAudio = null
+    resetLipSync()
+    onEnd()
   } catch (err) {
     console.warn('[voice] TTS playback failed:', err)
+    if (speakToken !== myToken) return
+    currentAudio = null
+    resetLipSync()
     onEnd()
   }
 }
@@ -491,10 +593,10 @@ export function useVoice(): VoiceState {
   // reset the volume meter, and clear history so the mic doesn't reopen for a
   // follow-up and the next wake-word starts fresh.
   const stopSpeaking = useCallback(() => {
-    if (currentAudio) {
-      try { currentAudio.pause() } catch { /* ignore */ }
-      currentAudio = null
-    }
+    // Cancels the whole queue, not just the clip that happens to be playing —
+    // otherwise the next chunk would start up a moment later and the assistant
+    // would keep talking after the user asked it to stop.
+    cancelSpeech()
     stopThinkingSound()
     resetLipSync()
     setIsSpeaking(false)
@@ -526,10 +628,9 @@ export function useVoice(): VoiceState {
       cleanup()
       stopThinkingSound()
       historyRef.current = []
-      if (currentAudio) {
-        try { currentAudio.pause() } catch { /* already stopped */ }
-        currentAudio = null
-      }
+      // Cancel the queue too — on unmount, a pending chunk must not start playing
+      // into a dead component.
+      cancelSpeech()
     }
   }, [cleanup])
 
