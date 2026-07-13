@@ -152,7 +152,8 @@ export const ASSISTANT_PROFILES: Record<AssistantId, AssistantProfile> = {
     name: 'Miku',
     tagline: 'Cheerful virtual singer — bubbly, warm, always glad to help.',
     // Her face and her voice are both Miku's — the whole point of tying the
-    // model to the assistant. Voice comes from Fish Audio (server profile).
+    // model to the assistant. The voice is produced locally by kokoro→RVC
+    // (see the server profile), so it costs nothing and works offline.
     defaultModelId: 'miku',
     wakePatterns: ['hey miku', 'hey mika', 'hey meeku', 'hey miko', 'a miku'],
     wakePhrase: 'Hey Miku',

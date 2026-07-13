@@ -18,11 +18,15 @@ services:
       - .env             # put your real secrets here (never committed)
     environment:
       NODE_ENV: production
-      # Local neural TTS (see the kokoro service below). Set = preferred provider
-      # for every assistant; unset = fall back to ElevenLabs / espeak.
+      # Local neural TTS (see the kokoro service below). Fallback for everyone,
+      # and the first half of Miku's voice pipeline.
       KOKORO_URL: http://kokoro:8880
+      # Local voice conversion (see the rvc service below). Together with Kokoro
+      # this produces Miku's character voice — free, offline, no API key.
+      RVC_URL: http://rvc:5050
     depends_on:
       - kokoro
+      - rvc
     volumes:
       - touchsphere-cache:/data/cache   # persist cache across restarts
       # Avatar assets (Live2D model + Cubism runtime). Licensed files that are
@@ -45,6 +49,24 @@ services:
     restart: unless-stopped
     expose:
       - "8880"
+
+  # ── RVC — local voice conversion (Miku's voice) ───────────────────────────
+  # Second half of Miku's pipeline: Kokoro speaks the words, this re-timbres them
+  # into her character voice. Entirely local — no key, no billing, works offline.
+  #
+  # Drop the voice model on the host at ./rvc-models/miku/ (a .pth, plus an
+  # optional .index). Free Miku RVC models are on Hugging Face. Without a model
+  # the conversion fails and Miku falls back to a normal voice — she still talks.
+  rvc:
+    build:
+      context: ./docker/rvc
+      dockerfile: Dockerfile
+    container_name: touchsphere-rvc
+    restart: unless-stopped
+    expose:
+      - "5050"
+    volumes:
+      - ./rvc-models:/app/rvc_models
 
   # ── Caddy — HTTPS reverse proxy ───────────────────────────────────────────
   # Caddy uses its own internal CA to issue a self-signed TLS certificate.

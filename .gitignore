@@ -45,6 +45,10 @@ vtuber models/
 # host; it never travels through git or the Docker image.
 /avatar/
 
+# RVC voice-conversion models (Miku). Multi-GB neural weights — bind-mounted into
+# the rvc container from the host, never committed. See docker/rvc/Dockerfile.
+/rvc-models/
+
 # Live2D Cubism Core — proprietary redistributable from Live2D Inc, fetched from
 # cubism.live2d.com. Not ours to commit. See:
 # https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html

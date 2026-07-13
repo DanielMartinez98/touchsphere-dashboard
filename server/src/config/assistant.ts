@@ -31,14 +31,15 @@ export interface AssistantProfile {
    */
   kokoroVoice: string
   /**
-   * Fish Audio voice model id ("reference_id"). Only set for assistants whose
-   * voice doesn't exist on ElevenLabs — Miku is a character voice clone hosted
-   * there. When this is set AND FISH_API_KEY is configured, TTS routes through
-   * Fish Audio for this assistant; everyone else is untouched and keeps using
-   * ElevenLabs. That's why the provider is resolved per-profile in routes/tts.ts
-   * rather than being one global env switch.
+   * RVC voice-conversion model name, for character voices that don't exist on
+   * any TTS service — Miku. RVC doesn't synthesise speech; it re-timbres it. So
+   * the pipeline is two local steps: Kokoro speaks the words in `kokoroVoice`,
+   * then RVC converts that audio into this character's voice.
+   *
+   * Set = this assistant is voiced locally by kokoro→rvc, ahead of ElevenLabs.
+   * Unset = normal ElevenLabs assistant. Free, offline, no API key.
    */
-  fishVoiceId?: string
+  rvcModel?: string
 }
 
 // NOTE: elevenVoiceId values are ElevenLabs "premade" library voices, available
@@ -103,11 +104,13 @@ export const ASSISTANT_PROFILES: Record<AssistantId, AssistantProfile> = {
       "enthusiastic — you treat even a boring weather question like it's a little bit exciting. You love music and " +
       "occasionally mention it, but you never let the cheer get in the way of a clear, genuinely useful answer. " +
       "Keep replies short and bright. Don't sing — you're talking, not performing.",
-    // Fish Audio hosts the Miku character voice; ElevenLabs has no equivalent.
-    // The elevenVoiceId below is only a fallback for when FISH_API_KEY is absent.
-    fishVoiceId: process.env['FISH_VOICE_ID']?.trim() || 'acc8237220d8470985ec9be6c4c480a9',
-    elevenVoiceId: 'pFZP5JQG7iQjIQuC4Bku',
-    kokoroVoice: 'af_sky',      // bright + youthful — closest local match to Miku
+    // Miku's voice is produced entirely locally, in two steps: Kokoro says the
+    // words in af_sky, then RVC re-timbres that audio into Miku. No API, no key,
+    // no per-word cost. `rvcModel` is the folder name under the RVC container's
+    // models directory.
+    rvcModel: process.env['RVC_MIKU_MODEL']?.trim() || 'miku',
+    kokoroVoice: 'af_sky',      // bright + youthful — the best base for the conversion
+    elevenVoiceId: 'pFZP5JQG7iQjIQuC4Bku',  // only if the local pipeline is down
     espeakVoice: 'en-us',
   },
   jess: {

@@ -42,13 +42,15 @@ const EL_VOICE_ENV = process.env['ELEVENLABS_VOICE_ID']?.trim() || ''
 // "eleven_turbo_v2_5" is fast + cheap. Use "eleven_multilingual_v2" for max quality.
 const EL_MODEL_ID = process.env['ELEVENLABS_MODEL_ID'] ?? 'eleven_turbo_v2_5'
 
-// ── Fish Audio ───────────────────────────────────────────────────────────────
-// Used for character voices that don't exist on ElevenLabs — Miku is a voice
-// clone hosted there. Only assistants with a `fishVoiceId` route through it.
-const FISH_KEY = process.env['FISH_API_KEY'] ?? ''
-// Their synthesis backend ("s1" is the current quality model; "speech-1.6" is
-// the faster/cheaper one). Sent as the `model` header, not in the body.
-const FISH_MODEL = process.env['FISH_MODEL_ID'] ?? 's1'
+// ── RVC (local voice conversion) ─────────────────────────────────────────────
+// For character voices no TTS service offers — Miku. RVC does NOT synthesise
+// speech; it re-timbres existing speech. So her voice is a two-step LOCAL
+// pipeline: Kokoro speaks the words, then RVC converts that audio into Miku.
+// Free, offline, no API key, no per-word billing.
+const RVC_URL = (process.env['RVC_URL'] ?? '').replace(/\/$/, '')
+// Conversion is much slower than plain synthesis (it's a second model pass over
+// the audio, on CPU), so it gets its own, longer budget.
+const RVC_TIMEOUT_MS = Number(process.env['RVC_TIMEOUT_MS'] ?? 45_000)
 
 // ── Kokoro (local neural TTS) ────────────────────────────────────────────────
 // Runs as a container next to us (Kokoro-FastAPI), so there's no API key, no
@@ -58,32 +60,41 @@ const FISH_MODEL = process.env['FISH_MODEL_ID'] ?? 's1'
 // It speaks the OpenAI /v1/audio/speech dialect.
 const KOKORO_URL = (process.env['KOKORO_URL'] ?? '').replace(/\/$/, '')
 
-type Provider = 'kokoro' | 'elevenlabs' | 'espeak' | 'fish'
+type Provider = 'rvc' | 'kokoro' | 'elevenlabs' | 'espeak'
 
 // An explicit TTS_PROVIDER pins every assistant to one backend. Otherwise we
 // build an ordered CHAIN per assistant and try each in turn, because any single
-// provider can fail for boring reasons — an empty Fish balance, a dead network,
+// provider can fail for boring reasons — a cold RVC container, a dead network,
 // an ElevenLabs 429. Falling through means a failure costs the assistant its
 // *preferred voice*, not its ability to answer at all. espeak is the floor: it's
 // local, always installed, and cannot fail for network reasons.
+//
+// ORDER MATTERS, and it's a taste call, not a technical one:
+//   • Miku goes through the local kokoro→rvc pipeline. It's the only way to get
+//     her actual character voice, and it's free and offline.
+//   • Everyone else prefers ElevenLabs. Kokoro is local and free, but its stock
+//     voices don't match these characters, and the voice IS the character here.
+//   • Kokoro therefore sits BEHIND ElevenLabs as the fallback: it's what keeps
+//     the dashboard talking when the network or the API key is unavailable,
+//     which is a far better floor than espeak's robot.
 const FORCED = process.env['TTS_PROVIDER']?.trim().toLowerCase()
 
-function providerChain(profile: { fishVoiceId?: string }): Provider[] {
-  if (FORCED === 'elevenlabs' || FORCED === 'espeak' || FORCED === 'fish' || FORCED === 'kokoro') {
+function providerChain(profile: { rvcModel?: string }): Provider[] {
+  if (FORCED === 'elevenlabs' || FORCED === 'espeak' || FORCED === 'kokoro' || FORCED === 'rvc') {
     return [FORCED, 'espeak']
   }
   const chain: Provider[] = []
-  // Miku's character voice only exists on Fish — worth trying first for her.
-  if (profile.fishVoiceId && FISH_KEY) chain.push('fish')
-  if (KOKORO_URL) chain.push('kokoro')
+  // RVC needs Kokoro to produce the source audio, so it's only viable with both.
+  if (profile.rvcModel && RVC_URL && KOKORO_URL) chain.push('rvc')
   if (EL_KEY) chain.push('elevenlabs')
+  if (KOKORO_URL) chain.push('kokoro')
   chain.push('espeak')
   return chain
 }
 
 console.log(
   `[tts] forced=${FORCED ?? 'no (per-assistant chain)'} kokoro=${KOKORO_URL || 'no'} ` +
-  `elevenlabs=${EL_KEY ? 'yes' : 'no'} fish=${FISH_KEY ? 'yes' : 'no'}`,
+  `rvc=${RVC_URL || 'no'} elevenlabs=${EL_KEY ? 'yes' : 'no'}`,
 )
 
 // ── Stage directions vs. spelled-out sounds ──────────────────────────────────
@@ -165,13 +176,12 @@ router.get('/', async (req, res) => {
   for (const provider of chain) {
     try {
       switch (provider) {
-        case 'fish': {
-          // ?voice= can override the model id; otherwise use the profile's.
-          const refId = voiceParam && /^[a-zA-Z0-9]+$/.test(voiceParam)
+        case 'rvc': {
+          const model = voiceParam && /^[a-zA-Z0-9_-]+$/.test(voiceParam)
             ? voiceParam
-            : profile.fishVoiceId
-          if (!refId) throw new Error(`assistant "${profile.id}" has no fishVoiceId`)
-          await synthesizeFishAudio(text, refId, res)
+            : profile.rvcModel
+          if (!model) throw new Error(`assistant "${profile.id}" has no rvcModel`)
+          await synthesizeKokoroRVC(text, profile.kokoroVoice, model, res)
           break
         }
         case 'kokoro': {
@@ -276,11 +286,11 @@ async function synthesizeElevenLabs(text: string, voiceId: string, res: import('
 // Kokoro-FastAPI implements OpenAI's /v1/audio/speech, so this is the same
 // request shape you'd send to OpenAI — just pointed at the container next door.
 // No key: it's on our own network, and reaching the internet isn't required.
-async function synthesizeKokoro(text: string, voice: string, res: import('express').Response) {
+async function kokoroSynth(text: string, voice: string, format: 'mp3' | 'wav'): Promise<Buffer> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), SYNTH_TIMEOUT_MS)
 
-  console.log(`[tts][kokoro] POST voice=${voice} chars=${text.length}`)
+  console.log(`[tts][kokoro] POST voice=${voice} format=${format} chars=${text.length}`)
   const apiRes = await fetch(`${KOKORO_URL}/v1/audio/speech`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -288,7 +298,7 @@ async function synthesizeKokoro(text: string, voice: string, res: import('expres
       model: 'kokoro',
       input: text,
       voice,
-      response_format: 'mp3',
+      response_format: format,
     }),
     signal: ctrl.signal,
   }).finally(() => clearTimeout(timer))
@@ -297,74 +307,88 @@ async function synthesizeKokoro(text: string, voice: string, res: import('expres
     const body = await apiRes.text().catch(() => '')
     throw new Error(`kokoro ${apiRes.status}: ${body.slice(0, 300)}`)
   }
-  if (!apiRes.body) {
-    throw new Error('kokoro returned empty body')
-  }
-
-  res.setHeader('Content-Type', 'audio/mpeg')
-  res.setHeader('Cache-Control', 'no-store')
-
-  const reader = apiRes.body.getReader()
-  let total = 0
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    total += value.byteLength
-    if (!res.write(Buffer.from(value))) {
-      await new Promise<void>(r => res.once('drain', r))
-    }
-  }
-  res.end()
-  console.log(`[tts][kokoro] OK ${total} bytes`)
+  const buf = Buffer.from(await apiRes.arrayBuffer())
+  if (buf.length === 0) throw new Error('kokoro returned empty audio')
+  console.log(`[tts][kokoro] OK ${buf.length} bytes`)
+  return buf
 }
 
-// ── Fish Audio ───────────────────────────────────────────────────────────────
-// Same contract as the ElevenLabs path: POST text, stream MP3 straight back to
-// the client. `reference_id` names the hosted voice model (Miku, in our case).
-async function synthesizeFishAudio(text: string, referenceId: string, res: import('express').Response) {
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), SYNTH_TIMEOUT_MS)
-
-  console.log(`[tts][fish] POST voice=${referenceId} model=${FISH_MODEL} chars=${text.length}`)
-  const apiRes = await fetch('https://api.fish.audio/v1/tts', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${FISH_KEY}`,
-      'Content-Type':  'application/json',
-      // The synthesis backend is selected by header, not in the body.
-      'model':         FISH_MODEL,
-    },
-    body: JSON.stringify({
-      text,
-      reference_id: referenceId,
-      format: 'mp3',
-    }),
-    signal: ctrl.signal,
-  }).finally(() => clearTimeout(timer))
-
-  if (!apiRes.ok) {
-    const body = await apiRes.text().catch(() => '')
-    throw new Error(`fish ${apiRes.status}: ${body.slice(0, 300)}`)
-  }
-  if (!apiRes.body) {
-    throw new Error('fish returned empty body')
-  }
-
+async function synthesizeKokoro(text: string, voice: string, res: import('express').Response) {
+  const audio = await kokoroSynth(text, voice, 'mp3')
   res.setHeader('Content-Type', 'audio/mpeg')
+  res.setHeader('Content-Length', audio.length)
   res.setHeader('Cache-Control', 'no-store')
+  res.end(audio)
+}
 
-  const reader = apiRes.body.getReader()
-  let total = 0
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    total += value.byteLength
-    if (!res.write(Buffer.from(value))) {
-      await new Promise<void>(r => res.once('drain', r))
+// ── Kokoro → RVC (Miku's local voice) ────────────────────────────────────────
+// RVC re-timbres speech; it can't create it. So we synthesise the words with
+// Kokoro first (as WAV — RVC wants raw audio, not a lossy MP3), then push that
+// through the conversion model to come out sounding like the character.
+//
+// Both hops are local containers, so this costs nothing and works offline. It IS
+// slower than plain TTS, though: it's a second neural pass over the whole clip,
+// on CPU. Hence the longer timeout.
+//
+// Nothing is written to `res` until the conversion has succeeded, so a failure
+// here falls cleanly through to the next provider in the chain.
+let rvcLoadedModel: string | null = null
+
+async function synthesizeKokoroRVC(
+  text: string,
+  kokoroVoice: string,
+  model: string,
+  res: import('express').Response,
+) {
+  const t0 = Date.now()
+  const wav = await kokoroSynth(text, kokoroVoice, 'wav')
+
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), RVC_TIMEOUT_MS)
+
+  try {
+    // The RVC server holds one model in memory at a time; only reload on change.
+    if (rvcLoadedModel !== model) {
+      console.log(`[tts][rvc] loading model "${model}"`)
+      const loadRes = await fetch(`${RVC_URL}/models/${encodeURIComponent(model)}`, {
+        method: 'POST',
+        signal: ctrl.signal,
+      })
+      if (!loadRes.ok) {
+        const body = await loadRes.text().catch(() => '')
+        throw new Error(`rvc load ${loadRes.status}: ${body.slice(0, 200)} (is the model in the rvc-models volume?)`)
+      }
+      rvcLoadedModel = model
     }
+
+    console.log(`[tts][rvc] converting ${wav.length} bytes with "${model}"`)
+    const convRes = await fetch(`${RVC_URL}/convert`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audio_data: wav.toString('base64') }),
+      signal: ctrl.signal,
+    })
+
+    if (!convRes.ok) {
+      const body = await convRes.text().catch(() => '')
+      throw new Error(`rvc convert ${convRes.status}: ${body.slice(0, 200)}`)
+    }
+
+    const out = Buffer.from(await convRes.arrayBuffer())
+    if (out.length === 0) throw new Error('rvc returned empty audio')
+
+    res.setHeader('Content-Type', 'audio/wav')
+    res.setHeader('Content-Length', out.length)
+    res.setHeader('Cache-Control', 'no-store')
+    res.end(out)
+    console.log(`[tts][rvc] OK ${out.length} bytes in ${Date.now() - t0}ms`)
+  } catch (err) {
+    // A failed load leaves the server's state unknown — force a reload next time.
+    rvcLoadedModel = null
+    throw err
+  } finally {
+    clearTimeout(timer)
   }
-  res.end()
-  console.log(`[tts][fish] OK ${total} bytes`)
 }
 
 // ── espeak-ng (offline fallback) ─────────────────────────────────────────────
