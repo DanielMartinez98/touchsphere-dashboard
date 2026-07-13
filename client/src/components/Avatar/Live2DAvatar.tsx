@@ -19,6 +19,10 @@ interface Props {
   voiceListening: boolean
   voiceSpeaking: boolean
   voiceVolume: number
+  /** How close she sits to the camera. 1 = whole model fits on screen. */
+  zoom: number
+  /** Vertical shift as a fraction of screen height. Negative = up. */
+  offsetY: number
   onStatus?: (status: AvatarStatus, detail?: string) => void
   onFps?: (fps: number) => void
 }
@@ -51,28 +55,37 @@ const PARAM_MOUTH = 'ParamMouthOpenY'
 // Sways the body so she isn't statue-still between replies.
 const PARAM_BODY_Y = 'ParamBodyAngleY'
 
-/** How much to fill the screen. Raise for a closer, more VTuber-like crop. */
-const ZOOM = 1.3
-
 // The binding types `coreModel` as a bare `object` — it's Cubism's own type and
 // isn't re-exported. We only ever poke one method on it.
 interface CubismCoreModel {
   setParameterValueById(id: string, value: number): void
 }
 
-export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolume, onStatus, onFps }: Props) {
+export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolume, zoom, offsetY, onStatus, onFps }: Props) {
   const mountRef       = useRef<HTMLDivElement>(null)
   const voiceListenRef = useRef(voiceListening)
   const voiceSpeakRef  = useRef(voiceSpeaking)
   const voiceVolRef    = useRef(voiceVolume)
+  const zoomRef        = useRef(zoom)
+  const offsetYRef     = useRef(offsetY)
   const onStatusRef    = useRef(onStatus)
   const onFpsRef       = useRef(onFps)
+  // Set once the model is on stage. Lets the framing effect below re-run the
+  // fit without tearing down and rebuilding the whole PIXI scene.
+  const refitRef       = useRef<(() => void) | null>(null)
 
   useEffect(() => { voiceListenRef.current = voiceListening }, [voiceListening])
   useEffect(() => { voiceSpeakRef.current  = voiceSpeaking  }, [voiceSpeaking])
   useEffect(() => { voiceVolRef.current    = voiceVolume    }, [voiceVolume])
   useEffect(() => { onStatusRef.current    = onStatus       }, [onStatus])
   useEffect(() => { onFpsRef.current       = onFps          }, [onFps])
+
+  // Live framing — dragging the sliders in Settings repositions her immediately.
+  useEffect(() => {
+    zoomRef.current    = zoom
+    offsetYRef.current = offsetY
+    refitRef.current?.()
+  }, [zoom, offsetY])
 
   useEffect(() => {
     const mount = mountRef.current
@@ -132,20 +145,24 @@ export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolum
           const raw = model.getBounds()
           if (raw.height === 0 || raw.width === 0) return
           // Fit to height, but never so wide that she overruns the corner widgets.
-          // ZOOM compensates for the model's invisible drawables — they inflate
-          // getBounds(), so a pure bounds-fit leaves the character undersized.
-          const scale = Math.min((H * 0.96) / raw.height, (W * 1.1) / raw.width) * ZOOM
+          // The zoom multiplier also compensates for the model's invisible
+          // drawables, which inflate getBounds() and leave a pure bounds-fit
+          // undersized — hence a default above 1.
+          const scale = Math.min((H * 0.96) / raw.height, (W * 1.1) / raw.width) * zoomRef.current
           model.scale.set(scale)
 
           // Re-measure at the final scale and nudge so the artwork's centre —
-          // rather than the canvas's — lands in the middle of the screen.
+          // rather than the canvas's — lands where we want it. Zooming in on a
+          // full-body model mostly wants to push her *down* (you're zooming
+          // toward the face), which is what offsetY is for.
           const b = model.getBounds()
           model.position.set(
             cx + (cx - (b.x + b.width / 2)),
-            cy + (cy - (b.y + b.height / 2)),
+            cy + (cy - (b.y + b.height / 2)) + offsetYRef.current * H,
           )
         }
         fit()
+        refitRef.current = fit
 
         // ── Lip sync ────────────────────────────────────────────────────────
         // Writing to coreModel from an outside ticker doesn't stick: Cubism
@@ -210,6 +227,7 @@ export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolum
         onStatusRef.current?.('ready')
 
         cleanupScene = () => {
+          refitRef.current = null
           window.removeEventListener('mousemove', handlePointer)
           window.removeEventListener('touchmove', handlePointer)
           window.removeEventListener('resize', handleResize)

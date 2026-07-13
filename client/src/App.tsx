@@ -27,7 +27,7 @@ import { BedtimeBanner } from './components/BedtimeBanner'
 import { TimersOverlay } from './components/TimersOverlay'
 import { useAutoMode } from './hooks/useAutoSchedule'
 import { useMuted } from './hooks/useMuted'
-import { useAvatarEnabled, useAvatarBackend, useAvatarRuntime, setAvatarRuntime, setAvatarFps } from './hooks/useAvatar'
+import { useAvatarEnabled, useAvatarBackend, useAvatarRuntime, useAvatarFraming, setAvatarRuntime, setAvatarFps } from './hooks/useAvatar'
 import { loadAssistantFromServer } from './config/assistant'
 import { playStartupSound } from './utils/sound'
 
@@ -74,6 +74,7 @@ function App() {
   const avatarEnabled = useAvatarEnabled()
   const avatarBackend = useAvatarBackend()
   const avatarRuntime = useAvatarRuntime()
+  const avatarFraming = useAvatarFraming()
   const timers = useTimers()
   const stopwatch = useStopwatch()
   const startupPlayedRef = useRef(false)
@@ -179,6 +180,8 @@ function App() {
               voiceListening={voice.isListening}
               voiceSpeaking={voice.isSpeaking}
               voiceVolume={voice.volume}
+              zoom={avatarFraming.zoom}
+              offsetY={avatarFraming.offsetY}
               onStatus={setAvatarRuntime}
               onFps={setAvatarFps}
             />
@@ -189,6 +192,8 @@ function App() {
               voiceListening={voice.isListening}
               voiceSpeaking={voice.isSpeaking}
               voiceVolume={voice.volume}
+              zoom={avatarFraming.zoom}
+              offsetY={avatarFraming.offsetY}
               onStatus={setAvatarRuntime}
               onFps={setAvatarFps}
             />

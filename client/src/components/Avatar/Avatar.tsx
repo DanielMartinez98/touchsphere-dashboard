@@ -23,6 +23,10 @@ interface Props {
   voiceListening: boolean
   voiceSpeaking: boolean
   voiceVolume: number
+  /** How close she sits to the camera. Higher = closer. */
+  zoom: number
+  /** Vertical shift as a fraction of the frame. Negative = up. */
+  offsetY: number
   /** Reports load progress so the caller can fall back to the sphere on error. */
   onStatus?: (status: AvatarStatus, detail?: string) => void
   /** Measured framerate, emitted ~1×/s. Surfaced in Settings to check the Pi. */
@@ -44,13 +48,19 @@ const MAX_PIXEL_RATIO = 1.5
 const EYE_Y = 1.35
 /** Resting brightness of the state-coloured rim light. */
 const RIM_BASE = 1.2
+/** Camera framing at zoom = 1, in metres. Divided by zoom to move closer. */
+const CAM_DIST = 1.85
+const CAM_Y    = 1.22
+const LOOK_Y   = 1.12
 
-export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolume, onStatus, onFps }: Props) {
+export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolume, zoom, offsetY, onStatus, onFps }: Props) {
   const mountRef       = useRef<HTMLDivElement>(null)
   const modeRef        = useRef(mode)
   const voiceListenRef = useRef(voiceListening)
   const voiceSpeakRef  = useRef(voiceSpeaking)
   const voiceVolRef    = useRef(voiceVolume)
+  const zoomRef        = useRef(zoom)
+  const offsetYRef     = useRef(offsetY)
   // Callbacks live in refs so a caller passing an inline arrow doesn't tear
   // down and rebuild the whole scene on every render.
   const onStatusRef    = useRef(onStatus)
@@ -60,6 +70,8 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
   useEffect(() => { voiceListenRef.current = voiceListening }, [voiceListening])
   useEffect(() => { voiceSpeakRef.current  = voiceSpeaking  }, [voiceSpeaking])
   useEffect(() => { voiceVolRef.current    = voiceVolume    }, [voiceVolume])
+  useEffect(() => { zoomRef.current        = zoom           }, [zoom])
+  useEffect(() => { offsetYRef.current     = offsetY        }, [offsetY])
   useEffect(() => { onStatusRef.current    = onStatus       }, [onStatus])
   useEffect(() => { onFpsRef.current       = onFps          }, [onFps])
 
@@ -75,8 +87,8 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
     // metres — a VRM is authored at human scale, eyes at roughly 1.35 m. Framed
     // to sit clear of the mode pill up top and the settings row below.
     const camera = new THREE.PerspectiveCamera(30, mount.clientWidth / mount.clientHeight, 0.1, 20)
-    camera.position.set(0, 1.22, 1.85)
-    camera.lookAt(0, 1.12, 0)
+    camera.position.set(0, CAM_Y, CAM_DIST)
+    camera.lookAt(0, LOOK_Y, 0)
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO))
@@ -261,6 +273,16 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
         // Drives expressions, look-at, and spring bones (hair/clothing physics).
         vrm.update(delta)
       }
+
+      // Framing — driven live by the Settings sliders. Zoom pulls the camera in
+      // along Z; offsetY slides the framing up/down. offsetY is a fraction of the
+      // visible frame, so it means the same thing here as it does for Live2D even
+      // though this camera works in metres.
+      const dist      = CAM_DIST / zoomRef.current
+      const visibleH  = 2 * dist * Math.tan((camera.fov * Math.PI) / 360)
+      const shift     = offsetYRef.current * visibleH
+      camera.position.set(0, CAM_Y + shift, dist)
+      camera.lookAt(0, LOOK_Y + shift, 0)
 
       // Rim light carries the same state colours as the sphere.
       const rimTarget = listening ? LISTEN_RIM : speaking ? SPEAK_RIM : (isRest ? REST_RIM : WORK_RIM)

@@ -6,7 +6,7 @@ import { playSound, playRecordChime } from '../utils/sound'
 import { useVolume, setVolume, getEffectiveGain, type VolumeCategory } from '../hooks/useVolume'
 import { useWakeWordEnabled, setWakeWordEnabled, useWakeWordTranscript, useWakeWordStatus } from '../hooks/useWakeWord'
 import { ASSISTANT_PROFILES, ASSISTANT_ORDER, setAssistantId, useAssistant, type AssistantId } from '../config/assistant'
-import { useAvatarEnabled, setAvatarEnabled, useAvatarBackend, setAvatarBackend, useAvatarRuntime, useAvatarFps, AVATAR_MODEL_URL, LIVE2D_MODEL_URL } from '../hooks/useAvatar'
+import { useAvatarEnabled, setAvatarEnabled, useAvatarBackend, setAvatarBackend, useAvatarRuntime, useAvatarFps, useAvatarFraming, setAvatarFraming, resetAvatarFraming, ZOOM_MIN, ZOOM_MAX, OFFSET_MIN, OFFSET_MAX, AVATAR_MODEL_URL, LIVE2D_MODEL_URL } from '../hooks/useAvatar'
 import { playVoicePreview } from '../utils/voicePreview'
 import { useAutoSchedule, fireBedtimeAlert } from '../hooks/useAutoSchedule'
 import { useRipple } from '../hooks/useRipple'
@@ -301,6 +301,7 @@ export function SettingsPanel() {
   const avatarEnabled   = useAvatarEnabled()
   const avatarBackend   = useAvatarBackend()
   const avatarRuntime   = useAvatarRuntime()
+  const avatarFraming   = useAvatarFraming()
   const avatarFps       = useAvatarFps()
   const [previewingId, setPreviewingId] = useState<AssistantId | null>(null)
 
@@ -642,6 +643,64 @@ export function SettingsPanel() {
                       {avatarRuntime.detail && (
                         <p className="text-white/30 text-xs font-mono break-words pt-1">{avatarRuntime.detail}</p>
                       )}
+                    </div>
+                  )}
+
+                  {/* Framing — models are authored at wildly different scales and
+                      crops, so there's no default that suits every one of them.
+                      Both sliders apply live, to whichever backend is active. */}
+                  {avatarEnabled && avatarRuntime.status === 'ready' && (
+                    <div className="space-y-3 pt-1">
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-white/70 text-sm font-medium">Zoom</span>
+                          <span className="text-white/50 text-xs font-mono tabular-nums">
+                            {avatarFraming.zoom.toFixed(2)}×
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={ZOOM_MIN}
+                          max={ZOOM_MAX}
+                          step={0.05}
+                          value={avatarFraming.zoom}
+                          onChange={e => setAvatarFraming({ zoom: Number(e.target.value) })}
+                          aria-label="Avatar zoom"
+                          className="w-full h-2 accent-cyan-400 cursor-pointer"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-white/70 text-sm font-medium">Vertical position</span>
+                          <span className="text-white/50 text-xs font-mono tabular-nums">
+                            {avatarFraming.offsetY > 0 ? '+' : ''}{Math.round(avatarFraming.offsetY * 100)}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={OFFSET_MIN}
+                          max={OFFSET_MAX}
+                          step={0.01}
+                          value={avatarFraming.offsetY}
+                          onChange={e => setAvatarFraming({ offsetY: Number(e.target.value) })}
+                          aria-label="Avatar vertical position"
+                          className="w-full h-2 accent-cyan-400 cursor-pointer"
+                        />
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={resetAvatarFraming}
+                        className="w-full rounded-xl px-3 py-2 bg-white/5 border border-white/8 active:bg-white/10 text-white/60 text-xs font-medium"
+                      >
+                        Reset framing
+                      </button>
+                      <p className="text-white/30 text-xs leading-relaxed">
+                        Zooming in crops toward the middle of the model, so a full-body
+                        character needs a positive vertical position to bring her face
+                        back into frame. Try 2.4× and +28%.
+                      </p>
                     </div>
                   )}
 

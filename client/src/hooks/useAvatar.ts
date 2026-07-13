@@ -90,6 +90,67 @@ export function useAvatarEnabled(): boolean {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
+// ── Framing (zoom + vertical position) ───────────────────────────────────────
+// How close the avatar sits to the camera and where she's centred. Models are
+// authored at wildly different scales and crops — one ships framed head-to-toe,
+// another bust-only — so there's no single default that suits every model. This
+// is a per-device visual preference, so it lives in localStorage like the rest
+// of the avatar settings rather than being pushed to the server.
+
+const LS_ZOOM_KEY    = 'ts_avatar_zoom'
+const LS_OFFSETY_KEY = 'ts_avatar_offset_y'
+
+/** 1 = fit the whole model on screen. Higher = closer. */
+export const ZOOM_MIN = 0.6
+export const ZOOM_MAX = 3.5
+export const ZOOM_DEFAULT = 1.3
+/** Fraction of screen height to shift her by. Negative = up, positive = down. */
+export const OFFSET_MIN = -0.5
+export const OFFSET_MAX = 0.5
+
+export interface AvatarFraming { zoom: number; offsetY: number }
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
+
+function readNumber(key: string, fallback: number, lo: number, hi: number): number {
+  try {
+    const raw = localStorage.getItem(key)
+    if (raw === null) return fallback
+    const n = Number(raw)
+    return Number.isFinite(n) ? clamp(n, lo, hi) : fallback
+  } catch { return fallback }
+}
+
+let framing: AvatarFraming = {
+  zoom:    readNumber(LS_ZOOM_KEY,    ZOOM_DEFAULT, ZOOM_MIN,   ZOOM_MAX),
+  offsetY: readNumber(LS_OFFSETY_KEY, 0,            OFFSET_MIN, OFFSET_MAX),
+}
+const framingListeners = new Set<() => void>()
+
+export function setAvatarFraming(next: Partial<AvatarFraming>) {
+  const zoom    = clamp(next.zoom    ?? framing.zoom,    ZOOM_MIN,   ZOOM_MAX)
+  const offsetY = clamp(next.offsetY ?? framing.offsetY, OFFSET_MIN, OFFSET_MAX)
+  if (zoom === framing.zoom && offsetY === framing.offsetY) return
+  framing = { zoom, offsetY }
+  try {
+    localStorage.setItem(LS_ZOOM_KEY, String(zoom))
+    localStorage.setItem(LS_OFFSETY_KEY, String(offsetY))
+  } catch { /* quota */ }
+  framingListeners.forEach(cb => cb())
+}
+
+export function resetAvatarFraming() {
+  setAvatarFraming({ zoom: ZOOM_DEFAULT, offsetY: 0 })
+}
+
+export function useAvatarFraming(): AvatarFraming {
+  return useSyncExternalStore(
+    cb => { framingListeners.add(cb); return () => { framingListeners.delete(cb) } },
+    () => framing,
+    () => framing,
+  )
+}
+
 // ── Runtime status ───────────────────────────────────────────────────────────
 // Reported by the Avatar component. App reads it to fall back to the sphere when
 // the model can't be loaded; Settings reads it to explain *why*.

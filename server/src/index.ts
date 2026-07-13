@@ -137,7 +137,11 @@ app.get('/api/health', (_req, res) => {
 // particle sphere — the correct behaviour on a host with no model installed.
 const AVATAR_DIR = process.env['AVATAR_DIR'] ?? '/data/avatar'
 if (fs.existsSync(AVATAR_DIR)) {
-  app.use(express.static(AVATAR_DIR, { maxAge: '1h' }))
+  // maxAge 0 + ETag: the browser revalidates each load and gets a cheap 304 when
+  // nothing changed, but picks up a swapped model immediately. A long max-age
+  // here pins a stale texture in the kiosk's disk cache, where no amount of
+  // reloading dislodges it — which is exactly what happened while debugging.
+  app.use(express.static(AVATAR_DIR, { maxAge: 0, etag: true }))
   console.log(`[startup] avatar assets      : serving from ${AVATAR_DIR}`)
 } else {
   console.log(`[startup] avatar assets      : none at ${AVATAR_DIR} — dashboard will use the sphere`)
