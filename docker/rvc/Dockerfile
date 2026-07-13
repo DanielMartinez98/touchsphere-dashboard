@@ -18,6 +18,10 @@
 #     with build isolation off.
 #   • pip >= 24.1 enforces PEP 440 strictly and rejects omegaconf 2.0.6's
 #     malformed metadata ("PyYAML>=5.1.*"), which fairseq pulls in.
+#   • fairseq's sdist on PyPI is BROKEN: the tarball omits its own C++ sources
+#     (fairseq/clib/libbase/balanced_assignment.cpp), so compiling it from PyPI
+#     always dies with "No such file or directory". It has to come from the git
+#     tag, which actually contains them.
 # Each pin below is load-bearing. Changing one tends to break the build.
 
 FROM python:3.10-slim
@@ -29,6 +33,7 @@ RUN apt-get update \
         ffmpeg \
         build-essential \
         python3-dev \
+        git \
     && rm -rf /var/lib/apt/lists/*
 
 # Old pip (see above) and the setuptools/wheel fairseq expects.
@@ -43,9 +48,12 @@ RUN pip install --no-cache-dir \
 # breaks its generated sources.
 RUN pip install --no-cache-dir "Cython<3.0" "numpy==1.23.5"
 
+# From the git tag, NOT PyPI — the published sdist is missing its own C++
+# sources and cannot compile (see the note at the top of this file).
 # --no-build-isolation so it uses the Cython/numpy installed above rather than
 # fetching a fresh (and incompatible) set into an isolated build env.
-RUN pip install --no-cache-dir --no-build-isolation "fairseq==0.12.2"
+RUN pip install --no-cache-dir --no-build-isolation \
+        "git+https://github.com/facebookresearch/fairseq.git@v0.12.2#egg=fairseq"
 
 RUN pip install --no-cache-dir rvc-python
 
