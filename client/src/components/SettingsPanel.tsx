@@ -7,6 +7,7 @@ import { useVolume, setVolume, getEffectiveGain, type VolumeCategory } from '../
 import { useWakeWordEnabled, setWakeWordEnabled, useWakeWordTranscript, useWakeWordStatus } from '../hooks/useWakeWord'
 import { ASSISTANT_PROFILES, ASSISTANT_ORDER, AVATAR_MODELS, getAvatarModel, setAssistantId, useAssistant, type AssistantId } from '../config/assistant'
 import { useAvatarEnabled, setAvatarEnabled, useAvatarRuntime, useAvatarFps, useAvatarFraming, setAvatarFraming, resetAvatarFraming, useAvatarModelOverride, setAvatarModelId, ZOOM_MIN, ZOOM_MAX, OFFSET_MIN, OFFSET_MAX } from '../hooks/useAvatar'
+import { useVoicePitch, setVoicePitch, PITCH_MIN, PITCH_MAX } from '../hooks/useVoicePitch'
 import { playVoicePreview } from '../utils/voicePreview'
 import { useAutoSchedule, fireBedtimeAlert } from '../hooks/useAutoSchedule'
 import { useRipple } from '../hooks/useRipple'
@@ -298,8 +299,32 @@ export function SettingsPanel() {
   const wakeTranscript  = useWakeWordTranscript()
   const wakeStatus      = useWakeWordStatus()
   const assistant       = useAssistant()
+  const voicePitch      = useVoicePitch(assistant.id)
+  const [pitchPreviewing, setPitchPreviewing] = useState(false)
   const avatarEnabled   = useAvatarEnabled()
   const avatarRuntime   = useAvatarRuntime()
+
+  // Speak the assistant's sample line at a specific transpose. Passes ?pitch=
+  // explicitly rather than relying on the saved value, so you hear the slider's
+  // CURRENT position immediately — the debounced save to the server may not have
+  // landed yet, and waiting for it would make the preview feel broken.
+  const previewPitch = async (semitones: number) => {
+    setPitchPreviewing(true)
+    try {
+      const url = `/api/tts?as=${assistant.id}`
+        + `&pitch=${semitones}`
+        + `&text=${encodeURIComponent(assistant.sampleLine)}`
+      const audio = new Audio(url)
+      audio.volume = Math.max(0, Math.min(1, getEffectiveGain('voice')))
+      await new Promise<void>((resolve) => {
+        audio.onended = () => resolve()
+        audio.onerror = () => resolve()
+        void audio.play().catch(() => resolve())
+      })
+    } finally {
+      setPitchPreviewing(false)
+    }
+  }
   const modelOverride   = useAvatarModelOverride(assistant.id)
   const avatarModelId   = modelOverride ?? assistant.defaultModelId
   const avatarModel     = getAvatarModel(avatarModelId) ?? getAvatarModel(assistant.defaultModelId)!
@@ -573,6 +598,52 @@ export function SettingsPanel() {
                     Switches the assistant's name, wake word, personality, and voice together.
                   </p>
                 </div>
+
+                {/* Voice pitch — only for assistants voiced through RVC. RVC swaps
+                    timbre but inherits the source TTS voice's pitch, so a character
+                    in a high register needs transposing to actually sit there. The
+                    right value is ear-tuned, hence a slider with a live preview. */}
+                {assistant.tunablePitch && (
+                  <>
+                    <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">
+                      {assistant.name}'s pitch
+                    </span>
+                    <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
+                      <div className="flex items-center justify-between">
+                        <span className="text-white/70 text-sm font-medium">Transpose</span>
+                        <span className="text-white/50 text-xs font-mono tabular-nums">
+                          {voicePitch > 0 ? '+' : ''}{voicePitch} semitone{Math.abs(voicePitch) === 1 ? '' : 's'}
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={PITCH_MIN}
+                        max={PITCH_MAX}
+                        step={1}
+                        value={voicePitch}
+                        onChange={e => setVoicePitch(assistant.id, Number(e.target.value))}
+                        aria-label={`${assistant.name} voice pitch in semitones`}
+                        className="w-full h-2 accent-cyan-400 cursor-pointer"
+                      />
+
+                      <button
+                        type="button"
+                        onClick={() => previewPitch(voicePitch)}
+                        disabled={pitchPreviewing}
+                        className="w-full rounded-xl px-4 py-3 bg-cyan-500/15 border border-cyan-500/40 active:bg-cyan-500/25 text-cyan-200 text-sm font-medium disabled:opacity-50"
+                      >
+                        {pitchPreviewing ? 'Synthesising…' : `Hear ${assistant.name} at this pitch`}
+                      </button>
+
+                      <p className="text-white/30 text-xs leading-relaxed">
+                        Her voice is converted from a normal speaking voice, which sits lower
+                        than she does — this lifts it into her range. 12 = one octave. Tune it
+                        by ear: too low still sounds like an adult, too high goes squeaky.
+                        Saved to the server, so the kiosk uses it too.
+                      </p>
+                    </div>
+                  </>
+                )}
 
                 {/* Avatar — swaps the centre particle sphere for a 3D VRM model
                     that lip-syncs to the reply. Off by default. Turning it off

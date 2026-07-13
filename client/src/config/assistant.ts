@@ -127,6 +127,14 @@ export interface AssistantProfile {
   wakePhrase: string
   /** A short in-character line spoken as a preview when the profile is selected. */
   sampleLine: string
+  /**
+   * True for assistants voiced through RVC voice-conversion (Miku). RVC inherits
+   * the source TTS voice's pitch and only swaps the timbre, so these need a
+   * transpose to sit in the character's actual register — and the right number is
+   * ear-tuned, not knowable in advance. Shows the pitch slider in Settings.
+   * The others use a TTS voice directly and have nothing to transpose.
+   */
+  tunablePitch?: boolean
 }
 
 export const ASSISTANT_PROFILES: Record<AssistantId, AssistantProfile> = {
@@ -178,6 +186,7 @@ export const ASSISTANT_PROFILES: Record<AssistantId, AssistantProfile> = {
     wakePatterns: ['hey miku', 'hey mika', 'hey meeku', 'hey miko', 'a miku'],
     wakePhrase: 'Hey Miku',
     sampleLine: "Hi hi! Miku here! Whatever you need, I'm on it — let's make today a good one!",
+    tunablePitch: true,
   },
   jess: {
     id: 'jess',

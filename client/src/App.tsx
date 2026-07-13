@@ -29,6 +29,7 @@ import { useAutoMode } from './hooks/useAutoSchedule'
 import { useMuted } from './hooks/useMuted'
 import { useAvatarEnabled, useAvatarRuntime, useAvatarFraming, useAvatarModelOverride, setAvatarRuntime, setAvatarFps, loadAvatarFramingFromServer } from './hooks/useAvatar'
 import { loadAssistantFromServer, useAssistant, getAvatarModel } from './config/assistant'
+import { loadVoicePitchFromServer } from './hooks/useVoicePitch'
 import { playStartupSound } from './utils/sound'
 
 // Both avatar renderers pull in heavy, single-purpose dependencies (three-vrm;
@@ -118,6 +119,7 @@ function App() {
   useEffect(() => {
     loadAssistantFromServer()
     loadAvatarFramingFromServer()
+    loadVoicePitchFromServer()
   }, [])
 
   // Listen for server-sent reload event and refresh the page

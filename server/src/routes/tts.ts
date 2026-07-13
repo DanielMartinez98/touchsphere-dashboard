@@ -66,7 +66,29 @@ const RVC_TIMEOUT_MS = Number(process.env['RVC_TIMEOUT_MS'] ?? 45_000)
 //     transposition you get "adult woman with a Miku-ish tone" — recognisably
 //     not her. This is the single biggest lever on whether she sounds right.
 const RVC_F0_METHOD = process.env['RVC_F0_METHOD'] ?? 'rmvpe'
+// Fallback only. The live value is the one the user dialled in on the Settings
+// slider, persisted by routes/state.ts — see savedPitch() below.
 const RVC_F0_UP_KEY = Number(process.env['RVC_F0_UP_KEY'] ?? 4)
+
+/**
+ * The transpose the user has saved for this assistant, if any.
+ *
+ * Read from disk per request rather than cached: it's a tiny file, and the whole
+ * point of the slider is that a change takes effect on the *next reply* — caching
+ * it would mean restarting the container to hear your own adjustment, which
+ * defeats the purpose.
+ */
+function savedPitch(assistantId: string): number | null {
+  try {
+    const dir = process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache'
+    const raw = fs.readFileSync(path.join(dir, 'voice-pitch.json'), 'utf8')
+    const all = JSON.parse(raw) as Record<string, number>
+    const v = all[assistantId]
+    return Number.isFinite(v) ? v! : null
+  } catch {
+    return null   // never saved, or unreadable — fall back to the env default
+  }
+}
 // How strongly to pull toward the model's own timbre (the .index file). Higher
 // is more "them", but too high smears consonants.
 const RVC_INDEX_RATE = Number(process.env['RVC_INDEX_RATE'] ?? 0.66)
@@ -205,14 +227,13 @@ router.get('/', async (req, res) => {
             ? voiceParam
             : profile.rvcModel
           if (!model) throw new Error(`assistant "${profile.id}" has no rvcModel`)
-          // ?pitch=<semitones> overrides the transpose for this request. There's
-          // no "correct" value — it depends on the model and the source voice —
-          // so this exists to make A/B-ing it a URL edit rather than a redeploy.
-          // ±24 is two octaves; anything beyond is a typo, not a choice.
+          // Transpose precedence: an explicit ?pitch= (used by the Settings
+          // slider's live preview) → the value the user saved for this assistant
+          // → the env default. ±24 is two octaves; beyond that is a typo.
           const pitchRaw = Number(req.query['pitch'])
           const pitch = Number.isFinite(pitchRaw)
             ? Math.max(-24, Math.min(24, Math.round(pitchRaw)))
-            : RVC_F0_UP_KEY
+            : (savedPitch(profile.id) ?? RVC_F0_UP_KEY)
           await synthesizeKokoroRVC(text, profile.kokoroVoice, model, res, pitch)
           break
         }

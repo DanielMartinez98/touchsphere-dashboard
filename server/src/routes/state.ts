@@ -210,6 +210,50 @@ router.post('/avatar-framing', (req: Request, res: Response) => {
   }
 })
 
+// ── Voice pitch (RVC transpose) ───────────────────────────────────────────────
+// Semitones to transpose an assistant's voice by, for the ones voiced through
+// RVC (Miku). RVC swaps timbre but INHERITS the source voice's pitch, so without
+// transposition a character in a high register just sounds like the TTS voice
+// wearing their tone. There's no correct value — it depends on the model and the
+// source voice — so it has to be tunable by ear, which means a slider, not an
+// env var and a redeploy.
+//
+// Keyed by assistant id, and persisted server-side so the value dialled in on a
+// laptop is the one the Pi kiosk speaks with.
+const PITCH_FILE = 'voice-pitch.json'
+const PITCH_MIN = -12
+const PITCH_MAX = 12
+
+// GET /api/state/voice-pitch → { [assistantId]: semitones }
+router.get('/voice-pitch', (_req: Request, res: Response) => {
+  res.json(readJSON<Record<string, number>>(PITCH_FILE, {}))
+})
+
+// POST /api/state/voice-pitch  { assistantId, pitch }
+router.post('/voice-pitch', (req: Request, res: Response) => {
+  const { assistantId, pitch } = req.body as { assistantId?: string; pitch?: number }
+
+  if (!assistantId || !(assistantId in ASSISTANT_PROFILES)) {
+    res.status(400).json({ error: `assistantId must be one of ${Object.keys(ASSISTANT_PROFILES).join(' | ')}` })
+    return
+  }
+  if (!Number.isFinite(pitch)) {
+    res.status(400).json({ error: 'pitch must be a number (semitones)' })
+    return
+  }
+
+  const semis = Math.round(Math.min(PITCH_MAX, Math.max(PITCH_MIN, pitch as number)))
+  try {
+    const all = readJSON<Record<string, number>>(PITCH_FILE, {})
+    all[assistantId] = semis
+    writeJSON(PITCH_FILE, all)
+    console.log(`[state] POST voice-pitch ${assistantId} → ${semis > 0 ? '+' : ''}${semis} semitones`)
+    res.json({ assistantId, pitch: semis })
+  } catch {
+    res.status(500).json({ error: 'Failed to persist voice pitch' })
+  }
+})
+
 // ── Lock Credential ───────────────────────────────────────────────────────────
 // GET /api/state/cred  — check if a credential exists
 router.get('/cred', (_req: Request, res: Response) => {
