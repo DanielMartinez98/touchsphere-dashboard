@@ -66,12 +66,22 @@ RUN pip install --no-cache-dir rvc-python
 # rvc-python declares torch>=2.0.0 / torchaudio>=2.0.0, so pip is free to pull a
 # newer one and leave the pair mismatched — which is exactly what killed the
 # container the first time. Re-assert the matched CPU pair last, after every
-# other dependency has had its say, and prove they agree at BUILD time rather
-# than discovering it in a restart loop.
-RUN pip install --no-cache-dir --force-reinstall \
+# other dependency has had its say.
+#
+# --no-deps is essential. A plain --force-reinstall also reinstalls torch's own
+# dependencies, and that DOWNGRADES typing_extensions — which then breaks the
+# pydantic_core that FastAPI needs ("cannot import name 'Sentinel'"). We only
+# want to pin the two packages whose ABIs must agree; everything else is already
+# installed and correct, so don't let pip touch it.
+RUN pip install --no-cache-dir --force-reinstall --no-deps \
         "torch==2.1.2" "torchaudio==2.1.2" \
-        --index-url https://download.pytorch.org/whl/cpu \
-    && python -c "import torch, torchaudio, fairseq; print('torch', torch.__version__, '| torchaudio', torchaudio.__version__)" \
+        --index-url https://download.pytorch.org/whl/cpu
+
+# Prove the whole stack imports at BUILD time. Without this the image "builds
+# fine" and then crash-loops at runtime, which has now happened twice.
+RUN python -c "import torch, torchaudio; print('torch', torch.__version__, '| torchaudio', torchaudio.__version__)" \
+    && python -c "import fairseq; print('fairseq OK')" \
+    && python -c "import fastapi, pydantic_core; print('fastapi OK')" \
     && python -c "import rvc_python; print('rvc-python imports OK')"
 
 WORKDIR /app
