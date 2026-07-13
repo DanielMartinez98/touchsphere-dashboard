@@ -39,10 +39,16 @@ RUN apt-get update \
 # Old pip (see above) and the setuptools/wheel fairseq expects.
 RUN pip install --no-cache-dir "pip<24.1" "setuptools==65.5.0" "wheel"
 
-# CPU-only torch. The default wheel drags in ~2 GB of CUDA libraries that would
-# never be used on a box without an NVIDIA GPU — this keeps the image sane.
+# CPU-only torch, PINNED as a matched pair. The default wheel drags in ~2 GB of
+# CUDA libraries that would never be used on a box without an NVIDIA GPU.
+#
+# The versions are exact on purpose: torchaudio ships a compiled extension linked
+# against a specific torch ABI, so a torch/torchaudio pair that drifted apart
+# dies at import with "undefined symbol: aoti_torch_abi_version". Leaving these
+# unpinned lets a later install shift torch and break torchaudio.
 RUN pip install --no-cache-dir \
-        torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+        "torch==2.1.2" "torchaudio==2.1.2" \
+        --index-url https://download.pytorch.org/whl/cpu
 
 # Must exist before fairseq builds: its setup.py imports numpy, and Cython 3
 # breaks its generated sources.
@@ -56,6 +62,17 @@ RUN pip install --no-cache-dir --no-build-isolation \
         "git+https://github.com/facebookresearch/fairseq.git@v0.12.2#egg=fairseq"
 
 RUN pip install --no-cache-dir rvc-python
+
+# rvc-python declares torch>=2.0.0 / torchaudio>=2.0.0, so pip is free to pull a
+# newer one and leave the pair mismatched — which is exactly what killed the
+# container the first time. Re-assert the matched CPU pair last, after every
+# other dependency has had its say, and prove they agree at BUILD time rather
+# than discovering it in a restart loop.
+RUN pip install --no-cache-dir --force-reinstall \
+        "torch==2.1.2" "torchaudio==2.1.2" \
+        --index-url https://download.pytorch.org/whl/cpu \
+    && python -c "import torch, torchaudio, fairseq; print('torch', torch.__version__, '| torchaudio', torchaudio.__version__)" \
+    && python -c "import rvc_python; print('rvc-python imports OK')"
 
 WORKDIR /app
 
