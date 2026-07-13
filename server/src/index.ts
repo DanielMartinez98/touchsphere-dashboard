@@ -92,6 +92,20 @@ const tileLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many requests, please try again later.' },
 })
+// TTS gets its own budget because a spoken reply is no longer one request: the
+// client splits it into sentences and fetches them separately so the first one
+// can start playing while the rest are still being synthesised. On the strict
+// data budget — which the widgets' polling also draws from — a long reply during
+// a busy minute could 429 mid-sentence and simply stop talking. The requests are
+// still bounded (MAX_TEXT_LEN per chunk, and a human can only hold so many
+// conversations a minute), so a higher ceiling costs nothing.
+const ttsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 240,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' },
+})
 
 app.use('/api/weather', dataLimiter, weatherRouter)
 app.use('/api/calendar', dataLimiter, calendarRouter)
@@ -102,7 +116,7 @@ app.use('/api/system', systemRouter)
 app.use('/api/state', dataLimiter, stateRouter)
 app.use('/api/device', dataLimiter, deviceRouter)
 app.use('/api/audio', audioRouter)
-app.use('/api/tts', dataLimiter, ttsRouter)
+app.use('/api/tts', ttsLimiter, ttsRouter)
 app.use('/api/stt', dataLimiter, sttRouter)
 app.use('/api/chat', dataLimiter, chatRouter)
 app.use('/api/notion', dataLimiter, notionRouter)

@@ -70,32 +70,111 @@ const POST_TTS_GRACE_MS = 500
 // We use HTMLAudioElement (not WebAudio) so we can call setSinkId() and route
 // the reply to whichever speaker the user picked in the Hardware tab. WebAudio
 // has no equivalent. The browser handles MP3/WAV decoding natively.
-let currentAudio: HTMLAudioElement | null = null
+//
+// ── Why the reply is spoken sentence by sentence ─────────────────────────────
+// /api/tts buffers the whole clip before it responds, and for the RVC-voiced
+// assistant (Miku) synthesis is a two-model pass whose cost scales with clip
+// length. Asking for the reply in one piece therefore means waiting for EVERY
+// sentence to be synthesised and converted before hearing the first word — a
+// four-sentence answer pays four sentences of latency up front.
+//
+// So we split the reply and pipeline it: fetch sentence 1, start playing it,
+// and fetch sentence 2 while it plays. Time-to-first-word becomes the cost of
+// one sentence instead of the whole reply, and the remaining fetches hide
+// underneath playback. Exactly one request is ever in flight, which also keeps
+// the single-model RVC server from being asked to convert two clips at once.
+const MIN_CHUNK_CHARS = 45    // below this, merge forward — don't pay a round-trip for "Sure."
+const MAX_CHUNK_CHARS = 180   // above this, split at a comma/space so no chunk is a long wait
 
-async function speakText(text: string, onEnd: () => void) {
-  // Stop any in-flight playback so replies don't pile up.
+/** Split a reply into speakable chunks at sentence boundaries. Exported for tests. */
+export function splitForSpeech(text: string): string[] {
+  // Keep the terminator with its sentence; also break on hard newlines.
+  const pieces = text
+    .split(/(?<=[.!?…])\s+|\n+/)
+    .map(s => s.trim())
+    .filter(Boolean)
+
+  const merged: string[] = []
+  for (const piece of pieces) {
+    const last = merged[merged.length - 1]
+    // Top up a chunk that's still too short to be worth its own round-trip
+    // ("Hi there!"), but never grow one that already is — the whole point is to
+    // get the first chunk playing early, and merging into a big chunk just
+    // rebuilds the long wait we're trying to avoid. A short chunk at the END is
+    // harmless: it's fetched while an earlier one is already playing.
+    if (last && last.length < MIN_CHUNK_CHARS
+        && last.length + piece.length + 1 <= MAX_CHUNK_CHARS) {
+      merged[merged.length - 1] = `${last} ${piece}`
+    } else {
+      merged.push(piece)
+    }
+  }
+
+  // A single sentence can still be long enough to be a noticeable wait on its
+  // own; break those at the last comma (else the last space) before the cap.
+  const out: string[] = []
+  for (let chunk of merged) {
+    while (chunk.length > MAX_CHUNK_CHARS) {
+      const head = chunk.slice(0, MAX_CHUNK_CHARS)
+      const cut = Math.max(head.lastIndexOf(', '), head.lastIndexOf('; '))
+      const at = cut > MIN_CHUNK_CHARS ? cut + 1 : head.lastIndexOf(' ')
+      if (at <= 0) break   // one unbroken 180-char token; let it through whole
+      out.push(chunk.slice(0, at).trim())
+      chunk = chunk.slice(at).trim()
+    }
+    if (chunk) out.push(chunk)
+  }
+  return out
+}
+
+let currentAudio: HTMLAudioElement | null = null
+// Resolver for the clip currently playing, so an interrupt can unblock the
+// sequencer's `await` instead of leaving it hanging on an 'ended' that a
+// pause() will never fire.
+let currentClipDone: (() => void) | null = null
+// Bumped on every interrupt. The sequencer compares its own token after each
+// await and bails out if it's been superseded, so a stopped reply can't resume
+// with its next sentence.
+let playToken = 0
+
+/** Stop playback immediately and invalidate any in-flight reply sequence. */
+function haltPlayback() {
+  playToken++
   if (currentAudio) {
     try { currentAudio.pause() } catch { /* ignore */ }
     currentAudio = null
   }
+  const done = currentClipDone
+  currentClipDone = null
+  done?.()
+}
 
-  try {
-    const url = `${API}/api/tts?text=${encodeURIComponent(text)}`
-    const audio = new Audio(url)
+/** Synthesise one chunk. Fetched as a blob (not an <audio src>) so playback of
+ *  the previous chunk and the fetch of the next can overlap. */
+async function fetchClip(text: string): Promise<string> {
+  const res = await fetch(`${API}/api/tts?text=${encodeURIComponent(text)}`)
+  if (!res.ok) throw new Error(`tts ${res.status}`)
+  return URL.createObjectURL(await res.blob())
+}
+
+/** Play one clip to completion. Resolves on end, on error, or on interrupt. */
+function playClip(objectUrl: string): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const audio = new Audio(objectUrl)
     audio.preload = 'auto'
     audio.volume = Math.max(0, Math.min(1, getEffectiveGain('voice')))
-    audio.onended = () => {
+
+    const finish = () => {
       if (currentAudio === audio) currentAudio = null
-      resetLipSync()
-      onEnd()
+      if (currentClipDone === finish) currentClipDone = null
+      URL.revokeObjectURL(objectUrl)
+      resolve()
     }
-    audio.onerror = () => {
-      console.warn('[voice] TTS audio error')
-      if (currentAudio === audio) currentAudio = null
-      resetLipSync()
-      onEnd()
-    }
+    audio.onended = finish
+    audio.onerror = () => { console.warn('[voice] TTS audio error'); finish() }
+
     currentAudio = audio
+    currentClipDone = finish
 
     const outId = localStorage.getItem(LS_OUTPUT_KEY) ?? 'default'
 
@@ -104,23 +183,69 @@ async function speakText(text: string, onEnd: () => void) {
     // (an element routed into WebAudio no longer honours its own setSinkId), so
     // it only reports success when it can preserve the chosen output — otherwise
     // we fall through to the untapped path below and simply don't lip-sync.
-    const tapped = getAvatarEnabled() ? await attachLipSync(audio, outId) : false
-
-    if (!tapped) {
-      // Route to the user-selected speaker if supported.
-      type AudioWithSink = HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }
-      const a = audio as AudioWithSink
-      if (outId && outId !== 'default' && typeof a.setSinkId === 'function') {
-        try { await a.setSinkId(outId) } catch (err) {
-          console.warn('[voice] setSinkId failed, using default sink:', err)
+    void (async () => {
+      try {
+        const tapped = getAvatarEnabled() ? await attachLipSync(audio, outId) : false
+        if (!tapped) {
+          // Route to the user-selected speaker if supported.
+          type AudioWithSink = HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }
+          const a = audio as AudioWithSink
+          if (outId && outId !== 'default' && typeof a.setSinkId === 'function') {
+            try { await a.setSinkId(outId) } catch (err) {
+              console.warn('[voice] setSinkId failed, using default sink:', err)
+            }
+          }
         }
+        // Interrupted while we were setting up routing — never start.
+        if (currentAudio !== audio) return
+        await audio.play()
+      } catch (err) {
+        console.warn('[voice] TTS playback failed:', err)
+        finish()
       }
-    }
+    })()
+  })
+}
 
-    await audio.play()
-  } catch (err) {
-    console.warn('[voice] TTS playback failed:', err)
-    onEnd()
+async function speakText(text: string, onEnd: () => void) {
+  haltPlayback()                 // stop any in-flight reply so they don't pile up
+  const token = playToken
+  const chunks = splitForSpeech(text)
+  if (chunks.length === 0) { onEnd(); return }
+
+  const t0 = performance.now()
+  try {
+    // Always keep exactly one fetch running ahead of playback.
+    let next = fetchClip(chunks[0]!)
+    for (let i = 0; i < chunks.length; i++) {
+      let url: string
+      try {
+        url = await next
+      } catch (err) {
+        console.warn(`[voice] TTS chunk ${i + 1}/${chunks.length} failed:`, err)
+        break                    // speak what we have rather than nothing
+      }
+      if (token !== playToken) { URL.revokeObjectURL(url); return }
+      if (i === 0) console.log(`[voice] first audio in ${Math.round(performance.now() - t0)}ms (${chunks.length} chunks)`)
+
+      const upcoming = chunks[i + 1]
+      // Kick off the next chunk's synthesis before playing this one, so the
+      // wait for it happens underneath the audio the user is already hearing.
+      if (upcoming) {
+        next = fetchClip(upcoming)
+        // The loop awaits this on the next pass; the no-op catch only stops a
+        // failure from being reported as an unhandled rejection in the meantime.
+        next.catch(() => {})
+      }
+
+      await playClip(url)
+      if (token !== playToken) return
+    }
+  } finally {
+    if (token === playToken) {
+      resetLipSync()
+      onEnd()
+    }
   }
 }
 
@@ -485,16 +610,14 @@ export function useVoice(): VoiceState {
     stopRecording(true)
   }, [stopRecording])
 
-  // Interrupt an in-flight spoken reply and end the conversation. Pausing
-  // currentAudio means its onended never fires, so we replicate the end-of-turn
-  // teardown here: silence the thinking loop, drop out of speaking/thinking,
-  // reset the volume meter, and clear history so the mic doesn't reopen for a
-  // follow-up and the next wake-word starts fresh.
+  // Interrupt an in-flight spoken reply and end the conversation. haltPlayback
+  // stops the audio AND invalidates the rest of the sentence queue, so nothing
+  // more is spoken and speakText's onEnd (which would reopen the mic) is
+  // skipped. We therefore replicate the end-of-turn teardown here: silence the
+  // thinking loop, drop out of speaking/thinking, reset the volume meter, and
+  // clear history so the next wake-word starts fresh.
   const stopSpeaking = useCallback(() => {
-    if (currentAudio) {
-      try { currentAudio.pause() } catch { /* ignore */ }
-      currentAudio = null
-    }
+    haltPlayback()
     stopThinkingSound()
     resetLipSync()
     setIsSpeaking(false)
@@ -526,10 +649,7 @@ export function useVoice(): VoiceState {
       cleanup()
       stopThinkingSound()
       historyRef.current = []
-      if (currentAudio) {
-        try { currentAudio.pause() } catch { /* already stopped */ }
-        currentAudio = null
-      }
+      haltPlayback()
     }
   }, [cleanup])
 

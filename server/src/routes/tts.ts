@@ -399,7 +399,24 @@ async function synthesizeKokoroRVC(
 ) {
   const t0 = Date.now()
   const wav = await kokoroSynth(text, kokoroVoice, 'wav')
+  const tSpoken = Date.now()
 
+  const out = await convertWithRVC(wav, model, pitch)
+
+  res.setHeader('Content-Type', 'audio/wav')
+  res.setHeader('Content-Length', out.length)
+  res.setHeader('Cache-Control', 'no-store')
+  res.end(out)
+  // Split the timing: kokoro is usually fast and rvc is usually the wait, and
+  // when a reply feels slow this line is what tells you which one to chase.
+  console.log(
+    `[tts][rvc] OK ${out.length} bytes in ${Date.now() - t0}ms ` +
+    `(kokoro ${tSpoken - t0}ms + rvc ${Date.now() - tSpoken}ms)`,
+  )
+}
+
+/** Re-timbre a WAV into `model`'s voice. Returns the converted WAV. */
+async function convertWithRVC(wav: Buffer, model: string, pitch: number): Promise<Buffer> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), RVC_TIMEOUT_MS)
 
@@ -462,12 +479,7 @@ async function synthesizeKokoroRVC(
 
     const out = Buffer.from(await convRes.arrayBuffer())
     if (out.length === 0) throw new Error('rvc returned empty audio')
-
-    res.setHeader('Content-Type', 'audio/wav')
-    res.setHeader('Content-Length', out.length)
-    res.setHeader('Cache-Control', 'no-store')
-    res.end(out)
-    console.log(`[tts][rvc] OK ${out.length} bytes in ${Date.now() - t0}ms`)
+    return out
   } catch (err) {
     // A failed load leaves the server's state unknown — force a reload next time.
     rvcLoadedModel = null
@@ -475,6 +487,40 @@ async function synthesizeKokoroRVC(
   } finally {
     clearTimeout(timer)
   }
+}
+
+// ── Warm-up ──────────────────────────────────────────────────────────────────
+// The first conversion after a container start is far slower than the rest: it
+// pays for loading the voice model, the hubert encoder and the rmvpe pitch net,
+// all inside the request. Nobody is listening at boot, so we spend that time
+// then instead of making the user's first question wait for it.
+//
+// Deliberately quiet and non-fatal: if Kokoro or RVC isn't up yet we just leave
+// the pipeline cold and the first real request pays the load, exactly as before.
+const WARM_TEXT = 'Hello.'
+
+async function warmRVC(): Promise<void> {
+  if (!RVC_URL || !KOKORO_URL) return
+  const profiles = Object.values(ASSISTANT_PROFILES).filter(p => p.rvcModel)
+  if (profiles.length === 0) return
+
+  for (const p of profiles) {
+    try {
+      const wav = await kokoroSynth(WARM_TEXT, p.kokoroVoice, 'wav')
+      const t0 = Date.now()
+      await convertWithRVC(wav, p.rvcModel!, savedPitch(p.id) ?? RVC_F0_UP_KEY)
+      console.log(`[tts][rvc] warm: "${p.rvcModel}" ready (first conversion took ${Date.now() - t0}ms)`)
+    } catch (err) {
+      console.warn(`[tts][rvc] warm-up failed for "${p.rvcModel}" — first reply will be slower:`,
+        err instanceof Error ? err.message : err)
+    }
+  }
+}
+
+// Both containers need a moment to come up; the app doesn't wait on them, and a
+// warm-up that races them just fails for no reason.
+if (RVC_URL && KOKORO_URL) {
+  setTimeout(() => { void warmRVC() }, 20_000).unref()
 }
 
 // ── espeak-ng (offline fallback) ─────────────────────────────────────────────
