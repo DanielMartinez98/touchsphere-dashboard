@@ -27,8 +27,8 @@ import { BedtimeBanner } from './components/BedtimeBanner'
 import { TimersOverlay } from './components/TimersOverlay'
 import { useAutoMode } from './hooks/useAutoSchedule'
 import { useMuted } from './hooks/useMuted'
-import { useAvatarEnabled, useAvatarBackend, useAvatarRuntime, useAvatarFraming, setAvatarRuntime, setAvatarFps } from './hooks/useAvatar'
-import { loadAssistantFromServer } from './config/assistant'
+import { useAvatarEnabled, useAvatarRuntime, useAvatarFraming, useAvatarModelOverride, setAvatarRuntime, setAvatarFps } from './hooks/useAvatar'
+import { loadAssistantFromServer, useAssistant, getAvatarModel } from './config/assistant'
 import { playStartupSound } from './utils/sound'
 
 // Both avatar renderers pull in heavy, single-purpose dependencies (three-vrm;
@@ -71,10 +71,22 @@ function App() {
   const { mode, hasCred, setMode, createPassword, verifyPassword, unlock } = useAppMode()
   const voice = useVoice()
   const muted = useMuted()
+  // The assistant owns its own face: it names a model from the catalogue, so
+  // changing assistant changes the avatar along with the voice. The user can
+  // override that choice per assistant in Settings.
+  const assistant     = useAssistant()
   const avatarEnabled = useAvatarEnabled()
-  const avatarBackend = useAvatarBackend()
   const avatarRuntime = useAvatarRuntime()
-  const avatarFraming = useAvatarFraming()
+  const modelOverride = useAvatarModelOverride(assistant.id)
+  // Fall back to the profile default if the override names a model that no
+  // longer exists (e.g. one removed from the catalogue after being selected).
+  const avatarModel   = getAvatarModel(modelOverride ?? assistant.defaultModelId)
+                     ?? getAvatarModel(assistant.defaultModelId)!
+  const avatarSpec    = avatarModel.spec
+  // Framing is keyed by MODEL, not assistant: it describes how that particular
+  // model sits in frame, so two assistants wearing the same face share it.
+  const avatarFraming = useAvatarFraming(avatarModel.id)
+  const showAvatar    = avatarEnabled && avatarSpec.kind !== 'sphere'
   const timers = useTimers()
   const stopwatch = useStopwatch()
   const startupPlayedRef = useRef(false)
@@ -169,17 +181,18 @@ function App() {
           a bad/absent .vrm can never leave the kiosk staring at a blank centre.
           Note the Avatar stays mounted on failure (it just stops rendering) —
           unmounting it on 'error' would remount it and retry in a loop. */}
-      {avatarEnabled && (
+      {showAvatar && (
         <Suspense fallback={null}>
-          {/* Keyed by backend so switching renderer tears the old scene down
-              rather than trying to reuse it. */}
-          {avatarBackend === 'live2d' ? (
+          {/* Keyed by model URL so switching assistant tears the old scene down
+              and loads the new face, rather than trying to reuse the scene. */}
+          {avatarSpec.kind === 'live2d' ? (
             <Live2DAvatar
-              key="live2d"
+              key={avatarSpec.model}
               mode={mode}
               voiceListening={voice.isListening}
               voiceSpeaking={voice.isSpeaking}
               voiceVolume={voice.volume}
+              modelUrl={avatarSpec.model}
               zoom={avatarFraming.zoom}
               offsetY={avatarFraming.offsetY}
               onStatus={setAvatarRuntime}
@@ -187,11 +200,12 @@ function App() {
             />
           ) : (
             <Avatar
-              key="vrm"
+              key={avatarSpec.model}
               mode={mode}
               voiceListening={voice.isListening}
               voiceSpeaking={voice.isSpeaking}
               voiceVolume={voice.volume}
+              modelUrl={avatarSpec.model}
               zoom={avatarFraming.zoom}
               offsetY={avatarFraming.offsetY}
               onStatus={setAvatarRuntime}
@@ -201,7 +215,7 @@ function App() {
         </Suspense>
       )}
 
-      {(!avatarEnabled || avatarRuntime.status !== 'ready') && (
+      {(!showAvatar || avatarRuntime.status !== 'ready') && (
         <ParticleSphere
           mode={mode}
           voiceListening={voice.isListening}

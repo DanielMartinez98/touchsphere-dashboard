@@ -3,7 +3,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMUtils, type VRM } from '@pixiv/three-vrm'
 import type { AppMode } from '../../hooks/useAppMode'
-import { AVATAR_MODEL_URL } from '../../hooks/useAvatar'
+import type { AvatarStatus } from '../../hooks/useAvatar'
 import { getMouthLevel } from '../../utils/lipsync'
 
 // 3D "VTuber" avatar — the alternative centre visual to the particle sphere.
@@ -12,17 +12,18 @@ import { getMouthLevel } from '../../utils/lipsync'
 // tracks the user's touch. It reuses the same voice state the sphere does
 // (listening / speaking / volume), so the two are drop-in swappable.
 //
-// The model is NOT bundled: drop a .vrm at client/public/avatar.vrm. If it's
-// absent or fails to parse we report 'error' and App falls back to the sphere,
-// so a missing/broken asset can never leave the kiosk with a blank centre.
-
-export type AvatarStatus = 'loading' | 'ready' | 'error'
+// The model is NOT bundled — it's named by the active assistant's profile (see
+// config/assistant.ts) and served from client/public or the server's avatar
+// mount. If it's absent or fails to parse we report 'error' and App falls back
+// to the sphere, so a missing asset can never leave the kiosk with a blank centre.
 
 interface Props {
   mode: AppMode
   voiceListening: boolean
   voiceSpeaking: boolean
   voiceVolume: number
+  /** URL of the .vrm to load. Comes from the active assistant's profile. */
+  modelUrl: string
   /** How close she sits to the camera. Higher = closer. */
   zoom: number
   /** Vertical shift as a fraction of the frame. Negative = up. */
@@ -49,7 +50,7 @@ const RIM_BASE = 1.2
 /** Eye height as a fraction of total model height — standard human proportion. */
 const EYE_RATIO = 0.93
 
-export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolume, zoom, offsetY, onStatus, onFps }: Props) {
+export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolume, modelUrl, zoom, offsetY, onStatus, onFps }: Props) {
   const mountRef       = useRef<HTMLDivElement>(null)
   const modeRef        = useRef(mode)
   const voiceListenRef = useRef(voiceListening)
@@ -145,7 +146,7 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
     loader.register(parser => new VRMLoaderPlugin(parser))
 
     loader.load(
-      AVATAR_MODEL_URL,
+      modelUrl,
       (gltf) => {
         if (disposed) return
         const loaded = gltf.userData['vrm'] as VRM | undefined
@@ -218,7 +219,7 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
         const msg = err instanceof Error ? err.message : String(err)
         console.warn('[avatar] failed to load VRM:', msg)
         loadFailed = true
-        onStatusRef.current?.('error', `Couldn’t load ${AVATAR_MODEL_URL}`)
+        onStatusRef.current?.('error', `Couldn’t load ${modelUrl}`)
       },
     )
 

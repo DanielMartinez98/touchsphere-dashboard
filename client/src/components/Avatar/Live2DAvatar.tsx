@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { AppMode } from '../../hooks/useAppMode'
-import { LIVE2D_MODEL_URL, type AvatarStatus } from '../../hooks/useAvatar'
+import type { AvatarStatus } from '../../hooks/useAvatar'
 import { getMouthLevel } from '../../utils/lipsync'
 
 // Live2D avatar — a 2D rigged model (.moc3), the format VTubers actually use.
@@ -19,6 +19,8 @@ interface Props {
   voiceListening: boolean
   voiceSpeaking: boolean
   voiceVolume: number
+  /** URL of the model3.json to load. Comes from the active assistant's profile. */
+  modelUrl: string
   /** How close she sits to the camera. 1 = whole model fits on screen. */
   zoom: number
   /** Vertical shift as a fraction of screen height. Negative = up. */
@@ -56,12 +58,13 @@ const PARAM_MOUTH = 'ParamMouthOpenY'
 const PARAM_BODY_Y = 'ParamBodyAngleY'
 
 // The binding types `coreModel` as a bare `object` — it's Cubism's own type and
-// isn't re-exported. We only ever poke one method on it.
+// isn't re-exported. We only ever poke these two methods on it.
 interface CubismCoreModel {
   setParameterValueById(id: string, value: number): void
+  getParameterValueById(id: string): number
 }
 
-export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolume, zoom, offsetY, onStatus, onFps }: Props) {
+export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolume, modelUrl, zoom, offsetY, onStatus, onFps }: Props) {
   const mountRef       = useRef<HTMLDivElement>(null)
   const voiceListenRef = useRef(voiceListening)
   const voiceSpeakRef  = useRef(voiceSpeaking)
@@ -120,7 +123,7 @@ export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolum
         const canvas = app.view as unknown as HTMLCanvasElement
         mount.appendChild(canvas)
 
-        const model = await Live2DModel.from(LIVE2D_MODEL_URL, { autoInteract: false })
+        const model = await Live2DModel.from(modelUrl, { autoInteract: false })
         if (disposed) {
           model.destroy()
           app.destroy(true)
@@ -174,10 +177,22 @@ export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolum
         const core = im.coreModel as CubismCoreModel
         const motionManager = im.motionManager
         const originalUpdate = motionManager.update.bind(motionManager)
+        let t = 0
         motionManager.update = (...args: Parameters<typeof originalUpdate>) => {
           const result = originalUpdate(...args)
+
           const mouth = voiceSpeakRef.current ? getMouthLevel() : 0
           core.setParameterValueById(PARAM_MOUTH, mouth)
+
+          // A subtle sway, ADDED to whatever the model's idle motion already did
+          // rather than replacing it — these models ship with real Idle motions,
+          // and clobbering the body angle would fight them. Lifts a little while
+          // she's listening to you.
+          t += 1 / 60
+          const listening = voiceListenRef.current
+          const sway = Math.sin(t * 1.6) * 0.4 + (listening ? voiceVolRef.current * 2 : 0)
+          core.setParameterValueById(PARAM_BODY_Y, core.getParameterValueById(PARAM_BODY_Y) + sway)
+
           return result
         }
 
@@ -195,19 +210,14 @@ export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolum
         window.addEventListener('mousemove', handlePointer)
         window.addEventListener('touchmove', handlePointer, { passive: true })
 
-        // ── Idle breathing + a lean toward the user while listening ─────────
-        let t = 0
+        // Idle motion, blinking and physics all come from the model's own
+        // manifest; the sway and lip-sync ride along inside the update wrapper
+        // above (writes from out here don't survive Cubism's update cycle — the
+        // same trap the lip-sync had to work around). All that's left is the
+        // framerate probe.
         let frames = 0
         let fpsWindowStart = performance.now()
         const tick = () => {
-          t += app.ticker.deltaMS / 1000
-          const listening = voiceListenRef.current
-          const vol = voiceVolRef.current
-          // A gentle sway so she isn't statue-still, plus a subtle lift when
-          // she's listening to you.
-          const breathe = Math.sin(t * 1.6) * 0.4
-          core.setParameterValueById(PARAM_BODY_Y, breathe + (listening ? vol * 2 : 0))
-
           frames++
           const now = performance.now()
           if (now - fpsWindowStart >= 1000) {

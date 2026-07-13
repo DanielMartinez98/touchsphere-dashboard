@@ -1,7 +1,12 @@
 // Avatar toggle — swaps the centre visual between the particle sphere (default)
-// and a 3D VRM "VTuber" avatar that lip-syncs to the assistant's TTS reply.
+// and a "VTuber" avatar that lip-syncs to the assistant's TTS reply.
 //
-// Off by default, and deliberately cheap to turn off: when disabled, no VRM is
+// WHICH avatar is not decided here: each assistant owns its own face, declared
+// as `avatar` on its profile in config/assistant.ts, alongside its voice and
+// persona. Switching assistant therefore switches the model. TouchSphere's face
+// is the orb itself, so it stays a sphere even with this toggle on.
+//
+// Off by default, and deliberately cheap to turn off: when disabled, no model is
 // fetched, no extra WebGL scene is built, and the TTS audio path stays exactly
 // as it was (see utils/lipsync.ts — the WebAudio tap is only attached when the
 // avatar is on, because tapping the audio element moves speaker routing from
@@ -14,47 +19,6 @@
 import { useSyncExternalStore } from 'react'
 
 const LS_KEY = 'ts_avatar_enabled'
-const LS_BACKEND_KEY = 'ts_avatar_backend'
-
-/** Where the VRM model is served from. Drop a .vrm at client/public/avatar.vrm. */
-export const AVATAR_MODEL_URL = '/avatar.vrm'
-
-/** Where the Live2D model manifest is served from. */
-export const LIVE2D_MODEL_URL = '/live2d/Frieren/Frieren.model3.json'
-
-// Two very different avatar technologies, both valid:
-//   'live2d' — 2D rigged model (.moc3). What VTubers actually use. Much lighter
-//              on the GPU, which matters on the Pi.
-//   'vrm'    — 3D humanoid model (.vrm). Real depth, but a heavier scene.
-export type AvatarBackend = 'live2d' | 'vrm'
-
-let backendValue: AvatarBackend = (() => {
-  try {
-    const v = localStorage.getItem(LS_BACKEND_KEY)
-    if (v === 'live2d' || v === 'vrm') return v
-  } catch { /* ignore */ }
-  return 'live2d'
-})()
-
-const backendListeners = new Set<() => void>()
-
-export function setAvatarBackend(v: AvatarBackend) {
-  if (backendValue === v) return
-  backendValue = v
-  try { localStorage.setItem(LS_BACKEND_KEY, v) } catch { /* quota */ }
-  // Swapping renderers means a fresh load — clear the previous one's status.
-  setAvatarRuntime('loading')
-  setAvatarFps(0)
-  backendListeners.forEach(cb => cb())
-}
-
-export function useAvatarBackend(): AvatarBackend {
-  return useSyncExternalStore(
-    cb => { backendListeners.add(cb); return () => { backendListeners.delete(cb) } },
-    () => backendValue,
-    () => backendValue,
-  )
-}
 
 let enabledValue: boolean = (() => {
   try { return localStorage.getItem(LS_KEY) === '1' } catch { return false }
@@ -90,15 +54,60 @@ export function useAvatarEnabled(): boolean {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
-// ── Framing (zoom + vertical position) ───────────────────────────────────────
+// ── Model choice, per assistant ──────────────────────────────────────────────
+// Each assistant has a default face (its profile's `defaultModelId`), but the
+// user can point any assistant at any model in the catalogue. Stored per
+// assistant so choosing Cortana for Jess doesn't also change Martin.
+//
+// Only the *override* is stored — an assistant with no entry here falls back to
+// its profile default, so changing a default in code still takes effect for
+// anyone who never overrode it.
+
+const LS_MODELS_KEY = 'ts_avatar_models'
+
+let modelOverrides: Record<string, string> = (() => {
+  try {
+    const raw = localStorage.getItem(LS_MODELS_KEY)
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+    return parsed as Record<string, string>
+  } catch { return {} }
+})()
+
+const modelListeners = new Set<() => void>()
+
+export function setAvatarModelId(assistantId: string, modelId: string) {
+  if (modelOverrides[assistantId] === modelId) return
+  modelOverrides = { ...modelOverrides, [assistantId]: modelId }
+  try { localStorage.setItem(LS_MODELS_KEY, JSON.stringify(modelOverrides)) } catch { /* quota */ }
+  // A different model means a fresh load — don't leave the old one's status up.
+  setAvatarRuntime('loading')
+  setAvatarFps(0)
+  modelListeners.forEach(cb => cb())
+}
+
+/** The model id chosen for this assistant, or undefined to use its default. */
+export function useAvatarModelOverride(assistantId: string): string | undefined {
+  return useSyncExternalStore(
+    cb => { modelListeners.add(cb); return () => { modelListeners.delete(cb) } },
+    () => modelOverrides[assistantId],
+    () => modelOverrides[assistantId],
+  )
+}
+
+// ── Framing (zoom + vertical position), per assistant ────────────────────────
 // How close the avatar sits to the camera and where she's centred. Models are
 // authored at wildly different scales and crops — one ships framed head-to-toe,
-// another bust-only — so there's no single default that suits every model. This
-// is a per-device visual preference, so it lives in localStorage like the rest
-// of the avatar settings rather than being pushed to the server.
+// another bust-only — so there's no single number that suits every model. That's
+// why framing is stored PER ASSISTANT: once assistants have their own models,
+// each one's good framing is different, and a single shared value would be wrong
+// for all but one of them.
+//
+// A per-device visual preference, so it lives in localStorage like the rest of
+// the avatar settings rather than being pushed to the server.
 
-const LS_ZOOM_KEY    = 'ts_avatar_zoom'
-const LS_OFFSETY_KEY = 'ts_avatar_offset_y'
+const LS_FRAMING_KEY = 'ts_avatar_framing'
 
 /** 1 = fit the whole model on screen. Higher = closer. */
 export const ZOOM_MIN = 0.6
@@ -115,44 +124,60 @@ export const OFFSET_MAX = 1
 
 export interface AvatarFraming { zoom: number; offsetY: number }
 
+export const DEFAULT_FRAMING: AvatarFraming = { zoom: ZOOM_DEFAULT, offsetY: 0 }
+
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
-function readNumber(key: string, fallback: number, lo: number, hi: number): number {
-  try {
-    const raw = localStorage.getItem(key)
-    if (raw === null) return fallback
-    const n = Number(raw)
-    return Number.isFinite(n) ? clamp(n, lo, hi) : fallback
-  } catch { return fallback }
-}
+/** assistant id → framing. Missing entries fall back to DEFAULT_FRAMING. */
+type FramingMap = Record<string, AvatarFraming>
 
-let framing: AvatarFraming = {
-  zoom:    readNumber(LS_ZOOM_KEY,    ZOOM_DEFAULT, ZOOM_MIN,   ZOOM_MAX),
-  offsetY: readNumber(LS_OFFSETY_KEY, 0,            OFFSET_MIN, OFFSET_MAX),
-}
+let framings: FramingMap = (() => {
+  try {
+    const raw = localStorage.getItem(LS_FRAMING_KEY)
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+    return parsed as FramingMap
+  } catch { return {} }
+})()
+
 const framingListeners = new Set<() => void>()
 
-export function setAvatarFraming(next: Partial<AvatarFraming>) {
-  const zoom    = clamp(next.zoom    ?? framing.zoom,    ZOOM_MIN,   ZOOM_MAX)
-  const offsetY = clamp(next.offsetY ?? framing.offsetY, OFFSET_MIN, OFFSET_MAX)
-  if (zoom === framing.zoom && offsetY === framing.offsetY) return
-  framing = { zoom, offsetY }
-  try {
-    localStorage.setItem(LS_ZOOM_KEY, String(zoom))
-    localStorage.setItem(LS_OFFSETY_KEY, String(offsetY))
-  } catch { /* quota */ }
+// Cache the per-key object so useSyncExternalStore's getSnapshot returns a
+// referentially stable value — rebuilding it each call would loop forever.
+const snapshots = new Map<string, AvatarFraming>()
+
+function snapshotFor(key: string): AvatarFraming {
+  const stored = framings[key]
+  const zoom    = clamp(stored?.zoom    ?? DEFAULT_FRAMING.zoom,    ZOOM_MIN,   ZOOM_MAX)
+  const offsetY = clamp(stored?.offsetY ?? DEFAULT_FRAMING.offsetY, OFFSET_MIN, OFFSET_MAX)
+  const cached = snapshots.get(key)
+  if (cached && cached.zoom === zoom && cached.offsetY === offsetY) return cached
+  const fresh = { zoom, offsetY }
+  snapshots.set(key, fresh)
+  return fresh
+}
+
+export function setAvatarFraming(key: string, next: Partial<AvatarFraming>) {
+  const current = snapshotFor(key)
+  const zoom    = clamp(next.zoom    ?? current.zoom,    ZOOM_MIN,   ZOOM_MAX)
+  const offsetY = clamp(next.offsetY ?? current.offsetY, OFFSET_MIN, OFFSET_MAX)
+  if (zoom === current.zoom && offsetY === current.offsetY) return
+  framings = { ...framings, [key]: { zoom, offsetY } }
+  try { localStorage.setItem(LS_FRAMING_KEY, JSON.stringify(framings)) } catch { /* quota */ }
   framingListeners.forEach(cb => cb())
 }
 
-export function resetAvatarFraming() {
-  setAvatarFraming({ zoom: ZOOM_DEFAULT, offsetY: 0 })
+export function resetAvatarFraming(key: string) {
+  setAvatarFraming(key, DEFAULT_FRAMING)
 }
 
-export function useAvatarFraming(): AvatarFraming {
+/** Framing for one assistant. Each gets its own — their models differ. */
+export function useAvatarFraming(key: string): AvatarFraming {
   return useSyncExternalStore(
     cb => { framingListeners.add(cb); return () => { framingListeners.delete(cb) } },
-    () => framing,
-    () => framing,
+    () => snapshotFor(key),
+    () => snapshotFor(key),
   )
 }
 

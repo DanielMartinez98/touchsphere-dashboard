@@ -5,8 +5,8 @@ import { useDevice } from '../hooks/useDevice'
 import { playSound, playRecordChime } from '../utils/sound'
 import { useVolume, setVolume, getEffectiveGain, type VolumeCategory } from '../hooks/useVolume'
 import { useWakeWordEnabled, setWakeWordEnabled, useWakeWordTranscript, useWakeWordStatus } from '../hooks/useWakeWord'
-import { ASSISTANT_PROFILES, ASSISTANT_ORDER, setAssistantId, useAssistant, type AssistantId } from '../config/assistant'
-import { useAvatarEnabled, setAvatarEnabled, useAvatarBackend, setAvatarBackend, useAvatarRuntime, useAvatarFps, useAvatarFraming, setAvatarFraming, resetAvatarFraming, ZOOM_MIN, ZOOM_MAX, OFFSET_MIN, OFFSET_MAX, AVATAR_MODEL_URL, LIVE2D_MODEL_URL } from '../hooks/useAvatar'
+import { ASSISTANT_PROFILES, ASSISTANT_ORDER, AVATAR_MODELS, getAvatarModel, setAssistantId, useAssistant, type AssistantId } from '../config/assistant'
+import { useAvatarEnabled, setAvatarEnabled, useAvatarRuntime, useAvatarFps, useAvatarFraming, setAvatarFraming, resetAvatarFraming, useAvatarModelOverride, setAvatarModelId, ZOOM_MIN, ZOOM_MAX, OFFSET_MIN, OFFSET_MAX } from '../hooks/useAvatar'
 import { playVoicePreview } from '../utils/voicePreview'
 import { useAutoSchedule, fireBedtimeAlert } from '../hooks/useAutoSchedule'
 import { useRipple } from '../hooks/useRipple'
@@ -299,9 +299,15 @@ export function SettingsPanel() {
   const wakeStatus      = useWakeWordStatus()
   const assistant       = useAssistant()
   const avatarEnabled   = useAvatarEnabled()
-  const avatarBackend   = useAvatarBackend()
   const avatarRuntime   = useAvatarRuntime()
-  const avatarFraming   = useAvatarFraming()
+  const modelOverride   = useAvatarModelOverride(assistant.id)
+  const avatarModelId   = modelOverride ?? assistant.defaultModelId
+  const avatarModel     = getAvatarModel(avatarModelId) ?? getAvatarModel(assistant.defaultModelId)!
+  const avatarSpec      = avatarModel.spec
+  const avatarIsSphere  = avatarSpec.kind === 'sphere'
+  // Framing describes how a MODEL sits in frame, so it's keyed by model — two
+  // assistants wearing the same face share the same good framing.
+  const avatarFraming   = useAvatarFraming(avatarModel.id)
   const avatarFps       = useAvatarFps()
   const [previewingId, setPreviewingId] = useState<AssistantId | null>(null)
 
@@ -597,48 +603,57 @@ export function SettingsPanel() {
                     </button>
                   </div>
 
-                  {/* Two different avatar technologies. Live2D is the format
-                      VTubers actually use and is far lighter on the Pi's GPU;
-                      VRM is a true 3D model. */}
+                  {/* Model picker — which face THIS assistant wears. Stored per
+                      assistant, so each can have its own. "Orb" is a real choice,
+                      not an absence: it's TouchSphere's actual identity. */}
                   {avatarEnabled && (
-                    <div className="flex gap-2">
-                      {([
-                        { id: 'live2d' as const, label: 'Live2D', hint: '2D rigged — lighter' },
-                        { id: 'vrm'    as const, label: '3D (VRM)', hint: 'true 3D — heavier' },
-                      ]).map(b => (
-                        <button
-                          key={b.id}
-                          type="button"
-                          onClick={() => setAvatarBackend(b.id)}
-                          aria-pressed={avatarBackend === b.id}
-                          className={`flex-1 rounded-xl px-3 py-2.5 border text-left transition-colors ${
-                            avatarBackend === b.id
-                              ? 'bg-cyan-500/15 border-cyan-500/40'
-                              : 'bg-white/5 border-white/8 active:bg-white/10'
-                          }`}
-                        >
-                          <span className="block text-white/85 text-sm font-medium">{b.label}</span>
-                          <span className="block text-white/40 text-xs mt-0.5">{b.hint}</span>
-                        </button>
-                      ))}
+                    <div className="space-y-2">
+                      <span className="text-white/40 text-xs">
+                        {assistant.name}’s face
+                      </span>
+                      {AVATAR_MODELS.map(m => {
+                        const active = avatarModelId === m.id
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            onClick={() => setAvatarModelId(assistant.id, m.id)}
+                            aria-pressed={active}
+                            className={`w-full text-left rounded-xl px-4 py-3 border transition-colors flex items-center justify-between gap-3 ${
+                              active ? 'bg-cyan-500/15 border-cyan-500/40' : 'bg-white/5 border-white/8 active:bg-white/10'
+                            }`}
+                          >
+                            <span className="min-w-0">
+                              <span className="block text-white/85 text-sm font-medium">{m.label}</span>
+                              <span className="block text-white/40 text-xs mt-0.5">{m.note}</span>
+                            </span>
+                            {active && <Check size={18} className="text-cyan-300 flex-shrink-0" />}
+                          </button>
+                        )
+                      })}
                     </div>
                   )}
 
-                  {avatarEnabled && avatarRuntime.status === 'loading' && (
-                    <p className="text-amber-300/80 text-xs leading-relaxed">Loading model…</p>
+                  {avatarEnabled && avatarIsSphere && (
+                    <p className="text-white/30 text-xs leading-relaxed">
+                      The orb is {assistant.name}’s face. Pick a model above to give
+                      it a character instead.
+                    </p>
+                  )}
+
+                  {avatarEnabled && !avatarIsSphere && avatarRuntime.status === 'loading' && (
+                    <p className="text-amber-300/80 text-xs leading-relaxed">Loading {assistant.name}'s model…</p>
                   )}
 
                   {/* The model isn't bundled — this is the "you still need to add
                       a .vrm" path, and the most likely thing a new user hits. */}
-                  {avatarEnabled && avatarRuntime.status === 'error' && (
+                  {avatarEnabled && !avatarIsSphere && avatarRuntime.status === 'error' && (
                     <div className="bg-black/30 rounded-xl px-4 py-3 border border-red-500/20 space-y-1">
-                      <p className="text-red-300/90 text-xs font-medium">Couldn’t load the avatar — showing the orb.</p>
+                      <p className="text-red-300/90 text-xs font-medium">Couldn’t load {assistant.name}’s model — showing the orb.</p>
                       <p className="text-white/40 text-xs leading-relaxed">
-                        {avatarBackend === 'live2d'
-                          ? <>Expected a Live2D model at <span className="font-mono text-white/60">client/public{LIVE2D_MODEL_URL}</span>.</>
-                          : <>Put a <span className="font-mono text-white/60">.vrm</span> file at{' '}
-                             <span className="font-mono text-white/60">client/public{AVATAR_MODEL_URL}</span> and reload.
-                             Make one free in VRoid Studio, or download one from VRoid Hub.</>}
+                        Expected it at <span className="font-mono text-white/60">{avatarSpec.model}</span>,
+                        served from <span className="font-mono text-white/60">client/public</span> in dev or the
+                        server’s avatar mount in production.
                       </p>
                       {avatarRuntime.detail && (
                         <p className="text-white/30 text-xs font-mono break-words pt-1">{avatarRuntime.detail}</p>
@@ -649,7 +664,7 @@ export function SettingsPanel() {
                   {/* Framing — models are authored at wildly different scales and
                       crops, so there's no default that suits every one of them.
                       Both sliders apply live, to whichever backend is active. */}
-                  {avatarEnabled && avatarRuntime.status === 'ready' && (
+                  {avatarEnabled && !avatarIsSphere && avatarRuntime.status === 'ready' && (
                     <div className="space-y-3 pt-1">
                       <div className="space-y-2">
                         <div className="flex items-center justify-between">
@@ -664,7 +679,7 @@ export function SettingsPanel() {
                           max={ZOOM_MAX}
                           step={0.05}
                           value={avatarFraming.zoom}
-                          onChange={e => setAvatarFraming({ zoom: Number(e.target.value) })}
+                          onChange={e => setAvatarFraming(avatarModel.id, { zoom: Number(e.target.value) })}
                           aria-label="Avatar zoom"
                           className="w-full h-2 accent-cyan-400 cursor-pointer"
                         />
@@ -683,7 +698,7 @@ export function SettingsPanel() {
                           max={OFFSET_MAX}
                           step={0.01}
                           value={avatarFraming.offsetY}
-                          onChange={e => setAvatarFraming({ offsetY: Number(e.target.value) })}
+                          onChange={e => setAvatarFraming(avatarModel.id, { offsetY: Number(e.target.value) })}
                           aria-label="Avatar vertical position"
                           className="w-full h-2 accent-cyan-400 cursor-pointer"
                         />
@@ -691,7 +706,7 @@ export function SettingsPanel() {
 
                       <button
                         type="button"
-                        onClick={resetAvatarFraming}
+                        onClick={() => resetAvatarFraming(avatarModel.id)}
                         className="w-full rounded-xl px-3 py-2 bg-white/5 border border-white/8 active:bg-white/10 text-white/60 text-xs font-medium"
                       >
                         Reset framing
@@ -706,7 +721,7 @@ export function SettingsPanel() {
 
                   {/* Live framerate — the honest answer to "can the Pi run this?".
                       Anything below ~25 means turn it back off. */}
-                  {avatarEnabled && avatarRuntime.status === 'ready' && (
+                  {avatarEnabled && !avatarIsSphere && avatarRuntime.status === 'ready' && (
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-white/40 text-xs">Rendering at</span>
                       <span className={`text-xs font-mono px-2 py-1 rounded-md ${
