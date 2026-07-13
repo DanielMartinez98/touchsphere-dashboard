@@ -211,6 +211,7 @@ function App() {
               voiceSpeaking={voice.isSpeaking}
               voiceVolume={voice.volume}
               modelUrl={avatarSpec.model}
+              animUrl={avatarSpec.anim}
               zoom={avatarFraming.zoom}
               offsetY={avatarFraming.offsetY}
               onStatus={setAvatarRuntime}

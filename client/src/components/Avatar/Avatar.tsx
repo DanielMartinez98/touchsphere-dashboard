@@ -17,6 +17,18 @@ import { getMouthLevel } from '../../utils/lipsync'
 // mount. If it's absent or fails to parse we report 'error' and App falls back
 // to the sphere, so a missing asset can never leave the kiosk with a blank centre.
 
+// Companion JSON extracted from the model's Unity package: the artist's own
+// facial expressions, as named morph-target weights. Unity stores these 0..100;
+// the extractor normalises to 0..1.
+//
+// These are the expressions the VRM's own presets don't expose — 照れ (blush),
+// ウィンク (wink), 星目 (star eyes) — so they add to, rather than fight, the
+// standard happy/relaxed/blink/viseme set that three-vrm already drives.
+interface AvatarAnimData {
+  /** expression name → { morph target name: weight } */
+  expressions?: Record<string, Record<string, number>>
+}
+
 interface Props {
   mode: AppMode
   voiceListening: boolean
@@ -24,6 +36,8 @@ interface Props {
   voiceVolume: number
   /** URL of the .vrm to load. Comes from the active assistant's profile. */
   modelUrl: string
+  /** Optional pose + expression JSON that ships alongside the model. */
+  animUrl?: string
   /** How close she sits to the camera. Higher = closer. */
   zoom: number
   /** Vertical shift as a fraction of the frame. Negative = up. */
@@ -50,7 +64,37 @@ const RIM_BASE = 1.2
 /** Eye height as a fraction of total model height — standard human proportion. */
 const EYE_RATIO = 0.93
 
-export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolume, modelUrl, zoom, offsetY, onStatus, onFps }: Props) {
+/**
+ * How strongly to hold an artist expression. Well under 1: these were authored
+ * as full-face VRChat expressions, and at full weight they overpower the blink
+ * and lip-sync happening underneath.
+ */
+const EXPRESSION_STRENGTH = 0.65
+
+/** A morph target, located as (mesh, index) so we can set its influence. */
+type MorphIndex = Map<string, Array<{ mesh: THREE.Mesh; index: number }>>
+
+/**
+ * Map every morph target name in the model to where it lives. The artist's
+ * expressions reference morphs by their authored (Japanese) names — 笑い, ウィンク,
+ * 照れ — and a name can appear on more than one mesh, so each maps to a list.
+ */
+function indexMorphTargets(vrm: VRM): MorphIndex {
+  const index: MorphIndex = new Map()
+  vrm.scene.traverse((obj) => {
+    const mesh = obj as THREE.Mesh
+    if (!mesh.isMesh || !mesh.morphTargetDictionary || !mesh.morphTargetInfluences) return
+    for (const [name, i] of Object.entries(mesh.morphTargetDictionary)) {
+      const list = index.get(name) ?? []
+      list.push({ mesh, index: i })
+      index.set(name, list)
+    }
+  })
+  return index
+}
+
+
+export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolume, modelUrl, animUrl, zoom, offsetY, onStatus, onFps }: Props) {
   const mountRef       = useRef<HTMLDivElement>(null)
   const modeRef        = useRef(mode)
   const voiceListenRef = useRef(voiceListening)
@@ -120,6 +164,14 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
     // frames forever.
     let loadFailed = false
 
+    // The artist's pose + expressions, if this model ships them. Optional: a
+    // missing or broken file just means we fall back to the hand-authored pose
+    // and the VRM's own expression presets, so it can't break the avatar.
+    let animData: AvatarAnimData | null = null
+    let morphs: MorphIndex | null = null
+    // Currently-held facial expression, lerped so it doesn't snap on/off.
+    const morphWeights = new Map<string, number>()
+
     // ── Pointer tracking (same approach as ParticleSphere) ──────────────────
     let pointerX = 0
     let pointerY = 0
@@ -140,6 +192,16 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
     window.addEventListener('mousemove', handlePointer)
     window.addEventListener('touchmove', handlePointer, { passive: true })
 
+    // ── Load the pose/expression companion file, if this model has one ──────
+    // Kicked off before the model so it's usually resolved by the time the (far
+    // larger) .vrm finishes. Failure is non-fatal by design.
+    const animReady: Promise<void> = animUrl
+      ? fetch(animUrl)
+          .then(r => (r.ok ? r.json() as Promise<AvatarAnimData> : null))
+          .then(d => { animData = d })
+          .catch(err => { console.warn('[avatar] no pose/expression data:', err) })
+      : Promise.resolve()
+
     // ── Load the VRM ────────────────────────────────────────────────────────
     onStatusRef.current?.('loading')
     const loader = new GLTFLoader()
@@ -147,7 +209,22 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
 
     loader.load(
       modelUrl,
-      (gltf) => {
+      (gltf) => { void onModelLoaded(gltf) },
+      undefined,
+      (err) => {
+        if (disposed) return
+        const msg = err instanceof Error ? err.message : String(err)
+        console.warn('[avatar] failed to load VRM:', msg)
+        loadFailed = true
+        onStatusRef.current?.('error', `Couldn’t load ${modelUrl}`)
+      },
+    )
+
+    async function onModelLoaded(gltf: { scene: THREE.Group; userData: Record<string, unknown> }) {
+      // The pose/expression file is tiny next to the .vrm, so this has almost
+      // always resolved already — but the model must not be posed before it lands.
+      await animReady
+      {
         if (disposed) return
         const loaded = gltf.userData['vrm'] as VRM | undefined
         if (!loaded) {
@@ -167,10 +244,18 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
         loaded.scene.traverse((obj) => { obj.frustumCulled = false })
 
         // A bare VRM loads in a T-pose — arms straight out — which reads as a
-        // mannequin, not a character. There's no animation clip to fall back on,
-        // so drop the arms into a relaxed pose by hand. These rotations persist:
-        // vrm.update() drives expressions, look-at and spring bones, but never
-        // resets humanoid bone rotations we've set ourselves.
+        // mannequin, not a character, so drop the arms by hand.
+        //
+        // NOT taken from the model's own AFK pose, even though it ships one: that
+        // clip stores absolute local rotations in the FBX rig's space, where rest
+        // rotations are non-identity (its Hips carries the 90° Blender Z-up→Y-up
+        // root). UniVRM T-pose-normalises on export — every node in this VRM has
+        // an identity rest rotation — so replaying those quaternions folds the
+        // model in half. Porting it would mean parsing the FBX for its rest pose
+        // and applying deltas, which isn't worth it for a static stance.
+        //
+        // These rotations persist: vrm.update() drives expressions, look-at and
+        // spring bones, but never resets bone rotations we've set ourselves.
         const humanoid = loaded.humanoid
         if (humanoid) {
           const ARM_DROP = 1.25  // radians; ~72° down from horizontal
@@ -190,6 +275,26 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
             const node = humanoid.getNormalizedBoneNode(name)
             if (node) node.rotation.z = z
           }
+        }
+
+        // Index the model's morph targets by name so the artist's facial
+        // expressions can be driven directly.
+        //
+        // Then keep only the expressions the model can actually PERFORM. UniVRM
+        // strips any morph the VRM's own presets don't reference, so a Unity
+        // package's expression set is routinely wider than the exported .vrm's:
+        // this model ships Wink / Blush / Star Eyes clips, but the morphs behind
+        // them (ウィンク, 照れ, 星目) didn't survive the export. Applying those
+        // would silently do nothing, so drop them rather than pretend.
+        if (animData?.expressions) {
+          const index = indexMorphTargets(loaded)
+          const usable: Record<string, Record<string, number>> = {}
+          for (const [name, targets] of Object.entries(animData.expressions)) {
+            if (Object.keys(targets).every(m => index.has(m))) usable[name] = targets
+          }
+          morphs = index
+          animData = { expressions: usable }
+          console.log(`[avatar] artist expressions usable: ${Object.keys(usable).join(', ') || '(none)'}`)
         }
 
         if (loaded.lookAt) loaded.lookAt.target = lookTarget
@@ -212,16 +317,8 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
 
         vrm = loaded
         onStatusRef.current?.('ready')
-      },
-      undefined,
-      (err) => {
-        if (disposed) return
-        const msg = err instanceof Error ? err.message : String(err)
-        console.warn('[avatar] failed to load VRM:', msg)
-        loadFailed = true
-        onStatusRef.current?.('error', `Couldn’t load ${modelUrl}`)
-      },
-    )
+      }
+    }
 
     // ── Animation loop ──────────────────────────────────────────────────────
     const clock = new THREE.Clock()
@@ -232,6 +329,10 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
     let nextBlinkAt = 2 + Math.random() * 3
     let blinkStartedAt = -1
     const BLINK_MS = 0.12
+
+    // Idle wink — a small flourish so she has some life between replies.
+    let nextWinkAt = 20 + Math.random() * 20
+    let winkUntil = -1
 
     // FPS sampling.
     let frames = 0
@@ -300,6 +401,48 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
 
         // Drives expressions, look-at, and spring bones (hair/clothing physics).
         vrm.update(delta)
+
+        // ── The artist's facial expressions ──────────────────────────────────
+        // Applied AFTER vrm.update(), because the expression manager writes morph
+        // influences during it — anything set beforehand is overwritten. These use
+        // morphs the VRM presets don't expose at all (照れ / blush, ウィンク / wink,
+        // 星目 / star eyes), so they don't fight the lip-sync visemes above.
+        if (morphs && animData?.expressions) {
+          const have = (name: string) => name in animData!.expressions!
+
+          // Occasional flourish while idle, so she isn't a waxwork between
+          // replies. Whichever of these the model actually kept on export.
+          if (!speaking && !listening && time > nextWinkAt) {
+            winkUntil  = time + 0.6
+            nextWinkAt = time + 25 + Math.random() * 35
+          }
+          const flourish = ['Wink', 'Hau', 'Star Eyes'].find(have)
+
+          // Fall through to nothing if the model can't do the expression — the
+          // VRM's own happy/relaxed presets are still driving underneath, so she
+          // never ends up expressionless.
+          const want =
+              speaking  && have('Smile') ? 'Smile'
+            : listening && have('Calm')  ? 'Calm'
+            : !speaking && !listening && winkUntil > time && flourish ? flourish
+            : null
+
+          // Ease every known expression toward its target weight — snapping a face
+          // on and off looks robotic, and a lerp costs nothing.
+          for (const [name, targets] of Object.entries(animData.expressions)) {
+            const target = name === want ? EXPRESSION_STRENGTH : 0
+            const current = morphWeights.get(name) ?? 0
+            if (current === 0 && target === 0) continue
+            const next = current + (target - current) * 0.12
+            morphWeights.set(name, next)
+            if (next < 0.001) { morphWeights.set(name, 0) }
+            for (const [morph, weight] of Object.entries(targets)) {
+              for (const t of morphs.get(morph) ?? []) {
+                t.mesh.morphTargetInfluences![t.index] = weight * next
+              }
+            }
+          }
+        }
       }
 
       // Framing — driven live by the Settings sliders. Zoom pulls the camera in

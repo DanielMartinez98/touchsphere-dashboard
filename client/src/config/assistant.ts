@@ -21,7 +21,18 @@ export type AssistantId = 'jarvis' | 'touchsphere' | 'martin' | 'merlin' | 'jess
 export type AvatarSpec =
   | { kind: 'sphere' }
   | { kind: 'live2d'; model: string }
-  | { kind: 'vrm';    model: string }
+  | {
+      kind: 'vrm'
+      model: string
+      /**
+       * Optional companion JSON extracted from the model's Unity package: the
+       * artist's own rest pose (per-bone rotations) and named facial expressions
+       * (morph-target weights). Without it we fall back to a hand-authored pose
+       * and the VRM's standard expression presets — so it's a nice-to-have, not
+       * a requirement.
+       */
+      anim?: string
+    }
 
 // ── The model catalogue ──────────────────────────────────────────────────────
 // Every face the dashboard can wear. Each assistant picks one (see `avatar` on
@@ -69,8 +80,8 @@ export const AVATAR_MODELS: AvatarModel[] = [
     // 止丸式初音ミクNT by 止丸. VRM 0.x, 2048px textures (so it's within the Pi's
     // 4096 texture limit), and a full viseme + blink set, so lip-sync works.
     // Redistribution-prohibited: keep it out of git, same as the other models.
-    note: 'VRM — true 3D, turns and looks around',
-    spec: { kind: 'vrm', model: '/miku-nt.vrm' },
+    note: 'VRM — true 3D, artist’s pose + expressions',
+    spec: { kind: 'vrm', model: '/miku-nt.vrm', anim: '/miku-nt.anim.json' },
   },
   {
     id: 'frieren',
