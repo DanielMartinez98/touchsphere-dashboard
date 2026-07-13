@@ -205,7 +205,15 @@ router.get('/', async (req, res) => {
             ? voiceParam
             : profile.rvcModel
           if (!model) throw new Error(`assistant "${profile.id}" has no rvcModel`)
-          await synthesizeKokoroRVC(text, profile.kokoroVoice, model, res)
+          // ?pitch=<semitones> overrides the transpose for this request. There's
+          // no "correct" value — it depends on the model and the source voice —
+          // so this exists to make A/B-ing it a URL edit rather than a redeploy.
+          // ±24 is two octaves; anything beyond is a typo, not a choice.
+          const pitchRaw = Number(req.query['pitch'])
+          const pitch = Number.isFinite(pitchRaw)
+            ? Math.max(-24, Math.min(24, Math.round(pitchRaw)))
+            : RVC_F0_UP_KEY
+          await synthesizeKokoroRVC(text, profile.kokoroVoice, model, res, pitch)
           break
         }
         case 'kokoro': {
@@ -357,12 +365,16 @@ async function synthesizeKokoro(text: string, voice: string, res: import('expres
 // Nothing is written to `res` until the conversion has succeeded, so a failure
 // here falls cleanly through to the next provider in the chain.
 let rvcLoadedModel: string | null = null
+// The params currently set on the RVC server. Re-sent only when they change, so
+// a ?pitch= override costs one extra call rather than one per reply.
+let rvcAppliedPitch: number | null = null
 
 async function synthesizeKokoroRVC(
   text: string,
   kokoroVoice: string,
   model: string,
   res: import('express').Response,
+  pitch: number = RVC_F0_UP_KEY,
 ) {
   const t0 = Date.now()
   const wav = await kokoroSynth(text, kokoroVoice, 'wav')
@@ -382,13 +394,17 @@ async function synthesizeKokoroRVC(
         const body = await loadRes.text().catch(() => '')
         throw new Error(`rvc load ${loadRes.status}: ${body.slice(0, 200)} (is the model in the rvc-models volume?)`)
       }
+      rvcLoadedModel = model
+      rvcAppliedPitch = null   // a fresh model means fresh (default) params
+    }
 
-      // Set conversion params once per model load. Without this the server keeps
-      // its defaults — harvest (slow) and no transposition (wrong pitch), which
-      // is the difference between "sounds like her" and "doesn't".
+    // Set conversion params whenever they change. Without this the server keeps
+    // its defaults — harvest (slow) and no transposition (wrong pitch), which is
+    // the difference between "sounds like her" and "doesn't".
+    if (rvcAppliedPitch !== pitch) {
       const params = {
         f0method:      RVC_F0_METHOD,
-        f0up_key:      RVC_F0_UP_KEY,
+        f0up_key:      pitch,
         index_rate:    RVC_INDEX_RATE,
         rms_mix_rate:  RVC_RMS_MIX_RATE,
         protect:       RVC_PROTECT,
@@ -405,10 +421,9 @@ async function synthesizeKokoroRVC(
         // Non-fatal: the model still converts, just with the slow defaults.
         console.warn(`[tts][rvc] could not set params (${paramRes.status}) — using server defaults`)
       } else {
-        console.log(`[tts][rvc] params: f0=${RVC_F0_METHOD} transpose=${RVC_F0_UP_KEY}st index=${RVC_INDEX_RATE}`)
+        console.log(`[tts][rvc] params: f0=${RVC_F0_METHOD} transpose=${pitch}st index=${RVC_INDEX_RATE}`)
+        rvcAppliedPitch = pitch
       }
-
-      rvcLoadedModel = model
     }
 
     console.log(`[tts][rvc] converting ${wav.length} bytes with "${model}"`)
