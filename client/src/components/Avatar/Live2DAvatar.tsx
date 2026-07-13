@@ -242,8 +242,35 @@ export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolum
           window.removeEventListener('touchmove', handlePointer)
           window.removeEventListener('resize', handleResize)
           app.ticker.remove(tick)
-          model.destroy()
-          app.destroy(true)
+
+          // ORDER IS LOAD-BEARING. Live2DModel registers itself on PIXI's SHARED
+          // ticker (not app.ticker), so destroying it while autoUpdate is still on
+          // leaves the shared ticker calling update() on a model whose internals
+          // are gone — "Cannot read properties of undefined (reading 'update')",
+          // which escapes to the ErrorBoundary and takes the whole page down.
+          // Switching model or assistant runs this path, so it has to be exact:
+          //   1. unhook from the shared ticker
+          //   2. take it off the stage
+          //   3. destroy the model (releases the Cubism WebGL renderer)
+          //   4. only then tear down the PIXI app and its GL context
+          try {
+            // `autoUpdate` is installed at runtime by Live2DModel.registerTicker
+            // but is missing from the fork's type declarations, hence the cast.
+            (model as unknown as { autoUpdate: boolean }).autoUpdate = false
+            app.stage.removeChild(model)
+            model.destroy()
+          } catch (err) {
+            console.warn('[live2d] model teardown:', err)
+          }
+
+          // Teardown must never be able to crash the dashboard: an exception here
+          // is unrecoverable noise, not something the user can act on.
+          try {
+            app.destroy(true)
+          } catch (err) {
+            console.warn('[live2d] app teardown:', err)
+          }
+
           if (mount.contains(canvas)) mount.removeChild(canvas)
         }
       } catch (err) {

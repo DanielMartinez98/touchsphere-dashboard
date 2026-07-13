@@ -18,17 +18,46 @@ import { installTapGuard } from './utils/tapGuard'
 installDebugLog()
 installTapGuard()
 
-class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
+class ErrorBoundary extends Component<
+  { children: ReactNode },
+  { hasError: boolean; message: string }
+> {
   constructor(props: { children: ReactNode }) {
     super(props)
-    this.state = { hasError: false }
+    this.state = { hasError: false, message: '' }
   }
-  static getDerivedStateFromError() { return { hasError: true } }
+
+  static getDerivedStateFromError(error: unknown) {
+    return {
+      hasError: true,
+      message: error instanceof Error ? error.message : String(error),
+    }
+  }
+
+  // Without this the boundary swallows the error silently and all anyone ever
+  // sees is "something went wrong" — which is unactionable, and on a kiosk with
+  // no devtools it's the only clue there is. Log it, and show it.
+  componentDidCatch(error: Error, info: { componentStack?: string | null }) {
+    console.error('[fatal] uncaught render error:', error, info.componentStack)
+  }
+
   render() {
     if (this.state.hasError) {
       return (
-        <div className="flex items-center justify-center h-screen bg-black text-white">
-          <p>Something went wrong. Please reload the page.</p>
+        <div className="flex flex-col items-center justify-center gap-4 h-screen bg-black text-white px-8 text-center">
+          <p>Something went wrong.</p>
+          {this.state.message && (
+            <p className="text-white/40 text-xs font-mono break-words max-w-full">
+              {this.state.message}
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="rounded-xl px-5 py-3 bg-white/10 border border-white/15 active:bg-white/20 text-sm"
+          >
+            Reload
+          </button>
         </div>
       )
     }

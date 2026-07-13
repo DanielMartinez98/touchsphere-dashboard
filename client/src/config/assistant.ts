@@ -59,9 +59,18 @@ export const AVATAR_MODELS: AvatarModel[] = [
   },
   {
     id: 'miku',
-    label: 'Miku',
+    label: 'Miku (2D)',
     note: 'Live2D — official sample, full physics',
     spec: { kind: 'live2d', model: '/live2d/Miku/miku_sample_t04.model3.json' },
+  },
+  {
+    id: 'miku3d',
+    label: 'Miku (3D)',
+    // 止丸式初音ミクNT by 止丸. VRM 0.x, 2048px textures (so it's within the Pi's
+    // 4096 texture limit), and a full viseme + blink set, so lip-sync works.
+    // Redistribution-prohibited: keep it out of git, same as the other models.
+    note: 'VRM — true 3D, turns and looks around',
+    spec: { kind: 'vrm', model: '/miku-nt.vrm' },
   },
   {
     id: 'frieren',

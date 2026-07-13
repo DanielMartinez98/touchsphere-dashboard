@@ -153,6 +153,63 @@ router.post('/assistant', (req: Request, res: Response) => {
   }
 })
 
+// ── Avatar framing ────────────────────────────────────────────────────────────
+// How each avatar model sits in frame: zoom + vertical position. Keyed by MODEL
+// id (not assistant) because it describes the model — two assistants wearing the
+// same face want the same framing.
+//
+// Persisted server-side rather than in localStorage so the framing you dial in
+// on a laptop is the framing the Pi kiosk uses. Same reasoning as the assistant
+// selection: the server is the source of truth across devices.
+//
+// Values are clamped to the same ranges the client's sliders use — a bad write
+// (or a hand-edited file) shouldn't be able to push the avatar off screen.
+interface Framing { zoom: number; offsetY: number }
+const FRAMING_FILE = 'avatar-framing.json'
+const ZOOM_MIN = 0.6
+const ZOOM_MAX = 3.5
+const OFFSET_MIN = -1
+const OFFSET_MAX = 1
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
+
+// GET /api/state/avatar-framing → { [modelId]: { zoom, offsetY } }
+router.get('/avatar-framing', (_req: Request, res: Response) => {
+  const all = readJSON<Record<string, Framing>>(FRAMING_FILE, {})
+  res.json(all)
+})
+
+// POST /api/state/avatar-framing  { modelId, zoom, offsetY }
+router.post('/avatar-framing', (req: Request, res: Response) => {
+  const { modelId, zoom, offsetY } = req.body as Partial<Framing> & { modelId?: string }
+
+  // Model ids come from the client's catalogue, which the server has no copy of,
+  // so validate the shape rather than a whitelist: a short slug, nothing exotic.
+  if (!modelId || typeof modelId !== 'string' || !/^[a-z0-9_-]{1,40}$/i.test(modelId)) {
+    res.status(400).json({ error: 'modelId must be a short alphanumeric id' })
+    return
+  }
+  if (!Number.isFinite(zoom) || !Number.isFinite(offsetY)) {
+    res.status(400).json({ error: 'zoom and offsetY must be numbers' })
+    return
+  }
+
+  const entry: Framing = {
+    zoom:    clamp(zoom as number,    ZOOM_MIN,   ZOOM_MAX),
+    offsetY: clamp(offsetY as number, OFFSET_MIN, OFFSET_MAX),
+  }
+
+  try {
+    const all = readJSON<Record<string, Framing>>(FRAMING_FILE, {})
+    all[modelId] = entry
+    writeJSON(FRAMING_FILE, all)
+    console.log(`[state] POST avatar-framing ${modelId} → zoom=${entry.zoom} offsetY=${entry.offsetY}`)
+    res.json({ modelId, ...entry })
+  } catch {
+    res.status(500).json({ error: 'Failed to persist avatar framing' })
+  }
+})
+
 // ── Lock Credential ───────────────────────────────────────────────────────────
 // GET /api/state/cred  — check if a credential exists
 router.get('/cred', (_req: Request, res: Response) => {

@@ -27,7 +27,7 @@ import { BedtimeBanner } from './components/BedtimeBanner'
 import { TimersOverlay } from './components/TimersOverlay'
 import { useAutoMode } from './hooks/useAutoSchedule'
 import { useMuted } from './hooks/useMuted'
-import { useAvatarEnabled, useAvatarRuntime, useAvatarFraming, useAvatarModelOverride, setAvatarRuntime, setAvatarFps } from './hooks/useAvatar'
+import { useAvatarEnabled, useAvatarRuntime, useAvatarFraming, useAvatarModelOverride, setAvatarRuntime, setAvatarFps, loadAvatarFramingFromServer } from './hooks/useAvatar'
 import { loadAssistantFromServer, useAssistant, getAvatarModel } from './config/assistant'
 import { playStartupSound } from './utils/sound'
 
@@ -111,9 +111,14 @@ function App() {
     },
   })
 
-  // Reconcile the selected assistant (name/wake word/persona/voice) with the
-  // server on mount — the server is the source of truth across devices/reloads.
-  useEffect(() => { loadAssistantFromServer() }, [])
+  // Reconcile the selected assistant (name/wake word/persona/voice) and each
+  // avatar's framing with the server on mount — the server is the source of
+  // truth across devices/reloads, so framing dialled in on a laptop shows up
+  // on the kiosk.
+  useEffect(() => {
+    loadAssistantFromServer()
+    loadAvatarFramingFromServer()
+  }, [])
 
   // Listen for server-sent reload event and refresh the page
   useEffect(() => {

@@ -158,18 +158,72 @@ function snapshotFor(key: string): AvatarFraming {
   return fresh
 }
 
+// Coalesce slider drags: dragging emits a change per pixel, and we don't want a
+// POST per pixel. localStorage + the on-screen avatar update instantly; the
+// server catches up once the user stops moving.
+const SAVE_DEBOUNCE_MS = 400
+const pendingSaves = new Map<string, number>()
+
+function persistFraming(key: string, framing: AvatarFraming) {
+  const existing = pendingSaves.get(key)
+  if (existing !== undefined) window.clearTimeout(existing)
+  pendingSaves.set(key, window.setTimeout(() => {
+    pendingSaves.delete(key)
+    fetch('/api/state/avatar-framing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelId: key, ...framing }),
+    }).catch(err => console.warn('[avatar] failed to persist framing:', err))
+  }, SAVE_DEBOUNCE_MS))
+}
+
 export function setAvatarFraming(key: string, next: Partial<AvatarFraming>) {
   const current = snapshotFor(key)
   const zoom    = clamp(next.zoom    ?? current.zoom,    ZOOM_MIN,   ZOOM_MAX)
   const offsetY = clamp(next.offsetY ?? current.offsetY, OFFSET_MIN, OFFSET_MAX)
   if (zoom === current.zoom && offsetY === current.offsetY) return
-  framings = { ...framings, [key]: { zoom, offsetY } }
+  const entry = { zoom, offsetY }
+  framings = { ...framings, [key]: entry }
+  // localStorage is a boot cache so the avatar isn't briefly mis-framed on load;
+  // the server is the source of truth across devices.
   try { localStorage.setItem(LS_FRAMING_KEY, JSON.stringify(framings)) } catch { /* quota */ }
+  persistFraming(key, entry)
   framingListeners.forEach(cb => cb())
 }
 
 export function resetAvatarFraming(key: string) {
   setAvatarFraming(key, DEFAULT_FRAMING)
+}
+
+/**
+ * Pull every model's framing from the server once on boot and adopt it — the
+ * server wins, so framing dialled in on one device shows up on the kiosk.
+ * Mirrors loadAssistantFromServer().
+ */
+let framingLoaded = false
+export function loadAvatarFramingFromServer(): void {
+  if (framingLoaded) return
+  framingLoaded = true
+  fetch('/api/state/avatar-framing')
+    .then(r => (r.ok ? (r.json() as Promise<Record<string, Partial<AvatarFraming>>>) : null))
+    .then(data => {
+      if (!data || typeof data !== 'object') return
+      let changed = false
+      for (const [key, value] of Object.entries(data)) {
+        if (!value || !Number.isFinite(value.zoom) || !Number.isFinite(value.offsetY)) continue
+        const cur = framings[key]
+        if (cur && cur.zoom === value.zoom && cur.offsetY === value.offsetY) continue
+        framings[key] = {
+          zoom:    clamp(value.zoom!,    ZOOM_MIN,   ZOOM_MAX),
+          offsetY: clamp(value.offsetY!, OFFSET_MIN, OFFSET_MAX),
+        }
+        changed = true
+      }
+      if (!changed) return
+      try { localStorage.setItem(LS_FRAMING_KEY, JSON.stringify(framings)) } catch { /* quota */ }
+      framingListeners.forEach(cb => cb())
+    })
+    .catch(() => { /* offline — keep the locally cached framing */ })
 }
 
 /** Framing for one assistant. Each gets its own — their models differ. */
