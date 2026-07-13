@@ -7,18 +7,45 @@
 #
 # There's no official rvc-python image, hence this file.
 # https://github.com/daswer123/rvc-python
+#
+# ── Why this file is so fussy ────────────────────────────────────────────────
+# rvc-python depends on fairseq==0.12.2, which is a genuine minefield:
+#   • fairseq ships no wheel past cp38, so on 3.11+ it compiles from source —
+#     and it does not build there. faiss-cpu==1.7.3 likewise stops at cp310.
+#     => Python 3.10 is the newest base that works. Do not "upgrade" it.
+#   • fairseq's setup.py breaks with Cython 3 and with setuptools >= 66, and it
+#     imports numpy at build time, so both must be present BEFORE it installs,
+#     with build isolation off.
+#   • pip >= 24.1 enforces PEP 440 strictly and rejects omegaconf 2.0.6's
+#     malformed metadata ("PyYAML>=5.1.*"), which fairseq pulls in.
+# Each pin below is load-bearing. Changing one tends to break the build.
 
-FROM python:3.11-slim
+FROM python:3.10-slim
 
 # ffmpeg: rvc-python shells out to it for audio decode/resample.
+# build-essential + python3-dev: fairseq has C extensions to compile.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends \
+        ffmpeg \
+        build-essential \
+        python3-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Old pip (see above) and the setuptools/wheel fairseq expects.
+RUN pip install --no-cache-dir "pip<24.1" "setuptools==65.5.0" "wheel"
 
 # CPU-only torch. The default wheel drags in ~2 GB of CUDA libraries that would
 # never be used on a box without an NVIDIA GPU — this keeps the image sane.
 RUN pip install --no-cache-dir \
-    torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+        torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Must exist before fairseq builds: its setup.py imports numpy, and Cython 3
+# breaks its generated sources.
+RUN pip install --no-cache-dir "Cython<3.0" "numpy==1.23.5"
+
+# --no-build-isolation so it uses the Cython/numpy installed above rather than
+# fetching a fresh (and incompatible) set into an isolated build env.
+RUN pip install --no-cache-dir --no-build-isolation "fairseq==0.12.2"
 
 RUN pip install --no-cache-dir rvc-python
 
