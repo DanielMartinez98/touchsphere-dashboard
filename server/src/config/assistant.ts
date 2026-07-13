@@ -11,7 +11,7 @@
 import fs from 'fs'
 import path from 'path'
 
-export type AssistantId = 'jarvis' | 'touchsphere' | 'martin' | 'merlin' | 'jess'
+export type AssistantId = 'jarvis' | 'touchsphere' | 'martin' | 'merlin' | 'jess' | 'miku'
 
 export interface AssistantProfile {
   id: AssistantId
@@ -21,8 +21,24 @@ export interface AssistantProfile {
   persona: string
   /** ElevenLabs voice id used when the elevenlabs TTS provider is active. */
   elevenVoiceId: string
-  /** espeak-ng -v value used by the offline fallback (accent differentiation). */
+  /** espeak-ng -v value used by the last-resort fallback (accent differentiation). */
   espeakVoice: string
+  /**
+   * Kokoro voice pack (see https://github.com/remsky/Kokoro-FastAPI). Kokoro is
+   * the LOCAL neural TTS — no API key, no credit, works with the internet down —
+   * so this is the preferred provider whenever KOKORO_URL is configured.
+   * Prefix tells you the accent/gender: af_/am_ = US female/male, bf_/bm_ = UK.
+   */
+  kokoroVoice: string
+  /**
+   * Fish Audio voice model id ("reference_id"). Only set for assistants whose
+   * voice doesn't exist on ElevenLabs — Miku is a character voice clone hosted
+   * there. When this is set AND FISH_API_KEY is configured, TTS routes through
+   * Fish Audio for this assistant; everyone else is untouched and keeps using
+   * ElevenLabs. That's why the provider is resolved per-profile in routes/tts.ts
+   * rather than being one global env switch.
+   */
+  fishVoiceId?: string
 }
 
 // NOTE: elevenVoiceId values are ElevenLabs "premade" library voices, available
@@ -38,6 +54,7 @@ export const ASSISTANT_PROFILES: Record<AssistantId, AssistantProfile> = {
       "You are unflappable, precise, and quietly efficient, with a dry, understated wit and the occasional " +
       "flash of subtle sarcasm. Address the user with cool professionalism and get straight to the point.",
     elevenVoiceId: 'onwK4e9ZLuTAKqWW03F9', // Daniel — crisp British presenter
+    kokoroVoice: 'bm_george',   // British male — butler
     espeakVoice: 'en-gb',
   },
   touchsphere: {
@@ -48,6 +65,7 @@ export const ASSISTANT_PROFILES: Record<AssistantId, AssistantProfile> = {
       "You're friendly, energetic, and a little playful about technology, and you're always glad to help. " +
       "Keep things warm, clear, and approachable.",
     elevenVoiceId: 'pFZP5JQG7iQjIQuC4Bku',
+    kokoroVoice: 'af_nova',     // bright, upbeat US female
     espeakVoice: 'en-us',
   },
   martin: {
@@ -62,6 +80,7 @@ export const ASSISTANT_PROFILES: Record<AssistantId, AssistantProfile> = {
       "\"Eehuuup!\", \"Uuuurgh.\", \"Haaahhh...\", \"Hnnngh.\" Never write *hiccup* or *sighs*: a stage direction " +
       "just gets read aloud as the word, which ruins the whole bit.",
     elevenVoiceId: 'LSjRk8DBArwMCfQVonxs',
+    kokoroVoice: 'am_fenrir',   // gruff older US male — the grumbling wizard
     espeakVoice: 'en-us',
   },
   merlin: {
@@ -73,7 +92,23 @@ export const ASSISTANT_PROFILES: Record<AssistantId, AssistantProfile> = {
       "potions, and enchantments, while still giving clear, genuinely helpful answers. The magic is seasoning, " +
       "not a substitute for substance.",
     elevenVoiceId: 'yT5srFl9OYVb0uSht5Pd',
+    kokoroVoice: 'bm_fable',    // theatrical British storyteller
     espeakVoice: 'en-gb',
+  },
+  miku: {
+    id: 'miku',
+    name: 'Miku',
+    persona:
+      "You are Miku, a cheerful virtual singer who lives in the dashboard. You're bubbly, warm, and endlessly " +
+      "enthusiastic — you treat even a boring weather question like it's a little bit exciting. You love music and " +
+      "occasionally mention it, but you never let the cheer get in the way of a clear, genuinely useful answer. " +
+      "Keep replies short and bright. Don't sing — you're talking, not performing.",
+    // Fish Audio hosts the Miku character voice; ElevenLabs has no equivalent.
+    // The elevenVoiceId below is only a fallback for when FISH_API_KEY is absent.
+    fishVoiceId: process.env['FISH_VOICE_ID']?.trim() || 'acc8237220d8470985ec9be6c4c480a9',
+    elevenVoiceId: 'pFZP5JQG7iQjIQuC4Bku',
+    kokoroVoice: 'af_sky',      // bright + youthful — closest local match to Miku
+    espeakVoice: 'en-us',
   },
   jess: {
     id: 'jess',
@@ -84,6 +119,7 @@ export const ASSISTANT_PROFILES: Record<AssistantId, AssistantProfile> = {
       "but, grumbling all the way, you still give the user a correct and genuinely useful answer. " +
       "Keep the attitude playful, never actually mean or hurtful.",
     elevenVoiceId: 'e0mqm571SOnRI6afpjhB',
+    kokoroVoice: 'af_nicole',   // sharper US female — the sass
     espeakVoice: 'en-us',
   },
 }

@@ -9,7 +9,7 @@
 
 import { useSyncExternalStore } from 'react'
 
-export type AssistantId = 'jarvis' | 'touchsphere' | 'martin' | 'merlin' | 'jess'
+export type AssistantId = 'jarvis' | 'touchsphere' | 'martin' | 'merlin' | 'jess' | 'miku'
 
 // ── The assistant's face ─────────────────────────────────────────────────────
 // Each assistant owns its appearance the same way it owns its voice and persona,
@@ -147,6 +147,17 @@ export const ASSISTANT_PROFILES: Record<AssistantId, AssistantProfile> = {
     wakePhrase: 'Excuse me Merlin',
     sampleLine: "Ahh, greetings! Merlin — weaver of spells and keeper of ancient wisdom — at thy service.",
   },
+  miku: {
+    id: 'miku',
+    name: 'Miku',
+    tagline: 'Cheerful virtual singer — bubbly, warm, always glad to help.',
+    // Her face and her voice are both Miku's — the whole point of tying the
+    // model to the assistant. Voice comes from Fish Audio (server profile).
+    defaultModelId: 'miku',
+    wakePatterns: ['hey miku', 'hey mika', 'hey meeku', 'hey miko', 'a miku'],
+    wakePhrase: 'Hey Miku',
+    sampleLine: "Hi hi! Miku here! Whatever you need, I'm on it — let's make today a good one!",
+  },
   jess: {
     id: 'jess',
     name: 'Jess',
@@ -159,7 +170,7 @@ export const ASSISTANT_PROFILES: Record<AssistantId, AssistantProfile> = {
 }
 
 /** Display order for the Settings selector. */
-export const ASSISTANT_ORDER: AssistantId[] = ['martin', 'jarvis', 'touchsphere', 'merlin', 'jess']
+export const ASSISTANT_ORDER: AssistantId[] = ['martin', 'jarvis', 'touchsphere', 'miku', 'merlin', 'jess']
 export const DEFAULT_ASSISTANT_ID: AssistantId = 'martin'
 
 // ── Reactive selection store ─────────────────────────────────────────────────

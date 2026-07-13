@@ -18,6 +18,11 @@ services:
       - .env             # put your real secrets here (never committed)
     environment:
       NODE_ENV: production
+      # Local neural TTS (see the kokoro service below). Set = preferred provider
+      # for every assistant; unset = fall back to ElevenLabs / espeak.
+      KOKORO_URL: http://kokoro:8880
+    depends_on:
+      - kokoro
     volumes:
       - touchsphere-cache:/data/cache   # persist cache across restarts
       # Avatar assets (Live2D model + Cubism runtime). Licensed files that are
@@ -28,6 +33,18 @@ services:
     dns:
       - 8.8.8.8
       - 8.8.4.4
+
+  # ── Kokoro — local neural TTS ─────────────────────────────────────────────
+  # Runs the 82M-param Kokoro model on CPU and speaks OpenAI's
+  # /v1/audio/speech dialect. This is what makes the assistants' voices work
+  # with no API key, no per-word billing, and no internet connection.
+  # Not exposed to the host — only the app talks to it, over the compose network.
+  kokoro:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
+    container_name: touchsphere-kokoro
+    restart: unless-stopped
+    expose:
+      - "8880"
 
   # ── Caddy — HTTPS reverse proxy ───────────────────────────────────────────
   # Caddy uses its own internal CA to issue a self-signed TLS certificate.

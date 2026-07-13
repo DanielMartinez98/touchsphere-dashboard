@@ -42,8 +42,49 @@ const EL_VOICE_ENV = process.env['ELEVENLABS_VOICE_ID']?.trim() || ''
 // "eleven_turbo_v2_5" is fast + cheap. Use "eleven_multilingual_v2" for max quality.
 const EL_MODEL_ID = process.env['ELEVENLABS_MODEL_ID'] ?? 'eleven_turbo_v2_5'
 
-const PROVIDER = (process.env['TTS_PROVIDER'] ?? (EL_KEY ? 'elevenlabs' : 'espeak')).toLowerCase()
-console.log(`[tts] provider=${PROVIDER}${PROVIDER === 'elevenlabs' ? ` voice=${EL_VOICE_ENV || 'per-assistant'} model=${EL_MODEL_ID}` : ''}`)
+// ── Fish Audio ───────────────────────────────────────────────────────────────
+// Used for character voices that don't exist on ElevenLabs — Miku is a voice
+// clone hosted there. Only assistants with a `fishVoiceId` route through it.
+const FISH_KEY = process.env['FISH_API_KEY'] ?? ''
+// Their synthesis backend ("s1" is the current quality model; "speech-1.6" is
+// the faster/cheaper one). Sent as the `model` header, not in the body.
+const FISH_MODEL = process.env['FISH_MODEL_ID'] ?? 's1'
+
+// ── Kokoro (local neural TTS) ────────────────────────────────────────────────
+// Runs as a container next to us (Kokoro-FastAPI), so there's no API key, no
+// credit balance to run dry, and it keeps working with the internet down. It's
+// the preferred provider whenever it's configured — the cloud ones are only
+// there for voices Kokoro can't do (Miku) or when it isn't deployed.
+// It speaks the OpenAI /v1/audio/speech dialect.
+const KOKORO_URL = (process.env['KOKORO_URL'] ?? '').replace(/\/$/, '')
+
+type Provider = 'kokoro' | 'elevenlabs' | 'espeak' | 'fish'
+
+// An explicit TTS_PROVIDER pins every assistant to one backend. Otherwise we
+// build an ordered CHAIN per assistant and try each in turn, because any single
+// provider can fail for boring reasons — an empty Fish balance, a dead network,
+// an ElevenLabs 429. Falling through means a failure costs the assistant its
+// *preferred voice*, not its ability to answer at all. espeak is the floor: it's
+// local, always installed, and cannot fail for network reasons.
+const FORCED = process.env['TTS_PROVIDER']?.trim().toLowerCase()
+
+function providerChain(profile: { fishVoiceId?: string }): Provider[] {
+  if (FORCED === 'elevenlabs' || FORCED === 'espeak' || FORCED === 'fish' || FORCED === 'kokoro') {
+    return [FORCED, 'espeak']
+  }
+  const chain: Provider[] = []
+  // Miku's character voice only exists on Fish — worth trying first for her.
+  if (profile.fishVoiceId && FISH_KEY) chain.push('fish')
+  if (KOKORO_URL) chain.push('kokoro')
+  if (EL_KEY) chain.push('elevenlabs')
+  chain.push('espeak')
+  return chain
+}
+
+console.log(
+  `[tts] forced=${FORCED ?? 'no (per-assistant chain)'} kokoro=${KOKORO_URL || 'no'} ` +
+  `elevenlabs=${EL_KEY ? 'yes' : 'no'} fish=${FISH_KEY ? 'yes' : 'no'}`,
+)
 
 // ── Stage directions vs. spelled-out sounds ──────────────────────────────────
 // The assistant is meant to PERFORM its noises, not narrate them. Two very
@@ -115,34 +156,67 @@ router.get('/', async (req, res) => {
     return res.status(413).json({ error: `text too long (max ${MAX_TEXT_LEN})` })
   }
 
-  try {
-    if (PROVIDER === 'elevenlabs') {
-      if (!EL_KEY) {
-        return res.status(500).json({ error: 'ELEVENLABS_API_KEY not set' })
+  // Try each provider in turn. Once one starts streaming (headersSent) we're
+  // committed — we can't retry a half-written response, so a mid-stream failure
+  // just ends the response. Only a clean pre-stream failure falls through.
+  const chain = providerChain(profile)
+  const failures: string[] = []
+
+  for (const provider of chain) {
+    try {
+      switch (provider) {
+        case 'fish': {
+          // ?voice= can override the model id; otherwise use the profile's.
+          const refId = voiceParam && /^[a-zA-Z0-9]+$/.test(voiceParam)
+            ? voiceParam
+            : profile.fishVoiceId
+          if (!refId) throw new Error(`assistant "${profile.id}" has no fishVoiceId`)
+          await synthesizeFishAudio(text, refId, res)
+          break
+        }
+        case 'kokoro': {
+          // Kokoro voice names are lowercase letters + underscore (e.g. af_sky).
+          const voice = voiceParam && /^[a-z_]+$/.test(voiceParam)
+            ? voiceParam
+            : profile.kokoroVoice
+          await synthesizeKokoro(text, voice, res)
+          break
+        }
+        case 'elevenlabs': {
+          // Voice precedence: explicit ?voice= override → global env override →
+          // the selected assistant's profile voice. All whitelisted to alphanumerics
+          // (ElevenLabs voice IDs are ~20-char base62 strings).
+          const voiceId =
+            voiceParam && /^[a-zA-Z0-9]+$/.test(voiceParam) ? voiceParam
+            : EL_VOICE_ENV && /^[a-zA-Z0-9]+$/.test(EL_VOICE_ENV) ? EL_VOICE_ENV
+            : profile.elevenVoiceId
+          await synthesizeElevenLabs(text, voiceId, res)
+          break
+        }
+        case 'espeak': {
+          const lang = voiceParam && /^[a-z]{2}(-[a-z0-9]+)?$/i.test(voiceParam)
+            ? voiceParam
+            : (profile.espeakVoice || 'en-us')
+          await synthesizeEspeak(text, lang, res)
+          break
+        }
       }
-      // Voice precedence: explicit ?voice= override → global env override →
-      // the selected assistant's profile voice. All whitelisted to alphanumerics
-      // (ElevenLabs voice IDs are ~20-char base62 strings).
-      const voiceId =
-        voiceParam && /^[a-zA-Z0-9]+$/.test(voiceParam) ? voiceParam
-        : EL_VOICE_ENV && /^[a-zA-Z0-9]+$/.test(EL_VOICE_ENV) ? EL_VOICE_ENV
-        : profile.elevenVoiceId
-      await synthesizeElevenLabs(text, voiceId, res)
-    } else {
-      const lang = voiceParam || profile.espeakVoice || 'en-us'
-      if (!/^[a-z]{2}(-[a-z0-9]+)?$/i.test(lang)) {
-        return res.status(400).json({ error: 'invalid voice (espeak expects e.g. "en-us")' })
+      return  // synthesised + streamed successfully
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      failures.push(`${provider}: ${msg}`)
+      console.warn(`[tts] ${provider} failed — ${msg}`)
+      if (res.headersSent) {
+        // Already streaming; can't start over with a different provider.
+        return res.end()
       }
-      await synthesizeEspeak(text, lang, res)
+      // else: fall through and try the next provider in the chain
     }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error('[tts] failed:', msg)
-    if (!res.headersSent) {
-      res.status(502).json({ error: 'tts failed', detail: msg })
-    } else {
-      res.end()
-    }
+  }
+
+  console.error('[tts] every provider failed:', failures.join(' | '))
+  if (!res.headersSent) {
+    res.status(502).json({ error: 'tts failed', detail: failures.join(' | ') })
   }
 })
 
@@ -196,6 +270,101 @@ async function synthesizeElevenLabs(text: string, voiceId: string, res: import('
   }
   res.end()
   console.log(`[tts][elevenlabs] OK ${total} bytes`)
+}
+
+// ── Kokoro (local) ───────────────────────────────────────────────────────────
+// Kokoro-FastAPI implements OpenAI's /v1/audio/speech, so this is the same
+// request shape you'd send to OpenAI — just pointed at the container next door.
+// No key: it's on our own network, and reaching the internet isn't required.
+async function synthesizeKokoro(text: string, voice: string, res: import('express').Response) {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), SYNTH_TIMEOUT_MS)
+
+  console.log(`[tts][kokoro] POST voice=${voice} chars=${text.length}`)
+  const apiRes = await fetch(`${KOKORO_URL}/v1/audio/speech`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'kokoro',
+      input: text,
+      voice,
+      response_format: 'mp3',
+    }),
+    signal: ctrl.signal,
+  }).finally(() => clearTimeout(timer))
+
+  if (!apiRes.ok) {
+    const body = await apiRes.text().catch(() => '')
+    throw new Error(`kokoro ${apiRes.status}: ${body.slice(0, 300)}`)
+  }
+  if (!apiRes.body) {
+    throw new Error('kokoro returned empty body')
+  }
+
+  res.setHeader('Content-Type', 'audio/mpeg')
+  res.setHeader('Cache-Control', 'no-store')
+
+  const reader = apiRes.body.getReader()
+  let total = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (!res.write(Buffer.from(value))) {
+      await new Promise<void>(r => res.once('drain', r))
+    }
+  }
+  res.end()
+  console.log(`[tts][kokoro] OK ${total} bytes`)
+}
+
+// ── Fish Audio ───────────────────────────────────────────────────────────────
+// Same contract as the ElevenLabs path: POST text, stream MP3 straight back to
+// the client. `reference_id` names the hosted voice model (Miku, in our case).
+async function synthesizeFishAudio(text: string, referenceId: string, res: import('express').Response) {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), SYNTH_TIMEOUT_MS)
+
+  console.log(`[tts][fish] POST voice=${referenceId} model=${FISH_MODEL} chars=${text.length}`)
+  const apiRes = await fetch('https://api.fish.audio/v1/tts', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${FISH_KEY}`,
+      'Content-Type':  'application/json',
+      // The synthesis backend is selected by header, not in the body.
+      'model':         FISH_MODEL,
+    },
+    body: JSON.stringify({
+      text,
+      reference_id: referenceId,
+      format: 'mp3',
+    }),
+    signal: ctrl.signal,
+  }).finally(() => clearTimeout(timer))
+
+  if (!apiRes.ok) {
+    const body = await apiRes.text().catch(() => '')
+    throw new Error(`fish ${apiRes.status}: ${body.slice(0, 300)}`)
+  }
+  if (!apiRes.body) {
+    throw new Error('fish returned empty body')
+  }
+
+  res.setHeader('Content-Type', 'audio/mpeg')
+  res.setHeader('Cache-Control', 'no-store')
+
+  const reader = apiRes.body.getReader()
+  let total = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (!res.write(Buffer.from(value))) {
+      await new Promise<void>(r => res.once('drain', r))
+    }
+  }
+  res.end()
+  console.log(`[tts][fish] OK ${total} bytes`)
 }
 
 // ── espeak-ng (offline fallback) ─────────────────────────────────────────────
