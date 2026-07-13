@@ -104,9 +104,14 @@ const LS_OFFSETY_KEY = 'ts_avatar_offset_y'
 export const ZOOM_MIN = 0.6
 export const ZOOM_MAX = 3.5
 export const ZOOM_DEFAULT = 1.3
-/** Fraction of screen height to shift her by. Negative = up, positive = down. */
-export const OFFSET_MIN = -0.5
-export const OFFSET_MAX = 0.5
+/**
+ * Fraction of the frame to shift her by. Negative = up, positive = down.
+ * Ranges a full frame each way: zooming a full-body model to a bust shot means
+ * travelling from the body's centre all the way up to the face, and ±50% wasn't
+ * enough to get there — it cropped the head.
+ */
+export const OFFSET_MIN = -1
+export const OFFSET_MAX = 1
 
 export interface AvatarFraming { zoom: number; offsetY: number }
 

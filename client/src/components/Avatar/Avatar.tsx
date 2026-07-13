@@ -44,14 +44,10 @@ const SPEAK_RIM  = new THREE.Color(0xf59e0b)
 // retina-density buffer of a 3D character is the fastest way to tank framerate.
 const MAX_PIXEL_RATIO = 1.5
 
-/** Approximate eye height of a VRM in metres — models are authored at human scale. */
-const EYE_Y = 1.35
 /** Resting brightness of the state-coloured rim light. */
 const RIM_BASE = 1.2
-/** Camera framing at zoom = 1, in metres. Divided by zoom to move closer. */
-const CAM_DIST = 1.85
-const CAM_Y    = 1.22
-const LOOK_Y   = 1.12
+/** Eye height as a fraction of total model height — standard human proportion. */
+const EYE_RATIO = 0.93
 
 export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolume, zoom, offsetY, onStatus, onFps }: Props) {
   const mountRef       = useRef<HTMLDivElement>(null)
@@ -83,12 +79,11 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
 
     const scene = new THREE.Scene()
 
-    // Framing: portrait screen, so we frame head-and-chest. Positions are in
-    // metres — a VRM is authored at human scale, eyes at roughly 1.35 m. Framed
-    // to sit clear of the mode pill up top and the settings row below.
-    const camera = new THREE.PerspectiveCamera(30, mount.clientWidth / mount.clientHeight, 0.1, 20)
-    camera.position.set(0, CAM_Y, CAM_DIST)
-    camera.lookAt(0, LOOK_Y, 0)
+    // Framing is derived from the model's own bounding box once it loads (see
+    // below) rather than hard-coded: VRMs are *supposed* to be authored at human
+    // scale (~1.5 m) but plenty aren't, and a fixed camera then ends up staring
+    // at the model's knees. Far clip is generous for the same reason.
+    const camera = new THREE.PerspectiveCamera(30, mount.clientWidth / mount.clientHeight, 0.01, 500)
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO))
@@ -108,10 +103,15 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
     scene.add(rim)
 
     // Where the avatar's eyes point — placed out at the viewer so she meets your
-    // gaze, then nudged by touch below.
+    // gaze, then nudged by touch below. Positioned once the model's real scale
+    // is known.
     const lookTarget = new THREE.Object3D()
-    lookTarget.position.set(0, EYE_Y, 2.2)
     scene.add(lookTarget)
+
+    // Measured from the loaded model. Until then there's nothing to draw anyway.
+    let eyeY = 1.35      // world Y of the eyes
+    let centreY = 1.0    // world Y the camera frames on at zoom 1
+    let baseDist = 2.0   // camera distance that fits the whole model at zoom 1
 
     let vrm: VRM | null = null
     // Set when the model can't be loaded. App swaps the sphere back in, so this
@@ -174,11 +174,16 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
         if (humanoid) {
           const ARM_DROP = 1.25  // radians; ~72° down from horizontal
           const ELBOW    = 0.12  // a touch of bend so the arms aren't planks
+          // VRM 0.x rigs come through three-vrm's normalization mirrored about Y
+          // relative to 1.0 (0.x models face -Z, and rotateVRM0 turns them round).
+          // The upshot is that the same Z rotation that drops a 1.0 model's arms
+          // *raises* a 0.x model's, so the sign has to follow the spec version.
+          const flip = loaded.meta?.metaVersion === '0' ? -1 : 1
           const pose: [Parameters<typeof humanoid.getNormalizedBoneNode>[0], number][] = [
-            ['leftUpperArm',  -ARM_DROP],
-            ['rightUpperArm',  ARM_DROP],
-            ['leftLowerArm',  -ELBOW],
-            ['rightLowerArm',  ELBOW],
+            ['leftUpperArm',  -ARM_DROP * flip],
+            ['rightUpperArm',  ARM_DROP * flip],
+            ['leftLowerArm',  -ELBOW    * flip],
+            ['rightLowerArm',  ELBOW    * flip],
           ]
           for (const [name, z] of pose) {
             const node = humanoid.getNormalizedBoneNode(name)
@@ -188,6 +193,22 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
 
         if (loaded.lookAt) loaded.lookAt.target = lookTarget
         scene.add(loaded.scene)
+
+        // Measure the model to derive the camera framing. A VRM's units are only
+        // conventionally metres — this one ("Cortana") is authored several times
+        // human scale, so anything hard-coded frames her knees. Deriving from the
+        // bounding box means any model, at any scale, lands correctly.
+        loaded.scene.updateMatrixWorld(true)
+        const box = new THREE.Box3().setFromObject(loaded.scene)
+        const height = Math.max(box.max.y - box.min.y, 0.001)
+        eyeY = box.min.y + height * EYE_RATIO
+        centreY = (box.min.y + box.max.y) / 2
+        // Distance at which the full height fits the viewport → zoom 1 = whole
+        // model, matching what "zoom" means for the Live2D backend.
+        const vFov = (camera.fov * Math.PI) / 180
+        baseDist = (height * 1.05) / (2 * Math.tan(vFov / 2))
+        console.log(`[avatar] model height=${height.toFixed(2)} → baseDist=${baseDist.toFixed(2)}`)
+
         vrm = loaded
         onStatusRef.current?.('ready')
       },
@@ -268,7 +289,13 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
           head.rotation.x += (-pointerY * 0.2 - head.rotation.x) * 0.06
         }
 
-        lookTarget.position.set(pointerX * 0.8, EYE_Y + pointerY * 0.4, 2.2)
+        // Keep the gaze target out in front of the camera and scaled to the
+        // model, so head-tracking behaves the same at any authoring scale.
+        lookTarget.position.set(
+          pointerX * baseDist * 0.3,
+          eyeY + pointerY * baseDist * 0.15,
+          baseDist,
+        )
 
         // Drives expressions, look-at, and spring bones (hair/clothing physics).
         vrm.update(delta)
@@ -278,11 +305,11 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
       // along Z; offsetY slides the framing up/down. offsetY is a fraction of the
       // visible frame, so it means the same thing here as it does for Live2D even
       // though this camera works in metres.
-      const dist      = CAM_DIST / zoomRef.current
+      const dist      = baseDist / zoomRef.current
       const visibleH  = 2 * dist * Math.tan((camera.fov * Math.PI) / 360)
       const shift     = offsetYRef.current * visibleH
-      camera.position.set(0, CAM_Y + shift, dist)
-      camera.lookAt(0, LOOK_Y + shift, 0)
+      camera.position.set(0, centreY + shift, dist)
+      camera.lookAt(0, centreY + shift, 0)
 
       // Rim light carries the same state colours as the sphere.
       const rimTarget = listening ? LISTEN_RIM : speaking ? SPEAK_RIM : (isRest ? REST_RIM : WORK_RIM)
