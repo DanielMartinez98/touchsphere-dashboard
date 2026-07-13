@@ -52,6 +52,30 @@ const RVC_URL = (process.env['RVC_URL'] ?? '').replace(/\/$/, '')
 // the audio, on CPU), so it gets its own, longer budget.
 const RVC_TIMEOUT_MS = Number(process.env['RVC_TIMEOUT_MS'] ?? 45_000)
 
+// ── RVC conversion parameters ────────────────────────────────────────────────
+// These two matter more than anything else, and rvc-python's defaults are wrong
+// for us on both counts:
+//
+//   f0method — the pitch-extraction algorithm. The default, "harvest", is
+//     famously slow: it was costing ~8s per reply on this CPU. "rmvpe" is both
+//     faster AND more accurate, and is what the RVC community defaults to.
+//
+//   f0up_key — transpose, in semitones. The default of 0 keeps the SOURCE
+//     voice's pitch and swaps only the timbre. Kokoro speaks in an adult
+//     woman's register; a character like Miku sits far higher. With no
+//     transposition you get "adult woman with a Miku-ish tone" — recognisably
+//     not her. This is the single biggest lever on whether she sounds right.
+const RVC_F0_METHOD = process.env['RVC_F0_METHOD'] ?? 'rmvpe'
+const RVC_F0_UP_KEY = Number(process.env['RVC_F0_UP_KEY'] ?? 4)
+// How strongly to pull toward the model's own timbre (the .index file). Higher
+// is more "them", but too high smears consonants.
+const RVC_INDEX_RATE = Number(process.env['RVC_INDEX_RATE'] ?? 0.66)
+// How much of the source's loudness envelope to keep. Low = more of the target
+// character's own dynamics.
+const RVC_RMS_MIX_RATE = Number(process.env['RVC_RMS_MIX_RATE'] ?? 0.25)
+// Protects breathy/unvoiced consonants from being over-converted into artefacts.
+const RVC_PROTECT = Number(process.env['RVC_PROTECT'] ?? 0.33)
+
 // ── Kokoro (local neural TTS) ────────────────────────────────────────────────
 // Runs as a container next to us (Kokoro-FastAPI), so there's no API key, no
 // credit balance to run dry, and it keeps working with the internet down. It's
@@ -358,6 +382,32 @@ async function synthesizeKokoroRVC(
         const body = await loadRes.text().catch(() => '')
         throw new Error(`rvc load ${loadRes.status}: ${body.slice(0, 200)} (is the model in the rvc-models volume?)`)
       }
+
+      // Set conversion params once per model load. Without this the server keeps
+      // its defaults — harvest (slow) and no transposition (wrong pitch), which
+      // is the difference between "sounds like her" and "doesn't".
+      const params = {
+        f0method:      RVC_F0_METHOD,
+        f0up_key:      RVC_F0_UP_KEY,
+        index_rate:    RVC_INDEX_RATE,
+        rms_mix_rate:  RVC_RMS_MIX_RATE,
+        protect:       RVC_PROTECT,
+        filter_radius: 3,
+        resample_sr:   0,
+      }
+      const paramRes = await fetch(`${RVC_URL}/params`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ params }),
+        signal: ctrl.signal,
+      })
+      if (!paramRes.ok) {
+        // Non-fatal: the model still converts, just with the slow defaults.
+        console.warn(`[tts][rvc] could not set params (${paramRes.status}) — using server defaults`)
+      } else {
+        console.log(`[tts][rvc] params: f0=${RVC_F0_METHOD} transpose=${RVC_F0_UP_KEY}st index=${RVC_INDEX_RATE}`)
+      }
+
       rvcLoadedModel = model
     }
 
