@@ -86,7 +86,7 @@ type MorphIndex = Map<string, Array<{ mesh: THREE.Mesh; index: number }>>
 const IDLE_POSE = {
   shoulderZ: 0.06,   // shoulders settled down from the T-pose shrug
   upperArmZ: 1.32,   // ~76° down — arms hanging close to the body
-  upperArmX: 0.06,   // a hint forward, the way relaxed arms actually hang
+  upperArmX: -0.06,  // a hint forward (on a hanging arm, VRM 1.0 forward is −x)
   lowerArmZ: 0.24,   // visible elbow bend so the arms aren't planks
   handZ:     0.10,   // relaxed wrists
   spineX:    0.02,   // barely-there slouch
@@ -130,7 +130,7 @@ const GESTURES: Record<string, GestureDef> = {
     duration: 2.0,
     apply(p, env, o) {
       o.rUpperZ  = -1.75 * env                                          // arm up and out
-      o.rUpperX  = -0.15 * env
+      o.rUpperX  = 0.15 * env
       o.rLowerZ  = (-0.35 + Math.sin(p * Math.PI * 7) * 0.45) * env     // the wave itself
       o.rHandZ   = Math.sin(p * Math.PI * 7) * 0.25 * env
       o.headYaw  = -0.06 * env
@@ -159,7 +159,7 @@ const GESTURES: Record<string, GestureDef> = {
     duration: 2.6,
     apply(_p, env, o) {
       o.rUpperZ   = -0.35 * env
-      o.rUpperX   = 0.55 * env                             // forearm swings toward the chin
+      o.rUpperX   = -0.55 * env                            // forearm swings toward the chin
       o.rLowerZ   = -1.55 * env
       o.headYaw   = 0.12 * env
       o.headPitch = 0.08 * env
@@ -183,20 +183,27 @@ const GESTURES: Record<string, GestureDef> = {
 const FACE_HOLD_S = 4.5
 const WINK_HOLD_S = 1.4
 
-/** cue name → VRM preset expression + weight. The universal fallback layer. */
-const PRESET_FOR: Record<string, [name: string, weight: number]> = {
-  happy:     ['happy', 0.7],
-  excited:   ['happy', 1.0],
-  shy:       ['happy', 0.35],
-  wink:      ['blinkLeft', 1.0],
-  sad:       ['sad', 0.8],
-  angry:     ['angry', 0.85],
-  surprised: ['surprised', 0.95],
-  calm:      ['relaxed', 0.8],
-  shocked:   ['surprised', 1.0],
+/** cue name → VRM preset candidates (first the model has, wins) + weight.
+ *  The universal fallback layer for models without artist morphs. VRM 0.x has
+ *  no 'surprised' preset, so those fall through to the 'oh' viseme — an open
+ *  O-mouth is a decent surprise on any rig. */
+const PRESET_FOR: Record<string, [name: string, weight: number][]> = {
+  happy:     [['happy', 0.7]],
+  excited:   [['happy', 1.0]],
+  shy:       [['happy', 0.35]],
+  wink:      [['blinkLeft', 1.0]],
+  sad:       [['sad', 0.8]],
+  angry:     [['angry', 0.85]],
+  surprised: [['surprised', 0.95], ['oh', 0.8]],
+  calm:      [['relaxed', 0.8]],
+  shocked:   [['surprised', 1.0], ['oh', 0.9]],
 }
 
-/** cue name → the artist's expressions, best first (see miku-nt.anim.json). */
+/** cue name → the artist's expressions, best first (see miku-nt.anim.json).
+ *  Ordered against what actually SURVIVES this model's export (Smile, Cry,
+ *  Hau, and partial Star Eyes/Anger): Star Eyes' surviving お morph is a
+ *  bright wide-eyed "ooh!" — the best surprise on offer — while Hau reads
+ *  flustered, which suits shy and shocked. */
 const ARTIST_FOR: Record<string, string[]> = {
   happy:     ['Smile'],
   excited:   ['Star Eyes', 'Smile2', 'Smile'],
@@ -204,9 +211,9 @@ const ARTIST_FOR: Record<string, string[]> = {
   wink:      ['Wink'],
   sad:       ['Cry'],
   angry:     ['Anger'],
-  surprised: ['Hau', 'Star Eyes'],
+  surprised: ['Star Eyes', 'Hau'],
   calm:      ['Calm'],
-  shocked:   ['Pale'],
+  shocked:   ['Pale', 'Hau'],
 }
 
 /**
@@ -445,21 +452,35 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
         // Index the model's morph targets by name so the artist's facial
         // expressions can be driven directly.
         //
-        // Then keep only the expressions the model can actually PERFORM. UniVRM
-        // strips any morph the VRM's own presets don't reference, so a Unity
-        // package's expression set is routinely wider than the exported .vrm's:
-        // this model ships Wink / Blush / Star Eyes clips, but the morphs behind
-        // them (ウィンク, 照れ, 星目) didn't survive the export. Applying those
-        // would silently do nothing, so drop them rather than pretend.
+        // Then keep whatever parts of each expression the model can actually
+        // PERFORM. UniVRM strips any morph the VRM's own presets don't
+        // reference, so a Unity package's expression set is routinely wider
+        // than the exported .vrm's — on this model only 3 of 11 expressions
+        // survived whole. An expression that kept SOME of its morphs is still
+        // worth having (Star Eyes without 星目 still opens her mouth in an
+        // "oh"), so keep the surviving subset rather than demanding all-or-
+        // nothing; only fully-stripped expressions are dropped.
         if (animData?.expressions) {
           const index = indexMorphTargets(loaded)
           const usable: Record<string, Record<string, number>> = {}
+          const partial: string[] = []
           for (const [name, targets] of Object.entries(animData.expressions)) {
-            if (Object.keys(targets).every(m => index.has(m))) usable[name] = targets
+            const kept = Object.fromEntries(
+              Object.entries(targets).filter(([m]) => index.has(m)),
+            )
+            const survived = Object.keys(kept).length
+            if (survived === 0) continue
+            usable[name] = kept
+            if (survived < Object.keys(targets).length) {
+              partial.push(`${name} (${survived}/${Object.keys(targets).length})`)
+            }
           }
           morphs = index
           animData = { expressions: usable }
-          console.log(`[avatar] artist expressions usable: ${Object.keys(usable).join(', ') || '(none)'}`)
+          console.log(
+            `[avatar] artist expressions usable: ${Object.keys(usable).join(', ') || '(none)'}` +
+            (partial.length ? ` — partial: ${partial.join(', ')}` : ''),
+          )
         }
 
         if (loaded.lookAt) loaded.lookAt.target = lookTarget
@@ -529,6 +550,16 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
       if (vrm) {
         const expr = vrm.expressionManager
 
+        // The face the LLM asked for, while its hold lasts — and the artist's
+        // version of it when this model kept those morphs. The artist version
+        // REPLACES the preset fallback rather than stacking on it: both tend to
+        // bind the same underlying morphs (the VRM 'happy' preset and the
+        // artist's Smile both drive 笑い), and 0.7 + 0.65 of the same morph
+        // extrapolates the mesh past its authored shape into a crushed grimace.
+        const face = cueFace && time < cueFace.until ? cueFace.name : null
+        const artistHave = (n: string) => !!(morphs && animData?.expressions && n in animData.expressions)
+        const artistFace = face ? ARTIST_FOR[face]?.find(artistHave) ?? null : null
+
         if (expr) {
           // Lip sync — the mouth follows the actual TTS waveform while speaking.
           // When the tap isn't attached (see utils/lipsync) this reads 0 and the
@@ -549,18 +580,18 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
             }
           }
 
-          // The face the LLM asked for via a cue, while its hold lasts.
-          const face = cueFace && time < cueFace.until ? cueFace.name : null
-
           // A little life in the face for each state: attentive while listening,
           // pleased while speaking, neutral at rest — unless the LLM chose a
           // face, which wins while it's held. Weights are lerped so expressions
-          // fade in and out rather than snapping.
+          // fade in and out rather than snapping. The preset layer only carries
+          // a cue face when the artist layer can't (see artistFace above).
           const presetTarget = new Map<string, number>()
           presetTarget.set('relaxed', listening && !face ? 0.35 + vol * 0.2 : 0)
           presetTarget.set('happy',   speaking  && !face ? 0.25 : 0)
-          const cuePreset = face ? PRESET_FOR[face] : undefined
-          if (cuePreset && expr.getExpression(cuePreset[0])) {
+          const cuePreset = face && !artistFace
+            ? PRESET_FOR[face]?.find(([name]) => expr.getExpression(name))
+            : undefined
+          if (cuePreset) {
             presetTarget.set(cuePreset[0], Math.max(presetTarget.get(cuePreset[0]) ?? 0, cuePreset[1]))
           }
           // Anything held from an earlier cue but absent from this frame's
@@ -600,11 +631,11 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
           bones.lShoulder?.rotation.set(0, 0, flip * -IDLE_POSE.shoulderZ)
           bones.rShoulder?.rotation.set(0, 0, flip *  IDLE_POSE.shoulderZ)
           if (bones.lUpper) {
-            bones.lUpper.rotation.x = IDLE_POSE.upperArmX + g.lUpperX
+            bones.lUpper.rotation.x = flip * (IDLE_POSE.upperArmX + g.lUpperX)
             bones.lUpper.rotation.z = flip * (-IDLE_POSE.upperArmZ + swayL + g.lUpperZ)
           }
           if (bones.rUpper) {
-            bones.rUpper.rotation.x = IDLE_POSE.upperArmX + g.rUpperX
+            bones.rUpper.rotation.x = flip * (IDLE_POSE.upperArmX + g.rUpperX)
             bones.rUpper.rotation.z = flip * (IDLE_POSE.upperArmZ + swayR + g.rUpperZ)
           }
           if (bones.lLower) bones.lLower.rotation.z = flip * (-IDLE_POSE.lowerArmZ + g.lLowerZ)
@@ -612,7 +643,7 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
           if (bones.lHand)  bones.lHand.rotation.z  = flip * (-IDLE_POSE.handZ + g.lHandZ)
           if (bones.rHand)  bones.rHand.rotation.z  = flip * ( IDLE_POSE.handZ + g.rHandZ)
           if (bones.spine) {
-            bones.spine.rotation.x = IDLE_POSE.spineX + g.spineX
+            bones.spine.rotation.x = flip * (IDLE_POSE.spineX + g.spineX)
             bones.spine.rotation.z = flip * shiftPhase * 0.018             // weight shift…
           }
           if (bones.hips) bones.hips.rotation.z = flip * -shiftPhase * 0.012  // …hips counter it
@@ -621,19 +652,26 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
         // Idle breathing + a gentle lean toward the user while listening.
         const chest = vrm.humanoid?.getNormalizedBoneNode('chest')
         if (chest) {
-          chest.rotation.x = Math.sin(time * 1.6) * 0.02 + (listening ? 0.05 : 0)
+          chest.rotation.x = flip * (Math.sin(time * 1.6) * 0.02 + (listening ? 0.05 : 0))
         }
 
         // Head follows the touch point, damped so it doesn't snap. Tracking is
         // integrated in its own variables and composed with the gesture's
         // nod/shake and a slow idle drift, so none of them feed back into the
         // damping of the others.
+        //
+        // NOTE the flip on pitch: X-axis rotations mirror between VRM 0.x and
+        // 1.0 exactly like Z (conjugating by rotateVRM0's 180° Y-turn negates
+        // both), which is why the un-flipped original made her look UP at a
+        // touch near the bottom of the screen and threw her head back whenever
+        // the pointer sat on the on-screen buttons. Yaw is preserved by that
+        // same conjugation, so it stays un-flipped.
         const head = vrm.humanoid?.getNormalizedBoneNode('neck')
         if (head) {
           trackedYaw   += (pointerX * 0.35 - trackedYaw)   * 0.06
           trackedPitch += (-pointerY * 0.2 - trackedPitch) * 0.06
-          head.rotation.y = trackedYaw   + g.headYaw   + Math.sin(time * 0.21) * 0.02
-          head.rotation.x = trackedPitch + g.headPitch + Math.sin(time * 0.33) * 0.012
+          head.rotation.y = trackedYaw + g.headYaw + Math.sin(time * 0.21) * 0.02
+          head.rotation.x = flip * (trackedPitch + g.headPitch + Math.sin(time * 0.33) * 0.012)
         }
 
         // Vertical hop (cheer/jump), scaled by the model's real height so any
@@ -668,14 +706,10 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
           const flourish = ['Wink', 'Hau', 'Star Eyes'].find(have)
 
           // The LLM's face cue takes priority when the artist authored a match —
-          // her own Star Eyes beat a generic preset every time. Fall through to
-          // nothing if the model can't do the expression: the VRM's own presets
-          // are still driving underneath, so she never ends up expressionless.
-          const cueWant = cueFace && time < cueFace.until
-            ? ARTIST_FOR[cueFace.name]?.find(have) ?? null
-            : null
+          // her own Star Eyes beat a generic preset every time (artistFace is
+          // computed once, above, and also suppresses the preset fallback).
           const want =
-              cueWant                    ? cueWant
+              artistFace                 ? artistFace
             : speaking  && have('Smile') ? 'Smile'
             : listening && have('Calm')  ? 'Calm'
             : !speaking && !listening && winkUntil > time && flourish ? flourish
