@@ -40,6 +40,13 @@ client/public/avatar.vrm
 client/public/live2d/
 vtuber models/
 *.vrm
+# VRM Animation clips (.vrma). The pixiv/VRoid motion pack is free but its licence
+# forbids redistributing the raw files in an extractable form, so — like the .vrm
+# models — they're kept out of git and dropped into client/public/vrma (dev) or the
+# server's avatar mount (prod) at runtime. Credit: "Character animation credits to
+# pixiv Inc.'s VRoid Project".
+*.vrma
+client/public/vrma/
 # Bind-mounted into the container at /data/avatar (see docker-compose.yml) and
 # served at the web root by server/src/index.ts. Copy this folder to the server
 # host; it never travels through git or the Docker image.

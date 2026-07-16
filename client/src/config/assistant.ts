@@ -32,6 +32,14 @@ export type AvatarSpec =
        * a requirement.
        */
       anim?: string
+      /**
+       * Optional gesture-cue → .vrma clip map. VRM Animation files play through a
+       * mixer and retarget onto ANY humanoid, so authored motions replace the
+       * procedural gestures for the cues listed here (others stay procedural).
+       * Keys are avatar cue names (see utils/avatarCues); values are URLs served
+       * from the web root. Absent → all gestures stay procedural.
+       */
+      motions?: Record<string, string>
     }
 
 // ── The model catalogue ──────────────────────────────────────────────────────
@@ -81,7 +89,23 @@ export const AVATAR_MODELS: AvatarModel[] = [
     // 4096 texture limit), and a full viseme + blink set, so lip-sync works.
     // Redistribution-prohibited: keep it out of git, same as the other models.
     note: 'VRM — true 3D, artist’s pose + expressions',
-    spec: { kind: 'vrm', model: '/miku-nt.vrm', anim: '/miku-nt.anim.json' },
+    spec: {
+      kind: 'vrm',
+      model: '/miku-nt.vrm',
+      anim: '/miku-nt.anim.json',
+      // pixiv/VRoid free VRM Animation pack (.vrma). Authored motions that play
+      // over the procedural pose on these gesture cues; every other cue stays
+      // procedural. Credit: "Character animation credits to pixiv Inc.'s VRoid
+      // Project". Kept out of git (see .gitignore) — drop the pack into
+      // client/public/vrma (dev) or the server avatar mount (prod).
+      motions: {
+        wave:  '/vrma/greeting.vrma',
+        cheer: '/vrma/spin.vrma',
+        jump:  '/vrma/squat.vrma',
+        peace: '/vrma/peace.vrma',
+        pose:  '/vrma/pose.vrma',
+      },
+    },
   },
   {
     id: 'frieren',

@@ -23,7 +23,7 @@ export interface AvatarCue {
 
 // Canonical vocabulary. Keep it small: a local model uses a dozen cues
 // reliably, but hallucinates freely inside a huge one.
-export const GESTURE_CUES = ['wave', 'nod', 'shake', 'bow', 'cheer', 'think', 'jump'] as const
+export const GESTURE_CUES = ['wave', 'nod', 'shake', 'bow', 'cheer', 'think', 'jump', 'peace', 'pose'] as const
 export const FACE_CUES    = ['happy', 'excited', 'shy', 'wink', 'sad', 'angry', 'surprised', 'calm', 'shocked'] as const
 
 export type GestureName = (typeof GESTURE_CUES)[number]
@@ -55,6 +55,12 @@ const ALIASES: Record<string, { kind: 'gesture' | 'face'; name: string }> = {
   ponder:  { kind: 'gesture', name: 'think' },
   hooray:  { kind: 'gesture', name: 'cheer' },
   yay:     { kind: 'gesture', name: 'cheer' },
+  peacesign: { kind: 'gesture', name: 'peace' },
+  'peace sign': { kind: 'gesture', name: 'peace' },
+  vsign:   { kind: 'gesture', name: 'peace' },
+  'v sign': { kind: 'gesture', name: 'peace' },
+  posing:  { kind: 'gesture', name: 'pose' },
+  'model pose': { kind: 'gesture', name: 'pose' },
 }
 
 function resolveCue(word: string): { kind: 'gesture' | 'face'; name: string } | null {

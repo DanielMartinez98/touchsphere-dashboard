@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMUtils, type VRM } from '@pixiv/three-vrm'
+import { VRMAnimationLoaderPlugin, createVRMAnimationClip, type VRMAnimation } from '@pixiv/three-vrm-animation'
 import type { AppMode } from '../../hooks/useAppMode'
 import type { AvatarStatus } from '../../hooks/useAvatar'
 import { getMouthLevel } from '../../utils/lipsync'
@@ -39,6 +40,9 @@ interface Props {
   modelUrl: string
   /** Optional pose + expression JSON that ships alongside the model. */
   animUrl?: string
+  /** Optional gesture-cue → .vrma clip URLs. Authored motions that replace the
+   *  procedural gesture for those cues; others stay procedural. */
+  motions?: Record<string, string>
   /** How close she sits to the camera. Higher = closer. */
   zoom: number
   /** Vertical shift as a fraction of the frame. Negative = up. */
@@ -237,7 +241,7 @@ function indexMorphTargets(vrm: VRM): MorphIndex {
 }
 
 
-export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolume, modelUrl, animUrl, zoom, offsetY, onStatus, onFps }: Props) {
+export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolume, modelUrl, animUrl, motions, zoom, offsetY, onStatus, onFps }: Props) {
   const mountRef       = useRef<HTMLDivElement>(null)
   const modeRef        = useRef(mode)
   const voiceListenRef = useRef(voiceListening)
@@ -314,6 +318,17 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
     let morphs: MorphIndex | null = null
     // Currently-held facial expression, lerped so it doesn't snap on/off.
     const morphWeights = new Map<string, number>()
+
+    // ── VRM Animation (.vrma) playback ───────────────────────────────────────
+    // Authored motions from the assistant's `motions` map, retargeted onto this
+    // model and played through a mixer. While one runs it OWNS the body — the
+    // procedural pose/gesture/head writes are skipped — then the procedural idle
+    // resumes. These clips start and end near a neutral stance, so the handoff
+    // needs no explicit blend. Optional: a model without motions (or a clip that
+    // fails to load) just keeps the procedural gestures.
+    let mixer: THREE.AnimationMixer | null = null
+    const motionClips = new Map<string, THREE.AnimationClip>()
+    let activeMotion: THREE.AnimationAction | null = null
 
     // Bones the per-frame pose/gesture system drives, cached at load. The
     // resting stance is re-applied every frame so gesture offsets can layer on
@@ -506,6 +521,28 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
 
         vrm = loaded
         onStatusRef.current?.('ready')
+
+        // ── Load the authored motions (.vrma), if this profile declares any ──
+        // Streamed in after the model is already on screen — the clips are
+        // optional flourishes, so the avatar must never wait on them. Each is a
+        // glb with a VRMC_vrm_animation extension; createVRMAnimationClip
+        // retargets it onto THIS vrm's humanoid, so it plays on a 0.x rig too.
+        if (motions && Object.keys(motions).length > 0) {
+          mixer = new THREE.AnimationMixer(loaded.scene)
+          // A one-shot clip that finishes hands the body back to the procedural
+          // idle — clearing activeMotion is the whole handoff.
+          mixer.addEventListener('finished', () => { activeMotion = null })
+          const vrmaLoader = new GLTFLoader()
+          vrmaLoader.register((parser) => new VRMAnimationLoaderPlugin(parser))
+          for (const [cue, url] of Object.entries(motions)) {
+            vrmaLoader.loadAsync(url).then((gltf) => {
+              if (disposed) return
+              const va = (gltf.userData['vrmAnimations'] as VRMAnimation[] | undefined)?.[0]
+              if (!va) { console.warn(`[avatar] no animation in ${url}`); return }
+              motionClips.set(cue, createVRMAnimationClip(va, loaded))
+            }).catch((err) => console.warn(`[avatar] motion load failed (${url}):`, err))
+          }
+        }
       }
     }
 
@@ -527,7 +564,21 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
     // useVoice fires these in sync with the sentence chunk being spoken.
     const offCue = onCue((cue) => {
       if (cue.kind === 'gesture') {
-        if (GESTURES[cue.name] && gestureQueue.length < 2) gestureQueue.push(cue.name)
+        // An authored .vrma clip for this cue wins over the procedural gesture:
+        // it plays through the mixer and takes over the whole body until it ends.
+        const clip = mixer ? motionClips.get(cue.name) : undefined
+        if (clip && mixer) {
+          if (activeMotion) activeMotion.stop()
+          const action = mixer.clipAction(clip)
+          action.reset()
+          action.setLoop(THREE.LoopOnce, 1)
+          action.clampWhenFinished = false
+          action.fadeIn(0.25)
+          action.play()
+          activeMotion = action
+        } else if (GESTURES[cue.name] && gestureQueue.length < 2) {
+          gestureQueue.push(cue.name)
+        }
       } else if (PRESET_FOR[cue.name] || ARTIST_FOR[cue.name]) {
         cueFace = { name: cue.name, until: time + (cue.name === 'wink' ? WINK_HOLD_S : FACE_HOLD_S) }
       }
@@ -550,6 +601,10 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
 
       if (vrm) {
         const expr = vrm.expressionManager
+        // While an authored .vrma clip runs it owns the whole body — skip every
+        // procedural bone write below so the two don't fight. The clips start and
+        // end near a neutral stance, so the handoff needs no explicit blend.
+        const motionActive = activeMotion !== null
 
         // The face the LLM asked for, while its hold lasts — and the artist's
         // version of it when this model kept those morphs. The artist version
@@ -642,7 +697,7 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
         const shiftPhase = Math.sin(time * 0.22) * 0.7 + Math.sin(time * 0.11 + 0.6) * 0.3
         const swayL = Math.sin(time * 0.5) * 0.022
         const swayR = Math.sin(time * 0.5 + 1.7) * 0.022
-        if (bones) {
+        if (bones && !motionActive) {
           bones.lShoulder?.rotation.set(0, 0, flip * -IDLE_POSE.shoulderZ)
           bones.rShoulder?.rotation.set(0, 0, flip *  IDLE_POSE.shoulderZ)
           if (bones.lUpper) {
@@ -669,7 +724,7 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
         // catch the eye, which is most of what sells "alive" on an otherwise
         // still model.
         const chest = vrm.humanoid?.getNormalizedBoneNode('chest')
-        if (chest) {
+        if (chest && !motionActive) {
           chest.rotation.x = flip * (Math.sin(time * 1.5) * 0.035 + (listening ? 0.05 : 0))
         }
 
@@ -685,7 +740,7 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
         // the pointer sat on the on-screen buttons. Yaw is preserved by that
         // same conjugation, so it stays un-flipped.
         const head = vrm.humanoid?.getNormalizedBoneNode('neck')
-        if (head) {
+        if (head && !motionActive) {
           trackedYaw   += (pointerX * 0.35 - trackedYaw)   * 0.06
           trackedPitch += (-pointerY * 0.2 - trackedPitch) * 0.06
           // Two out-of-sync sines per axis so the head wanders instead of
@@ -695,8 +750,9 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
         }
 
         // Vertical hop (cheer/jump), scaled by the model's real height so any
-        // authoring scale hops the same apparent amount.
-        vrm.scene.position.y = baseSceneY + g.rootY * modelHeight
+        // authoring scale hops the same apparent amount. Skipped during a .vrma
+        // clip, which drives the hips itself.
+        if (!motionActive) vrm.scene.position.y = baseSceneY + g.rootY * modelHeight
 
         // Keep the gaze target out in front of the camera and scaled to the
         // model, so head-tracking behaves the same at any authoring scale.
@@ -705,6 +761,11 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
           eyeY + pointerY * baseDist * 0.15,
           baseDist,
         )
+
+        // Advance the authored motion (if any) just before vrm.update(), so its
+        // bone writes are the last word before the humanoid is committed and the
+        // spring bones (hair/skirt) settle on top of the pose.
+        if (mixer) mixer.update(delta)
 
         // Drives expressions, look-at, and spring bones (hair/clothing physics).
         vrm.update(delta)
@@ -785,6 +846,10 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
       window.removeEventListener('mousemove', handlePointer)
       window.removeEventListener('touchmove', handlePointer)
       window.removeEventListener('resize', handleResize)
+      if (mixer) {
+        mixer.stopAllAction()
+        mixer.uncacheRoot(mixer.getRoot())
+      }
       if (vrm) {
         scene.remove(vrm.scene)
         VRMUtils.deepDispose(vrm.scene)
