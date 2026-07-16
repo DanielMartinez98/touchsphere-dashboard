@@ -89,12 +89,13 @@ type MorphIndex = Map<string, Array<{ mesh: THREE.Mesh; index: number }>>
 // values are mirrored per side and per spec version at apply time (`flip`).
 const IDLE_POSE = {
   shoulderZ: 0.06,   // shoulders settled down from the T-pose shrug
-  upperArmZ: 1.27,   // ~73° down — arms hang with a little clearance from the body
-  upperArmX: -0.17,  // rest forward (VRM 1.0 forward is −x) so the hands settle in
-                     // FRONT of the thighs instead of clipping into them
-  lowerArmZ: 0.34,   // a softer elbow bend — relaxed, not planks, and swings the
-                     // forearms slightly forward to keep the hands off the hips
-  handZ:     0.10,   // relaxed wrists
+  upperArmZ: 1.22,   // arms hang slightly OUT from vertical so the hands sit beside
+                     // the hips (above the flared skirt), not against it
+  upperArmX: -0.03,  // almost no forward lean — leaning the arms forward pushed the
+                     // hands into the FRONT of the skirt, where they clipped
+  lowerArmZ: 0.10,   // near-straight forearms — a bigger elbow bend swung the hands
+                     // inward until they met at the centre and sank into the skirt
+  handZ:     0.06,   // relaxed wrists, turned in just a touch
   spineX:    0.02,   // barely-there slouch
 }
 
