@@ -7,6 +7,7 @@ import { useVolume, setVolume, getEffectiveGain, type VolumeCategory } from '../
 import { useWakeWordEnabled, setWakeWordEnabled, useWakeWordTranscript, useWakeWordStatus } from '../hooks/useWakeWord'
 import { ASSISTANT_PROFILES, ASSISTANT_ORDER, AVATAR_MODELS, getAvatarModel, setAssistantId, useAssistant, type AssistantId } from '../config/assistant'
 import { useAvatarEnabled, setAvatarEnabled, useAvatarRuntime, useAvatarFps, useAvatarFraming, setAvatarFraming, resetAvatarFraming, useAvatarModelOverride, setAvatarModelId, ZOOM_MIN, ZOOM_MAX, OFFSET_MIN, OFFSET_MAX } from '../hooks/useAvatar'
+import { GESTURE_CUES, FACE_CUES, dispatchCue } from '../utils/avatarCues'
 import { useVoicePitch, setVoicePitch, PITCH_MIN, PITCH_MAX } from '../hooks/useVoicePitch'
 import { playVoicePreview } from '../utils/voicePreview'
 import { useAutoSchedule, fireBedtimeAlert } from '../hooks/useAutoSchedule'
@@ -802,6 +803,46 @@ export function SettingsPanel() {
                       }`}>
                         {avatarFps} fps
                       </span>
+                    </div>
+                  )}
+
+                  {/* Animation test board — fires the exact cue events the LLM's
+                      hidden [tags] produce, so tapping these exercises the same
+                      code path as a real reply. Debug tool: it lives behind the
+                      same "ready" gate as the framing sliders. */}
+                  {avatarEnabled && !avatarIsSphere && avatarRuntime.status === 'ready' && (
+                    <div className="space-y-3 pt-1">
+                      <span className="text-white/40 text-xs">Test animations</span>
+                      <div className="grid grid-cols-3 gap-2">
+                        {GESTURE_CUES.map(name => (
+                          <button
+                            key={name}
+                            type="button"
+                            onClick={() => dispatchCue({ kind: 'gesture', name })}
+                            className="rounded-xl px-2 py-2.5 bg-white/5 border border-white/8 active:bg-cyan-500/20 text-white/70 text-xs font-medium capitalize"
+                          >
+                            {name}
+                          </button>
+                        ))}
+                      </div>
+                      <span className="text-white/40 text-xs">Test faces</span>
+                      <div className="grid grid-cols-3 gap-2">
+                        {FACE_CUES.map(name => (
+                          <button
+                            key={name}
+                            type="button"
+                            onClick={() => dispatchCue({ kind: 'face', name })}
+                            className="rounded-xl px-2 py-2.5 bg-white/5 border border-white/8 active:bg-cyan-500/20 text-white/70 text-xs font-medium capitalize"
+                          >
+                            {name}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-white/30 text-xs leading-relaxed">
+                        Gestures play once; faces hold for a few seconds and fade.
+                        These are the same cues the assistant sends invisibly inside
+                        its replies.
+                      </p>
                     </div>
                   )}
                 </div>
