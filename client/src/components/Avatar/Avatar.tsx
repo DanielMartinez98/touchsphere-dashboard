@@ -85,9 +85,11 @@ type MorphIndex = Map<string, Array<{ mesh: THREE.Mesh; index: number }>>
 // values are mirrored per side and per spec version at apply time (`flip`).
 const IDLE_POSE = {
   shoulderZ: 0.06,   // shoulders settled down from the T-pose shrug
-  upperArmZ: 1.32,   // ~76° down — arms hanging close to the body
-  upperArmX: -0.06,  // a hint forward (on a hanging arm, VRM 1.0 forward is −x)
-  lowerArmZ: 0.24,   // visible elbow bend so the arms aren't planks
+  upperArmZ: 1.27,   // ~73° down — arms hang with a little clearance from the body
+  upperArmX: -0.17,  // rest forward (VRM 1.0 forward is −x) so the hands settle in
+                     // FRONT of the thighs instead of clipping into them
+  lowerArmZ: 0.34,   // a softer elbow bend — relaxed, not planks, and swings the
+                     // forearms slightly forward to keep the hands off the hips
   handZ:     0.10,   // relaxed wrists
   spineX:    0.02,   // barely-there slouch
 }
@@ -184,36 +186,35 @@ const FACE_HOLD_S = 4.5
 const WINK_HOLD_S = 1.4
 
 /** cue name → VRM preset candidates (first the model has, wins) + weight.
- *  The universal fallback layer for models without artist morphs. VRM 0.x has
- *  no 'surprised' preset, so those fall through to the 'oh' viseme — an open
+ *  This is the PRIMARY expression layer: a VRM's own presets are complete and
+ *  reliable, whereas the artist morphs below (ARTIST_FOR) are routinely stripped
+ *  on export. On miku-nt these presets resolve to — happy→joy (ワ+はぅ, a bright
+ *  OPEN-eyed smile), relaxed→fun (笑い, the closed-eye ^_^ smile), sad→sorrow
+ *  (with tears), angry, and blinkLeft→ウィンク２ (a real wink). VRM 0.x has no
+ *  'surprised' preset, so those fall through to the 'oh' viseme — an open
  *  O-mouth is a decent surprise on any rig. */
 const PRESET_FOR: Record<string, [name: string, weight: number][]> = {
-  happy:     [['happy', 0.7]],
+  happy:     [['happy', 0.85]],
   excited:   [['happy', 1.0]],
   shy:       [['happy', 0.35]],
   wink:      [['blinkLeft', 1.0]],
-  sad:       [['sad', 0.8]],
-  angry:     [['angry', 0.85]],
-  surprised: [['surprised', 0.95], ['oh', 0.8]],
+  sad:       [['sad', 0.85]],
+  angry:     [['angry', 0.9]],
+  surprised: [['surprised', 0.95], ['oh', 0.85]],
   calm:      [['relaxed', 0.8]],
   shocked:   [['surprised', 1.0], ['oh', 0.9]],
 }
 
-/** cue name → the artist's expressions, best first (see miku-nt.anim.json).
- *  Ordered against what actually SURVIVES this model's export (Smile, Cry,
- *  Hau, and partial Star Eyes/Anger): Star Eyes' surviving お morph is a
- *  bright wide-eyed "ooh!" — the best surprise on offer — while Hau reads
- *  flustered, which suits shy and shocked. */
+/** cue name → the artist's own morph expressions (see miku-nt.anim.json), used
+ *  ONLY where they beat the VRM preset. Most of this model's authored set was
+ *  stripped on export (16 morphs survived) and what remains either duplicates a
+ *  preset (Smile == fun/relaxed, Anger == angry) or closes her eyes — crucially
+ *  'Smile' is 笑い, which shuts her eyes, so mapping it to 'happy' made them
+ *  vanish. The one uniquely-useful survivor is はぅ (Hau): a flustered blush the
+ *  presets don't offer, so shy is the only cue kept here. Everything else
+ *  deliberately falls through to the PRESET_FOR layer above. */
 const ARTIST_FOR: Record<string, string[]> = {
-  happy:     ['Smile'],
-  excited:   ['Star Eyes', 'Smile2', 'Smile'],
-  shy:       ['Blush', 'Hau'],
-  wink:      ['Wink'],
-  sad:       ['Cry'],
-  angry:     ['Anger'],
-  surprised: ['Star Eyes', 'Hau'],
-  calm:      ['Calm'],
-  shocked:   ['Pale', 'Hau'],
+  shy: ['Hau'],
 }
 
 /**
@@ -588,6 +589,18 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
           const presetTarget = new Map<string, number>()
           presetTarget.set('relaxed', listening && !face ? 0.35 + vol * 0.2 : 0)
           presetTarget.set('happy',   speaking  && !face ? 0.25 : 0)
+
+          // Idle wink — a small flourish so she has some life between replies.
+          // Driven off the VRM's blinkLeft preset (ウィンク２ on this model): the
+          // artist's own ウィンク morph didn't survive export, so the old artist-
+          // layer flourish fell through to はぅ and made her look flustered at
+          // random instead of winking.
+          if (!speaking && !listening && !face && time > nextWinkAt) {
+            winkUntil  = time + 0.5
+            nextWinkAt = time + 25 + Math.random() * 35
+          }
+          if (winkUntil > time) presetTarget.set('blinkLeft', 1)
+
           const cuePreset = face && !artistFace
             ? PRESET_FOR[face]?.find(([name]) => expr.getExpression(name))
             : undefined
@@ -622,11 +635,13 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
 
         // ── Pose — resting stance + gesture offsets, re-applied every frame ──
         // Idle micro-motion rides on top: a slow weight shift, out-of-phase arm
-        // sway, and (below) head drift. Amplitudes are tiny on purpose —
-        // visible life at a glance, invisible when you look straight at it.
-        const shiftPhase = Math.sin(time * 0.25)
-        const swayL = Math.sin(time * 0.5) * 0.012
-        const swayR = Math.sin(time * 0.5 + 1.7) * 0.012
+        // sway, and (below) head drift + breathing. Two out-of-sync sines are
+        // summed for the weight shift so it drifts like a person settling their
+        // balance rather than ticking like a metronome — the single-sine version
+        // read as statue-still.
+        const shiftPhase = Math.sin(time * 0.22) * 0.7 + Math.sin(time * 0.11 + 0.6) * 0.3
+        const swayL = Math.sin(time * 0.5) * 0.022
+        const swayR = Math.sin(time * 0.5 + 1.7) * 0.022
         if (bones) {
           bones.lShoulder?.rotation.set(0, 0, flip * -IDLE_POSE.shoulderZ)
           bones.rShoulder?.rotation.set(0, 0, flip *  IDLE_POSE.shoulderZ)
@@ -644,15 +659,18 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
           if (bones.rHand)  bones.rHand.rotation.z  = flip * ( IDLE_POSE.handZ + g.rHandZ)
           if (bones.spine) {
             bones.spine.rotation.x = flip * (IDLE_POSE.spineX + g.spineX)
-            bones.spine.rotation.z = flip * shiftPhase * 0.018             // weight shift…
+            bones.spine.rotation.z = flip * shiftPhase * 0.03              // weight shift…
           }
-          if (bones.hips) bones.hips.rotation.z = flip * -shiftPhase * 0.012  // …hips counter it
+          if (bones.hips) bones.hips.rotation.z = flip * -shiftPhase * 0.02   // …hips counter it
         }
 
-        // Idle breathing + a gentle lean toward the user while listening.
+        // Idle breathing + a gentle lean toward the user while listening. The
+        // breath is deliberately visible — the chest rises and falls enough to
+        // catch the eye, which is most of what sells "alive" on an otherwise
+        // still model.
         const chest = vrm.humanoid?.getNormalizedBoneNode('chest')
         if (chest) {
-          chest.rotation.x = flip * (Math.sin(time * 1.6) * 0.02 + (listening ? 0.05 : 0))
+          chest.rotation.x = flip * (Math.sin(time * 1.5) * 0.035 + (listening ? 0.05 : 0))
         }
 
         // Head follows the touch point, damped so it doesn't snap. Tracking is
@@ -670,8 +688,10 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
         if (head) {
           trackedYaw   += (pointerX * 0.35 - trackedYaw)   * 0.06
           trackedPitch += (-pointerY * 0.2 - trackedPitch) * 0.06
-          head.rotation.y = trackedYaw + g.headYaw + Math.sin(time * 0.21) * 0.02
-          head.rotation.x = flip * (trackedPitch + g.headPitch + Math.sin(time * 0.33) * 0.012)
+          // Two out-of-sync sines per axis so the head wanders instead of
+          // sweeping on a fixed cycle — a slow look-around that never repeats.
+          head.rotation.y = trackedYaw + g.headYaw + Math.sin(time * 0.19) * 0.035 + Math.sin(time * 0.077) * 0.02
+          head.rotation.x = flip * (trackedPitch + g.headPitch + Math.sin(time * 0.31) * 0.02)
         }
 
         // Vertical hop (cheer/jump), scaled by the model's real height so any
@@ -695,25 +715,14 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
         // morphs the VRM presets don't expose at all (照れ / blush, ウィンク / wink,
         // 星目 / star eyes), so they don't fight the lip-sync visemes above.
         if (morphs && animData?.expressions) {
-          const have = (name: string) => name in animData!.expressions!
-
-          // Occasional flourish while idle, so she isn't a waxwork between
-          // replies. Whichever of these the model actually kept on export.
-          if (!speaking && !listening && time > nextWinkAt) {
-            winkUntil  = time + 0.6
-            nextWinkAt = time + 25 + Math.random() * 35
-          }
-          const flourish = ['Wink', 'Hau', 'Star Eyes'].find(have)
-
-          // The LLM's face cue takes priority when the artist authored a match —
-          // her own Star Eyes beat a generic preset every time (artistFace is
-          // computed once, above, and also suppresses the preset fallback).
-          const want =
-              artistFace                 ? artistFace
-            : speaking  && have('Smile') ? 'Smile'
-            : listening && have('Calm')  ? 'Calm'
-            : !speaking && !listening && winkUntil > time && flourish ? flourish
-            : null
+          // The artist morph layer now carries ONLY the held cue faces that
+          // ARTIST_FOR keeps (just はぅ/Hau — see that table). Speaking, listening
+          // and idle faces are the VRM presets' job now: the surviving artist
+          // morphs either duplicate a preset or close her eyes, so driving them
+          // here is what made 'happy' blank her eyes and the idle flourish look
+          // flustered. `artistFace` is computed once, above, and also suppresses
+          // the preset fallback for whatever it does cover.
+          const want = artistFace
 
           // Ease every known expression toward its target weight — snapping a face
           // on and off looks robotic, and a lerp costs nothing.
