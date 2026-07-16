@@ -1,12 +1,12 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, lazy, Suspense } from 'react'
 import { Check, X as XIcon, RotateCw, ClipboardCopy, MessageSquare, Trash2, Volume2 } from 'lucide-react'
 import { useAudioDevices } from '../hooks/useAudioDevices'
 import { useDevice } from '../hooks/useDevice'
 import { playSound, playRecordChime } from '../utils/sound'
 import { useVolume, setVolume, getEffectiveGain, type VolumeCategory } from '../hooks/useVolume'
 import { useWakeWordEnabled, setWakeWordEnabled, useWakeWordTranscript, useWakeWordStatus } from '../hooks/useWakeWord'
-import { ASSISTANT_PROFILES, ASSISTANT_ORDER, AVATAR_MODELS, getAvatarModel, setAssistantId, useAssistant, type AssistantId } from '../config/assistant'
-import { useAvatarEnabled, setAvatarEnabled, useAvatarRuntime, useAvatarFps, useAvatarFraming, setAvatarFraming, resetAvatarFraming, useAvatarModelOverride, setAvatarModelId, ZOOM_MIN, ZOOM_MAX, OFFSET_MIN, OFFSET_MAX } from '../hooks/useAvatar'
+import { ASSISTANT_PROFILES, ASSISTANT_ORDER, AVATAR_MODELS, getAvatarModel, setAssistantId, useAssistant, type AssistantId, type AvatarSpec } from '../config/assistant'
+import { useAvatarEnabled, setAvatarEnabled, useAvatarRuntime, useAvatarFps, useAvatarFraming, setAvatarFraming, resetAvatarFraming, useAvatarModelOverride, setAvatarModelId, ZOOM_MIN, ZOOM_MAX, OFFSET_MIN, OFFSET_MAX, type AvatarStatus } from '../hooks/useAvatar'
 import { GESTURE_CUES, FACE_CUES, dispatchCue } from '../utils/avatarCues'
 import { useVoicePitch, setVoicePitch, PITCH_MIN, PITCH_MAX } from '../hooks/useVoicePitch'
 import { playVoicePreview } from '../utils/voicePreview'
@@ -14,7 +14,13 @@ import { useAutoSchedule, fireBedtimeAlert } from '../hooks/useAutoSchedule'
 import { useRipple } from '../hooks/useRipple'
 import { useDebugLog, clearDebugLog, getDebugLog } from '../utils/debugLog'
 
-type Tab = 'assistant' | 'sounds' | 'hardware' | 'schedule' | 'system' | 'debug'
+type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'system' | 'debug'
+
+// The preview reuses the dashboard's own renderers. Lazy, same chunks App
+// splits out — opening the VTuber tab is what pulls in the heavy deps, and
+// only if the user actually goes there.
+const AvatarRenderer = lazy(() => import('./Avatar/Avatar'))
+const Live2DRenderer = lazy(() => import('./Avatar/Live2DAvatar'))
 
 type SoundCategory = 'sfx' | 'music' | 'voice'
 
@@ -374,6 +380,7 @@ export function SettingsPanel() {
 
   const TABS: { id: Tab; label: string }[] = [
     { id: 'assistant', label: 'Assistant' },
+    { id: 'vtuber',    label: 'VTuber'    },
     { id: 'sounds',    label: 'Audio'     },
     { id: 'hardware',  label: 'Hardware'  },
     { id: 'schedule',  label: 'Schedule'  },
@@ -655,10 +662,32 @@ export function SettingsPanel() {
                   </>
                 )}
 
+              </div>
+            )}
+
+            {/* VTuber tab — the avatar as its own page, with a live preview
+                window up top so you can SEE the character while flipping
+                models, testing animations, and dialling in framing. (The
+                fullscreen avatar is hidden behind this very overlay, which
+                made all of that blind before.) */}
+            {tab === 'vtuber' && (
+              <div className="space-y-4 max-w-lg mx-auto">
+                {/* Sticky, so the character stays in view while the controls
+                    below scroll. Mounted only while this tab is open, so the
+                    kiosk never pays for a second renderer in normal use. */}
+                <div className="sticky top-0 z-10">
+                  <VTuberPreview
+                    spec={avatarSpec}
+                    enabled={avatarEnabled}
+                    zoom={avatarFraming.zoom}
+                    offsetY={avatarFraming.offsetY}
+                  />
+                </div>
+
                 {/* Avatar — swaps the centre particle sphere for a 3D VRM model
                     that lip-syncs to the reply. Off by default. Turning it off
                     restores the sphere and leaves the audio path untouched. */}
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Avatar</span>
+                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Avatar</span>
                 <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
                   <div className="flex items-center justify-between gap-4">
                     <div className="min-w-0">
@@ -855,7 +884,15 @@ export function SettingsPanel() {
                     </div>
                   )}
                 </div>
+              </div>
+            )}
 
+            {/* Assistant tab, part two — wake word belongs with identity and
+                voice, not with the avatar visuals. A second conditional block
+                for the same tab: only one tab's blocks render at a time, and
+                this keeps the big JSX sections intact. */}
+            {tab === 'assistant' && (
+              <div className="space-y-4 max-w-lg mx-auto">
                 {/* Wake word — always-on offline detection via Vosk WASM. When
                     enabled, saying the selected assistant's wake phrase (e.g.
                     “Hey Martin”) activates it just like tapping the orb. The
@@ -1825,6 +1862,103 @@ function DebugTab() {
       >
         <ClipboardCopy size={16} /> {copied ?? 'Copy full diagnostics'}
       </button>
+    </div>
+  )
+}
+
+// ── VTuber preview ────────────────────────────────────────────────────────────
+// A live window onto the character, inside the settings overlay. It's a second,
+// settings-scoped instance of the exact renderer the dashboard uses, so what
+// you see here — model, framing, gestures fired from the test board — is what
+// the kiosk shows. It keeps its own status/fps state rather than reporting into
+// the global stores: those belong to the REAL avatar behind this overlay, and
+// two writers would fight over them.
+interface VTuberPreviewProps {
+  spec: AvatarSpec
+  enabled: boolean
+  zoom: number
+  offsetY: number
+}
+
+function VTuberPreview({ spec, enabled, zoom, offsetY }: VTuberPreviewProps) {
+  const [status, setStatus] = useState<AvatarStatus>('loading')
+  const [detail, setDetail] = useState<string | undefined>(undefined)
+  const [fps, setFps]       = useState(0)
+
+  const showModel = enabled && spec.kind !== 'sphere'
+
+  return (
+    <div className="relative h-[380px] rounded-2xl border border-white/10 bg-[#0b0b12] overflow-hidden shadow-lg">
+      {showModel && (
+        <Suspense
+          fallback={
+            <div className="absolute inset-0 flex items-center justify-center">
+              <p className="text-white/40 text-xs">Loading renderer…</p>
+            </div>
+          }
+        >
+          {spec.kind === 'live2d' ? (
+            <Live2DRenderer
+              key={spec.model}
+              mode="work"
+              voiceListening={false}
+              voiceSpeaking={false}
+              voiceVolume={0}
+              modelUrl={spec.model}
+              zoom={zoom}
+              offsetY={offsetY}
+              onStatus={(s, d) => { setStatus(s); setDetail(d) }}
+              onFps={setFps}
+            />
+          ) : spec.kind === 'vrm' ? (
+            <AvatarRenderer
+              key={spec.model}
+              mode="work"
+              voiceListening={false}
+              voiceSpeaking={false}
+              voiceVolume={0}
+              modelUrl={spec.model}
+              animUrl={spec.anim}
+              zoom={zoom}
+              offsetY={offsetY}
+              onStatus={(s, d) => { setStatus(s); setDetail(d) }}
+              onFps={setFps}
+            />
+          ) : null}
+        </Suspense>
+      )}
+
+      {/* Guidance overlays for every state where there's nothing to show. */}
+      {!enabled && (
+        <div className="absolute inset-0 flex items-center justify-center px-8">
+          <p className="text-white/40 text-sm text-center leading-relaxed">
+            The avatar is off — flip the toggle below to bring the character in.
+          </p>
+        </div>
+      )}
+      {enabled && spec.kind === 'sphere' && (
+        <div className="absolute inset-0 flex items-center justify-center px-8">
+          <p className="text-white/40 text-sm text-center leading-relaxed">
+            The orb has no character to preview — pick a model below.
+          </p>
+        </div>
+      )}
+      {showModel && status === 'loading' && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <p className="text-amber-300/80 text-xs animate-pulse">Loading model…</p>
+        </div>
+      )}
+      {showModel && status === 'error' && (
+        <div className="absolute inset-0 flex items-center justify-center px-6">
+          <div className="text-center space-y-1">
+            <p className="text-red-300/90 text-xs font-medium">Couldn’t load the model.</p>
+            {detail && <p className="text-white/30 text-xs font-mono break-words">{detail}</p>}
+          </div>
+        </div>
+      )}
+      {showModel && status === 'ready' && (
+        <span className="absolute bottom-2 right-3 text-[10px] font-mono text-white/35">{fps} fps</span>
+      )}
     </div>
   )
 }
