@@ -79,12 +79,19 @@ const POST_TTS_GRACE_MS = 500
 // four-sentence answer pays four sentences of latency up front.
 //
 // So we split the reply and pipeline it: fetch sentence 1, start playing it,
-// and fetch sentence 2 while it plays. Time-to-first-word becomes the cost of
-// one sentence instead of the whole reply, and the remaining fetches hide
-// underneath playback. Exactly one request is ever in flight, which also keeps
-// the single-model RVC server from being asked to convert two clips at once.
+// and fetch the following sentences while it plays. Time-to-first-word becomes
+// the cost of one SHORT chunk instead of the whole reply, and the remaining
+// fetches hide underneath playback. Up to two requests are kept in flight —
+// the server serialises the expensive RVC conversion itself, so the second
+// request's Kokoro synthesis overlaps the first one's conversion instead of
+// fighting it for the single conversion model.
 const MIN_CHUNK_CHARS = 45    // below this, merge forward — don't pay a round-trip for "Sure."
 const MAX_CHUNK_CHARS = 180   // above this, split at a comma/space so no chunk is a long wait
+// The first chunk is special: its synthesis time IS the time-to-first-word, and
+// for the RVC-voiced assistant that time scales with clip length. So it gets a
+// much tighter cap — start speaking after one clause, synthesise the rest
+// underneath playback.
+const FIRST_CHUNK_CHARS = 70
 
 /** Split a reply into speakable chunks at sentence boundaries. Exported for tests. */
 export function splitForSpeech(text: string): string[] {
@@ -112,15 +119,18 @@ export function splitForSpeech(text: string): string[] {
 
   // A single sentence can still be long enough to be a noticeable wait on its
   // own; break those at the last comma (else the last space) before the cap.
+  // The first chunk uses the tighter FIRST_CHUNK_CHARS cap (see above).
   const out: string[] = []
   for (let chunk of merged) {
-    while (chunk.length > MAX_CHUNK_CHARS) {
-      const head = chunk.slice(0, MAX_CHUNK_CHARS)
+    let cap = out.length === 0 ? FIRST_CHUNK_CHARS : MAX_CHUNK_CHARS
+    while (chunk.length > cap) {
+      const head = chunk.slice(0, cap)
       const cut = Math.max(head.lastIndexOf(', '), head.lastIndexOf('; '))
       const at = cut > MIN_CHUNK_CHARS ? cut + 1 : head.lastIndexOf(' ')
-      if (at <= 0) break   // one unbroken 180-char token; let it through whole
+      if (at <= 0) break   // one unbroken cap-length token; let it through whole
       out.push(chunk.slice(0, at).trim())
       chunk = chunk.slice(at).trim()
+      cap = MAX_CHUNK_CHARS
     }
     if (chunk) out.push(chunk)
   }
@@ -214,32 +224,48 @@ async function speakText(text: string, onEnd: () => void) {
   if (chunks.length === 0) { onEnd(); return }
 
   const t0 = performance.now()
+  // Keep up to two synth requests running ahead of playback. The server
+  // serialises the RVC conversion leg, so the second request's (cheap) Kokoro
+  // synthesis overlaps the first one's (expensive) conversion — that overlap is
+  // the whole point of the second slot.
+  const pending: Array<Promise<string> | undefined> = []
+  const prefetch = (i: number) => {
+    if (i >= chunks.length || pending[i]) return
+    const p = fetchClip(chunks[i]!)
+    // Awaited when its turn comes; the no-op catch only stops a failure from
+    // being reported as an unhandled rejection in the meantime.
+    p.catch(() => {})
+    pending[i] = p
+  }
+  // After a bail-out (interrupt or a failed chunk), in-flight fetches would
+  // otherwise resolve to object URLs nobody ever revokes.
+  const abandonFrom = (i: number) => {
+    for (let j = i; j < pending.length; j++) {
+      pending[j]?.then(u => URL.revokeObjectURL(u)).catch(() => {})
+    }
+  }
   try {
-    // Always keep exactly one fetch running ahead of playback.
-    let next = fetchClip(chunks[0]!)
+    prefetch(0)
+    prefetch(1)
     for (let i = 0; i < chunks.length; i++) {
       let url: string
       try {
-        url = await next
+        url = await pending[i]!
       } catch (err) {
         console.warn(`[voice] TTS chunk ${i + 1}/${chunks.length} failed:`, err)
+        abandonFrom(i + 1)
         break                    // speak what we have rather than nothing
       }
-      if (token !== playToken) { URL.revokeObjectURL(url); return }
+      if (token !== playToken) { URL.revokeObjectURL(url); abandonFrom(i + 1); return }
       if (i === 0) console.log(`[voice] first audio in ${Math.round(performance.now() - t0)}ms (${chunks.length} chunks)`)
 
-      const upcoming = chunks[i + 1]
-      // Kick off the next chunk's synthesis before playing this one, so the
-      // wait for it happens underneath the audio the user is already hearing.
-      if (upcoming) {
-        next = fetchClip(upcoming)
-        // The loop awaits this on the next pass; the no-op catch only stops a
-        // failure from being reported as an unhandled rejection in the meantime.
-        next.catch(() => {})
-      }
+      // Top the pipeline back up before playing, so the wait for upcoming
+      // chunks happens underneath the audio the user is already hearing.
+      prefetch(i + 1)
+      prefetch(i + 2)
 
       await playClip(url)
-      if (token !== playToken) return
+      if (token !== playToken) { abandonFrom(i + 1); return }
     }
   } finally {
     if (token === playToken) {

@@ -5,7 +5,8 @@
       "Bash(npm run *)",
       "Bash(node -e 'const fs=require\\('\\\\''fs'\\\\''\\);const p='\\\\''__TRACKED_VAR__'\\\\'';let s=fs.readFileSync\\(p,'\\\\''utf8'\\\\''\\);s=s.replace\\(/<button onClick=/g,'\\\\''<button type=\"button\" onClick='\\\\''\\);fs.writeFileSync\\(p,s\\)')",
       "Bash(cd ../server && npx tsc --noEmit 2>&1 | head -10)",
-      "Read(//c/Users/mmdan/OneDrive/Desktop/project_mini ipad/**)"
+      "Read(//c/Users/mmdan/OneDrive/Desktop/project_mini ipad/**)",
+      "PowerShell(node \"C:\\\\Users\\\\mmdan\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-mmdan-OneDrive-Documents-GitHub-touchsphere-dashboard\\\\109ca547-6573-4142-bade-f6e1442332a9\\\\scratchpad\\\\test-split.mjs\")"
     ]
   }
 }

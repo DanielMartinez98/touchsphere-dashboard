@@ -390,6 +390,77 @@ let rvcLoadedModel: string | null = null
 // a ?pitch= override costs one extra call rather than one per reply.
 let rvcAppliedPitch: number | null = null
 
+// The RVC server holds ONE model and converts ONE clip at a time; concurrent
+// /convert (or load-while-converting) calls interleave badly. The client keeps
+// two chunk requests in flight so that chunk N+1's Kokoro synthesis can overlap
+// chunk N's conversion — this queue is what makes that safe: only the RVC leg
+// is serialised, everything before it runs concurrently.
+let rvcQueue: Promise<void> = Promise.resolve()
+function withRVCLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = rvcQueue.then(fn)
+  rvcQueue = run.then(() => undefined, () => undefined)
+  return run
+}
+
+// ── Converted-clip cache ─────────────────────────────────────────────────────
+// A kokoro→rvc pass costs seconds of CPU, and its output for a given
+// (text, voice, model, pitch, params) never changes — so converted clips are
+// kept on disk and repeated phrases (greetings, the fallback lines, the
+// Settings preview) play back instantly instead of paying the pipeline again.
+// Best-effort throughout: any cache failure just means synthesising as before.
+const TTS_CACHE_MAX_FILES = 200
+
+function ttsCacheDir(): string {
+  return path.join(process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache', 'tts-cache')
+}
+
+function ttsCacheFile(text: string, kokoroVoice: string, model: string, pitch: number): string {
+  // Every knob that changes the audio is part of the key, so twiddling the
+  // pitch slider or env params can never serve a stale clip.
+  const id = JSON.stringify([
+    text, kokoroVoice, model, pitch,
+    RVC_F0_METHOD, RVC_INDEX_RATE, RVC_RMS_MIX_RATE, RVC_PROTECT,
+  ])
+  return crypto.createHash('sha1').update(id).digest('hex') + '.wav'
+}
+
+function ttsCacheGet(file: string): Buffer | null {
+  try {
+    const p = path.join(ttsCacheDir(), file)
+    const buf = fs.readFileSync(p)
+    if (buf.length === 0) return null
+    const now = new Date()
+    fs.utimes(p, now, now, () => {})   // freshen mtime — eviction is LRU by mtime
+    return buf
+  } catch {
+    return null   // miss (or unreadable) — just synthesise
+  }
+}
+
+function ttsCachePut(file: string, audio: Buffer): void {
+  const dir = ttsCacheDir()
+  // Write to a temp name and rename so a concurrent reader can never see a
+  // half-written WAV; rename within a directory is atomic.
+  const tmp = path.join(dir, `${file}.${crypto.randomBytes(4).toString('hex')}.tmp`)
+  void fs.promises.mkdir(dir, { recursive: true })
+    .then(() => fs.promises.writeFile(tmp, audio))
+    .then(() => fs.promises.rename(tmp, path.join(dir, file)))
+    .then(async () => {
+      // Evict oldest entries past the cap. Runs after the reply has already
+      // been sent, so this housekeeping never delays anyone.
+      const names = (await fs.promises.readdir(dir)).filter(n => n.endsWith('.wav'))
+      if (names.length <= TTS_CACHE_MAX_FILES) return
+      const stats = await Promise.all(names.map(async n => ({
+        n, t: (await fs.promises.stat(path.join(dir, n))).mtimeMs,
+      })))
+      stats.sort((a, b) => a.t - b.t)
+      for (const s of stats.slice(0, stats.length - TTS_CACHE_MAX_FILES)) {
+        await fs.promises.unlink(path.join(dir, s.n)).catch(() => {})
+      }
+    })
+    .catch(() => { void fs.promises.unlink(tmp).catch(() => {}) })
+}
+
 async function synthesizeKokoroRVC(
   text: string,
   kokoroVoice: string,
@@ -397,6 +468,17 @@ async function synthesizeKokoroRVC(
   res: import('express').Response,
   pitch: number = RVC_F0_UP_KEY,
 ) {
+  const cacheFile = ttsCacheFile(text, kokoroVoice, model, pitch)
+  const cached = ttsCacheGet(cacheFile)
+  if (cached) {
+    res.setHeader('Content-Type', 'audio/wav')
+    res.setHeader('Content-Length', cached.length)
+    res.setHeader('Cache-Control', 'no-store')
+    res.end(cached)
+    console.log(`[tts][rvc] cache hit — ${cached.length} bytes`)
+    return
+  }
+
   const t0 = Date.now()
   const wav = await kokoroSynth(text, kokoroVoice, 'wav')
   const tSpoken = Date.now()
@@ -407,6 +489,7 @@ async function synthesizeKokoroRVC(
   res.setHeader('Content-Length', out.length)
   res.setHeader('Cache-Control', 'no-store')
   res.end(out)
+  ttsCachePut(cacheFile, out)
   // Split the timing: kokoro is usually fast and rvc is usually the wait, and
   // when a reply feels slow this line is what tells you which one to chase.
   console.log(
@@ -415,8 +498,15 @@ async function synthesizeKokoroRVC(
   )
 }
 
-/** Re-timbre a WAV into `model`'s voice. Returns the converted WAV. */
-async function convertWithRVC(wav: Buffer, model: string, pitch: number): Promise<Buffer> {
+/** Re-timbre a WAV into `model`'s voice. Returns the converted WAV.
+ *  Serialised via withRVCLock — see the note on rvcQueue above. */
+function convertWithRVC(wav: Buffer, model: string, pitch: number): Promise<Buffer> {
+  return withRVCLock(() => convertWithRVCLocked(wav, model, pitch))
+}
+
+async function convertWithRVCLocked(wav: Buffer, model: string, pitch: number): Promise<Buffer> {
+  // The timeout starts HERE, once the lock is held, so a queued conversion's
+  // budget covers its own work rather than the clip ahead of it.
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), RVC_TIMEOUT_MS)
 
