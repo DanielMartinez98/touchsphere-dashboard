@@ -4,6 +4,7 @@ import { getMuted, subscribeMuted } from './useMuted'
 import { getAvatarEnabled } from './useAvatar'
 import { attachLipSync, resetLipSync } from '../utils/lipsync'
 import { startThinkingSound, stopThinkingSound } from '../utils/sound'
+import { extractCues, dispatchCue, type AvatarCue } from '../utils/avatarCues'
 
 // Fallback replies if /api/chat fails or returns nothing usable. We still want
 // the user to hear *something* so they know the loop completed.
@@ -217,11 +218,41 @@ function playClip(objectUrl: string): Promise<void> {
   })
 }
 
-async function speakText(text: string, onEnd: () => void) {
+async function speakText(text: string, onFirstAudio: () => void, onEnd: () => void, cues?: AvatarCue[]) {
   haltPlayback()                 // stop any in-flight reply so they don't pile up
   const token = playToken
   const chunks = splitForSpeech(text)
-  if (chunks.length === 0) { onEnd(); return }
+
+  // Map each chunk back to its start offset in `text` so avatar cues — whose
+  // offsets live in the same string — fire with the chunk they were written in:
+  // a [wave] mid-greeting happens WHILE the greeting is spoken. Chunks are
+  // verbatim substrings of the (whitespace-collapsed) text, in order, so a
+  // rolling indexOf recovers their positions exactly.
+  const chunkStart: number[] = []
+  {
+    let pos = 0
+    for (const chunk of chunks) {
+      const idx = text.indexOf(chunk, pos)
+      chunkStart.push(idx >= 0 ? idx : pos)
+      pos = (idx >= 0 ? idx : pos) + chunk.length
+    }
+  }
+  const fireCuesFor = (i: number) => {
+    if (!cues || cues.length === 0) return
+    const from = chunkStart[i]!
+    const to = i + 1 < chunkStart.length ? chunkStart[i + 1]! : Infinity
+    for (const cue of cues) {
+      if (cue.at >= from && cue.at < to) dispatchCue(cue)
+    }
+  }
+  // Fired once, the moment the first clip is about to play — the caller uses it
+  // to reveal the reply text in sync with the voice instead of seconds before
+  // it. If synthesis never produces audio (all chunks failed, or there was
+  // nothing speakable), it still fires just before onEnd, so the user can at
+  // least READ the reply they never got to hear.
+  let announced = false
+  const announce = () => { if (!announced) { announced = true; onFirstAudio() } }
+  if (chunks.length === 0) { announce(); onEnd(); return }
 
   const t0 = performance.now()
   // Keep up to two synth requests running ahead of playback. The server
@@ -264,11 +295,14 @@ async function speakText(text: string, onEnd: () => void) {
       prefetch(i + 1)
       prefetch(i + 2)
 
+      announce()
+      fireCuesFor(i)
       await playClip(url)
       if (token !== playToken) { abandonFrom(i + 1); return }
     }
   } finally {
     if (token === playToken) {
+      announce()   // no audio ever played — reveal the text anyway
       resetLipSync()
       onEnd()
     }
@@ -530,12 +564,18 @@ export function useVoice(): VoiceState {
         ...historyRef.current,
         { role: 'assistant', content: replyText } as ChatTurn,
       ].slice(-MAX_HISTORY_TURNS)
-      setReply(replyText)
+      // Pull out any hidden avatar cues ([wave], [happy]) the model embedded.
+      // History (above) keeps the RAW reply so the model sees its own cue style
+      // in later turns; the user only ever sees and hears the cleaned text.
+      const { clean: spokenText, cues } = extractCues(replyText)
       // Hand off audio focus from the thinking loop to the TTS reply.
       stopThinkingSound()
       setIsThinking(false)
       setIsSpeaking(true)
-      speakText(replyText, () => {
+      // The reply text is revealed by the onFirstAudio callback — in sync with
+      // the voice actually starting, not seconds ahead of it while the first
+      // chunk is still being synthesised.
+      speakText(spokenText, () => setReply(spokenText), () => {
         setIsSpeaking(false)
         setVolume(0)
         volumeRef.current = 0
@@ -552,7 +592,7 @@ export function useVoice(): VoiceState {
         // and re-bind startListeningRef to the latest closure (the guard
         // inside startListening would otherwise still see isSpeaking=true).
         setTimeout(() => startListeningRef.current?.(true), POST_TTS_GRACE_MS)
-      })
+      }, cues)
     }
 
     rec.onerror = (e) => {

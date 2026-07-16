@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { AppMode } from '../../hooks/useAppMode'
 import type { AvatarStatus } from '../../hooks/useAvatar'
 import { getMouthLevel } from '../../utils/lipsync'
+import { onCue } from '../../utils/avatarCues'
 
 // Live2D avatar — a 2D rigged model (.moc3), the format VTubers actually use.
 //
@@ -103,7 +104,7 @@ export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolum
 
         await loadCubismCore()
         const PIXI = await import('pixi.js')
-        const { Live2DModel } = await import('pixi-live2d-display-lipsyncpatch/cubism4')
+        const { Live2DModel, MotionPriority } = await import('pixi-live2d-display-lipsyncpatch/cubism4')
         if (disposed) return
 
         // The binding drives models off PIXI's shared ticker; it has to be told
@@ -199,6 +200,39 @@ export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolum
         // Blinking is handled for us — the model3.json declares an EyeBlink
         // group, and the binding drives it automatically.
 
+        // ── LLM cues ────────────────────────────────────────────────────────
+        // A 2D rig can't wave on command, but playing one of its own authored
+        // motions at the cue's moment reads as a reaction all the same — so
+        // gestures map onto whatever non-Idle motion groups the model ships
+        // (Miku: Tap / Flick / FlickUp). Face cues use the model's expression
+        // list when it has one; with none (Miku), they no-op gracefully.
+        const definitions =
+          (motionManager as unknown as { definitions?: Record<string, unknown[] | undefined> }).definitions ?? {}
+        const motionGroups = Object.keys(definitions)
+          .filter(gp => gp.toLowerCase() !== 'idle' && (definitions[gp]?.length ?? 0) > 0)
+        const GROUP_PREFERENCE: Record<string, string[]> = {
+          wave:  ['Tap', 'TapBody'],
+          nod:   ['Tap', 'TapBody'],
+          bow:   ['Tap', 'TapBody'],
+          shake: ['Flick', 'FlickDown'],
+          think: ['Flick', 'FlickDown'],
+          cheer: ['FlickUp', 'Flick'],
+          jump:  ['FlickUp', 'Flick'],
+        }
+        const expressions =
+          (motionManager as unknown as { expressionManager?: { definitions: unknown[] } }).expressionManager
+        const offCue = onCue((cue) => {
+          if (cue.kind === 'gesture') {
+            const group = GROUP_PREFERENCE[cue.name]?.find(gp => motionGroups.includes(gp)) ?? motionGroups[0]
+            // Random motion within the group; FORCE so it pre-empts the idle.
+            if (group) void model.motion(group, undefined, MotionPriority.FORCE)
+          } else if ((expressions?.definitions.length ?? 0) > 0) {
+            // No name mapping — expression names are model-specific. A random
+            // one still makes her face react at the moment the cue lands.
+            void model.expression()
+          }
+        })
+
         // ── Touch tracking ──────────────────────────────────────────────────
         // focus() turns a screen point into head/eye angles for us.
         const handlePointer = (e: MouseEvent | TouchEvent) => {
@@ -238,6 +272,7 @@ export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolum
 
         cleanupScene = () => {
           refitRef.current = null
+          offCue()
           window.removeEventListener('mousemove', handlePointer)
           window.removeEventListener('touchmove', handlePointer)
           window.removeEventListener('resize', handleResize)

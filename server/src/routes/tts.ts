@@ -180,6 +180,11 @@ export function stripStageDirections(input: string): string {
     .replace(/\*+([^*]*)\*+/g, handle)        // *hiccup* → gone;  *eehuuup* → spoken
     .replace(/_([^_\n]{1,40})_/g, handle)     // _mutters_ / _uuuugh_
     .replace(/\*/g, '')                       // stray unmatched asterisk
+    // Avatar stage cues — [wave], [happy] — are normally stripped client-side
+    // before the text ever reaches us, but anything that slips through (older
+    // clients, direct API use) must not be read aloud as "left bracket wave".
+    // Same shape as the client's tag matcher: one or two short words, no more.
+    .replace(/\[\s*[a-zA-Z]+(?:[ _-][a-zA-Z]+)?\s*\]/g, ' ')
     // Parentheticals: same rule, but only for short verb-ish asides. A longer
     // aside — "(higher tonight)" — is a real remark and is left alone.
     .replace(/\(([a-z]+(?:\s+[a-z]+){0,2})\)/gi, (m, inner: string) =>

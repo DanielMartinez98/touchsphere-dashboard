@@ -5,6 +5,7 @@ import { VRMLoaderPlugin, VRMUtils, type VRM } from '@pixiv/three-vrm'
 import type { AppMode } from '../../hooks/useAppMode'
 import type { AvatarStatus } from '../../hooks/useAvatar'
 import { getMouthLevel } from '../../utils/lipsync'
+import { onCue } from '../../utils/avatarCues'
 
 // 3D "VTuber" avatar — the alternative centre visual to the particle sphere.
 //
@@ -73,6 +74,140 @@ const EXPRESSION_STRENGTH = 0.65
 
 /** A morph target, located as (mesh, index) so we can set its influence. */
 type MorphIndex = Map<string, Array<{ mesh: THREE.Mesh; index: number }>>
+
+// ── Resting pose ─────────────────────────────────────────────────────────────
+// A bare VRM loads in a T-pose; the old fix dropped the arms with two straight
+// rotations, which reads as a mannequin. This stance adds settled shoulders, a
+// real elbow bend, relaxed wrists, a hint of slouch, and (in the animate loop)
+// a slow weight shift + arm sway so she's never statue-still.
+//
+// All angles are authored in VRM 1.0's normalized-bone convention; Z-axis
+// values are mirrored per side and per spec version at apply time (`flip`).
+const IDLE_POSE = {
+  shoulderZ: 0.06,   // shoulders settled down from the T-pose shrug
+  upperArmZ: 1.32,   // ~76° down — arms hanging close to the body
+  upperArmX: 0.06,   // a hint forward, the way relaxed arms actually hang
+  lowerArmZ: 0.24,   // visible elbow bend so the arms aren't planks
+  handZ:     0.10,   // relaxed wrists
+  spineX:    0.02,   // barely-there slouch
+}
+
+// ── Gestures — the LLM's body language ───────────────────────────────────────
+// Cues arrive as window events (see utils/avatarCues) fired by useVoice in sync
+// with the sentence being spoken. Each gesture is procedural — pure additive
+// bone offsets over time — so it works on ANY humanoid VRM, needs no animation
+// files, and can never break a model that lacks them.
+
+/** Additive offsets a gesture writes for one frame. Left/right in VRM 1.0 terms. */
+interface GestureFrame {
+  lUpperZ: number; rUpperZ: number   // + raises the left arm, − raises the right
+  lUpperX: number; rUpperX: number
+  lLowerZ: number; rLowerZ: number
+  lHandZ: number;  rHandZ: number
+  spineX: number
+  headYaw: number; headPitch: number
+  rootY: number                      // vertical hop, as a fraction of model height
+}
+
+const zeroFrame = (): GestureFrame => ({
+  lUpperZ: 0, rUpperZ: 0, lUpperX: 0, rUpperX: 0, lLowerZ: 0, rLowerZ: 0,
+  lHandZ: 0, rHandZ: 0, spineX: 0, headYaw: 0, headPitch: 0, rootY: 0,
+})
+
+interface GestureDef {
+  duration: number   // seconds
+  apply: (p: number, env: number, out: GestureFrame) => void   // p = progress 0..1
+}
+
+/** Smooth attack/release so limbs ease in and out instead of snapping. */
+function envelope(p: number, attack = 0.18, release = 0.25): number {
+  const s = (x: number) => { const c = Math.max(0, Math.min(1, x)); return c * c * (3 - 2 * c) }
+  return s(p / attack) * s((1 - p) / release)
+}
+
+const GESTURES: Record<string, GestureDef> = {
+  wave: {
+    duration: 2.0,
+    apply(p, env, o) {
+      o.rUpperZ  = -1.75 * env                                          // arm up and out
+      o.rUpperX  = -0.15 * env
+      o.rLowerZ  = (-0.35 + Math.sin(p * Math.PI * 7) * 0.45) * env     // the wave itself
+      o.rHandZ   = Math.sin(p * Math.PI * 7) * 0.25 * env
+      o.headYaw  = -0.06 * env
+    },
+  },
+  nod:   { duration: 1.0, apply(p, env, o) { o.headPitch = Math.sin(p * Math.PI * 3) * 0.22 * env } },
+  shake: { duration: 1.1, apply(p, env, o) { o.headYaw   = Math.sin(p * Math.PI * 4) * 0.28 * env } },
+  bow: {
+    duration: 1.7,
+    apply(_p, env, o) {
+      o.spineX    = 0.38 * env
+      o.headPitch = 0.22 * env
+      o.lUpperZ   = -0.10 * env; o.rUpperZ = 0.10 * env   // arms tucked slightly in
+    },
+  },
+  cheer: {
+    duration: 1.6,
+    apply(p, env, o) {
+      o.lUpperZ = 2.5 * env; o.rUpperZ = -2.5 * env       // both arms overhead
+      o.lLowerZ = IDLE_POSE.lowerArmZ * env; o.rLowerZ = -IDLE_POSE.lowerArmZ * env  // elbows straighten
+      o.rootY   = Math.abs(Math.sin(p * Math.PI * 2)) * 0.02 * env      // two little bounces
+      o.headPitch = -0.10 * env                                          // chin up
+    },
+  },
+  think: {
+    duration: 2.6,
+    apply(_p, env, o) {
+      o.rUpperZ   = -0.35 * env
+      o.rUpperX   = 0.55 * env                             // forearm swings toward the chin
+      o.rLowerZ   = -1.55 * env
+      o.headYaw   = 0.12 * env
+      o.headPitch = 0.08 * env
+    },
+  },
+  jump: {
+    duration: 1.3,
+    apply(p, env, o) {
+      const hop = Math.abs(Math.sin(p * Math.PI * 2))
+      o.rootY   = hop * 0.035 * env
+      o.lUpperZ = hop * 0.3 * env; o.rUpperZ = -hop * 0.3 * env   // arms flare on the hops
+    },
+  },
+}
+
+// ── LLM-driven faces ─────────────────────────────────────────────────────────
+// A face cue is held for a few seconds and drives BOTH layers: the VRM's own
+// expression presets (guaranteed to exist-ish on any model) and — when this
+// model kept them through export — the artist's authored morph expressions,
+// which look far more like *her*.
+const FACE_HOLD_S = 4.5
+const WINK_HOLD_S = 1.4
+
+/** cue name → VRM preset expression + weight. The universal fallback layer. */
+const PRESET_FOR: Record<string, [name: string, weight: number]> = {
+  happy:     ['happy', 0.7],
+  excited:   ['happy', 1.0],
+  shy:       ['happy', 0.35],
+  wink:      ['blinkLeft', 1.0],
+  sad:       ['sad', 0.8],
+  angry:     ['angry', 0.85],
+  surprised: ['surprised', 0.95],
+  calm:      ['relaxed', 0.8],
+  shocked:   ['surprised', 1.0],
+}
+
+/** cue name → the artist's expressions, best first (see miku-nt.anim.json). */
+const ARTIST_FOR: Record<string, string[]> = {
+  happy:     ['Smile'],
+  excited:   ['Star Eyes', 'Smile2', 'Smile'],
+  shy:       ['Blush', 'Hau'],
+  wink:      ['Wink'],
+  sad:       ['Cry'],
+  angry:     ['Anger'],
+  surprised: ['Hau', 'Star Eyes'],
+  calm:      ['Calm'],
+  shocked:   ['Pale'],
+}
 
 /**
  * Map every morph target name in the model to where it lives. The artist's
@@ -172,6 +307,33 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
     // Currently-held facial expression, lerped so it doesn't snap on/off.
     const morphWeights = new Map<string, number>()
 
+    // Bones the per-frame pose/gesture system drives, cached at load. The
+    // resting stance is re-applied every frame so gesture offsets can layer on
+    // top and always land back exactly at rest.
+    let bones: Record<
+      'lShoulder' | 'rShoulder' | 'lUpper' | 'rUpper' | 'lLower' | 'rLower' |
+      'lHand' | 'rHand' | 'spine' | 'hips',
+      THREE.Object3D | null
+    > | null = null
+    let flip = 1           // VRM 0.x mirrors Z rotations — see onModelLoaded
+    let modelHeight = 1.5  // real bounding-box height; scales gesture hops
+    let baseSceneY = 0
+
+    // ── LLM cue state ────────────────────────────────────────────────────────
+    // Gestures queue (shallowly — a burst of cues should read as expressive,
+    // not as a ten-second interpretive-dance backlog); a face cue is held for a
+    // few seconds. Both arrive via window events from useVoice, timed to the
+    // sentence being spoken.
+    const gestureQueue: string[] = []
+    let activeGesture: { def: GestureDef; startedAt: number } | null = null
+    let cueFace: { name: string; until: number } | null = null
+    // VRM preset-expression weights, lerped so faces fade rather than snap.
+    const presetWeights = new Map<string, number>()
+    // Head tracking is integrated separately from the bone it drives, so the
+    // gesture offsets composed onto the neck never feed back into the damping.
+    let trackedYaw = 0
+    let trackedPitch = 0
+
     // ── Pointer tracking (same approach as ParticleSphere) ──────────────────
     let pointerX = 0
     let pointerY = 0
@@ -244,7 +406,10 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
         loaded.scene.traverse((obj) => { obj.frustumCulled = false })
 
         // A bare VRM loads in a T-pose — arms straight out — which reads as a
-        // mannequin, not a character, so drop the arms by hand.
+        // mannequin, not a character. The resting stance (IDLE_POSE) plus any
+        // active gesture is applied to these bones EVERY FRAME in animate(),
+        // which is what lets gestures be purely additive and still always land
+        // back exactly at rest.
         //
         // NOT taken from the model's own AFK pose, even though it ships one: that
         // clip stores absolute local rotations in the FBX rig's space, where rest
@@ -254,26 +419,26 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
         // model in half. Porting it would mean parsing the FBX for its rest pose
         // and applying deltas, which isn't worth it for a static stance.
         //
-        // These rotations persist: vrm.update() drives expressions, look-at and
-        // spring bones, but never resets bone rotations we've set ourselves.
+        // Rotations we set persist: vrm.update() drives expressions, look-at and
+        // spring bones, but never resets bone rotations we've written ourselves.
         const humanoid = loaded.humanoid
         if (humanoid) {
-          const ARM_DROP = 1.25  // radians; ~72° down from horizontal
-          const ELBOW    = 0.12  // a touch of bend so the arms aren't planks
           // VRM 0.x rigs come through three-vrm's normalization mirrored about Y
           // relative to 1.0 (0.x models face -Z, and rotateVRM0 turns them round).
           // The upshot is that the same Z rotation that drops a 1.0 model's arms
           // *raises* a 0.x model's, so the sign has to follow the spec version.
-          const flip = loaded.meta?.metaVersion === '0' ? -1 : 1
-          const pose: [Parameters<typeof humanoid.getNormalizedBoneNode>[0], number][] = [
-            ['leftUpperArm',  -ARM_DROP * flip],
-            ['rightUpperArm',  ARM_DROP * flip],
-            ['leftLowerArm',  -ELBOW    * flip],
-            ['rightLowerArm',  ELBOW    * flip],
-          ]
-          for (const [name, z] of pose) {
-            const node = humanoid.getNormalizedBoneNode(name)
-            if (node) node.rotation.z = z
+          flip = loaded.meta?.metaVersion === '0' ? -1 : 1
+          bones = {
+            lShoulder: humanoid.getNormalizedBoneNode('leftShoulder'),
+            rShoulder: humanoid.getNormalizedBoneNode('rightShoulder'),
+            lUpper:    humanoid.getNormalizedBoneNode('leftUpperArm'),
+            rUpper:    humanoid.getNormalizedBoneNode('rightUpperArm'),
+            lLower:    humanoid.getNormalizedBoneNode('leftLowerArm'),
+            rLower:    humanoid.getNormalizedBoneNode('rightLowerArm'),
+            lHand:     humanoid.getNormalizedBoneNode('leftHand'),
+            rHand:     humanoid.getNormalizedBoneNode('rightHand'),
+            spine:     humanoid.getNormalizedBoneNode('spine'),
+            hips:      humanoid.getNormalizedBoneNode('hips'),
           }
         }
 
@@ -313,6 +478,8 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
         // model, matching what "zoom" means for the Live2D backend.
         const vFov = (camera.fov * Math.PI) / 180
         baseDist = (height * 1.05) / (2 * Math.tan(vFov / 2))
+        modelHeight = height
+        baseSceneY = loaded.scene.position.y
         console.log(`[avatar] model height=${height.toFixed(2)} → baseDist=${baseDist.toFixed(2)}`)
 
         vrm = loaded
@@ -333,6 +500,16 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
     // Idle wink — a small flourish so she has some life between replies.
     let nextWinkAt = 20 + Math.random() * 20
     let winkUntil = -1
+
+    // ── LLM cues → gestures + held faces ────────────────────────────────────
+    // useVoice fires these in sync with the sentence chunk being spoken.
+    const offCue = onCue((cue) => {
+      if (cue.kind === 'gesture') {
+        if (GESTURES[cue.name] && gestureQueue.length < 2) gestureQueue.push(cue.name)
+      } else if (PRESET_FOR[cue.name] || ARTIST_FOR[cue.name]) {
+        cueFace = { name: cue.name, until: time + (cue.name === 'wink' ? WINK_HOLD_S : FACE_HOLD_S) }
+      }
+    })
 
     // FPS sampling.
     let frames = 0
@@ -372,10 +549,73 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
             }
           }
 
+          // The face the LLM asked for via a cue, while its hold lasts.
+          const face = cueFace && time < cueFace.until ? cueFace.name : null
+
           // A little life in the face for each state: attentive while listening,
-          // pleased while speaking, neutral at rest.
-          expr.setValue('relaxed', listening ? 0.35 + vol * 0.2 : 0)
-          expr.setValue('happy',   speaking  ? 0.25 : 0)
+          // pleased while speaking, neutral at rest — unless the LLM chose a
+          // face, which wins while it's held. Weights are lerped so expressions
+          // fade in and out rather than snapping.
+          const presetTarget = new Map<string, number>()
+          presetTarget.set('relaxed', listening && !face ? 0.35 + vol * 0.2 : 0)
+          presetTarget.set('happy',   speaking  && !face ? 0.25 : 0)
+          const cuePreset = face ? PRESET_FOR[face] : undefined
+          if (cuePreset && expr.getExpression(cuePreset[0])) {
+            presetTarget.set(cuePreset[0], Math.max(presetTarget.get(cuePreset[0]) ?? 0, cuePreset[1]))
+          }
+          // Anything held from an earlier cue but absent from this frame's
+          // targets decays back to zero — a sad face must not outlive its hold.
+          for (const name of presetWeights.keys()) {
+            if (!presetTarget.has(name)) presetTarget.set(name, 0)
+          }
+          for (const [name, target] of presetTarget) {
+            const cur  = presetWeights.get(name) ?? 0
+            const next = Math.abs(target - cur) < 0.001 ? target : cur + (target - cur) * 0.15
+            if (next === 0 && cur === 0) { presetWeights.delete(name); continue }
+            presetWeights.set(name, next)
+            if (expr.getExpression(name)) expr.setValue(name, next)
+          }
+        }
+
+        // ── Gesture playback ─────────────────────────────────────────────────
+        if (!activeGesture && gestureQueue.length > 0) {
+          const def = GESTURES[gestureQueue.shift()!]
+          if (def) activeGesture = { def, startedAt: time }
+        }
+        const g = zeroFrame()
+        if (activeGesture) {
+          const p = (time - activeGesture.startedAt) / activeGesture.def.duration
+          if (p >= 1) activeGesture = null
+          else activeGesture.def.apply(p, envelope(p), g)
+        }
+
+        // ── Pose — resting stance + gesture offsets, re-applied every frame ──
+        // Idle micro-motion rides on top: a slow weight shift, out-of-phase arm
+        // sway, and (below) head drift. Amplitudes are tiny on purpose —
+        // visible life at a glance, invisible when you look straight at it.
+        const shiftPhase = Math.sin(time * 0.25)
+        const swayL = Math.sin(time * 0.5) * 0.012
+        const swayR = Math.sin(time * 0.5 + 1.7) * 0.012
+        if (bones) {
+          bones.lShoulder?.rotation.set(0, 0, flip * -IDLE_POSE.shoulderZ)
+          bones.rShoulder?.rotation.set(0, 0, flip *  IDLE_POSE.shoulderZ)
+          if (bones.lUpper) {
+            bones.lUpper.rotation.x = IDLE_POSE.upperArmX + g.lUpperX
+            bones.lUpper.rotation.z = flip * (-IDLE_POSE.upperArmZ + swayL + g.lUpperZ)
+          }
+          if (bones.rUpper) {
+            bones.rUpper.rotation.x = IDLE_POSE.upperArmX + g.rUpperX
+            bones.rUpper.rotation.z = flip * (IDLE_POSE.upperArmZ + swayR + g.rUpperZ)
+          }
+          if (bones.lLower) bones.lLower.rotation.z = flip * (-IDLE_POSE.lowerArmZ + g.lLowerZ)
+          if (bones.rLower) bones.rLower.rotation.z = flip * ( IDLE_POSE.lowerArmZ + g.rLowerZ)
+          if (bones.lHand)  bones.lHand.rotation.z  = flip * (-IDLE_POSE.handZ + g.lHandZ)
+          if (bones.rHand)  bones.rHand.rotation.z  = flip * ( IDLE_POSE.handZ + g.rHandZ)
+          if (bones.spine) {
+            bones.spine.rotation.x = IDLE_POSE.spineX + g.spineX
+            bones.spine.rotation.z = flip * shiftPhase * 0.018             // weight shift…
+          }
+          if (bones.hips) bones.hips.rotation.z = flip * -shiftPhase * 0.012  // …hips counter it
         }
 
         // Idle breathing + a gentle lean toward the user while listening.
@@ -384,12 +624,21 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
           chest.rotation.x = Math.sin(time * 1.6) * 0.02 + (listening ? 0.05 : 0)
         }
 
-        // Head follows the touch point, damped so it doesn't snap.
+        // Head follows the touch point, damped so it doesn't snap. Tracking is
+        // integrated in its own variables and composed with the gesture's
+        // nod/shake and a slow idle drift, so none of them feed back into the
+        // damping of the others.
         const head = vrm.humanoid?.getNormalizedBoneNode('neck')
         if (head) {
-          head.rotation.y += (pointerX * 0.35 - head.rotation.y) * 0.06
-          head.rotation.x += (-pointerY * 0.2 - head.rotation.x) * 0.06
+          trackedYaw   += (pointerX * 0.35 - trackedYaw)   * 0.06
+          trackedPitch += (-pointerY * 0.2 - trackedPitch) * 0.06
+          head.rotation.y = trackedYaw   + g.headYaw   + Math.sin(time * 0.21) * 0.02
+          head.rotation.x = trackedPitch + g.headPitch + Math.sin(time * 0.33) * 0.012
         }
+
+        // Vertical hop (cheer/jump), scaled by the model's real height so any
+        // authoring scale hops the same apparent amount.
+        vrm.scene.position.y = baseSceneY + g.rootY * modelHeight
 
         // Keep the gaze target out in front of the camera and scaled to the
         // model, so head-tracking behaves the same at any authoring scale.
@@ -418,11 +667,16 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
           }
           const flourish = ['Wink', 'Hau', 'Star Eyes'].find(have)
 
-          // Fall through to nothing if the model can't do the expression — the
-          // VRM's own happy/relaxed presets are still driving underneath, so she
-          // never ends up expressionless.
+          // The LLM's face cue takes priority when the artist authored a match —
+          // her own Star Eyes beat a generic preset every time. Fall through to
+          // nothing if the model can't do the expression: the VRM's own presets
+          // are still driving underneath, so she never ends up expressionless.
+          const cueWant = cueFace && time < cueFace.until
+            ? ARTIST_FOR[cueFace.name]?.find(have) ?? null
+            : null
           const want =
-              speaking  && have('Smile') ? 'Smile'
+              cueWant                    ? cueWant
+            : speaking  && have('Smile') ? 'Smile'
             : listening && have('Calm')  ? 'Calm'
             : !speaking && !listening && winkUntil > time && flourish ? flourish
             : null
@@ -482,6 +736,7 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
 
     return () => {
       disposed = true
+      offCue()
       if (pointerRafId !== null) cancelAnimationFrame(pointerRafId)
       cancelAnimationFrame(frameId)
       window.removeEventListener('mousemove', handlePointer)
