@@ -1,0 +1,71 @@
+# RVC — GPU (CUDA) variant of ./Dockerfile, for running the voice pipeline on
+# a box with an NVIDIA card (docker-compose.voice.yml --profile gpu). Conversion
+# that takes seconds per sentence on CPU is near-instant on CUDA.
+#
+# Identical to the CPU Dockerfile except the torch/torchaudio wheels come from
+# the cu121 index and the server starts with `-de cuda:0`. Read the CPU file's
+# header before touching ANY pin here — every one is load-bearing, and the
+# torch/torchaudio pair must stay matched or torchaudio dies at import.
+#
+# Host requirements: NVIDIA driver + nvidia-container-toolkit
+# (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/).
+# The CUDA runtime itself ships inside the torch wheels — no CUDA base image
+# needed, but the image is several GB larger than the CPU one.
+
+FROM python:3.10-slim
+
+# ffmpeg: rvc-python shells out to it for audio decode/resample.
+# build-essential + python3-dev: fairseq has C extensions to compile.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ffmpeg \
+        build-essential \
+        python3-dev \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Old pip (see the CPU Dockerfile) and the setuptools/wheel fairseq expects.
+RUN pip install --no-cache-dir "pip<24.1" "setuptools==65.5.0" "wheel"
+
+# CUDA torch, PINNED as a matched pair (same versions as the CPU image, cu121
+# wheels). cu121 works with any driver ≥ 525 — you do NOT need CUDA 12.1
+# installed on the host, just the driver.
+RUN pip install --no-cache-dir \
+        "torch==2.1.2" "torchaudio==2.1.2" \
+        --index-url https://download.pytorch.org/whl/cu121
+
+# Must exist before fairseq builds: its setup.py imports numpy, and Cython 3
+# breaks its generated sources.
+RUN pip install --no-cache-dir "Cython<3.0" "numpy==1.23.5"
+
+# From the git tag, NOT PyPI — the published sdist is missing its own C++
+# sources and cannot compile (see the CPU Dockerfile).
+RUN pip install --no-cache-dir --no-build-isolation \
+        "git+https://github.com/facebookresearch/fairseq.git@v0.12.2#egg=fairseq"
+
+RUN pip install --no-cache-dir rvc-python
+
+# Re-assert the matched pair last, after every other dependency has had its
+# say. --no-deps is essential — see the CPU Dockerfile for the war story.
+RUN pip install --no-cache-dir --force-reinstall --no-deps \
+        "torch==2.1.2" "torchaudio==2.1.2" \
+        --index-url https://download.pytorch.org/whl/cu121
+
+# Prove the whole stack imports at BUILD time (no GPU is present during the
+# build — torch.cuda is only exercised at runtime, so this still works).
+RUN python -c "import torch, torchaudio; print('torch', torch.__version__, '| torchaudio', torchaudio.__version__)" \
+    && python -c "import fairseq; print('fairseq OK')" \
+    && python -c "import fastapi, pydantic_core; print('fastapi OK')" \
+    && python -c "import rvc_python; print('rvc-python imports OK')"
+
+WORKDIR /app
+
+# Voice models live here, bind-mounted from the host: one folder per model,
+# each holding a .pth (and optionally a .index).
+VOLUME ["/app/rvc_models"]
+
+EXPOSE 5050
+
+# -l  listen on all interfaces (so the dashboard box can reach it)
+# -de cuda:0  the whole point of this file
+CMD ["python", "-m", "rvc_python", "api", "-p", "5050", "-l", "-de", "cuda:0"]

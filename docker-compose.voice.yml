@@ -1,0 +1,83 @@
+# ── Remote voice pipeline (Kokoro TTS + RVC conversion) ──────────────────────
+# Run this on a machine that can afford the compute — typically the same box
+# that already runs Ollama. The dashboard app talks to these containers over
+# plain HTTP, so where they run is purely a .env decision:
+#
+#   On the LLM machine (this file):
+#     git clone <this repo> && cd touchsphere-dashboard
+#     # put the voice model at ./rvc-models/miku/ (a .pth + optional .index)
+#     docker compose -f docker-compose.voice.yml --profile cpu up -d --build
+#     # …or, with an NVIDIA GPU + nvidia-container-toolkit installed:
+#     docker compose -f docker-compose.voice.yml --profile gpu up -d --build
+#
+#   On the dashboard machine (.env):
+#     KOKORO_URL=http://<llm-box-ip>:8880
+#     RVC_URL=http://<llm-box-ip>:5050
+#     # then restart WITHOUT the local voice containers:
+#     docker compose up -d --remove-orphans
+#
+# Exactly one profile (cpu or gpu) should be up at a time — both variants bind
+# the same host ports. The GPU profile is the reason to bother: RVC conversion
+# that takes seconds per sentence on CPU is near-instant on CUDA.
+#
+# NOTE: these ports carry no authentication — anyone on the LAN can synthesise
+# audio through them. Fine for a home network; don't forward them past it.
+
+services:
+  # ── Kokoro — neural TTS (says the words) ──────────────────────────────────
+  kokoro:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
+    container_name: touchsphere-kokoro
+    profiles: ["cpu"]
+    restart: unless-stopped
+    ports:
+      - "8880:8880"
+
+  kokoro-gpu:
+    image: ghcr.io/remsky/kokoro-fastapi-gpu:latest
+    container_name: touchsphere-kokoro
+    profiles: ["gpu"]
+    restart: unless-stopped
+    ports:
+      - "8880:8880"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ── RVC — voice conversion (turns the words into Miku) ────────────────────
+  # Same image contract as the local variant in docker-compose.yml; the voice
+  # model lives on THIS host at ./rvc-models/<name>/.
+  rvc:
+    build:
+      context: ./docker/rvc
+      dockerfile: Dockerfile
+    container_name: touchsphere-rvc
+    profiles: ["cpu"]
+    restart: unless-stopped
+    ports:
+      - "5050:5050"
+    volumes:
+      - ./rvc-models:/app/rvc_models
+
+  rvc-gpu:
+    build:
+      context: ./docker/rvc
+      dockerfile: Dockerfile.gpu
+    container_name: touchsphere-rvc
+    profiles: ["gpu"]
+    restart: unless-stopped
+    ports:
+      - "5050:5050"
+    volumes:
+      - ./rvc-models:/app/rvc_models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

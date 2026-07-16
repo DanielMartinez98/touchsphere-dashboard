@@ -18,15 +18,13 @@ services:
       - .env             # put your real secrets here (never committed)
     environment:
       NODE_ENV: production
-      # Local neural TTS (see the kokoro service below). Fallback for everyone,
-      # and the first half of Miku's voice pipeline.
-      KOKORO_URL: http://kokoro:8880
-      # Local voice conversion (see the rvc service below). Together with Kokoro
-      # this produces Miku's character voice — free, offline, no API key.
-      RVC_URL: http://rvc:5050
-    depends_on:
-      - kokoro
-      - rvc
+      # Neural TTS + voice conversion (Miku's pipeline). These default to the
+      # sibling containers below, but the app only ever talks HTTP — so on a box
+      # too slow for the conversion, set KOKORO_URL / RVC_URL in .env to a
+      # beefier machine (e.g. the one running Ollama) and run
+      # docker-compose.voice.yml THERE instead. See that file for the steps.
+      KOKORO_URL: ${KOKORO_URL:-http://kokoro:8880}
+      RVC_URL: ${RVC_URL:-http://rvc:5050}
     volumes:
       - touchsphere-cache:/data/cache   # persist cache across restarts
       # Avatar assets (Live2D model + Cubism runtime). Licensed files that are
@@ -43,9 +41,16 @@ services:
   # /v1/audio/speech dialect. This is what makes the assistants' voices work
   # with no API key, no per-word billing, and no internet connection.
   # Not exposed to the host — only the app talks to it, over the compose network.
+  #
+  # OPT-IN via the local-voice profile:
+  #   docker compose --profile local-voice up -d
+  # Skip the profile when the voice pipeline runs on another machine
+  # (docker-compose.voice.yml + KOKORO_URL/RVC_URL in .env) — this box then
+  # doesn't spend a core on synthesis it isn't doing.
   kokoro:
     image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
     container_name: touchsphere-kokoro
+    profiles: ["local-voice"]
     restart: unless-stopped
     expose:
       - "8880"
@@ -53,6 +58,7 @@ services:
   # ── RVC — local voice conversion (Miku's voice) ───────────────────────────
   # Second half of Miku's pipeline: Kokoro speaks the words, this re-timbres them
   # into her character voice. Entirely local — no key, no billing, works offline.
+  # Same local-voice profile as kokoro above; they only make sense together.
   #
   # Drop the voice model on the host at ./rvc-models/miku/ (a .pth, plus an
   # optional .index). Free Miku RVC models are on Hugging Face. Without a model
@@ -62,6 +68,7 @@ services:
       context: ./docker/rvc
       dockerfile: Dockerfile
     container_name: touchsphere-rvc
+    profiles: ["local-voice"]
     restart: unless-stopped
     expose:
       - "5050"

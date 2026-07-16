@@ -21,9 +21,16 @@ npm run start     # Run compiled dist/index.js
 
 ### Docker (from repo root)
 ```bash
-docker-compose up          # Start app + Caddy + Watchtower
-docker-compose build       # Multi-platform build (amd64 + arm64)
+docker-compose up                          # Start app + Caddy + Watchtower
+docker-compose --profile local-voice up    # …plus Kokoro + RVC on this box
+docker-compose build                       # Multi-platform build (amd64 + arm64)
 ```
+
+The Kokoro/RVC voice pipeline is location-independent (the app reaches it via
+`KOKORO_URL`/`RVC_URL`). To offload it to a faster machine (typically the Ollama
+box), run `docker-compose.voice.yml` there (`--profile gpu` for CUDA via
+`docker/rvc/Dockerfile.gpu`, `--profile cpu` otherwise) and point the URLs at it
+in `.env`; then start the dashboard box *without* `--profile local-voice`.
 
 ## Environment Setup
 
