@@ -14,7 +14,7 @@ import { useAutoSchedule, fireBedtimeAlert } from '../hooks/useAutoSchedule'
 import { useRipple } from '../hooks/useRipple'
 import { useDebugLog, clearDebugLog, getDebugLog } from '../utils/debugLog'
 
-type Tab = 'sounds' | 'hardware' | 'schedule' | 'system' | 'debug'
+type Tab = 'assistant' | 'sounds' | 'hardware' | 'schedule' | 'system' | 'debug'
 
 type SoundCategory = 'sfx' | 'music' | 'voice'
 
@@ -34,7 +34,7 @@ function formatUptime(seconds: number): string {
 
 export function SettingsPanel() {
   const [open, setOpen] = useState(false)
-  const [tab, setTab] = useState<Tab>('sounds')
+  const [tab, setTab] = useState<Tab>('assistant')
   const [confirmClose, setConfirmClose] = useState(false)
   const [playingSoundId, setPlayingSoundId] = useState<string | null>(null)
   const [ttsTesting, setTtsTesting] = useState(false)
@@ -373,11 +373,12 @@ export function SettingsPanel() {
   }
 
   const TABS: { id: Tab; label: string }[] = [
-    { id: 'sounds',   label: 'Audio'    },
-    { id: 'hardware', label: 'Hardware' },
-    { id: 'schedule', label: 'Schedule' },
-    { id: 'system',   label: 'System'   },
-    { id: 'debug',    label: 'Debug'    },
+    { id: 'assistant', label: 'Assistant' },
+    { id: 'sounds',    label: 'Audio'     },
+    { id: 'hardware',  label: 'Hardware'  },
+    { id: 'schedule',  label: 'Schedule'  },
+    { id: 'system',    label: 'System'    },
+    { id: 'debug',     label: 'Debug'     },
   ]
 
   const { schedule, updateSchedule } = useAutoSchedule()
@@ -564,11 +565,19 @@ export function SettingsPanel() {
                     Tap “Start Recording”, speak a sentence, then tap “Stop & Transcribe” to verify the mic and STT pipeline are working.
                   </p>
                 </div>
+              </div>
+            )}
 
+            {/* Assistant tab — everything about WHO the assistant is: identity,
+                voice, face (avatar + animations), and how you summon it. Split
+                out of the Audio tab, which had grown into a full-page scroll
+                that buried all of this. */}
+            {tab === 'assistant' && (
+              <div className="space-y-4 max-w-lg mx-auto">
                 {/* Assistant picker — selects the AI's name, wake word,
                     personality, and voice all at once. The choice is persisted
                     server-side so the chat persona and TTS voice follow it. */}
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Assistant</span>
+                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Assistant</span>
                 <div className="bg-white/5 rounded-2xl p-3 space-y-2 border border-white/8">
                   {ASSISTANT_ORDER.map(id => {
                     const p = ASSISTANT_PROFILES[id]
@@ -733,6 +742,46 @@ export function SettingsPanel() {
                     </div>
                   )}
 
+                  {/* Animation test board — fires the exact cue events the LLM's
+                      hidden [tags] produce, so tapping these exercises the same
+                      code path as a real reply. Sits above framing because it's
+                      the thing you come back for; framing is one-time setup. */}
+                  {avatarEnabled && !avatarIsSphere && avatarRuntime.status === 'ready' && (
+                    <div className="space-y-3 pt-1">
+                      <span className="text-white/40 text-xs">Test animations</span>
+                      <div className="grid grid-cols-3 gap-2">
+                        {GESTURE_CUES.map(name => (
+                          <button
+                            key={name}
+                            type="button"
+                            onClick={() => dispatchCue({ kind: 'gesture', name })}
+                            className="rounded-xl px-2 py-2.5 bg-white/5 border border-white/8 active:bg-cyan-500/20 text-white/70 text-xs font-medium capitalize"
+                          >
+                            {name}
+                          </button>
+                        ))}
+                      </div>
+                      <span className="text-white/40 text-xs">Test faces</span>
+                      <div className="grid grid-cols-3 gap-2">
+                        {FACE_CUES.map(name => (
+                          <button
+                            key={name}
+                            type="button"
+                            onClick={() => dispatchCue({ kind: 'face', name })}
+                            className="rounded-xl px-2 py-2.5 bg-white/5 border border-white/8 active:bg-cyan-500/20 text-white/70 text-xs font-medium capitalize"
+                          >
+                            {name}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-white/30 text-xs leading-relaxed">
+                        Gestures play once; faces hold for a few seconds and fade.
+                        These are the same cues the assistant sends invisibly inside
+                        its replies.
+                      </p>
+                    </div>
+                  )}
+
                   {/* Framing — models are authored at wildly different scales and
                       crops, so there's no default that suits every one of them.
                       Both sliders apply live, to whichever backend is active. */}
@@ -803,46 +852,6 @@ export function SettingsPanel() {
                       }`}>
                         {avatarFps} fps
                       </span>
-                    </div>
-                  )}
-
-                  {/* Animation test board — fires the exact cue events the LLM's
-                      hidden [tags] produce, so tapping these exercises the same
-                      code path as a real reply. Debug tool: it lives behind the
-                      same "ready" gate as the framing sliders. */}
-                  {avatarEnabled && !avatarIsSphere && avatarRuntime.status === 'ready' && (
-                    <div className="space-y-3 pt-1">
-                      <span className="text-white/40 text-xs">Test animations</span>
-                      <div className="grid grid-cols-3 gap-2">
-                        {GESTURE_CUES.map(name => (
-                          <button
-                            key={name}
-                            type="button"
-                            onClick={() => dispatchCue({ kind: 'gesture', name })}
-                            className="rounded-xl px-2 py-2.5 bg-white/5 border border-white/8 active:bg-cyan-500/20 text-white/70 text-xs font-medium capitalize"
-                          >
-                            {name}
-                          </button>
-                        ))}
-                      </div>
-                      <span className="text-white/40 text-xs">Test faces</span>
-                      <div className="grid grid-cols-3 gap-2">
-                        {FACE_CUES.map(name => (
-                          <button
-                            key={name}
-                            type="button"
-                            onClick={() => dispatchCue({ kind: 'face', name })}
-                            className="rounded-xl px-2 py-2.5 bg-white/5 border border-white/8 active:bg-cyan-500/20 text-white/70 text-xs font-medium capitalize"
-                          >
-                            {name}
-                          </button>
-                        ))}
-                      </div>
-                      <p className="text-white/30 text-xs leading-relaxed">
-                        Gestures play once; faces hold for a few seconds and fade.
-                        These are the same cues the assistant sends invisibly inside
-                        its replies.
-                      </p>
                     </div>
                   )}
                 </div>
