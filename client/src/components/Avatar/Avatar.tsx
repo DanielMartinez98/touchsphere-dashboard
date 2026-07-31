@@ -180,6 +180,32 @@ const GESTURES: Record<string, GestureDef> = {
       o.lUpperZ = hop * 0.3 * env; o.rUpperZ = -hop * 0.3 * env   // arms flare on the hops
     },
   },
+  // "ta-da" — arms open to present herself, chin up, a slow look side to side.
+  // The authored VRMA_01 ("show full body") does a real turn-around; this is the
+  // procedural stand-in for VRMs that don't ship it.
+  show: {
+    duration: 2.4,
+    apply(p, env, o) {
+      o.lUpperZ   = 0.7 * env;  o.rUpperZ = -0.7 * env    // arms open outward
+      o.lUpperX   = -0.22 * env; o.rUpperX = -0.22 * env
+      o.headPitch = -0.06 * env                            // chin up
+      o.headYaw   = Math.sin(p * Math.PI * 2) * 0.20 * env // glance left then right
+      o.spineX    = -0.04 * env                            // slight open chest
+    },
+  },
+  // Finger-gun: right arm punches forward with a couple of recoil kicks, then eases
+  // back. Procedural stand-in for the authored VRMA_04 ("shoot").
+  shoot: {
+    duration: 1.6,
+    apply(p, env, o) {
+      const recoil = Math.sin(p * Math.PI * 6) * 0.12 * (1 - p)   // kicks that fade
+      o.rUpperZ   = (-0.45 + recoil) * env                        // arm up toward the target
+      o.rUpperX   = -0.5 * env                                    // and forward
+      o.rLowerZ   = -0.15 * env
+      o.headPitch = 0.04 * env
+      o.headYaw   = -0.05 * env
+    },
+  },
 }
 
 // ── LLM-driven faces ─────────────────────────────────────────────────────────

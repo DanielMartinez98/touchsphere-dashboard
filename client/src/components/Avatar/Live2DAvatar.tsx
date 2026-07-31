@@ -218,6 +218,8 @@ export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolum
           think: ['Flick', 'FlickDown'],
           cheer: ['FlickUp', 'Flick'],
           jump:  ['FlickUp', 'Flick'],
+          show:  ['FlickUp', 'Flick'],
+          shoot: ['Tap', 'TapBody'],
         }
         const expressions =
           (motionManager as unknown as { expressionManager?: { definitions: unknown[] } }).expressionManager

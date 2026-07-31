@@ -93,17 +93,21 @@ export const AVATAR_MODELS: AvatarModel[] = [
       kind: 'vrm',
       model: '/miku-nt.vrm',
       anim: '/miku-nt.anim.json',
-      // pixiv/VRoid free VRM Animation pack (.vrma). Authored motions that play
-      // over the procedural pose on these gesture cues; every other cue stays
-      // procedural. Credit: "Character animation credits to pixiv Inc.'s VRoid
-      // Project". Kept out of git (see .gitignore) — drop the pack into
-      // client/public/vrma (dev) or the server avatar mount (prod).
+      // pixiv/VRoid free VRM Animation MotionPack (.vrma) — all 7 clips wired to
+      // gesture cues. Authored motions play over the procedural pose on these
+      // cues; every other cue stays procedural. Filenames are the pack's own
+      // (VRMA_01…07), so it's drop-in: extract the pack's `vrma/` folder into
+      // client/public/vrma (dev) or the server avatar mount (prod) — no renaming.
+      // Credit (required by the pack's licence): "Animation credits to pixiv
+      // Inc.'s VRoid Project". Kept out of git (see .gitignore).
       motions: {
-        wave:  '/vrma/greeting.vrma',
-        cheer: '/vrma/spin.vrma',
-        jump:  '/vrma/squat.vrma',
-        peace: '/vrma/peace.vrma',
-        pose:  '/vrma/pose.vrma',
+        show:  '/vrma/VRMA_01.vrma',   // VRMA_01 — Show full body (turn-around)
+        wave:  '/vrma/VRMA_02.vrma',   // VRMA_02 — Greeting
+        peace: '/vrma/VRMA_03.vrma',   // VRMA_03 — Peace sign
+        shoot: '/vrma/VRMA_04.vrma',   // VRMA_04 — Shoot
+        cheer: '/vrma/VRMA_05.vrma',   // VRMA_05 — Spin
+        pose:  '/vrma/VRMA_06.vrma',   // VRMA_06 — Model pose
+        jump:  '/vrma/VRMA_07.vrma',   // VRMA_07 — Squat
       },
     },
   },

@@ -23,7 +23,7 @@ export interface AvatarCue {
 
 // Canonical vocabulary. Keep it small: a local model uses a dozen cues
 // reliably, but hallucinates freely inside a huge one.
-export const GESTURE_CUES = ['wave', 'nod', 'shake', 'bow', 'cheer', 'think', 'jump', 'peace', 'pose'] as const
+export const GESTURE_CUES = ['wave', 'nod', 'shake', 'bow', 'cheer', 'think', 'jump', 'peace', 'pose', 'show', 'shoot'] as const
 export const FACE_CUES    = ['happy', 'excited', 'shy', 'wink', 'sad', 'angry', 'surprised', 'calm', 'shocked'] as const
 
 export type GestureName = (typeof GESTURE_CUES)[number]
@@ -61,6 +61,25 @@ const ALIASES: Record<string, { kind: 'gesture' | 'face'; name: string }> = {
   'v sign': { kind: 'gesture', name: 'peace' },
   posing:  { kind: 'gesture', name: 'pose' },
   'model pose': { kind: 'gesture', name: 'pose' },
+  spin:    { kind: 'gesture', name: 'cheer' },   // the spin motion reads as celebratory
+  twirl:   { kind: 'gesture', name: 'cheer' },
+  // "show" — a full-body reveal / turn-around ("ta-da, here I am")
+  shows:   { kind: 'gesture', name: 'show' },
+  showoff: { kind: 'gesture', name: 'show' },
+  'show off': { kind: 'gesture', name: 'show' },
+  showcase: { kind: 'gesture', name: 'show' },
+  turn:    { kind: 'gesture', name: 'show' },
+  'full body': { kind: 'gesture', name: 'show' },
+  fullbody: { kind: 'gesture', name: 'show' },
+  tada:    { kind: 'gesture', name: 'show' },
+  // "shoot" — a finger-gun / pew-pew pose
+  shoots:  { kind: 'gesture', name: 'shoot' },
+  bang:    { kind: 'gesture', name: 'shoot' },
+  pew:     { kind: 'gesture', name: 'shoot' },
+  pow:     { kind: 'gesture', name: 'shoot' },
+  gun:     { kind: 'gesture', name: 'shoot' },
+  fingergun: { kind: 'gesture', name: 'shoot' },
+  'finger gun': { kind: 'gesture', name: 'shoot' },
 }
 
 function resolveCue(word: string): { kind: 'gesture' | 'face'; name: string } | null {
