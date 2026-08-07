@@ -666,16 +666,24 @@ export function SettingsPanel() {
             )}
 
             {/* VTuber tab — the avatar as its own page, with a live preview
-                window up top so you can SEE the character while flipping
+                beside the controls so you can SEE the character while flipping
                 models, testing animations, and dialling in framing. (The
                 fullscreen avatar is hidden behind this very overlay, which
-                made all of that blind before.) */}
+                made all of that blind before.)
+
+                Side by side rather than stacked: a preview tall enough to frame
+                a character is most of a 1280px-high screen, so sitting it above
+                the controls pushed them off the bottom and left the sliders you
+                were adjusting invisible. Two columns give the character its
+                height and the settings theirs. Stacks again below 640px, where
+                there isn't width for both. */}
             {tab === 'vtuber' && (
-              <div className="space-y-4 max-w-lg mx-auto">
-                {/* Sticky, so the character stays in view while the controls
-                    below scroll. Mounted only while this tab is open, so the
-                    kiosk never pays for a second renderer in normal use. */}
-                <div className="sticky top-0 z-10">
+              <div className="max-w-3xl mx-auto flex flex-col sm:flex-row items-start gap-4">
+                {/* Left — live preview. Sticky, so the character stays in view
+                    while the controls scroll past it. Mounted only while this
+                    tab is open, so the kiosk never pays for a second renderer
+                    in normal use. */}
+                <div className="w-full sm:w-[280px] sm:flex-shrink-0 sticky top-0 z-10">
                   <VTuberPreview
                     spec={avatarSpec}
                     enabled={avatarEnabled}
@@ -683,6 +691,9 @@ export function SettingsPanel() {
                     offsetY={avatarFraming.offsetY}
                   />
                 </div>
+
+                {/* Right — every control, in its own scrolling column. */}
+                <div className="w-full sm:flex-1 min-w-0 space-y-4">
 
                 {/* Avatar — swaps the centre particle sphere for a 3D VRM model
                     that lip-syncs to the reply. Off by default. Turning it off
@@ -883,6 +894,7 @@ export function SettingsPanel() {
                       </span>
                     </div>
                   )}
+                </div>
                 </div>
               </div>
             )}
@@ -1887,8 +1899,10 @@ function VTuberPreview({ spec, enabled, zoom, offsetY }: VTuberPreviewProps) {
 
   const showModel = enabled && spec.kind !== 'sphere'
 
+  // Taller in the two-column layout: the frame is a portrait column there, and
+  // the extra height is free — it no longer pushes any controls down.
   return (
-    <div className="relative h-[380px] rounded-2xl border border-white/10 bg-[#0b0b12] overflow-hidden shadow-lg">
+    <div className="relative h-[380px] sm:h-[440px] rounded-2xl border border-white/10 bg-[#0b0b12] overflow-hidden shadow-lg">
       {showModel && (
         <Suspense
           fallback={
