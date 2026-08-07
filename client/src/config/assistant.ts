@@ -92,7 +92,10 @@ export const AVATAR_MODELS: AvatarModel[] = [
     spec: {
       kind: 'vrm',
       model: '/miku-nt.vrm',
-      anim: '/miku-nt.anim.json',
+      // No `anim` companion: this .vrm was re-exported from the Unity package with
+      // its full 85-morph set (but no VRM presets), so Avatar.tsx rebuilds the
+      // expression presets from the morphs directly (see SYNTH_EXPRESSIONS) —
+      // richer than the old stripped set, and no companion JSON needed.
       // pixiv/VRoid free VRM Animation MotionPack (.vrma) — all 7 clips wired to
       // gesture cues. Authored motions play over the procedural pose on these
       // cues; every other cue stays procedural. Filenames are the pack's own

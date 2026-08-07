@@ -25,6 +25,7 @@ import { MicMuteButton } from './components/MicMuteButton'
 import { VoiceInterface } from './components/VoiceInterface'
 import { BedtimeBanner } from './components/BedtimeBanner'
 import { TimersOverlay } from './components/TimersOverlay'
+import { BrowserOverlay } from './components/BrowserOverlay'
 import { useAutoMode } from './hooks/useAutoSchedule'
 import { useMuted } from './hooks/useMuted'
 import { useAvatarEnabled, useAvatarRuntime, useAvatarFraming, useAvatarModelOverride, setAvatarRuntime, setAvatarFps, loadAvatarFramingFromServer } from './hooks/useAvatar'
@@ -335,6 +336,11 @@ function App() {
 
       {/* Countdown timers & alarms — glanceable pills + ringing banner */}
       <TimersOverlay timers={timers} stopwatch={stopwatch} />
+
+      {/* Browser window — pages and videos the assistant put on screen. `hold`
+          keeps a video paused for as long as she has the floor, so playback and
+          the voice loop never talk over each other. */}
+      <BrowserOverlay hold={voice.isListening || voice.isThinking || voice.isSpeaking} />
 
       {/* Lock screen — covers everything when mode is 'locked' */}
       {mode === 'locked' && (

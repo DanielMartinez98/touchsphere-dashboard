@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
-import { VRMLoaderPlugin, VRMUtils, type VRM } from '@pixiv/three-vrm'
+import { VRMLoaderPlugin, VRMUtils, VRMExpression, VRMExpressionMorphTargetBind, VRMExpressionOverrideType, type VRM } from '@pixiv/three-vrm'
 import { VRMAnimationLoaderPlugin, createVRMAnimationClip, type VRMAnimation } from '@pixiv/three-vrm-animation'
 import type { AppMode } from '../../hooks/useAppMode'
 import type { AvatarStatus } from '../../hooks/useAvatar'
@@ -226,14 +226,14 @@ const WINK_HOLD_S = 1.4
  *  O-mouth is a decent surprise on any rig. */
 const PRESET_FOR: Record<string, [name: string, weight: number][]> = {
   happy:     [['happy', 0.85]],
-  excited:   [['happy', 1.0]],
-  shy:       [['happy', 0.35]],
+  excited:   [['excited', 1.0], ['happy', 1.0]],
+  shy:       [['blush', 1.0], ['happy', 0.35]],
   wink:      [['blinkLeft', 1.0]],
   sad:       [['sad', 0.85]],
   angry:     [['angry', 0.9]],
   surprised: [['surprised', 0.95], ['oh', 0.85]],
-  calm:      [['relaxed', 0.8]],
-  shocked:   [['surprised', 1.0], ['oh', 0.9]],
+  calm:      [['calm', 0.9], ['relaxed', 0.8]],
+  shocked:   [['shocked', 1.0], ['surprised', 1.0], ['oh', 0.9]],
 }
 
 /** cue name → the artist's own morph expressions (see miku-nt.anim.json), used
@@ -265,6 +265,70 @@ function indexMorphTargets(vrm: VRM): MorphIndex {
     }
   })
   return index
+}
+
+// ── Synthesised expression presets ────────────────────────────────────────────
+// A VRM exported straight from a VRChat avatar ships all its blendshapes but NO
+// VRM expression presets — the preset↔morph mapping only ever lived inside the
+// original .vrm. miku-nt is exactly this case: we re-exported it from the Unity
+// package to recover its full 85-morph set, which dropped the presets. Without
+// presets, three-vrm has nothing to drive for lip-sync, blink, or the emotion
+// faces (setValue('aa'|'blink'|'happy'…) all no-op).
+//
+// So at load we REBUILD the presets from the morphs, by the artist's (Japanese)
+// morph names. Each is created only when the model both LACKS that preset and HAS
+// the morph, so a model that ships real presets (Cortana) or lacks these morphs
+// is left completely untouched. This also lets us expose faces the original
+// preset set never had — real 'surprised' (びっくり), 'blush' (照れ), 'calm'
+// (なごみ), 'shocked' (がーん), 'excited' (星目) — wired to cues in PRESET_FOR.
+const SYNTH_EXPRESSIONS: Record<string, { morphs: Record<string, number>; overrideBlink?: boolean }> = {
+  // Visemes + blink — the functional layer lip-sync and blinking drive.
+  aa:         { morphs: { 'あ': 1 } },
+  ih:         { morphs: { 'い': 1 } },
+  ou:         { morphs: { 'う': 1 } },
+  ee:         { morphs: { 'え': 1 } },
+  oh:         { morphs: { 'お': 1 } },
+  blink:      { morphs: { 'まばたき': 1 } },
+  blinkLeft:  { morphs: { 'ウィンク': 1 } },
+  blinkRight: { morphs: { 'ウィンク右': 1 } },
+  // Emotions — the same bindings the artist used in the original .vrm's presets.
+  happy:      { morphs: { 'ワ': 1, 'はぅ': 0.4 } },
+  relaxed:    { morphs: { '笑い': 1, '下': 0.3 }, overrideBlink: true },  // closed-eye smile
+  sad:        { morphs: { '∧': 0.5, '困る': 0.7, '涙': 1 } },
+  angry:      { morphs: { '∧': 1, '怒り': 1 } },
+  surprised:  { morphs: { 'びっくり': 1 } },
+  // Faces the stripped preset set never exposed — now recoverable from the full
+  // morph list. Wired to cues in PRESET_FOR (shy→blush, excited→星目, calm, shocked).
+  excited:    { morphs: { '星目': 1, 'ワ': 0.6 } },
+  blush:      { morphs: { '照れ': 1, 'はぅ': 0.4 } },
+  calm:       { morphs: { 'なごみ': 1 }, overrideBlink: true },
+  shocked:    { morphs: { 'がーん': 1 } },
+}
+
+/**
+ * Build and register any SYNTH_EXPRESSIONS the model is missing, binding each to
+ * the morphs it needs (that exist). Returns the names actually created.
+ */
+function synthesizeExpressions(vrm: VRM, morphIndex: MorphIndex): string[] {
+  const em = vrm.expressionManager
+  if (!em) return []
+  const made: string[] = []
+  for (const [name, def] of Object.entries(SYNTH_EXPRESSIONS)) {
+    if (em.getExpression(name)) continue   // model already ships this preset — leave it
+    const expr = new VRMExpression(name)
+    let bound = 0
+    for (const [morphName, weight] of Object.entries(def.morphs)) {
+      for (const { mesh, index } of morphIndex.get(morphName) ?? []) {
+        expr.addBind(new VRMExpressionMorphTargetBind({ primitives: [mesh], index, weight }))
+        bound++
+      }
+    }
+    if (bound === 0) continue               // none of its morphs exist on this model
+    if (def.overrideBlink) expr.overrideBlink = VRMExpressionOverrideType.Block
+    em.registerExpression(expr)
+    made.push(name)
+  }
+  return made
 }
 
 
@@ -503,13 +567,30 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
         // worth having (Star Eyes without 星目 still opens her mouth in an
         // "oh"), so keep the surviving subset rather than demanding all-or-
         // nothing; only fully-stripped expressions are dropped.
+        // Index morph targets by name — needed both to SYNTHESISE the expression
+        // presets and to drive the (legacy) artist morph layer.
+        const morphIndex = indexMorphTargets(loaded)
+        morphs = morphIndex
+
+        // Rebuild any missing expression presets from the model's morphs (see
+        // SYNTH_EXPRESSIONS). This is what lets miku-nt — re-exported without VRM
+        // presets to keep its full morph set — lip-sync, blink and emote. Models
+        // that already ship presets, or lack these morphs, are untouched.
+        const synthesised = synthesizeExpressions(loaded, morphIndex)
+        if (synthesised.length) {
+          console.log(`[avatar] synthesised ${synthesised.length} expression presets: ${synthesised.join(', ')}`)
+        }
+
+        // Legacy artist-morph layer: if this model shipped a companion anim JSON,
+        // keep whatever expressions it can still perform. Superseded by the
+        // synthesised presets above for miku-nt (which no longer loads anim), but
+        // retained for any model that does rely on it.
         if (animData?.expressions) {
-          const index = indexMorphTargets(loaded)
           const usable: Record<string, Record<string, number>> = {}
           const partial: string[] = []
           for (const [name, targets] of Object.entries(animData.expressions)) {
             const kept = Object.fromEntries(
-              Object.entries(targets).filter(([m]) => index.has(m)),
+              Object.entries(targets).filter(([m]) => morphIndex.has(m)),
             )
             const survived = Object.keys(kept).length
             if (survived === 0) continue
@@ -518,7 +599,6 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
               partial.push(`${name} (${survived}/${Object.keys(targets).length})`)
             }
           }
-          morphs = index
           animData = { expressions: usable }
           console.log(
             `[avatar] artist expressions usable: ${Object.keys(usable).join(', ') || '(none)'}` +

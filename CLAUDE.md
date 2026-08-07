@@ -40,6 +40,7 @@ Copy `.env.example` to `server/.env` and fill in:
 - `DEFAULT_LAT` / `DEFAULT_LON` — recommended (falls back to GeoIP)
 - `ELEVENLABS_API_KEY` — optional; falls back to `espeak-ng` on Pi
 - `OLLAMA_URL` / `OLLAMA_MODEL` — LLM backend for `/api/chat`
+- `YOUTUBE_API_KEY` — optional; makes `play_video` search reliable (falls back to scraping)
 - `PORT` — defaults to 3001
 
 ## Architecture
@@ -65,6 +66,7 @@ A full-screen kiosk SPA (720×1280 portrait on Raspberry Pi 5 / 7" touchscreen) 
 - **[hooks/useVoice.ts](client/src/hooks/useVoice.ts)** — core voice loop: SpeechRecognition → `/api/stt` → `/api/chat` → `/api/tts` playback
 - **[hooks/useWakeWord.ts](client/src/hooks/useWakeWord.ts)** — offline wake-word via Vosk running in a Web Worker; the wake phrases come from the selected assistant profile
 - **[config/assistant.ts](client/src/config/assistant.ts)** — client half of the **selectable assistant** system: the profile table (name, `wakePatterns`, `wakePhrase`, tagline) + a reactive store (`useAssistant`, `setAssistantId`). Four profiles: **Martin** (default), **Jarvis**, **TouchSphere**, **Merlin**. The user picks one in Settings; the id is persisted via `POST /api/state/assistant` so the server's persona + voice follow. The server half (personality + TTS voice) is [server/src/config/assistant.ts](server/src/config/assistant.ts) — keep ids/names in sync. **This is the AI's identity** — the product/app is still "TouchSphere".
+- **[components/BrowserOverlay.tsx](client/src/components/BrowserOverlay.tsx)** — full-screen browser window the assistant opens via `open_website` / `play_video` (see [server/src/routes/browse.ts](server/src/routes/browse.ts)). Three bodies: the YouTube embed, a live iframe, or reader mode for the majority of sites that refuse to be framed — with a manual reader ⇄ site toggle, since an iframe can still come back blank. Target lives in [hooks/useBrowse.ts](client/src/hooks/useBrowse.ts) and is opened by `useVoice` at the moment the spoken reply is revealed, so window and voice land together. A video is held (poster, then iframe-API pause/resume) for as long as the assistant has the floor — playback and the voice loop must never share the room
 - **[hooks/useAppMode.ts](client/src/hooks/useAppMode.ts)** — `work` / `rest` / `locked` mode; lock credential hashed client-side
 
 ### Backend (`server/src/`)
@@ -72,6 +74,7 @@ A full-screen kiosk SPA (720×1280 portrait on Raspberry Pi 5 / 7" touchscreen) 
 - **[index.ts](server/src/index.ts)** — Express 5 app; Helmet security headers (CSP disabled for Vite), rate limiting (60/min data, 600/min tiles), CORS, request timing logs
 - **[routes/chat.ts](server/src/routes/chat.ts)** — `POST /api/chat` → Ollama LLM with conversation history; the system-prompt personality is built per-request from the selected assistant profile ([config/assistant.ts](server/src/config/assistant.ts) → `getSelectedProfile()`). `ASSISTANT_NAME` env seeds the default profile
 - **[config/assistant.ts](server/src/config/assistant.ts)** — server half of the selectable-assistant system: per-profile `persona` (chat personality) + `elevenVoiceId`/`espeakVoice` (TTS). Reads the selected id from `assistant.json` in `$CACHE_DIR`; consumed by chat.ts (persona) and tts.ts (voice)
+- **[routes/browse.ts](server/src/routes/browse.ts)** — the assistant's **show-it-on-screen** half. `web_search`/`web_fetch` only let her *talk* about what she found; the `open_website` and `play_video` tools defined here resolve a target and return a `display` payload on the chat reply, which the client renders in [BrowserOverlay](client/src/components/BrowserOverlay.tsx). Resolution is server-side because it needs the network: YouTube search (Data API when `YOUTUBE_API_KEY` is set, otherwise `ytInitialData` off the results page), a DuckDuckGo-HTML fallback for when the model passes a query instead of a URL, and an up-front embeddability probe — most sites send `X-Frame-Options`/`frame-ancestors` and would render as a blank iframe, so those are flagged for reader mode instead. `GET /api/browse/page?url=` serves that reader extraction. Model-supplied URLs are checked against loopback/LAN ranges before any fetch
 - **[routes/tts.ts](server/src/routes/tts.ts)** — `GET /api/tts?text=` → ElevenLabs WAV or `espeak-ng` fallback
 - **[routes/stt.ts](server/src/routes/stt.ts)** — `POST /api/stt` → Vosk or Whisper transcription
 - **[routes/state.ts](server/src/routes/state.ts)** — `POST /api/state/*` persists media list, mode, lock credential as JSON in `$CACHE_DIR` (Docker volume `/data/cache`)

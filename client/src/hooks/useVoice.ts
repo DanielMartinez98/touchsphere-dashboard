@@ -5,6 +5,7 @@ import { getAvatarEnabled } from './useAvatar'
 import { attachLipSync, resetLipSync } from '../utils/lipsync'
 import { startThinkingSound, stopThinkingSound } from '../utils/sound'
 import { extractCues, dispatchCue, type AvatarCue } from '../utils/avatarCues'
+import { openBrowseFromPayload } from './useBrowse'
 
 // Fallback replies if /api/chat fails or returns nothing usable. We still want
 // the user to hear *something* so they know the loop completed.
@@ -318,7 +319,11 @@ export interface ChatTurn { role: 'user' | 'assistant'; content: string }
 // Server enforces its own cap too, but we trim here so we don't ship junk.
 const MAX_HISTORY_TURNS = 20
 
-interface ChatReply { text: string; keepListening: boolean }
+// `display` is whatever the assistant asked to put on screen this turn (a web
+// page or a video, via open_website / play_video). It's carried back to the
+// caller rather than opened here, so the window appears in step with the spoken
+// reply instead of while she's still thinking.
+interface ChatReply { text: string; keepListening: boolean; display: unknown }
 
 async function fetchReply(messages: ChatTurn[]): Promise<ChatReply> {
   try {
@@ -329,9 +334,9 @@ async function fetchReply(messages: ChatTurn[]): Promise<ChatReply> {
     })
     if (!res.ok) {
       console.warn('[voice] /api/chat http', res.status)
-      return { text: FALLBACK_REPLIES[Math.floor(Math.random() * FALLBACK_REPLIES.length)]!, keepListening: false }
+      return { text: FALLBACK_REPLIES[Math.floor(Math.random() * FALLBACK_REPLIES.length)]!, keepListening: false, display: null }
     }
-    const json = (await res.json()) as { reply?: string; changed?: string[]; keepListening?: boolean }
+    const json = (await res.json()) as { reply?: string; changed?: string[]; keepListening?: boolean; display?: unknown }
     // Tell affected widgets to re-fetch their data (e.g. the media list after
     // the assistant added an item via add_media_item).
     const changed = Array.isArray(json.changed) ? json.changed : []
@@ -340,10 +345,10 @@ async function fetchReply(messages: ChatTurn[]): Promise<ChatReply> {
       window.dispatchEvent(new CustomEvent('ts:state-changed', { detail: { slices: changed } }))
     }
     const text = (json.reply ?? '').trim() || FALLBACK_REPLIES[0]!
-    return { text, keepListening: json.keepListening === true }
+    return { text, keepListening: json.keepListening === true, display: json.display ?? null }
   } catch (err) {
     console.warn('[voice] /api/chat failed:', err)
-    return { text: FALLBACK_REPLIES[Math.floor(Math.random() * FALLBACK_REPLIES.length)]!, keepListening: false }
+    return { text: FALLBACK_REPLIES[Math.floor(Math.random() * FALLBACK_REPLIES.length)]!, keepListening: false, display: null }
   }
 }
 
@@ -558,7 +563,7 @@ export function useVoice(): VoiceState {
         ...historyRef.current,
         { role: 'user', content: text } as ChatTurn,
       ].slice(-MAX_HISTORY_TURNS)
-      const { text: replyText, keepListening: wantFollowUp } = await fetchReply(historyRef.current)
+      const { text: replyText, keepListening: wantFollowUp, display } = await fetchReply(historyRef.current)
       console.log(`[voice] reply: "${replyText}" keepListening=${wantFollowUp}`)
       historyRef.current = [
         ...historyRef.current,
@@ -575,7 +580,13 @@ export function useVoice(): VoiceState {
       // The reply text is revealed by the onFirstAudio callback — in sync with
       // the voice actually starting, not seconds ahead of it while the first
       // chunk is still being synthesised.
-      speakText(spokenText, () => setReply(spokenText), () => {
+      speakText(spokenText, () => {
+        setReply(spokenText)
+        // Opened alongside the reply text, not before it: "here's that tutorial"
+        // and the window it refers to land together. The player itself waits for
+        // her to stop talking (see BrowserOverlay's `hold`).
+        if (display) openBrowseFromPayload(display)
+      }, () => {
         setIsSpeaking(false)
         setVolume(0)
         volumeRef.current = 0

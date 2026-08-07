@@ -30,6 +30,7 @@
 
 import { Router, type Request, type Response } from 'express'
 import { DASHBOARD_TOOLS, MUTATING_TOOLS, TOOL_SLICE, runDashboardTool } from './dashboard-tools'
+import { BROWSE_TOOLS, runBrowseTool, type DisplayPayload } from './browse'
 import { addMemory, formatForPrompt as formatMemoryForPrompt } from '../memory'
 import { getSelectedProfile, type AssistantProfile } from '../config/assistant'
 
@@ -117,7 +118,19 @@ const SYSTEM_PROMPT_BODY =
     ? " You also have web_search and web_fetch tools for current events, recent news, live data, " +
       "or anything you don't reliably know. If a search snippet looks promising but lacks the exact " +
       "answer, call web_fetch on that URL to read the full page."
-    : "")
+    : "") +
+  " SHOWING THINGS ON SCREEN: you can put a page or a video on the dashboard with open_website and play_video. " +
+  "Answering out loud and showing something are not exclusive — showing is an extra, and you still speak one short sentence either way. " +
+  "Use play_video for anything the user would rather WATCH: tutorials, how-tos, recipes, repairs, walkthroughs, " +
+  "workouts, music, trailers, \"show me how to...\". " +
+  "Use open_website when they ask you to open, pull up, show, or browse a site, article, or page, " +
+  "and for answers that are much better read than heard (long articles, documentation, recipes with amounts, tables, listings). " +
+  (WEB_SEARCH_ENABLED
+    ? "For open_website, call web_search FIRST and pass the winning result's exact url — only pass a bare query if the search gave you nothing. "
+    : "For open_website, pass a url you are confident is real (e.g. a wikipedia.org article); pass a query only if you have none. ") +
+  "Do NOT speak URLs out loud — say what you put on screen (\"Put a ten-minute knife-sharpening tutorial up for you\"), never the address. " +
+  "If the user only wants a quick fact, just answer — don't open a window for it. " +
+  "One window at a time: a new open_website or play_video replaces whatever is on screen."
 
 // Compose the full system prompt for a given assistant: its personality up
 // front, then the shared behaviour/tool instructions.
@@ -215,8 +228,10 @@ const TURN_CONTROL_TOOLS = [
   },
 ] as const
 
-// Dashboard tools are always exposed; web tools layer on if configured.
-const TOOLS = [...DASHBOARD_TOOLS, ...TURN_CONTROL_TOOLS, ...WEB_TOOLS]
+// Dashboard + browsing tools are always exposed; web search/fetch layer on if
+// configured. (open_website / play_video do their own resolving, so they work
+// even without an Ollama web-search key.)
+const TOOLS = [...DASHBOARD_TOOLS, ...BROWSE_TOOLS, ...TURN_CONTROL_TOOLS, ...WEB_TOOLS]
 
 // ── Tool implementations ──────────────────────────────────────────────────
 async function runWebSearch(query: string): Promise<string> {
@@ -468,6 +483,10 @@ router.post('/', async (req: Request, res: Response) => {
   // later calls end_conversation in the same turn.
   let keepListening = false
 
+  // Set when the model asks for something to be put on screen (open_website /
+  // play_video). Only the last one survives — the dashboard shows one window.
+  let display: DisplayPayload | null = null
+
   try {
     // Tool-call loop. Bounded by MAX_TOOL_ROUNDS to prevent runaway upstreams.
     for (let round = 0; round < MAX_TOOL_ROUNDS + 1; round++) {
@@ -484,18 +503,18 @@ router.post('/', async (req: Request, res: Response) => {
       // No tool calls → we're done.
       if (calls.length === 0) {
         const reply = text || "I'm here, but I didn't catch a reply that time."
-        console.log(`[chat] ← reply="${reply.slice(0, 80)}${reply.length > 80 ? '…' : ''}" rounds=${round + 1} changed=[${[...changed].join(',')}] keepListening=${keepListening}`)
+        console.log(`[chat] ← reply="${reply.slice(0, 80)}${reply.length > 80 ? '…' : ''}" rounds=${round + 1} changed=[${[...changed].join(',')}] keepListening=${keepListening}${display ? ` display=${display.kind}` : ''}`)
         // Conversation is ending — kick off a background summary for short-term
         // memory. Fire-and-forget so the user gets their reply without waiting.
         if (!keepListening) void summarizeAndStore(messages, reply)
-        return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed], keepListening })
+        return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed], keepListening, display })
       }
 
       // Cap reached — bail with whatever text we have so the user hears something.
       if (round === MAX_TOOL_ROUNDS) {
         console.warn(`[chat] tool-call cap reached (${MAX_TOOL_ROUNDS}) — returning fallback`)
         const reply = text || "I tried to look that up but couldn't finish in time."
-        return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed], keepListening })
+        return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed], keepListening, display })
       }
 
       // Execute each tool call and append the results back into the conversation.
@@ -516,6 +535,16 @@ router.post('/', async (req: Request, res: Response) => {
           keepListening = true
           console.log('[chat:tool] keep_listening \u2014 mic will reopen after reply')
           messages.push({ role: 'tool', content: 'Acknowledged. The microphone will reopen after your reply so the user can respond.', tool_name: name })
+          continue
+        }
+
+        // Browsing tools return a payload for the client alongside the text
+        // the model reads, so they're dispatched here rather than in runTool.
+        const browsed = await runBrowseTool(name, args)
+        if (browsed) {
+          if (browsed.display) display = browsed.display
+          console.log(`[chat:tool] ${name} → ${browsed.display ? `${browsed.display.kind} "${browsed.display.title.slice(0, 60)}"` : 'no display'}`)
+          messages.push({ role: 'tool', content: browsed.text, tool_name: name })
           continue
         }
 

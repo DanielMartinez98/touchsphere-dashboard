@@ -17,6 +17,7 @@ import audioRouter from './routes/audio'
 import ttsRouter from './routes/tts'
 import sttRouter from './routes/stt'
 import chatRouter from './routes/chat'
+import browseRouter from './routes/browse'
 import notionRouter from './routes/notion'
 import timersRouter from './routes/timers'
 import artworkRouter from './routes/artwork'
@@ -36,6 +37,7 @@ console.log('[startup] ELEVENLABS_API_KEY    :', process.env['ELEVENLABS_API_KEY
 console.log('[startup] OLLAMA_URL            :', process.env['OLLAMA_URL']           ?? 'http://host.docker.internal:11434 (default)')
 console.log('[startup] OLLAMA_MODEL          :', process.env['OLLAMA_MODEL']         ?? 'gemma3 (default)')
 console.log('[startup] OLLAMA_API_KEY        :', process.env['OLLAMA_API_KEY']       ? '✓ set' : '— not set (no auth header)')
+console.log('[startup] YOUTUBE_API_KEY       :', process.env['YOUTUBE_API_KEY']      ? '✓ set' : '— not set (video search falls back to scraping)')
 console.log('[startup] NOTION_API_KEY        :', process.env['NOTION_API_KEY']       ? '✓ set' : '— not set (Notion widget disabled)')
 console.log('[startup] NOTION_DATABASE_ID    :', process.env['NOTION_DATABASE_ID']   ? '✓ set' : '— not set (Notion widget disabled)')
 console.log('[startup] DEFAULT_LAT/LON       :',
@@ -119,6 +121,7 @@ app.use('/api/audio', audioRouter)
 app.use('/api/tts', ttsLimiter, ttsRouter)
 app.use('/api/stt', dataLimiter, sttRouter)
 app.use('/api/chat', dataLimiter, chatRouter)
+app.use('/api/browse', dataLimiter, browseRouter)
 app.use('/api/notion', dataLimiter, notionRouter)
 app.use('/api/timers', dataLimiter, timersRouter)
 // Artwork is split across both limiters. Cached covers are served off local
