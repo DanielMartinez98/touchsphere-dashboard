@@ -1728,7 +1728,11 @@ function DebugTab() {
         const res = await fetch(`${DEBUG_API}/api/tts?as=${id}&text=hi`)
         const ms = Math.round(performance.now() - t0)
         if (res.ok) {
-          setVoices(prev => ({ ...prev, [id]: { state: 'ok', ms } }))
+          // A 200 only means *something* spoke. The provider chain falls back
+          // silently, so record which engine it actually was — "ok (espeak)"
+          // is a failure of the configured voice, not a pass.
+          const engine = res.headers.get('x-tts-provider') ?? ''
+          setVoices(prev => ({ ...prev, [id]: { state: 'ok', ms, detail: engine } }))
         } else {
           let detail = `HTTP ${res.status}`
           try {
@@ -1947,8 +1951,21 @@ function DebugTab() {
               <div key={id} className="px-5 py-3.5">
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-sm text-white/70">{ASSISTANT_PROFILES[id].name} <span className="text-white/30 font-mono text-xs">{id}</span></span>
-                  <StatusChip result={result} />
+                  <div className="flex items-center gap-2 shrink-0">
+                    {/* espeak is the floor of the fallback chain — reaching it
+                        means the configured voice failed, so it reads amber
+                        rather than passing quietly as green. */}
+                    {result?.state === 'ok' && result.detail && (
+                      <span className={`text-xs font-mono px-1.5 py-0.5 rounded ${result.detail === 'espeak' ? 'bg-amber-500/20 text-amber-300' : 'bg-white/10 text-white/50'}`}>
+                        {result.detail}
+                      </span>
+                    )}
+                    <StatusChip result={result} />
+                  </div>
                 </div>
+                {result?.state === 'ok' && result.detail === 'espeak' && (
+                  <p className="text-xs text-amber-400/70 mt-1">Fell back to the offline robot voice — the configured provider failed.</p>
+                )}
                 {result?.state === 'fail' && result.detail && (
                   <p className="text-xs text-red-400/80 mt-1 break-all font-mono">{result.detail}</p>
                 )}

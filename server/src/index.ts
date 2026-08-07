@@ -86,7 +86,10 @@ app.use(helmet({ contentSecurityPolicy: false }))
 // LAN kiosks live on a different origin (the Pi) and POST audio here, so allow it.
 // Tighten by setting AUDIO_ALLOWED_ORIGIN=http://192.168.1.42 if you want to lock down.
 const allowed = process.env['AUDIO_ALLOWED_ORIGIN']
-app.use(cors({ origin: allowed ?? '*' }))
+// exposedHeaders: without it the browser hides X-TTS-Provider from JS on a
+// cross-origin kiosk, and the Debug tab silently loses the one field that says
+// which engine actually spoke.
+app.use(cors({ origin: allowed ?? '*', exposedHeaders: ['X-TTS-Provider'] }))
 app.use(express.json())
 
 // Request logger — logs method, path, status code, and response time

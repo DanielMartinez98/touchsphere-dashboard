@@ -226,6 +226,12 @@ router.get('/', async (req, res) => {
 
   for (const provider of chain) {
     try {
+      // Which engine actually produced the audio. The chain means a 200 does
+      // NOT imply the preferred provider worked — a rejected ElevenLabs key
+      // falls through to espeak and still succeeds, so "the voice test passed"
+      // has been hiding exactly the failure it was meant to catch. Set per
+      // attempt; a pre-stream failure just overwrites it on the next pass.
+      res.setHeader('X-TTS-Provider', provider)
       switch (provider) {
         case 'rvc': {
           const model = voiceParam && /^[a-zA-Z0-9_-]+$/.test(voiceParam)

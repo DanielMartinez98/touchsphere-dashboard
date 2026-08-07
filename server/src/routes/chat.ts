@@ -502,6 +502,18 @@ router.post('/', async (req: Request, res: Response) => {
 
       // No tool calls → we're done.
       if (calls.length === 0) {
+        // An empty final message is a real upstream failure wearing a 200: the
+        // user hears the fallback line and the log says "reply=..." as if all
+        // was well. Dump the message shape so the cause is visible — commonly a
+        // model that put its answer somewhere other than `content` (e.g. the
+        // `thinking` field of a reasoning model), or one that stopped early.
+        if (!text) {
+          console.warn(
+            `[chat] upstream returned an EMPTY final message on round ${round + 1} — ` +
+            `keys=[${Object.keys(msg ?? {}).join(',')}] ` +
+            `raw=${JSON.stringify(msg ?? resp.response ?? null).slice(0, 400)}`,
+          )
+        }
         const reply = text || "I'm here, but I didn't catch a reply that time."
         console.log(`[chat] ← reply="${reply.slice(0, 80)}${reply.length > 80 ? '…' : ''}" rounds=${round + 1} changed=[${[...changed].join(',')}] keepListening=${keepListening}${display ? ` display=${display.kind}` : ''}`)
         // Conversation is ending — kick off a background summary for short-term
