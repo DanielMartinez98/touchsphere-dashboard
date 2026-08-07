@@ -1487,6 +1487,9 @@ interface ServerDebug {
   cacheDir:  string
   config:    Record<string, boolean>
   ollama:    { url: string; model: string }
+  // Faults a boolean can't express — e.g. a key that is present but the wrong
+  // shape. Absent on servers older than this field.
+  warnings?: string[]
 }
 
 interface CheckResult { state: 'ok' | 'fail'; ms: number; detail?: string }
@@ -1849,6 +1852,9 @@ function DebugTab() {
         {!serverErr && !server && (
           <p className="px-5 py-4 text-sm text-white/40">Loading…</p>
         )}
+        {server?.warnings?.map((w, i) => (
+          <p key={i} className="px-5 py-3.5 text-sm text-amber-300/90 bg-amber-500/10 leading-snug">{w}</p>
+        ))}
         {server && (
           <>
             <div className={rowClass}>

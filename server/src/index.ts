@@ -21,6 +21,7 @@ import browseRouter from './routes/browse'
 import notionRouter from './routes/notion'
 import timersRouter from './routes/timers'
 import artworkRouter from './routes/artwork'
+import { elevenLabsKeyState } from './config/keys'
 
 dotenv.config()
 
@@ -32,7 +33,7 @@ dotenv.config()
 // and just stops responding to speech, so the format is worth asserting here
 // rather than leaving it to be discovered from ElevenLabs' 400.
 const ELEVEN_KEY = process.env['ELEVENLABS_API_KEY'] ?? ''
-const ELEVEN_KEY_MALFORMED = ELEVEN_KEY.length > 0 && !ELEVEN_KEY.startsWith('sk_')
+const ELEVEN_KEY_MALFORMED = elevenLabsKeyState() === 'malformed'
 
 console.log('[startup] ============================================')
 console.log('[startup] TouchSphere server starting')

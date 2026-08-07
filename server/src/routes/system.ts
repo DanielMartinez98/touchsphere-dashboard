@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import fs from 'fs'
 import path from 'path'
+import { elevenLabsKeyState } from '../config/keys'
 
 const router = Router()
 
@@ -10,18 +11,22 @@ const router = Router()
 // app itself. Identity is stamped into the image at build time (see Dockerfile)
 // and compared here against the repo's HEAD on GitHub.
 
-const GIT_SHA       = (process.env['GIT_SHA'] ?? '').trim()
-const GITHUB_REPO   = process.env['GITHUB_REPO']   ?? 'DanielMartinez98/touchsphere-dashboard'
-const GITHUB_BRANCH = process.env['GITHUB_BRANCH'] ?? 'main'
+// Read lazily, never at module scope: index.ts calls dotenv.config() *after*
+// its imports have been evaluated, so anything captured at import time misses
+// everything in server/.env. Harmless under Docker (env_file puts it all in the
+// real process env) and silently wrong under `npm run dev`.
+const gitSha       = () => (process.env['GIT_SHA'] ?? '').trim()
+const githubRepo   = () => process.env['GITHUB_REPO']   ?? 'DanielMartinez98/touchsphere-dashboard'
+const githubBranch = () => process.env['GITHUB_BRANCH'] ?? 'main'
 // Optional. Unauthenticated GitHub API calls are limited to 60/hour per IP,
 // which the 5-minute cache below keeps us far beneath — a token is only worth
 // setting if this server shares an outbound IP with other API consumers.
-const GITHUB_TOKEN  = process.env['GITHUB_TOKEN'] ?? ''
+const githubToken  = () => process.env['GITHUB_TOKEN'] ?? ''
 
 // Written by the final Dockerfile layer. The env var takes precedence so a
 // non-Docker deployment can supply it too; absent both (npm run dev) it stays
 // null, where "when was this built" isn't a meaningful question anyway.
-const BUILD_TIME = (() => {
+function buildTime(): string | null {
   const fromEnv = (process.env['BUILD_TIME'] ?? '').trim()
   if (fromEnv) return fromEnv
   try {
@@ -29,7 +34,7 @@ const BUILD_TIME = (() => {
   } catch {
     return null
   }
-})()
+}
 
 interface GitHubCommit { sha: string; date: string | null; message: string }
 
@@ -44,7 +49,7 @@ function githubHeaders(): Record<string, string> {
     accept: 'application/vnd.github+json',
     'user-agent': 'touchsphere-dashboard',
   }
-  if (GITHUB_TOKEN) headers['authorization'] = `Bearer ${GITHUB_TOKEN}`
+  if (githubToken()) headers['authorization'] = `Bearer ${githubToken()}`
   return headers
 }
 
@@ -53,7 +58,7 @@ async function fetchLatestCommit(): Promise<GitHubCommit> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 10_000)
   try {
-    const url = `https://api.github.com/repos/${GITHUB_REPO}/commits/${encodeURIComponent(GITHUB_BRANCH)}`
+    const url = `https://api.github.com/repos/${githubRepo()}/commits/${encodeURIComponent(githubBranch())}`
     const res = await fetch(url, { headers: githubHeaders(), signal: ctrl.signal })
     if (!res.ok) {
       const detail = await res.text().catch(() => '')
@@ -83,7 +88,7 @@ async function fetchBehindBy(base: string, head: string): Promise<number | null>
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 10_000)
   try {
-    const url = `https://api.github.com/repos/${GITHUB_REPO}/compare/${base}...${head}`
+    const url = `https://api.github.com/repos/${githubRepo()}/compare/${base}...${head}`
     const res = await fetch(url, { headers: githubHeaders(), signal: ctrl.signal })
     if (!res.ok) return null
     const json = await res.json() as { ahead_by?: number }
@@ -99,23 +104,26 @@ async function fetchBehindBy(base: string, head: string): Promise<number | null>
 
 // GET /api/system/version — what this container is, no network required.
 router.get('/version', (_req: Request, res: Response) => {
+  const sha = gitSha()
   res.json({
-    sha:      GIT_SHA || null,
-    shortSha: GIT_SHA ? GIT_SHA.slice(0, 7) : null,
-    builtAt:  BUILD_TIME,
-    repo:     GITHUB_REPO,
-    branch:   GITHUB_BRANCH,
+    sha:      sha || null,
+    shortSha: sha ? sha.slice(0, 7) : null,
+    builtAt:  buildTime(),
+    repo:     githubRepo(),
+    branch:   githubBranch(),
   })
 })
 
 // GET /api/system/version/check — compare against the repo's HEAD.
 //
 // Two ways to be sure, in order of confidence:
-//   1. GIT_SHA is stamped in  → compare commits directly (exact, gives a count)
-//   2. only BUILD_TIME exists → a build predating the newest commit is behind
+//   1. gitSha() is stamped in  → compare commits directly (exact, gives a count)
+//   2. only buildTime() exists → a build predating the newest commit is behind
 // Neither available (dev server) → 'unknown', reported honestly rather than
 // guessed at.
 router.get('/version/check', async (_req: Request, res: Response) => {
+  const sha   = gitSha()
+  const built = buildTime()
   try {
     const latest = await fetchLatestCommit()
 
@@ -123,16 +131,16 @@ router.get('/version/check', async (_req: Request, res: Response) => {
     let behindBy: number | null = null
     let basis: 'sha' | 'build-time' | 'none' = 'none'
 
-    if (GIT_SHA && latest.sha) {
+    if (sha && latest.sha) {
       basis  = 'sha'
-      status = GIT_SHA === latest.sha ? 'up-to-date' : 'behind'
-      if (status === 'behind') behindBy = await fetchBehindBy(GIT_SHA, latest.sha)
-    } else if (BUILD_TIME && latest.date) {
+      status = sha === latest.sha ? 'up-to-date' : 'behind'
+      if (status === 'behind') behindBy = await fetchBehindBy(sha, latest.sha)
+    } else if (built && latest.date) {
       basis  = 'build-time'
-      const built     = Date.parse(BUILD_TIME)
-      const committed = Date.parse(latest.date)
-      status = Number.isFinite(built) && Number.isFinite(committed)
-        ? (built >= committed ? 'up-to-date' : 'behind')
+      const builtMs     = Date.parse(built)
+      const committedMs = Date.parse(latest.date)
+      status = Number.isFinite(builtMs) && Number.isFinite(committedMs)
+        ? (builtMs >= committedMs ? 'up-to-date' : 'behind')
         : 'unknown'
     }
 
@@ -141,10 +149,10 @@ router.get('/version/check', async (_req: Request, res: Response) => {
       status,
       basis,
       behindBy,
-      current: { sha: GIT_SHA || null, shortSha: GIT_SHA ? GIT_SHA.slice(0, 7) : null, builtAt: BUILD_TIME },
+      current: { sha: sha || null, shortSha: sha ? sha.slice(0, 7) : null, builtAt: built },
       latest:  { ...latest, shortSha: latest.sha.slice(0, 7) },
-      repo:    GITHUB_REPO,
-      branch:  GITHUB_BRANCH,
+      repo:    githubRepo(),
+      branch:  githubBranch(),
     })
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
@@ -178,7 +186,17 @@ router.get('/events', (req: Request, res: Response) => {
 // Secrets are reported as booleans only; never echo key material.
 router.get('/debug', (_req: Request, res: Response) => {
   const env = process.env
+
+  // Config problems a presence check can't see. A green "set" chip next to a
+  // key the upstream rejects is worse than no chip at all — it actively steers
+  // debugging away from the actual fault.
+  const warnings: string[] = []
+  if (elevenLabsKeyState() === 'malformed') {
+    warnings.push('ELEVENLABS_API_KEY is set but malformed — ElevenLabs keys start with "sk_". Voice input (STT) will fail on every utterance; TTS falls back to espeak-ng.')
+  }
+
   res.json({
+    warnings,
     uptimeSec: Math.floor(process.uptime()),
     node:      process.version,
     platform:  `${process.platform}/${process.arch}`,
@@ -187,7 +205,9 @@ router.get('/debug', (_req: Request, res: Response) => {
     config: {
       OPENWEATHER_API_KEY: !!env['OPENWEATHER_API_KEY'],
       CALENDAR_ICAL_URL:   !!env['CALENDAR_ICAL_URL'],
-      ELEVENLABS_API_KEY:  !!env['ELEVENLABS_API_KEY'],
+      // Deliberately validity, not presence — a malformed key is not "set" in
+      // any sense the reader of this panel cares about.
+      ELEVENLABS_API_KEY:  elevenLabsKeyState() === 'ok',
       NOTION_API_KEY:      !!env['NOTION_API_KEY'],
       NOTION_DATABASE_ID:  !!env['NOTION_DATABASE_ID'],
       OLLAMA_API_KEY:      !!env['OLLAMA_API_KEY'],
