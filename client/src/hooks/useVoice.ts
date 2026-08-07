@@ -310,6 +310,49 @@ async function speakText(text: string, onFirstAudio: () => void, onEnd: () => vo
   }
 }
 
+// ── Transcription ────────────────────────────────────────────────────────────
+// A failed transcription and a genuinely silent clip both end up as an empty
+// string, and the loop treats empty as "user said nothing" — it ends the turn
+// without speaking. That's right for silence and invisible for a failure: an
+// STT outage looks exactly like the assistant ignoring you. So the failure is
+// carried out of transcribe() as a typed error and turned into an on-screen
+// message, since a kiosk has no console to check.
+
+/** Thrown when /api/stt answers non-OK, so the caller can tell a server-side
+ *  failure apart from a clip that simply had no speech in it. */
+class SttError extends Error {
+  // Declared explicitly rather than as constructor parameter properties —
+  // the project builds with erasableSyntaxOnly, which rejects those.
+  readonly status: number
+  readonly detail: string
+  constructor(status: number, detail: string) {
+    super(`stt ${status}: ${detail}`)
+    this.name = 'SttError'
+    this.status = status
+    this.detail = detail
+  }
+}
+
+/** Turn a transcription failure into something readable at arm's length. The
+ *  server passes ElevenLabs' own error body through in `detail`, so the common
+ *  misconfigurations can each say what to actually go fix. */
+function describeSttError(err: unknown): string {
+  if (!(err instanceof SttError)) {
+    // Never reached the server at all — network down, container stopped.
+    return 'Couldn’t reach the server to transcribe what you said.'
+  }
+  if (/ELEVENLABS_API_KEY/i.test(err.detail)) {
+    return 'Speech-to-text isn’t set up — the server has no ElevenLabs API key.'
+  }
+  if (err.status === 401 || /invalid_api_key|unauthor/i.test(err.detail)) {
+    return 'Speech-to-text rejected the server’s API key — check ELEVENLABS_API_KEY.'
+  }
+  if (err.status === 429 || /quota|rate.?limit|too many/i.test(err.detail)) {
+    return 'Speech-to-text is out of quota right now — try again later.'
+  }
+  return `Couldn’t transcribe that (error ${err.status}).`
+}
+
 // ── Chat (LLM reply) ─────────────────────────────────────────────────────────
 // One entry in the running conversation. The server prepends the system
 // message and forwards the rest to Ollama, so the model sees prior turns.
@@ -423,7 +466,7 @@ export function useVoice(): VoiceState {
     const res = await fetch(`${API}/api/stt`, { method: 'POST', body: fd })
     if (!res.ok) {
       const detail = await res.text().catch(() => '')
-      throw new Error(`stt ${res.status}: ${detail.slice(0, 200)}`)
+      throw new SttError(res.status, detail.slice(0, 300))
     }
     const json = (await res.json()) as { text?: string }
     return (json.text ?? '').trim()
@@ -534,10 +577,15 @@ export function useVoice(): VoiceState {
       setIsThinking(true)
       setIsTranscribing(true)
       let text = ''
+      // Empty because transcription FAILED, as opposed to empty because the
+      // clip had no speech. The two are indistinguishable downstream, so the
+      // reason is captured here and reported below.
+      let sttError = ''
       try {
         text = await transcribe(blob)
       } catch (err) {
         console.warn('[voice] transcribe failed:', err)
+        sttError = describeSttError(err)
       } finally {
         setIsTranscribing(false)
       }
@@ -550,7 +598,16 @@ export function useVoice(): VoiceState {
       // nothing meaningful, end the conversation instead of replying to noise.
       const cleaned = text.replace(/[^\p{L}\p{N}]/gu, '').trim()
       if (cleaned.length < 2) {
-        console.log('[voice] no meaningful speech detected — ending conversation')
+        // Silence ends the turn quietly — that's the intended behaviour and
+        // needs no announcement. A transcription that FAILED gets said out
+        // loud on screen instead, so a broken key or a dead upstream doesn't
+        // masquerade as the assistant simply not answering.
+        if (sttError) {
+          console.warn('[voice] transcription unavailable —', sttError)
+          setError(sttError)
+        } else {
+          console.log('[voice] no meaningful speech detected — ending conversation')
+        }
         stopThinkingSound()
         setIsThinking(false)
         historyRef.current = []

@@ -25,6 +25,15 @@ import artworkRouter from './routes/artwork'
 dotenv.config()
 
 // ── Startup diagnostics ───────────────────────────────────────────────────────
+// ElevenLabs keys are `sk_…`. Presence alone is not a useful check: a
+// wrong-format key still reads as "set", and the failure it causes is silent in
+// both directions — TTS quietly degrades to espeak-ng, while STT (which has no
+// fallback at all) 502s on every utterance. The dashboard looks perfectly alive
+// and just stops responding to speech, so the format is worth asserting here
+// rather than leaving it to be discovered from ElevenLabs' 400.
+const ELEVEN_KEY = process.env['ELEVENLABS_API_KEY'] ?? ''
+const ELEVEN_KEY_MALFORMED = ELEVEN_KEY.length > 0 && !ELEVEN_KEY.startsWith('sk_')
+
 console.log('[startup] ============================================')
 console.log('[startup] TouchSphere server starting')
 console.log('[startup] NODE_ENV              :', process.env['NODE_ENV'] ?? 'not set')
@@ -33,7 +42,10 @@ console.log('[startup] CACHE_DIR             :', process.env['CACHE_DIR'] ?? '/t
 console.log('[startup] LOG_LEVEL             :', process.env['LOG_LEVEL'] ?? 'info (default)')
 console.log('[startup] OPENWEATHER_API_KEY   :', process.env['OPENWEATHER_API_KEY'] ? '✓ set' : '✗ MISSING')
 console.log('[startup] CALENDAR_ICAL_URL     :', process.env['CALENDAR_ICAL_URL']   ? '✓ set' : '— not set (calendar disabled)')
-console.log('[startup] ELEVENLABS_API_KEY    :', process.env['ELEVENLABS_API_KEY']  ? '✓ set' : '— not set (TTS will use espeak-ng)')
+console.log('[startup] ELEVENLABS_API_KEY    :',
+  !ELEVEN_KEY            ? '— not set (TTS will use espeak-ng, STT disabled)'
+  : ELEVEN_KEY_MALFORMED ? `✗ MALFORMED (starts with "${ELEVEN_KEY.slice(0, 3)}…", expected "sk_")`
+  : '✓ set')
 console.log('[startup] OLLAMA_URL            :', process.env['OLLAMA_URL']           ?? 'http://host.docker.internal:11434 (default)')
 console.log('[startup] OLLAMA_MODEL          :', process.env['OLLAMA_MODEL']         ?? 'gemma3 (default)')
 console.log('[startup] OLLAMA_API_KEY        :', process.env['OLLAMA_API_KEY']       ? '✓ set' : '— not set (no auth header)')
@@ -50,6 +62,16 @@ console.log('[startup] ============================================')
 if (!process.env['OPENWEATHER_API_KEY']) {
   console.error('[startup] FATAL: OPENWEATHER_API_KEY is not set. Exiting.')
   process.exit(1)
+}
+
+// Loud but not fatal: the dashboard is perfectly usable without voice, so a bad
+// key shouldn't stop the widgets from coming up — it just has to be impossible
+// to miss in the boot log.
+if (ELEVEN_KEY_MALFORMED) {
+  console.error('[startup] WARNING: ELEVENLABS_API_KEY does not look like an ElevenLabs key.')
+  console.error('[startup]          Keys begin with "sk_" — elevenlabs.io → Profile → API Keys.')
+  console.error('[startup]          Until it is fixed: /api/stt fails on every utterance (voice')
+  console.error('[startup]          input will not work at all) and /api/tts falls back to espeak-ng.')
 }
 
 const app = express()
