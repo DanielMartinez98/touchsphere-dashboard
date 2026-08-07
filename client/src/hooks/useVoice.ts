@@ -368,12 +368,16 @@ const MAX_HISTORY_TURNS = 20
 // reply instead of while she's still thinking.
 interface ChatReply { text: string; keepListening: boolean; display: unknown }
 
-async function fetchReply(messages: ChatTurn[]): Promise<ChatReply> {
+// `newConversation` marks the opening utterance after a wake word. The server
+// only asks "is this the same topic as last time?" on that turn — later turns
+// inherit whatever it decided, so it must not be able to mistake a follow-up
+// for a fresh start.
+async function fetchReply(messages: ChatTurn[], newConversation: boolean): Promise<ChatReply> {
   try {
     const res = await fetch(`${API}/api/chat`, {
       method:  'POST',
       headers: { 'content-type': 'application/json' },
-      body:    JSON.stringify({ messages }),
+      body:    JSON.stringify({ messages, newConversation }),
     })
     if (!res.ok) {
       console.warn('[voice] /api/chat http', res.status)
@@ -616,11 +620,13 @@ export function useVoice(): VoiceState {
 
       // Append this user turn to the running history, then ask the LLM with
       // full context so multi-turn conversations actually remember prior turns.
+      const isOpeningTurn = historyRef.current.length === 0
       historyRef.current = [
         ...historyRef.current,
         { role: 'user', content: text } as ChatTurn,
       ].slice(-MAX_HISTORY_TURNS)
-      const { text: replyText, keepListening: wantFollowUp, display } = await fetchReply(historyRef.current)
+      const { text: replyText, keepListening: wantFollowUp, display } =
+        await fetchReply(historyRef.current, isOpeningTurn)
       console.log(`[voice] reply: "${replyText}" keepListening=${wantFollowUp}`)
       historyRef.current = [
         ...historyRef.current,

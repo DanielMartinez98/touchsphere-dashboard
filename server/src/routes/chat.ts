@@ -32,6 +32,10 @@ import { Router, type Request, type Response } from 'express'
 import { DASHBOARD_TOOLS, MUTATING_TOOLS, TOOL_SLICE, runDashboardTool } from './dashboard-tools'
 import { BROWSE_TOOLS, runBrowseTool, type DisplayPayload } from './browse'
 import { addMemory, formatForPrompt as formatMemoryForPrompt } from '../memory'
+import {
+  saveSession, updateSessionSummary, loadSession, scoreContinuation, sessionAgeMinutes,
+  type SessionTurn,
+} from '../session'
 import { getSelectedProfile, type AssistantProfile } from '../config/assistant'
 
 const router = Router()
@@ -106,7 +110,9 @@ const SYSTEM_PROMPT_BODY =
   "(d) you acknowledged something (\"got it\", \"sure\", \"done\"), " +
   "(e) you don't know and have nothing more to try. " +
   "Call keep_listening ONLY when you literally cannot proceed without more input from the user " +
-  "(ambiguous title, missing date, unclear target, multiple matching items to disambiguate). " +
+  "(ambiguous title, missing date, unclear target, multiple matching items to disambiguate), " +
+  "or when you are OFFERING to show something based on a learned preference (see PERSISTENT MEMORY below) " +
+  "and need a yes or no — that offer is a real question and the mic must reopen for the answer. " +
   "Never call keep_listening for filler like \"anything else?\", \"sound good?\", or \"let me know if you need more\" \u2014 those are end_conversation. " +
   "If you forget to call either tool, the system defaults to end_conversation. " +
   "Only call ONE turn-control tool per reply; if you change your mind mid-turn, the LATER call wins. " +
@@ -128,12 +134,21 @@ const SYSTEM_PROMPT_BODY =
   "so just confirm what you set in one short sentence), " +
   "get_weather (now), get_weather_forecast (future \u2014 use for any \"will it rain\", \"high tomorrow\", multi-hour question), " +
   "get_air_quality, get_calendar_today, get_calendar_day, get_calendar_week, get_calendar_range, get_device_status, " +
-  "remember (save a fact to long-term or short-term memory), forget (remove memories matching a query), and list_memories. " +
-  "PERSISTENT MEMORY: anything you saved with remember in a past conversation is auto-injected into your prompt below — " +
+  "remember (save a fact), remember_preference (save how the user likes to be answered), " +
+  "forget (remove memories matching a query), and list_memories. " +
+  "PERSISTENT MEMORY: anything you saved in a past conversation is auto-injected into your prompt below — " +
   "treat those as facts you already know and answer directly without re-asking. Use remember whenever the user shares " +
-  "something they would not want to repeat (their name, preferences, recurring routines, what they're working on today). " +
+  "something they would not want to repeat (their name, recurring routines, what they're working on today). " +
   "Choose scope=long for stable facts, scope=short for context that's only relevant for the rest of the day. " +
-  "Use forget when the user contradicts a saved fact or asks you to forget something. " +
+  "LEARNING HOW THEY LIKE ANSWERS: pay attention to the SHAPE of what the user asks for, not just the content. " +
+  "If they ask for a video walkthrough of a game section, a recipe on screen rather than read aloud, or short answers " +
+  "on a recurring subject, call remember_preference so you get it right unprompted next time. " +
+  "Only save a pattern you have actually seen — one clear request is enough, a guess is not. " +
+  "Applying a preference is an OFFER, never an assumption: say what you think they want and let them decline " +
+  "(\"That's a fiddly bit — want me to put a video up?\") with keep_listening, rather than silently opening a window. " +
+  "If they already said which form they want in this turn, just do that and don't ask. " +
+  "Use forget when the user contradicts a saved fact or asks you to forget something; " +
+  "forget matches by substring, so pass a distinctive phrase from the specific memory, not a broad word. " +
   "For any calendar question other than 'today', use get_calendar_day, get_calendar_week, or get_calendar_range — never guess what is on a date you haven't fetched. " +
   "CRITICAL: When you use a tool, base your answer strictly on what the tool actually returned. " +
   "Do not invent facts, numbers, dates, names, titles, or quotes. After mutating tools (add/remove/mark) confirm what you did in one short sentence." +
@@ -350,12 +365,25 @@ async function runWebFetch(url: string): Promise<string> {
   }
 }
 
-// ── Background session summarizer ─────────────────────────────────────────
-// When the assistant calls end_conversation we kick this off (fire-and-forget)
-// to distill the just-finished session into one short note that lives in
-// short-term memory for the next 24h. Skipped for trivial sessions to avoid
-// burning tokens on "what time is it"-style one-shots.
-async function summarizeAndStore(history: ChatMessage[], finalReply: string): Promise<void> {
+// ── Conversation carry-over ───────────────────────────────────────────────
+// When the continuation scorer says the user is picking up the last topic, the
+// old turns have to stay in play for the WHOLE new conversation — not just the
+// first utterance that triggered the match. The client only ever sends its own
+// turns, so the decision is latched here.
+//
+// A module-level latch is honest about what this box is: one kiosk, one
+// microphone, one conversation at a time. Anything fancier would be pretending
+// to support concurrent users who don't exist.
+interface Carry { turns: ChatMessage[]; note: string }
+let carry: Carry | null = null
+
+// ── End of conversation ───────────────────────────────────────────────────
+// Two things happen when the assistant hangs up. The transcript is parked in
+// the 12h session store so the next conversation can continue it, and — for
+// sessions substantial enough to be worth it — a background LLM call distills
+// one note into 24h short-term memory. The first is cheap and always runs; the
+// second is fire-and-forget so the user never waits on it.
+async function endConversation(history: ChatMessage[], finalReply: string): Promise<void> {
   // Filter to user/assistant text turns; tool messages and the system prompt
   // aren't useful here. Append the just-spoken final reply so the summarizer
   // sees how the assistant closed the conversation.
@@ -367,6 +395,18 @@ async function summarizeAndStore(history: ChatMessage[], finalReply: string): Pr
     .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.trim()}`)
     .join('\n')
   if (!transcript) return
+
+  // Park the transcript first, unconditionally. Even a two-line exchange is a
+  // topic worth resuming — the summary below is a separate, pickier question.
+  // `turns` already includes anything carried in from the previous session, so
+  // a topic revisited three times accumulates instead of resetting.
+  const sessionTurns: SessionTurn[] = turns.map(m => ({
+    role: m.role === 'user' ? 'user' : 'assistant',
+    content: m.content,
+  }))
+  const stamp = saveSession(sessionTurns)
+  carry = null
+
   const userTurns = history.filter(m => m.role === 'user').length
   // Single-turn Q&A rarely contains anything worth remembering for tomorrow.
   if (userTurns < 2 && transcript.length < 200) return
@@ -412,6 +452,10 @@ async function summarizeAndStore(history: ChatMessage[], finalReply: string): Pr
       return
     }
     addMemory(summary, 'short', 'auto')
+    // Attach the gist to the session we parked above. It sharpens the topic
+    // keywords the next utterance is scored against, so this makes the
+    // continue/new call better, not just the Settings list prettier.
+    if (stamp) updateSessionSummary(stamp, summary)
   } catch (err) {
     console.warn('[memory:auto] summarize failed:', err)
   }
@@ -465,7 +509,7 @@ async function callOllama(messages: ChatMessage[]): Promise<OllamaResponse> {
 
 // ── Route ─────────────────────────────────────────────────────────────────
 router.post('/', async (req: Request, res: Response) => {
-  const body = req.body as { prompt?: unknown; messages?: unknown }
+  const body = req.body as { prompt?: unknown; messages?: unknown; newConversation?: unknown }
 
   // Normalize input. Accept either:
   //   { prompt: string }                       (legacy single-turn)
@@ -491,20 +535,64 @@ router.post('/', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'a final user message (or `prompt`) is required' })
   }
 
+  // ── Same topic, or a new one? ───────────────────────────────────────────
+  // Only asked on the opening utterance of a conversation. Later turns inherit
+  // whatever was decided then, via the `carry` latch — re-scoring mid-thread
+  // could yank the context out from under a conversation already using it.
+  const isNew = body.newConversation === true || history.length === 1
+  if (isNew) {
+    carry = null
+    const prev = loadSession()
+    if (prev) {
+      const d = scoreContinuation(last.content, prev)
+      const mins = sessionAgeMinutes(prev)
+      console.log(`[session] ${d.verdict} (score ${d.score}, ${mins}m ago) — ${d.reason}`)
+      if (d.verdict === 'continue') {
+        // Replayed as genuine turns: the model should treat these as things
+        // that were really said, because they were.
+        carry = {
+          turns: prev.turns.map(t => ({ role: t.role as Role, content: t.content })),
+          note:
+            `\nCONTINUING A CONVERSATION: the turns before the user's latest message are from a ` +
+            `conversation that ended ${mins} minute${mins === 1 ? '' : 's'} ago. The user appears to be ` +
+            `picking that topic back up, so treat them as context you already have. ` +
+            `If it turns out they've moved on to something unrelated, ignore them and answer what was just asked.`,
+        }
+      } else if (d.verdict === 'maybe') {
+        // Too close to call. Hand the model the gist rather than the whole
+        // transcript, and say plainly that it may be irrelevant — a wrong
+        // recap the model can discard is much cheaper than wrong history it
+        // can't tell from the truth.
+        const gist = prev.summary
+          ?? prev.turns.filter(t => t.role === 'user').map(t => t.content).slice(-2).join(' / ')
+        carry = {
+          turns: [],
+          note:
+            `\nPOSSIBLY RELATED: ${mins} minute${mins === 1 ? '' : 's'} ago this user was talking about: ` +
+            `"${gist.slice(0, 300)}". This may have nothing to do with what they just said. ` +
+            `Use it only if it clearly fits; otherwise ignore it completely and never mention it.`,
+        }
+      }
+    }
+  }
+
   // Inject persistent memory into the system message so the assistant treats
   // remembered facts as background knowledge without having to call list_memories.
   const profile = getSelectedProfile()
   const memoryBlock = formatMemoryForPrompt()
   const basePrompt = buildSystemPrompt(profile)
-  const systemContent = memoryBlock ? `${basePrompt}\n${memoryBlock}` : basePrompt
+  const systemContent =
+    basePrompt + (memoryBlock ? `\n${memoryBlock}` : '') + (carry ? `\n${carry.note}` : '')
   const messages: ChatMessage[] = [
     { role: 'system', content: systemContent },
+    ...(carry?.turns ?? []),
     ...history,
   ]
 
   const preview = last.content.slice(0, 80)
   console.log(
     `[chat] → ${OLLAMA_URL} model=${OLLAMA_MODEL} as=${profile.id} turns=${history.length} ` +
+    `carry=${carry ? (carry.turns.length > 0 ? `${carry.turns.length}turns` : 'recap') : 'none'} ` +
     `tools=dashboard${WEB_SEARCH_ENABLED ? '+web' : ''} think=${JSON.stringify(OLLAMA_THINK)} ` +
     `prompt=\"${preview}${last.content.length > 80 ? '\u2026' : ''}\"`,
   )
@@ -564,9 +652,10 @@ router.post('/', async (req: Request, res: Response) => {
         }
         const reply = text || "I'm here, but I didn't catch a reply that time."
         console.log(`[chat] ← reply="${reply.slice(0, 80)}${reply.length > 80 ? '…' : ''}" rounds=${round + 1} changed=[${[...changed].join(',')}] keepListening=${keepListening}${display ? ` display=${display.kind}` : ''}`)
-        // Conversation is ending — kick off a background summary for short-term
-        // memory. Fire-and-forget so the user gets their reply without waiting.
-        if (!keepListening) void summarizeAndStore(messages, reply)
+        // Conversation is ending — park the transcript for the next 12h and
+        // kick off a background summary. Fire-and-forget so the user gets their
+        // reply without waiting on either.
+        if (!keepListening) void endConversation(messages, reply)
         return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed], keepListening, display })
       }
 

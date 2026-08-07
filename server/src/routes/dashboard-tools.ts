@@ -696,12 +696,23 @@ function rememberFact(content: string, scope: string): string {
   return `Saved to ${s}-term memory: "${mem.content}"`
 }
 
+function rememberPreference(content: string): string {
+  const c = content.trim()
+  if (!c) return 'Error: content is required.'
+  const mem = addMemory(c, 'long', 'assistant', 'preference')
+  return `Saved a preference: "${mem.content}"`
+}
+
 function forgetFact(query: string): string {
   const q = query.trim()
   if (!q) return 'Error: query is required.'
-  const removed = removeMemories(q)
-  if (removed === 0) return `No memories matched "${q}".`
-  return `Forgot ${removed} ${removed === 1 ? 'memory' : 'memories'} matching "${q}".`
+  // A refusal is not a failure — it comes back with the matches listed so the
+  // model can pick a distinctive phrase instead of widening the net further.
+  const { removed, refused } = removeMemories(q)
+  if (refused) return `Did not forget anything: ${refused}`
+  if (removed.length === 0) return `No memories matched "${q}".`
+  return `Forgot ${removed.length} ${removed.length === 1 ? 'memory' : 'memories'}: ` +
+         removed.map(m => `"${m.content}"`).join('; ')
 }
 
 function listMemoriesTool(): string {
@@ -710,9 +721,15 @@ function listMemoriesTool(): string {
     return 'Memory is empty.'
   }
   const parts: string[] = []
-  if (store.longTerm.length > 0) {
-    parts.push('Long-term:')
-    for (const m of store.longTerm) parts.push(`- ${m.content}`)
+  const prefs = store.longTerm.filter(m => m.kind === 'preference')
+  const facts = store.longTerm.filter(m => m.kind !== 'preference')
+  if (facts.length > 0) {
+    parts.push('Long-term facts:')
+    for (const m of facts) parts.push(`- ${m.content}`)
+  }
+  if (prefs.length > 0) {
+    parts.push('Learned preferences:')
+    for (const m of prefs) parts.push(`- ${m.content}`)
   }
   if (store.shortTerm.length > 0) {
     parts.push('Short-term (last 24h):')
@@ -1239,8 +1256,9 @@ export const DASHBOARD_TOOLS = [
       name: 'remember',
       description:
         'Save a fact to persistent memory so you remember it in future conversations. ' +
-        'Use this for stable facts (the user\'s name, preferences, recurring routines, important dates) — ' +
+        'Use this for stable facts (the user\'s name, recurring routines, important dates) — ' +
         'scope "long" — or for context you only need for the rest of the day (current project, mood, what they\'re working on) — scope "short". ' +
+        'For how they like ANSWERS shaped (video vs. spoken, short vs. detailed), use remember_preference instead. ' +
         'Long-term memories never expire; short-term memories are auto-deleted after 24 hours. ' +
         'Phrase the content as a complete factual statement (e.g. "The user\'s name is Daniel", not "Daniel"). ' +
         'Don\'t use this for trivia the user can easily restate; reserve it for things they\'d be annoyed to repeat.',
@@ -1257,15 +1275,40 @@ export const DASHBOARD_TOOLS = [
   {
     type: 'function',
     function: {
-      name: 'forget',
+      name: 'remember_preference',
       description:
-        'Remove memories that match a query. Matches by case-insensitive substring against the stored content, ' +
-        'so "name" would remove every memory mentioning a name. Use this when the user contradicts a saved fact, ' +
-        'asks you to forget something, or when stored info becomes stale.',
+        'Save a pattern about HOW this user likes to be answered, so you get the format right unprompted next time. ' +
+        'Use it when you notice the shape of what they want, not the content: they asked for a video walkthrough ' +
+        'of a game section, they wanted a recipe shown on screen rather than read aloud, they prefer short answers ' +
+        'about a recurring subject. Phrase it as when/then: ' +
+        '"When the user asks how to get past a part of a game, they usually want a video tutorial on screen." ' +
+        'Only save a pattern you have actually observed — one clear request is enough, a guess is not. ' +
+        'Preferences are applied as OFFERS, not assumptions, so saving one will never railroad the user.',
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Substring to match against memory contents.' },
+          content: {
+            type: 'string',
+            description: 'The preference as one when/then sentence about the user.',
+          },
+        },
+        required: ['content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'forget',
+      description:
+        'Remove memories that match a query. Matches by case-insensitive substring against the stored content. ' +
+        'Pass a DISTINCTIVE phrase from the specific memory you mean — a broad word like "name" or "game" will be ' +
+        'refused if it matches several memories, and the refusal lists them so you can retry with something precise. ' +
+        'Use this when the user contradicts a saved fact, asks you to forget something, or when stored info goes stale.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'A distinctive substring of the memory to remove (3+ characters).' },
         },
         required: ['query'],
       },
@@ -1382,7 +1425,8 @@ export async function runDashboardTool(
     case 'get_calendar_week':  return getCalendarWeek(str('start'))
     case 'get_calendar_range': return getCalendarRange(str('start'), str('end'))
     case 'get_device_status':  return getDeviceStatus()
-    case 'remember':           return rememberFact(str('content'), str('scope'))
+    case 'remember':            return rememberFact(str('content'), str('scope'))
+    case 'remember_preference': return rememberPreference(str('content'))
     case 'forget':             return forgetFact(str('query'))
     case 'list_memories':      return listMemoriesTool()
     case 'set_timer': {
@@ -1408,6 +1452,7 @@ export const MUTATING_TOOLS = new Set([
   'set_app_mode',
   'add_notion_task',
   'remember',
+  'remember_preference',
   'forget',
   'set_timer',
   'set_alarm',
@@ -1417,10 +1462,15 @@ export const MUTATING_TOOLS = new Set([
 // Maps a mutating tool to the client-side state slice it touches, so the chat
 // route can tell exactly which widgets/hooks should refetch.
 export const TOOL_SLICE: Record<string, string> = {
-  set_app_mode:    'mode',
-  add_notion_task: 'notion',
-  set_timer:       'timers',
-  set_alarm:       'timers',
-  cancel_timer:    'timers',
+  set_app_mode:        'mode',
+  add_notion_task:     'notion',
+  set_timer:           'timers',
+  set_alarm:           'timers',
+  cancel_timer:        'timers',
+  // Memory tools used to fall through to the 'media' default, so every
+  // remembered fact triggered a pointless media-list refetch on the client.
+  remember:            'memory',
+  remember_preference: 'memory',
+  forget:              'memory',
   // everything else defaults to 'media'
 }

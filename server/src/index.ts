@@ -20,6 +20,7 @@ import chatRouter from './routes/chat'
 import browseRouter from './routes/browse'
 import notionRouter from './routes/notion'
 import timersRouter from './routes/timers'
+import memoryRouter from './routes/memory'
 import artworkRouter from './routes/artwork'
 import { elevenLabsKeyState } from './config/keys'
 
@@ -160,6 +161,7 @@ app.use('/api/chat', dataLimiter, chatRouter)
 app.use('/api/browse', dataLimiter, browseRouter)
 app.use('/api/notion', dataLimiter, notionRouter)
 app.use('/api/timers', dataLimiter, timersRouter)
+app.use('/api/memory', dataLimiter, memoryRouter)
 // Artwork is split across both limiters. Cached covers are served off local
 // disk and a full list fetches one per item, so they need the tile budget —
 // but /search calls TMDB/IGDB upstream, so it stays on the strict data budget

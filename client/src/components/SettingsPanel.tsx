@@ -13,8 +13,10 @@ import { playVoicePreview } from '../utils/voicePreview'
 import { useAutoSchedule, fireBedtimeAlert } from '../hooks/useAutoSchedule'
 import { useRipple } from '../hooks/useRipple'
 import { useDebugLog, clearDebugLog, getDebugLog } from '../utils/debugLog'
+import { useMemory, type MemoryItem, type MemoryKind } from '../hooks/useMemory'
+import { TouchInput } from './TouchInput'
 
-type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'system' | 'debug'
+type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'system' | 'debug'
 
 // The preview reuses the dashboard's own renderers. Lazy, same chunks App
 // splits out — opening the VTuber tab is what pulls in the heavy deps, and
@@ -384,6 +386,7 @@ export function SettingsPanel() {
     { id: 'sounds',    label: 'Audio'     },
     { id: 'hardware',  label: 'Hardware'  },
     { id: 'schedule',  label: 'Schedule'  },
+    { id: 'memory',    label: 'Memory'    },
     { id: 'system',    label: 'System'    },
     { id: 'debug',     label: 'Debug'     },
   ]
@@ -1323,6 +1326,9 @@ export function SettingsPanel() {
               </div>
             )}
 
+            {/* Memory tab — what the assistant knows about you */}
+            {tab === 'memory' && <MemoryTab />}
+
             {/* Debug tab — config visibility, endpoint checks, error log */}
             {tab === 'debug' && <DebugTab />}
 
@@ -1330,6 +1336,207 @@ export function SettingsPanel() {
         </div>
       )}
     </>
+  )
+}
+
+// ── Memory tab ────────────────────────────────────────────────────────────────
+// Everything the assistant knows about you, in the order it forgets it: the
+// current conversation window (12h), then facts and preferences (forever),
+// then loose recent context (24h). Every row has a delete button — the whole
+// point of this tab is that memory stops being something you can only inspect
+// by asking out loud and hoping the answer is honest.
+
+function ago(iso: string): string {
+  const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60_000))
+  if (mins < 1)  return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.round(mins / 60)
+  if (hrs < 48)  return `${hrs}h ago`
+  return `${Math.round(hrs / 24)}d ago`
+}
+
+const SOURCE_LABEL: Record<string, string> = {
+  user:      'you',
+  assistant: 'saved in chat',
+  auto:      'auto-summary',
+}
+
+function MemoryRow({ item, onDelete }: { item: MemoryItem; onDelete: (id: string) => void }) {
+  return (
+    <div className="flex items-start gap-3 py-3 border-b border-white/6 last:border-0">
+      <div className="flex-1 min-w-0">
+        <p className="text-white/80 text-sm leading-snug">{item.content}</p>
+        <p className="text-white/25 text-xs mt-1">
+          {ago(item.createdAt)}
+          {item.source ? ` · ${SOURCE_LABEL[item.source] ?? item.source}` : ''}
+          {item.expiresAt ? ' · expires in 24h' : ''}
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={() => onDelete(item.id)}
+        aria-label={`Forget: ${item.content.slice(0, 40)}`}
+        className="w-11 h-11 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white/40 active:scale-90 active:bg-red-500/25 active:text-red-300 transition-colors flex-shrink-0"
+      >
+        <Trash2 size={17} />
+      </button>
+    </div>
+  )
+}
+
+function AddRow({ placeholder, onAdd }: { placeholder: string; onAdd: (v: string) => void }) {
+  const [draft, setDraft] = useState('')
+  const value = draft.trim()
+  return (
+    <div className="flex items-stretch gap-2 pt-3">
+      <TouchInput
+        value={draft}
+        onChange={setDraft}
+        placeholder={placeholder}
+        ariaLabel={placeholder}
+        className="flex-1 bg-white/8 border border-white/12 rounded-xl px-4 py-3 text-white/90 text-sm focus:outline-none focus:border-cyan-500/50"
+      />
+      <button
+        type="button"
+        disabled={!value}
+        onClick={() => { onAdd(value); setDraft('') }}
+        className="px-5 rounded-xl bg-cyan-500/20 border border-cyan-400/30 text-cyan-200 text-sm font-medium active:scale-95 disabled:opacity-30 disabled:active:scale-100 transition-all flex-shrink-0"
+      >
+        Add
+      </button>
+    </div>
+  )
+}
+
+function MemorySection({
+  title, hint, items, empty, onDelete, addPlaceholder, onAdd,
+}: {
+  title: string
+  hint?: string
+  items: MemoryItem[]
+  empty: string
+  onDelete: (id: string) => void
+  addPlaceholder?: string
+  onAdd?: (v: string, kind: MemoryKind) => void
+}) {
+  return (
+    <div>
+      <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+        {title} {items.length > 0 && <span className="text-white/25 normal-case">· {items.length}</span>}
+      </span>
+      <div className="bg-white/5 rounded-2xl px-5 py-2 border border-white/8">
+        {hint && <p className="text-white/30 text-xs pt-3 pb-1 leading-relaxed">{hint}</p>}
+        {items.length === 0
+          ? <p className="text-white/25 text-sm py-4">{empty}</p>
+          : items.map(m => <MemoryRow key={m.id} item={m} onDelete={onDelete} />)}
+        {addPlaceholder && onAdd && (
+          <div className="pb-4">
+            <AddRow placeholder={addPlaceholder} onAdd={v => onAdd(v, 'fact')} />
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function MemoryTab() {
+  const { facts, preferences, shortTerm, session, loading, error, add, remove, forgetSession } = useMemory()
+  const [busy, setBusy] = useState<string | null>(null)
+
+  async function run(label: string, fn: () => Promise<void>) {
+    setBusy(label)
+    try { await fn() } catch (err) { console.warn('[memory] action failed:', err) }
+    finally { setBusy(null) }
+  }
+
+  const del = (id: string) => void run(id, () => remove(id))
+
+  if (loading) return <p className="text-white/40 text-sm text-center py-10">Loading memory…</p>
+
+  return (
+    <div className="space-y-5 max-w-lg mx-auto pb-4">
+      {error && <p className="text-amber-300/80 text-sm">{error}</p>}
+
+      {/* Current conversation window */}
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          Last conversation
+        </span>
+        <div className="bg-white/5 rounded-2xl p-5 border border-white/8">
+          {session ? (
+            <>
+              <p className="text-white/80 text-sm leading-snug">
+                {session.summary ?? session.opener ?? `${session.turns} turns`}
+              </p>
+              <p className="text-white/30 text-xs mt-1.5">
+                ended {ago(session.endedAt)} · {session.turns} turns · kept for 12h
+              </p>
+              {session.keywords.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-3">
+                  {session.keywords.map(k => (
+                    <span key={k} className="px-2 py-0.5 rounded-md bg-white/8 text-white/40 text-xs">{k}</span>
+                  ))}
+                </div>
+              )}
+              <p className="text-white/25 text-xs mt-3 leading-relaxed">
+                If your next question looks like it continues this, these turns are added back in
+                automatically. Otherwise the conversation starts clean.
+              </p>
+              <button
+                type="button"
+                disabled={busy === 'session'}
+                onClick={() => void run('session', forgetSession)}
+                className="mt-4 w-full py-3 rounded-xl bg-white/8 border border-white/12 text-white/60 text-sm font-medium active:scale-95 active:bg-red-500/20 active:text-red-300 disabled:opacity-40 transition-all"
+              >
+                Forget this conversation
+              </button>
+            </>
+          ) : (
+            <p className="text-white/25 text-sm">
+              Nothing carried over. The next thing you say starts a fresh conversation.
+            </p>
+          )}
+        </div>
+      </div>
+
+      <MemorySection
+        title="Facts"
+        items={facts}
+        empty="Nothing saved yet."
+        onDelete={del}
+        addPlaceholder="e.g. I'm allergic to peanuts"
+        onAdd={v => void run('add-fact', () => add(v, 'fact'))}
+      />
+
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          Preferences {preferences.length > 0 && <span className="text-white/25 normal-case">· {preferences.length}</span>}
+        </span>
+        <div className="bg-white/5 rounded-2xl px-5 py-2 border border-white/8">
+          <p className="text-white/30 text-xs pt-3 pb-1 leading-relaxed">
+            How you like answers shaped. She learns these from what you ask for, and offers
+            them rather than assuming — you always get the chance to say no.
+          </p>
+          {preferences.length === 0
+            ? <p className="text-white/25 text-sm py-4">Nothing learned yet.</p>
+            : preferences.map(m => <MemoryRow key={m.id} item={m} onDelete={del} />)}
+          <div className="pb-4">
+            <AddRow
+              placeholder="When I ask about a game, show a video"
+              onAdd={v => void run('add-pref', () => add(v, 'preference'))}
+            />
+          </div>
+        </div>
+      </div>
+
+      <MemorySection
+        title="Recent context"
+        hint="Auto-written at the end of each conversation. Clears itself after 24 hours."
+        items={shortTerm}
+        empty="Nothing recent."
+        onDelete={del}
+      />
+    </div>
   )
 }
 

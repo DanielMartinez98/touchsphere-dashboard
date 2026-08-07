@@ -24,6 +24,14 @@ import { useBrowse, closeBrowse, type BrowseTarget } from '../hooks/useBrowse'
  * Every window is keyed by its sequence number, so opening a new target
  * remounts the whole shell — that's what resets the reader toggle, the player
  * and the reader fetch without a single reset effect.
+ *
+ * Getting OUT deserves more than one button, because the body of this window is
+ * an iframe: it swallows every pointer event inside its bounds, so none of the
+ * usual dismiss gestures reach us there. The routes out are the close button,
+ * a swipe down from anywhere on the header, a tap on the dimmed backdrop
+ * outside the window, and — for video, which leaves wide black gutters — a tap
+ * in the gutter or the Close video pill. Escape is a desktop convenience only;
+ * the kiosk has no keyboard.
  */
 
 const READER_MIN_CHARS = 200
@@ -134,7 +142,16 @@ function VideoView({ target, hold }: { target: Extract<BrowseTarget, { kind: 'vi
 
   if (playing) {
     return (
-      <div className="h-full flex items-center justify-center bg-black">
+      // The player is a 16:9 band in a tall window, so most of this body is
+      // black gutter — and the gutter is ours, not the iframe's. Tapping it
+      // closes, same as tapping the backdrop outside the window, and a visible
+      // Close pill sits in the lower gutter so that exit isn't a secret. The
+      // iframe eats every pointer event inside its own bounds, so without these
+      // the only way out of a video is one 56px button in the header.
+      <div
+        className="relative h-full flex items-center justify-center bg-black"
+        onClick={e => { if (e.target === e.currentTarget) closeBrowse() }}
+      >
         <div className="w-full aspect-video">
           <iframe
             ref={frameRef}
@@ -152,6 +169,17 @@ function VideoView({ target, hold }: { target: Extract<BrowseTarget, { kind: 'vi
             allowFullScreen
           />
         </div>
+
+        <button
+          type="button"
+          onClick={closeBrowse}
+          className="absolute bottom-6 left-1/2 -translate-x-1/2 px-6 h-12 rounded-full
+                     bg-glass-2 border border-hairline text-ink text-[15px] font-medium
+                     flex items-center gap-2 active:scale-95 active:bg-white/25 transition-colors"
+        >
+          <X size={18} strokeWidth={2.25} />
+          Close video
+        </button>
       </div>
     )
   }
@@ -220,17 +248,23 @@ function BrowserWindow({ target, hold }: { target: BrowseTarget; hold: boolean }
         if (info.offset.y > 140 || info.velocity.y > 900) closeBrowse()
       }}
     >
-      {/* Grab handle — swipe down to dismiss, same gesture as the widgets */}
+      {/* Grab pill — pure decoration now; the whole header below is the handle,
+          so it's drawn without pointer-events and the drag starts underneath it. */}
       <div
-        onPointerDown={e => dragControls.start(e)}
-        className="absolute top-0 left-1/2 -translate-x-1/2 w-44 h-9 z-[9500] flex items-start justify-center pt-2.5 touch-none"
+        className="absolute top-0 left-1/2 -translate-x-1/2 w-44 h-9 z-[9500] flex items-start justify-center pt-2.5 pointer-events-none"
         aria-hidden
       >
         <div className="w-12 h-1.5 rounded-full bg-white/20" />
       </div>
 
-      {/* Header — what's on screen, where it came from, how to get out */}
-      <div className="flex items-start gap-3 pl-5 pr-3 pt-9 pb-3 border-b border-hairline flex-shrink-0">
+      {/* Header — what's on screen, where it came from, how to get out.
+          The whole bar starts the swipe-down-to-dismiss drag: a 176×36 hidden
+          strip was too small a target to find with a finger, and the body below
+          is an iframe that swallows the gesture entirely. */}
+      <div
+        onPointerDown={e => dragControls.start(e)}
+        className="flex items-start gap-3 pl-5 pr-3 pt-9 pb-3 border-b border-hairline flex-shrink-0 touch-none"
+      >
         <span
           className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5 ${
             target.kind === 'video'
@@ -251,24 +285,28 @@ function BrowserWindow({ target, hold }: { target: BrowseTarget; hold: boolean }
           </p>
         </div>
 
+        {/* The header is a drag handle, so its buttons swallow pointerdown —
+            otherwise a tap on Close would also start a dismiss drag. */}
         {isWeb && (
           <button
             type="button"
             onClick={() => setForceReader(v => !v)}
+            onPointerDown={e => e.stopPropagation()}
             aria-label={showReader ? 'Show the live site' : 'Show reader view'}
-            className="w-12 h-12 rounded-full bg-glass border border-hairline flex items-center justify-center text-ink-mid active:scale-90 active:bg-white/20 transition-colors flex-shrink-0"
+            className="w-14 h-14 rounded-full bg-glass border border-hairline flex items-center justify-center text-ink-mid active:scale-90 active:bg-white/20 transition-colors flex-shrink-0"
           >
-            {showReader ? <Layout size={20} /> : <FileText size={20} />}
+            {showReader ? <Layout size={22} /> : <FileText size={22} />}
           </button>
         )}
 
         <button
           type="button"
           onClick={closeBrowse}
+          onPointerDown={e => e.stopPropagation()}
           aria-label="Close"
-          className="w-12 h-12 rounded-full bg-glass-2 border border-hairline flex items-center justify-center text-ink active:scale-90 active:bg-white/25 transition-colors flex-shrink-0"
+          className="w-14 h-14 rounded-full bg-white/15 border border-white/25 flex items-center justify-center text-ink active:scale-90 active:bg-white/30 transition-colors flex-shrink-0"
         >
-          <X size={24} strokeWidth={2.25} />
+          <X size={26} strokeWidth={2.25} />
         </button>
       </div>
 
@@ -297,7 +335,22 @@ export function BrowserOverlay({ hold = false }: { hold?: boolean }) {
 
   return createPortal(
     <AnimatePresence>
-      {target && <BrowserWindow key={target.seq} target={target} hold={hold} />}
+      {target && [
+        // Backdrop. The window is inset, so the dashboard shows around its
+        // edges — and that visible margin is the first place a finger goes to
+        // dismiss. Without something to catch them, those taps fell through and
+        // opened the widget behind the video instead of closing it.
+        <motion.div
+          key="backdrop"
+          className="fixed inset-0 z-[8990] bg-black/40"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          onClick={closeBrowse}
+          aria-hidden
+        />,
+        <BrowserWindow key={target.seq} target={target} hold={hold} />,
+      ]}
     </AnimatePresence>,
     document.body,
   )
