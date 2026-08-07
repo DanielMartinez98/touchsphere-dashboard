@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, lazy, Suspense } from 'react'
-import { Check, X as XIcon, RotateCw, ClipboardCopy, MessageSquare, Trash2, Volume2 } from 'lucide-react'
+import { Check, X as XIcon, RotateCw, ClipboardCopy, MessageSquare, Trash2, Volume2, Download } from 'lucide-react'
 import { useAudioDevices } from '../hooks/useAudioDevices'
 import { useDevice } from '../hooks/useDevice'
 import { playSound, playRecordChime } from '../utils/sound'
@@ -1491,6 +1491,42 @@ interface ServerDebug {
 
 interface CheckResult { state: 'ok' | 'fail'; ms: number; detail?: string }
 
+// Stamped into the image at build time; null outside Docker or when a local
+// build didn't export GIT_SHA.
+interface VersionInfo {
+  sha: string | null
+  shortSha: string | null
+  builtAt: string | null
+  repo: string
+  branch: string
+}
+
+interface UpdateCheck {
+  status: 'up-to-date' | 'behind' | 'unknown'
+  // Which comparison produced `status` — an exact commit match, or the weaker
+  // "was this built before the newest commit landed?". Worth showing, because
+  // the two justify different amounts of confidence.
+  basis: 'sha' | 'build-time' | 'none'
+  behindBy: number | null
+  current: { sha: string | null; shortSha: string | null; builtAt: string | null }
+  latest: { sha: string; shortSha: string; date: string | null; message: string }
+  repo: string
+  branch: string
+}
+
+/** Coarse "how long ago" for a timestamp. Days is as fine-grained as anyone
+ *  cares about for a deployment, and it has to read at arm's length. */
+function formatAgo(iso: string | null): string {
+  if (!iso) return 'unknown'
+  const then = Date.parse(iso)
+  if (!Number.isFinite(then)) return 'unknown'
+  const mins = Math.floor((Date.now() - then) / 60_000)
+  if (mins < 1)     return 'just now'
+  if (mins < 60)    return `${mins}m ago`
+  if (mins < 1440)  return `${Math.floor(mins / 60)}h ago`
+  return `${Math.floor(mins / 1440)}d ago`
+}
+
 // Display order for the checks list. Paths are resolved at run time because
 // weather/air need coordinates (from the geoip check, same as the app itself)
 // and calendar needs the current month.
@@ -1565,7 +1601,40 @@ function DebugTab() {
   const [voices,    setVoices]    = useState<Record<string, CheckResult>>({})
   const [testingVoices, setTestingVoices] = useState(false)
   const [copied,    setCopied]    = useState<string | null>(null)
+  const [version,   setVersion]   = useState<VersionInfo | null>(null)
+  const [update,    setUpdate]    = useState<{ state: 'idle' | 'checking' | 'done' | 'fail'; data?: UpdateCheck; error?: string }>({ state: 'idle' })
   const errors = useDebugLog()
+
+  async function loadVersion() {
+    try {
+      const res = await fetch(`${DEBUG_API}/api/system/version`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      setVersion(await res.json() as VersionInfo)
+    } catch {
+      // Endpoint is missing on servers older than this feature, which is itself
+      // the answer to "am I up to date?" — handled in the render below.
+      setVersion(null)
+    }
+  }
+
+  // Hits GitHub (through the server, which caches for 5 min). Runs once on open
+  // so the answer is just there, and again on demand.
+  async function checkUpdate() {
+    setUpdate({ state: 'checking' })
+    try {
+      const res = await fetch(`${DEBUG_API}/api/system/version/check`)
+      if (!res.ok) {
+        // A 404 isn't a failed check so much as the answer to it: this server
+        // is old enough to predate the endpoint, so it is definitely behind.
+        if (res.status === 404) throw new Error('This server predates the update check — it is out of date. Rebuild the container.')
+        const j = await res.json().catch(() => ({})) as { detail?: string; error?: string }
+        throw new Error(j.detail ?? j.error ?? `HTTP ${res.status}`)
+      }
+      setUpdate({ state: 'done', data: await res.json() as UpdateCheck })
+    } catch (err) {
+      setUpdate({ state: 'fail', error: err instanceof Error ? err.message : String(err) })
+    }
+  }
 
   async function loadServer() {
     setServerErr(null)
@@ -1608,6 +1677,8 @@ function DebugTab() {
   }
 
   useEffect(() => {
+    void loadVersion()
+    void checkUpdate()
     void loadServer()
     void runChecks()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -1674,8 +1745,10 @@ function DebugTab() {
 
   async function copyDiagnostics() {
     const payload = {
-      at:     new Date().toISOString(),
-      server: serverErr ? { error: serverErr } : server,
+      at:      new Date().toISOString(),
+      version,
+      update:  update.state === 'fail' ? { error: update.error } : update.data,
+      server:  serverErr ? { error: serverErr } : server,
       checks,
       llm,
       voices,
@@ -1699,8 +1772,74 @@ function DebugTab() {
 
   const rowClass = 'flex items-center justify-between gap-3 px-5 py-3.5'
 
+  const upd = update.data
+
   return (
     <div className="space-y-4 max-w-lg mx-auto">
+      {/* ── Version / update ──
+          Top of the tab on purpose: with Watchtower swapping images silently,
+          "which build is this?" is the first thing you need when something on
+          screen doesn't match the code you just pushed. */}
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Version</span>
+        <button
+          onClick={() => { void loadVersion(); void checkUpdate() }}
+          disabled={update.state === 'checking'}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 text-white/60 text-xs font-medium active:bg-white/20 disabled:opacity-40"
+        >
+          <RotateCw size={13} className={update.state === 'checking' ? 'animate-spin' : ''} /> Check
+        </button>
+      </div>
+      <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden divide-y divide-white/8">
+        <div className={rowClass}>
+          <span className="text-sm text-white/70">Running build</span>
+          <span className="text-sm text-white/60 text-right">
+            {version?.shortSha
+              ? <span className="font-mono">{version.shortSha}</span>
+              : <span className="text-white/35">unknown commit</span>}
+            {version?.builtAt && <><br /><span className="text-white/40 text-xs">built {formatAgo(version.builtAt)}</span></>}
+          </span>
+        </div>
+
+        {/* Update verdict */}
+        <div className="px-5 py-3.5">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-sm text-white/70">Update status</span>
+            {update.state === 'checking' && <span className="w-4 h-4 rounded-full border-2 border-white/20 border-t-white/60 animate-spin shrink-0" />}
+            {update.state === 'fail' && <span className="flex items-center gap-1.5 text-red-400 text-sm shrink-0"><XIcon size={15} /> check failed</span>}
+            {update.state === 'done' && upd?.status === 'up-to-date' && (
+              <span className="flex items-center gap-1.5 text-emerald-400 text-sm shrink-0"><Check size={15} /> up to date</span>
+            )}
+            {update.state === 'done' && upd?.status === 'behind' && (
+              <span className="flex items-center gap-1.5 text-amber-400 text-sm shrink-0">
+                <Download size={15} /> {upd.behindBy !== null ? `${upd.behindBy} commit${upd.behindBy === 1 ? '' : 's'} behind` : 'update available'}
+              </span>
+            )}
+            {update.state === 'done' && upd?.status === 'unknown' && (
+              <span className="text-white/35 text-sm shrink-0">can’t tell</span>
+            )}
+          </div>
+
+          {update.state === 'fail' && (
+            <p className="text-xs text-red-400/80 mt-1 break-all">{update.error}</p>
+          )}
+          {update.state === 'done' && upd && (
+            <p className="text-xs text-white/40 mt-1 break-words">
+              {upd.status === 'up-to-date'
+                ? `Matches ${upd.branch} — “${upd.latest.message}”`
+                : upd.status === 'behind'
+                  ? <>Latest on {upd.branch}: <span className="font-mono text-white/50">{upd.latest.shortSha}</span> {formatAgo(upd.latest.date)} — “{upd.latest.message}”</>
+                  : 'This build carries no commit stamp and no build time, so it can’t be compared. Rebuild the image to enable the check.'}
+              {/* An image built without GIT_SHA can only be dated, not
+                  identified — say so, or "up to date" reads stronger than it is. */}
+              {upd.basis === 'build-time' && (
+                <><br /><span className="text-white/30">Compared by build time — no commit stamp in this image.</span></>
+              )}
+            </p>
+          )}
+        </div>
+      </div>
+
       {/* ── Server configuration ── */}
       <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Server configuration</span>
       <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden divide-y divide-white/8">

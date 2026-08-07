@@ -69,4 +69,23 @@ EXPOSE 3001
 ENV NODE_ENV=production
 ENV CACHE_DIR=/data/cache
 
+# ─── Version stamp ───────────────────────────────────────────────────────────
+# With Watchtower silently swapping images underneath it, "what is actually
+# running right now?" is otherwise unanswerable from the device itself. These
+# two facts let the Debug tab say so, and compare against the repo's HEAD.
+#
+# GIT_SHA is a build arg: CI always passes it (see docker-publish.yml). A local
+# `docker compose build app` only gets it if you export it first —
+#   GIT_SHA=$(git rev-parse HEAD) docker compose build app
+# — and reports "unknown" otherwise, which is honest rather than wrong.
+ARG GIT_SHA=""
+ENV GIT_SHA=$GIT_SHA
+
+# BUILD_TIME needs no cooperation from the caller, so it's the fallback that
+# always works: a build is out of date if it predates the newest commit. It sits
+# after the COPY steps deliberately — those layers change whenever the app does,
+# so the timestamp is re-evaluated on every real build but stays put (correctly)
+# when the whole image is a cache hit and genuinely IS the older build.
+RUN date -u +%Y-%m-%dT%H:%M:%SZ > /app/.build-time
+
 CMD ["/entrypoint.sh"]

@@ -51,6 +51,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Stamps the image with the commit it was built from, so the running
+          # dashboard can report its own version and tell whether it's behind.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
           # Cache layers between builds to keep CI fast
           cache-from: type=gha
           cache-to: type=gha,mode=max

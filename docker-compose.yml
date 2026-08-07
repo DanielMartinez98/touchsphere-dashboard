@@ -8,6 +8,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Lets the Debug tab report exactly which commit is running. Compose
+        # can't shell out, so export it when building locally:
+        #   GIT_SHA=$(git rev-parse HEAD) docker compose build app
+        # Left empty it reports "unknown" and the update check falls back to
+        # comparing the image's build time against the newest commit, which
+        # still answers "am I out of date?" correctly.
+        GIT_SHA: ${GIT_SHA:-}
     container_name: touchsphere
     restart: on-failure
     # Expose the Node app directly on the host so it's reachable at
