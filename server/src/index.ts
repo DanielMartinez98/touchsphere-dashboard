@@ -81,7 +81,17 @@ const isProd = process.env['NODE_ENV'] === 'production'
 
 // Security headers (CSP disabled — Vite inlines scripts during dev and the SPA
 // uses dynamic imports that a strict default-src would block)
-app.use(helmet({ contentSecurityPolicy: false }))
+//
+// referrerPolicy is overridden because Helmet defaults to `no-referrer`, and
+// since late 2025 the YouTube embed player REQUIRES a Referer header to
+// identify its host — without one it refuses to play and shows "Video player
+// configuration error (153)". `strict-origin-when-cross-origin` is the browser
+// default and what YouTube expects: it sends only the origin cross-site (so no
+// path or query leaks outward) while still identifying us.
+app.use(helmet({
+  contentSecurityPolicy: false,
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+}))
 
 // LAN kiosks live on a different origin (the Pi) and POST audio here, so allow it.
 // Tighten by setting AUDIO_ALLOWED_ORIGIN=http://192.168.1.42 if you want to lock down.

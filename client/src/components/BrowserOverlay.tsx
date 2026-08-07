@@ -141,6 +141,13 @@ function VideoView({ target, hold }: { target: Extract<BrowseTarget, { kind: 'vi
             title={target.title}
             src={`${YT_ORIGIN}/embed/${target.videoId}?autoplay=1&playsinline=1&rel=0&modestbranding=1&enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}`}
             className="w-full h-full border-0"
+            // Set per-iframe as well as via the server's Referrer-Policy header.
+            // The embed player refuses to start without a Referer identifying
+            // the host ("error 153"), and a page-level `no-referrer` from any
+            // source — Helmet, a meta tag, a privacy extension — strips it.
+            // Stating it here means the player keeps working even if the page
+            // policy is tightened again later.
+            referrerPolicy="strict-origin-when-cross-origin"
             allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
             allowFullScreen
           />
@@ -191,7 +198,15 @@ function BrowserWindow({ target, hold }: { target: BrowseTarget; hold: boolean }
       role="dialog"
       aria-modal="true"
       aria-label={target.title}
-      className="fixed inset-0 z-[9000] bg-black/95 backdrop-blur-xl flex flex-col"
+      // Inset rather than full-bleed: the dashboard stays visible around the
+      // edges, so the window reads as something the assistant put ON the
+      // dashboard rather than an app that replaced it — and the corner widgets
+      // stay glanceable while a video plays. max-w keeps it from becoming an
+      // unusable slab on a desktop browser; on the 720×1280 kiosk the margins
+      // are what's doing the work.
+      className="fixed left-4 right-4 top-10 bottom-10 mx-auto max-w-[880px] z-[9000]
+                 bg-black/95 backdrop-blur-xl flex flex-col
+                 rounded-[28px] overflow-hidden border border-hairline shadow-2xl shadow-black/60"
       initial={{ opacity: 0, y: 40, scale: 0.97 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 40, scale: 0.97 }}
