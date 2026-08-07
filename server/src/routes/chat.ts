@@ -43,6 +43,29 @@ const TIMEOUT_MS     = Number(process.env['OLLAMA_TIMEOUT_MS'] ?? 30_000)
 const WEB_SEARCH_URL = process.env['OLLAMA_WEB_SEARCH_URL'] ?? 'https://ollama.com/api/web_search'
 const WEB_FETCH_URL  = process.env['OLLAMA_WEB_FETCH_URL']  ?? 'https://ollama.com/api/web_fetch'
 
+// ── Thinking mode ─────────────────────────────────────────────────────────
+// Reasoning models (Gemma 4 among them) default to thinking, and Ollama then
+// returns the reasoning in `message.thinking` while leaving `message.content`
+// EMPTY. Nothing errors: the request is a 200, the tool loop sees no text and
+// no tool calls, and the user hears the "didn't catch a reply" fallback — a
+// total failure that looks like success from every angle.
+//   https://github.com/ollama/ollama/issues/15288
+//
+// Off by default, for two reasons: this assistant's whole job is one or two
+// spoken sentences, and thinking tokens are latency the user waits through
+// before hearing anything. Set OLLAMA_THINK=true (or low|medium|high|max) if
+// you ever want it back; empty string omits the field for upstreams that
+// reject unknown keys.
+const OLLAMA_THINK: boolean | string | null = (() => {
+  const raw = (process.env['OLLAMA_THINK'] ?? 'false').trim().toLowerCase()
+  if (raw === '')      return null
+  if (raw === 'true')  return true
+  if (raw === 'false') return false
+  if (['low', 'medium', 'high', 'max'].includes(raw)) return raw
+  console.warn(`[chat] unrecognised OLLAMA_THINK="${raw}" — disabling thinking`)
+  return false
+})()
+
 const WEB_SEARCH_ENABLED = (() => {
   const flag = process.env['OLLAMA_ENABLE_WEB_SEARCH']
   if (flag === '1' || flag?.toLowerCase() === 'true')  return true
@@ -369,7 +392,14 @@ async function summarizeAndStore(history: ChatMessage[], finalReply: string): Pr
       method: 'POST',
       headers,
       signal: ctrl.signal,
-      body: JSON.stringify({ model: OLLAMA_MODEL, stream: false, messages: summarizerMessages }),
+      // Same thinking caveat as callOllama — a reasoning model would return an
+      // empty summary here too, silently costing every session its memory note.
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        stream: false,
+        messages: summarizerMessages,
+        ...(OLLAMA_THINK !== null ? { think: OLLAMA_THINK } : {}),
+      }),
     }).finally(() => clearTimeout(timer))
     if (!res.ok) {
       console.warn('[memory:auto] summarizer upstream', res.status)
@@ -389,7 +419,10 @@ async function summarizeAndStore(history: ChatMessage[], finalReply: string): Pr
 
 // ── Single Ollama /api/chat round ─────────────────────────────────────────
 interface OllamaResponse {
-  message?: { content?: string; tool_calls?: ToolCall[] }
+  // `thinking` is only read for diagnostics — it's a reasoning trace, not a
+  // reply, and speaking it aloud would be worse than the fallback line. Its
+  // presence alongside empty content is the signature of the bug above.
+  message?: { content?: string; thinking?: string; tool_calls?: ToolCall[] }
   response?: string
   status: number
   detail?: string
@@ -408,6 +441,7 @@ async function callOllama(messages: ChatMessage[]): Promise<OllamaResponse> {
       messages,
     }
     if (TOOLS.length > 0) body['tools'] = TOOLS
+    if (OLLAMA_THINK !== null) body['think'] = OLLAMA_THINK
 
     const upstream = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
       method: 'POST',
@@ -420,7 +454,7 @@ async function callOllama(messages: ChatMessage[]): Promise<OllamaResponse> {
       return { status: upstream.status, detail }
     }
     const json = await upstream.json() as {
-      message?: { content?: string; tool_calls?: ToolCall[] }
+      message?: { content?: string; thinking?: string; tool_calls?: ToolCall[] }
       response?: string
     }
     return { ...json, status: 200 }
@@ -471,7 +505,8 @@ router.post('/', async (req: Request, res: Response) => {
   const preview = last.content.slice(0, 80)
   console.log(
     `[chat] → ${OLLAMA_URL} model=${OLLAMA_MODEL} as=${profile.id} turns=${history.length} ` +
-    `tools=dashboard${WEB_SEARCH_ENABLED ? '+web' : ''} prompt=\"${preview}${last.content.length > 80 ? '\u2026' : ''}\"`,
+    `tools=dashboard${WEB_SEARCH_ENABLED ? '+web' : ''} think=${JSON.stringify(OLLAMA_THINK)} ` +
+    `prompt=\"${preview}${last.content.length > 80 ? '\u2026' : ''}\"`,
   )
 
   // Track which client-side state slices the model touched so the client can
@@ -508,11 +543,24 @@ router.post('/', async (req: Request, res: Response) => {
         // model that put its answer somewhere other than `content` (e.g. the
         // `thinking` field of a reasoning model), or one that stopped early.
         if (!text) {
-          console.warn(
-            `[chat] upstream returned an EMPTY final message on round ${round + 1} — ` +
-            `keys=[${Object.keys(msg ?? {}).join(',')}] ` +
-            `raw=${JSON.stringify(msg ?? resp.response ?? null).slice(0, 400)}`,
-          )
+          const thinking = (msg?.thinking ?? '').trim()
+          if (thinking) {
+            // The model answered, into the wrong field. Name the fix outright
+            // rather than making the next person rediscover the GitHub issue.
+            console.warn(
+              `[chat] EMPTY content but ${thinking.length} chars of THINKING — the model is in ` +
+              `reasoning mode and put its answer in message.thinking. think=${JSON.stringify(OLLAMA_THINK)} ` +
+              `was sent; if that is not false, set OLLAMA_THINK=false. See ollama/ollama#15288. ` +
+              `thinking="${thinking.slice(0, 200).replace(/\s+/g, ' ')}…"`,
+            )
+          } else {
+            console.warn(
+              `[chat] upstream returned an EMPTY final message on round ${round + 1} — ` +
+              `no content, no thinking, no tool calls. Model=${OLLAMA_MODEL}, ` +
+              `system prompt ${messages[0]?.content.length ?? 0} chars. ` +
+              `raw=${JSON.stringify(msg ?? resp.response ?? null).slice(0, 400)}`,
+            )
+          }
         }
         const reply = text || "I'm here, but I didn't catch a reply that time."
         console.log(`[chat] ← reply="${reply.slice(0, 80)}${reply.length > 80 ? '…' : ''}" rounds=${round + 1} changed=[${[...changed].join(',')}] keepListening=${keepListening}${display ? ` display=${display.kind}` : ''}`)
