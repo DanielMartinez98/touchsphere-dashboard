@@ -1541,6 +1541,10 @@ const CHECK_LABELS: { id: string; label: string }[] = [
   { id: 'air',      label: 'Air quality' },
   { id: 'notion',   label: 'Notion tasks' },
   { id: 'device',   label: 'Device stats (Pi)' },
+  // Voice input dies completely when this key is bad, and nothing else in this
+  // list would notice — so it gets its own probe rather than being inferred
+  // from a TTS test that quietly falls back to espeak and passes.
+  { id: 'eleven',   label: 'ElevenLabs key (voice in/out)' },
 ]
 
 const CONFIG_LABELS: Record<string, string> = {
@@ -1671,9 +1675,17 @@ function DebugTab() {
       { id: 'air',      path: `/api/airquality?lat=${lat}&lon=${lon}` },
       { id: 'notion',   path: '/api/notion/tasks' },
       { id: 'device',   path: '/api/device' },
+      { id: 'eleven',   path: '/api/system/check/elevenlabs' },
     ]
     await Promise.all(endpoints.map(async ep => {
-      const { result } = await timedFetch(ep.path)
+      const { result, json } = await timedFetch(ep.path)
+      // A valid key that has burned its whole quota passes authentication and
+      // then fails every synthesis — reported here rather than shown as a
+      // clean pass, since the symptom is identical to a dead key.
+      if (ep.id === 'eleven' && result.state === 'ok' && json?.quotaExhausted) {
+        setChecks(prev => ({ ...prev, [ep.id]: { ...result, state: 'fail', detail: `quota exhausted (${json.charactersUsed}/${json.characterLimit} characters)` } }))
+        return
+      }
       setChecks(prev => ({ ...prev, [ep.id]: result }))
     }))
     setChecking(false)

@@ -161,6 +161,66 @@ router.get('/version/check', async (_req: Request, res: Response) => {
   }
 })
 
+// GET /api/system/check/elevenlabs — is the key actually accepted?
+//
+// The shape check in config/keys.ts only catches a key pasted from the wrong
+// place. Revoked keys, deleted accounts and exhausted quota all look perfectly
+// well-formed and fail identically at request time — and because TTS silently
+// falls through to espeak while STT has no fallback at all, the first symptom
+// is "she stopped hearing me" with nothing anywhere saying why. So this asks
+// ElevenLabs directly. /v1/user is the cheapest authenticated endpoint they
+// expose: no synthesis, no quota consumed, no audio required.
+router.get('/check/elevenlabs', async (_req: Request, res: Response) => {
+  const key = (process.env['ELEVENLABS_API_KEY'] ?? '').trim()
+  if (!key) {
+    return res.status(502).json({ error: 'ELEVENLABS_API_KEY not set — voice input is disabled' })
+  }
+  if (elevenLabsKeyState() === 'malformed') {
+    return res.status(502).json({ error: `malformed key (starts with "${key.slice(0, 3)}…", expected "sk_")` })
+  }
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 10_000)
+  try {
+    const upstream = await fetch('https://api.elevenlabs.io/v1/user', {
+      headers: { 'xi-api-key': key },
+      signal: ctrl.signal,
+    })
+    if (!upstream.ok) {
+      const body = await upstream.text().catch(() => '')
+      // ElevenLabs nests the useful bit; surface it rather than a bare status.
+      let reason = `HTTP ${upstream.status}`
+      try {
+        const j = JSON.parse(body) as { detail?: { message?: string } | string }
+        const msg = typeof j.detail === 'string' ? j.detail : j.detail?.message
+        if (msg) reason += ` — ${msg}`
+      } catch { /* non-JSON body */ }
+      console.warn(`[system] elevenlabs check failed: ${reason}`)
+      return res.status(502).json({ error: reason })
+    }
+    const json = await upstream.json() as {
+      subscription?: { tier?: string; character_count?: number; character_limit?: number }
+    }
+    const sub = json.subscription
+    const used = sub?.character_count
+    const cap  = sub?.character_limit
+    // Quota is reported, not judged: a key at 100% is authentic but will still
+    // fail every synthesis, and that distinction matters when reading this.
+    res.json({
+      ok: true,
+      tier: sub?.tier ?? null,
+      charactersUsed: used ?? null,
+      characterLimit: cap ?? null,
+      quotaExhausted: typeof used === 'number' && typeof cap === 'number' && used >= cap,
+    })
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    console.warn('[system] elevenlabs check error:', detail)
+    res.status(502).json({ error: `unreachable — ${detail}` })
+  } finally {
+    clearTimeout(timer)
+  }
+})
+
 // All active SSE clients waiting for server events.
 const sseClients = new Set<Response>()
 
