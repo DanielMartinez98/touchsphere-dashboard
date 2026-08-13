@@ -14,11 +14,11 @@ import {
   deleteGuide,
   guideProgress,
   loadGuide,
-  saveGuide,
+  setSectionDone,
   type Guide,
   type GuideSection,
 } from '../guides'
-import { isGenerating } from '../guide-generator'
+import { isGenerating, regenerateSection } from '../guide-generator'
 import { pushGuide } from '../guide-events'
 import { findByTitle, readMedia, type MediaItem } from './dashboard-tools'
 import type { BrowseToolResult, DisplayPayload } from './browse'
@@ -140,6 +140,26 @@ export const GUIDE_VIEW_TOOLS = [
           title:   { type: 'string', description: "The game's title. Omit if only one game has a guide." },
           chapter: { type: 'string', description: 'Chapter name or number.' },
           done:    { type: 'boolean', description: 'true to tick the whole chapter off (default), false to clear it.' },
+        },
+        required: ['chapter'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'regenerate_guide_chapter',
+      description:
+        'Research and rewrite ONE chapter of a game guide, leaving the rest of the guide and every ' +
+        'other ticked step alone. Use when the user complains about one part of a guide — "the Snowhead ' +
+        'Temple chapter is empty", "chapter 4 has no detail", "redo the masks list". ' +
+        'Prefer this strongly over create_game_guide when the problem is one chapter: rebuilding the ' +
+        'whole guide throws away all of their progress. It takes a minute or two and fills in on screen.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title:   { type: 'string', description: "The game's title. Omit if only one game has a guide." },
+          chapter: { type: 'string', description: 'Chapter name or number to rewrite.' },
         },
         required: ['chapter'],
       },
@@ -303,20 +323,10 @@ function checkOffChapter(title: string, chapterHint: string, done: boolean): Bro
     return noDisplay(`Every step in "${chapter.title}" is already marked ${done ? 'done' : 'not done'}.`)
   }
 
-  // One write for the lot: setStepDone re-reads and re-writes the file per call,
-  // which would be a dozen atomic rewrites for one spoken sentence.
-  const now = new Date().toISOString()
-  const next: Guide = {
-    ...guide,
-    sections: guide.sections.map(s => s.id !== chapter.id ? s : {
-      ...s,
-      steps: s.steps.map(step => {
-        const { doneAt: _drop, ...rest } = step
-        return { ...rest, done, ...(done ? { doneAt: now } : {}) }
-      }),
-    }),
-  }
-  const saved = saveGuide(next)
+  // Shares the store's bulk write with the tap path, so a spoken "I finished
+  // Woodfall" and the chapter list's tick button do exactly the same thing.
+  const saved = setSectionDone(item.id, chapter.id, done)
+  if (!saved) return noDisplay(`Couldn't update the "${chapter.title}" chapter — try again.`)
   pushGuide(saved)
 
   const p = guideProgress(saved)
@@ -326,6 +336,46 @@ function checkOffChapter(title: string, chapterHint: string, done: boolean): Bro
     `(${changed} changed). ${guide.title} is now ${p.percent}% complete ` +
     `(${p.counted.done} of ${p.counted.total} steps). Confirm in one short sentence.`,
   )
+}
+
+function regenerateChapter(title: string, chapterHint: string): BrowseToolResult {
+  const found = resolveGuide(title)
+  if (typeof found === 'string') return noDisplay(found)
+  const { item, guide } = found
+
+  const chapter = findChapter(guide, chapterHint)
+  if (!chapter) {
+    return noDisplay(
+      `"${chapterHint}" isn't a chapter in the guide for ${guide.title}. Its chapters are: ` +
+      `${guide.sections.map((s, i) => chapterLine(s, i)).join('; ')}. Ask which one they meant.`,
+    )
+  }
+
+  const result = regenerateSection(item.id, chapter.id)
+  if (result === 'busy') {
+    return noDisplay(
+      `Something is already being researched for "${guide.title}" (${guide.phase ?? 'in progress'}). ` +
+      `Tell the user to give it a moment, and do not start another.`,
+    )
+  }
+  if (result === 'missing') return noDisplay(`Couldn't find that chapter to rewrite.`)
+
+  const ticked = chapter.steps.filter(s => s.done).length
+  console.log(`[chat:tool] regenerate_guide_chapter → "${guide.title}" § ${chapter.title}`)
+  return {
+    text:
+      `Started re-researching the "${chapter.title}" chapter of ${guide.title}. It takes a minute or two ` +
+      `and fills in on screen; the rest of the guide is untouched` +
+      (ticked > 0 ? `, and steps they had already ticked off stay ticked if they survive the rewrite` : '') +
+      `. Confirm in one short sentence.`,
+    // Put the guide up so they can watch it fill in, straight to that chapter.
+    display: {
+      kind: 'guide',
+      itemId: item.id,
+      title: guide.title || item.title,
+      chapter: chapter.id,
+    } satisfies DisplayPayload,
+  }
 }
 
 function listChapters(title: string): BrowseToolResult {
@@ -373,6 +423,7 @@ export async function runGuideViewTool(
       const done = typeof args['done'] === 'boolean' ? (args['done'] as boolean) : true
       return checkOffChapter(str('title'), str('chapter'), done)
     }
+    case 'regenerate_guide_chapter': return regenerateChapter(str('title'), str('chapter'))
     case 'list_guide_chapters':    return listChapters(str('title'))
     case 'delete_game_guide':      return deleteGuideTool(str('title'))
     default: return null
@@ -380,4 +431,8 @@ export async function runGuideViewTool(
 }
 
 /** Guide-view tools that change stored state, for the chat route's refetch hints. */
-export const GUIDE_VIEW_MUTATING = new Set(['check_off_guide_chapter', 'delete_game_guide'])
+export const GUIDE_VIEW_MUTATING = new Set([
+  'check_off_guide_chapter',
+  'regenerate_guide_chapter',
+  'delete_game_guide',
+])

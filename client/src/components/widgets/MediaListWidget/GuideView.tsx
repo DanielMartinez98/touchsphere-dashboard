@@ -16,7 +16,8 @@
 
 import { useState } from 'react'
 import {
-  ArrowLeft, Check, ChevronRight, Play, RefreshCw, ListOrdered, Trash2, Loader2, AlertTriangle,
+  ArrowLeft, Check, CheckCheck, ChevronRight, Play, RefreshCw, ListOrdered, Square, Trash2,
+  Loader2, AlertTriangle,
 } from 'lucide-react'
 import type { Guide, GuideSection, GuideVideo, MediaItem, SectionKind } from '../../../types'
 import { guideProgress } from '../../../types'
@@ -91,17 +92,22 @@ function WatchRow({ video, label }: { video: GuideVideo; label: string }) {
 // ── Layer 2: one chapter ─────────────────────────────────────────────────────
 
 function ChapterPage({
-  section, index, total, onBack, onToggleStep, onJump,
+  section, index, total, busy, onBack, onToggleStep, onToggleAll, onRebuild, onJump,
 }: {
   section:      GuideSection
   index:        number
   total:        number
+  /** Something is already generating for this guide — no second rebuild. */
+  busy:         boolean
   onBack:       () => void
   onToggleStep: (stepId: string) => void
+  onToggleAll:  (done: boolean) => void
+  onRebuild:    () => void
   /** Move to the previous/next chapter without going back to the list. */
   onJump:       (delta: number) => void
 }) {
   const { done, total: steps, pct, complete } = sectionCounts(section)
+  const rebuilding = busy && section.state === 'pending'
 
   return (
     <div className="absolute inset-0 z-[55] flex flex-col bg-[#07090f]">
@@ -141,15 +147,40 @@ function ChapterPage({
 
         {section.video && <WatchRow video={section.video} label="Watch this chapter" />}
 
+        {/* Both live at the top rather than under the steps: the whole point of
+            "I already did this one" is not having to scroll past sixty boxes to
+            say so, and a chapter you want rewritten is one you don't want to read. */}
+        <div className="grid grid-cols-2 gap-2">
+          <button type="button" disabled={steps === 0} onClick={() => onToggleAll(!complete)}
+            className={`h-13 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-30 ${
+              complete
+                ? 'bg-white/[0.06] text-white/70 active:bg-white/10'
+                : 'bg-emerald-500/15 text-emerald-200 border border-emerald-500/30 active:bg-emerald-500/25'
+            }`}>
+            {complete ? <><Square size={16} /> Clear all</> : <><CheckCheck size={16} /> Mark all done</>}
+          </button>
+          <button type="button" disabled={busy} onClick={onRebuild}
+            className="h-13 rounded-xl text-sm font-semibold bg-white/[0.06] text-white/70 active:bg-white/10 disabled:opacity-40 flex items-center justify-center gap-2">
+            {rebuilding
+              ? <><Loader2 size={16} className="animate-spin" /> Rewriting…</>
+              : <><RefreshCw size={16} /> Redo this chapter</>}
+          </button>
+        </div>
+
         {steps === 0 && (
           <div className="rounded-2xl bg-amber-500/10 border border-amber-500/30 p-4">
             <p className="flex items-center gap-2 text-sm font-semibold text-amber-200">
-              <AlertTriangle size={16} /> Nothing researched for this chapter
+              {rebuilding
+                ? <><Loader2 size={16} className="animate-spin" /> Researching this chapter…</>
+                : <><AlertTriangle size={16} /> Nothing researched for this chapter</>}
             </p>
             <p className="text-xs text-amber-100/60 mt-1.5 leading-snug">
-              {section.state === 'pending'
-                ? 'It hasn’t been researched yet — this fills in while the guide is being built.'
-                : 'The sources didn’t cover it. Rebuilding the guide from the chapter list will try again.'}
+              {rebuilding
+                ? 'Reading what the community has written about this part. It fills in here when it lands.'
+                : section.state === 'pending'
+                  ? 'It hasn’t been researched yet — this fills in while the guide is being built.'
+                  : '“Redo this chapter” searches again with wider terms. It only touches this chapter — ' +
+                    'the rest of the guide and everything you’ve ticked off stays put.'}
             </p>
           </div>
         )}
@@ -284,6 +315,10 @@ interface Props {
   loading:      boolean
   onClose:      () => void
   onToggleStep: (sectionId: string, stepId: string) => void
+  /** Tick or clear every step in one chapter at once. */
+  onToggleSection: (sectionId: string, done: boolean) => void
+  /** Re-research one chapter, leaving the rest of the guide alone. */
+  onRebuildSection: (sectionId: string) => void
   /** Start or rebuild. `order` overrides the community ordering. */
   onGenerate:   (order?: string) => void
   onDelete:     () => void
@@ -294,8 +329,8 @@ interface Props {
 }
 
 export function GuideView({
-  item, guide, loading, onClose, onToggleStep, onGenerate, onDelete,
-  chapterHint, hintSeq = 0,
+  item, guide, loading, onClose, onToggleStep, onToggleSection, onRebuildSection,
+  onGenerate, onDelete, chapterHint, hintSeq = 0,
 }: Props) {
   // Taps win over the assistant's hint, but only until the next command: a new
   // hintSeq makes the tap stale and the hint takes over again. Derived rather
@@ -404,47 +439,69 @@ export function GuideView({
           </p>
         )}
 
+        {/* A row is two targets, not one: the body opens the chapter, the trailing
+            circle ticks the whole thing off where it stands. Sitting down with a
+            guide for a game you're part-way through means marking four chapters
+            done before you read anything, and that shouldn't cost four screens
+            and two hundred taps. Nested buttons aren't legal, hence the div. */}
         {guide?.sections.map((section, i) => {
           const { done, total, pct, complete } = sectionCounts(section)
           return (
-            <button key={section.id} type="button" onClick={() => setOpenId(section.id)}
-              className={`w-full text-left rounded-2xl border p-3.5 flex items-center gap-3 active:bg-white/[0.05] transition-colors ${
+            <div key={section.id}
+              className={`w-full rounded-2xl border flex items-stretch transition-colors ${
                 complete ? 'bg-emerald-500/[0.07] border-emerald-500/25' : 'bg-glass border-hairline'
               }`}>
-              <span className={`w-9 h-9 shrink-0 rounded-xl flex items-center justify-center text-sm font-bold tabular-nums ${
-                complete ? 'bg-emerald-500/25 text-emerald-300' : 'bg-white/[0.07] text-white/50'
-              }`}>
-                {complete ? <Check size={18} strokeWidth={3} /> : i + 1}
-              </span>
-
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-2 flex-wrap">
-                  <span className="text-[15px] font-semibold text-white leading-tight">{section.title}</span>
-                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${KIND_CLASS[section.kind]}`}>
-                    {KIND_LABEL[section.kind]}
-                  </span>
-                  {section.video && <Play size={11} className="text-red-400/80" fill="currentColor" />}
+              <button type="button" onClick={() => setOpenId(section.id)}
+                className="min-w-0 flex-1 text-left p-3.5 flex items-center gap-3 active:bg-white/[0.05] rounded-l-2xl">
+                <span className={`w-9 h-9 shrink-0 rounded-xl flex items-center justify-center text-sm font-bold tabular-nums ${
+                  complete ? 'bg-emerald-500/25 text-emerald-300' : 'bg-white/[0.07] text-white/50'
+                }`}>
+                  {complete ? <Check size={18} strokeWidth={3} /> : i + 1}
                 </span>
 
-                {section.state === 'pending' ? (
-                  <span className="flex items-center gap-2 mt-1.5 text-xs text-white/40">
-                    <Loader2 size={12} className="animate-spin" /> waiting to be researched
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[15px] font-semibold text-white leading-tight">{section.title}</span>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${KIND_CLASS[section.kind]}`}>
+                      {KIND_LABEL[section.kind]}
+                    </span>
+                    {section.video && <Play size={11} className="text-red-400/80" fill="currentColor" />}
                   </span>
-                ) : total === 0 ? (
-                  <span className="flex items-center gap-1.5 mt-1.5 text-xs text-amber-300/70">
-                    <AlertTriangle size={12} /> nothing found for this chapter
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-2 mt-1.5">
-                    <Bar pct={pct} height="h-1.5"
-                         accent={complete ? 'bg-emerald-400/80' : 'bg-[var(--accent,#06b6d4)]'} />
-                    <span className="text-xs tabular-nums text-white/50 shrink-0">{done}/{total}</span>
-                  </span>
-                )}
-              </span>
 
-              <ChevronRight size={20} className="text-white/25 shrink-0" />
-            </button>
+                  {section.state === 'pending' ? (
+                    <span className="flex items-center gap-2 mt-1.5 text-xs text-white/40">
+                      <Loader2 size={12} className="animate-spin" />
+                      {generating ? 'being researched…' : 'waiting to be researched'}
+                    </span>
+                  ) : total === 0 ? (
+                    <span className="flex items-center gap-1.5 mt-1.5 text-xs text-amber-300/70">
+                      <AlertTriangle size={12} /> nothing found — open it to redo this chapter
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-2 mt-1.5">
+                      <Bar pct={pct} height="h-1.5"
+                           accent={complete ? 'bg-emerald-400/80' : 'bg-[var(--accent,#06b6d4)]'} />
+                      <span className="text-xs tabular-nums text-white/50 shrink-0">{done}/{total}</span>
+                    </span>
+                  )}
+                </span>
+
+                <ChevronRight size={20} className="text-white/25 shrink-0" />
+              </button>
+
+              <button type="button" disabled={total === 0}
+                onClick={() => onToggleSection(section.id, !complete)}
+                aria-label={complete ? `Clear ${section.title}` : `Mark ${section.title} complete`}
+                className="w-16 shrink-0 flex items-center justify-center rounded-r-2xl border-l border-white/[0.06] active:bg-white/[0.07] disabled:opacity-20">
+                <span className={`w-9 h-9 rounded-full border-2 flex items-center justify-center transition-colors ${
+                  complete
+                    ? 'bg-emerald-500/30 border-emerald-500/60 text-emerald-300'
+                    : 'border-white/25 text-transparent'
+                }`}>
+                  <Check size={18} strokeWidth={3} />
+                </span>
+              </button>
+            </div>
           )
         })}
 
@@ -509,8 +566,11 @@ export function GuideView({
           section={openSection}
           index={openIndex}
           total={guide.sections.length}
+          busy={generating}
           onBack={() => setOpenId(null)}
           onToggleStep={stepId => onToggleStep(openSection.id, stepId)}
+          onToggleAll={done => onToggleSection(openSection.id, done)}
+          onRebuild={() => onRebuildSection(openSection.id)}
           onJump={delta => {
             const next = guide.sections[openIndex + delta]
             if (next) setOpenId(next.id)

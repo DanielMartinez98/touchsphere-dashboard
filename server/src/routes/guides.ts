@@ -9,9 +9,10 @@ import {
   deleteGuide,
   listGuides,
   loadGuide,
+  setSectionDone,
   setStepDone,
 } from '../guides'
-import { isGenerating, startGuide } from '../guide-generator'
+import { isGenerating, regenerateSection, startGuide } from '../guide-generator'
 import { pushGuide } from '../guide-events'
 
 const router = Router()
@@ -95,6 +96,45 @@ router.patch('/:itemId/steps/:sectionId/:stepId', (req: Request, res: Response) 
   // generator uses, so a tick here shows up everywhere at once.
   pushGuide(updated)
   res.json(updated)
+})
+
+// PATCH /api/guides/:itemId/sections/:sectionId  { done }
+// Tick or clear a whole chapter in one go — "I already finished that dungeon",
+// without opening it and tapping sixty boxes.
+router.patch('/:itemId/sections/:sectionId', (req: Request, res: Response) => {
+  const itemId    = String(req.params['itemId'] ?? '')
+  const sectionId = String(req.params['sectionId'] ?? '')
+  const body = (req.body ?? {}) as { done?: unknown }
+  if (typeof body.done !== 'boolean') {
+    res.status(400).json({ error: 'done must be a boolean' })
+    return
+  }
+  const updated = setSectionDone(itemId, sectionId, body.done)
+  if (!updated) {
+    res.status(404).json({ error: 'No such guide or section' })
+    return
+  }
+  pushGuide(updated)
+  res.json(updated)
+})
+
+// POST /api/guides/:itemId/sections/:sectionId/regenerate
+// Re-research one chapter, leaving the other chapters and their ticks intact.
+// 202 like the whole-guide POST: the work runs in the background and the client
+// follows the same `guide` SSE event.
+router.post('/:itemId/sections/:sectionId/regenerate', (req: Request, res: Response) => {
+  const itemId    = String(req.params['itemId'] ?? '')
+  const sectionId = String(req.params['sectionId'] ?? '')
+
+  const result = regenerateSection(itemId, sectionId)
+  if (result === 'missing') {
+    res.status(404).json({ error: 'No such guide or section' })
+    return
+  }
+  console.log(`[guides] POST /${itemId}/sections/${sectionId}/regenerate → ${result}`)
+  // 'busy' means something is already generating for this guide — the user tapped
+  // twice, or asked out loud while a rebuild was running. Not an error to show.
+  res.status(202).json({ status: 'generating', started: result === 'started' })
 })
 
 // DELETE /api/guides/:itemId

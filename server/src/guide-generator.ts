@@ -33,7 +33,13 @@ import {
   type GuideStep,
   type SectionKind,
 } from './guides'
-import { communityTableOfContents, researchGame, type Page } from './research'
+import {
+  communityQuery,
+  communityTableOfContents,
+  researchGame,
+  researchPages,
+  type Page,
+} from './research'
 import { pushGuide } from './guide-events'
 import { searchYouTube } from './routes/browse'
 
@@ -44,11 +50,31 @@ const OLLAMA_API_KEY = process.env['OLLAMA_API_KEY'] ?? ''
 // Generous compared to the 30 s the conversation gets: nobody is waiting on a
 // spoken reply here, and a section of forty steps is a lot of tokens for a
 // model running on a box that is also driving the voice pipeline.
-const TIMEOUT_MS = Number(process.env['OLLAMA_GUIDE_TIMEOUT_MS'] ?? 120_000)
+const TIMEOUT_MS = Number(process.env['OLLAMA_GUIDE_TIMEOUT_MS'] ?? 180_000)
+
+// THE most important number in this file. Ollama defaults num_ctx to 4096 tokens
+// and silently discards whatever doesn't fit — from the FRONT of the prompt,
+// which is exactly where the research notes are. Left at the default, a section
+// prompt carrying two pages of wiki text reaches the model as instructions with
+// the evidence sheared off, and the model then writes four vague steps because
+// four vague steps is all it can see. Every "the guide isn't detailed" symptom
+// traces back here. Lower it only on a box that can't hold the KV cache.
+const NUM_CTX = Number(process.env['OLLAMA_GUIDE_NUM_CTX'] ?? 16384)
 
 const TARGET_SECTIONS = 12                       // asked for; capped by GUIDE_CAPS.MAX_SECTIONS
 const YOUTUBE_GAP_MS  = 400                      // politeness gap between video lookups
-const RESEARCH_CHARS  = 6000                     // per page fed to the model
+
+// Per-page budgets. Outline pages only have to convey how the game is divided
+// up; a section's pages have to contain the actual walkthrough, so they get
+// room. A wiki dungeon article runs 20–40k chars and the walkthrough is usually
+// in the middle of it, well past where the old 6000-char cut landed.
+const OUTLINE_CHARS = 8000
+const SECTION_CHARS = 14000
+
+/** A section researched from less than this has nothing to write steps from. */
+const SECTION_MIN_CHARS = 4000
+/** …and past this there's more than the context window should carry. */
+const SECTION_MAX_CHARS = 26000
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
@@ -99,7 +125,17 @@ async function postChat(
       // No `tools` here on purpose: this call has one job, which is to emit JSON.
       // think:false for the same reason as the chat route — a reasoning model
       // puts its answer in `thinking` and leaves `content` empty.
-      body: JSON.stringify({ model: OLLAMA_MODEL, stream: false, think: false, format, messages }),
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        stream: false,
+        think: false,
+        format,
+        messages,
+        // num_ctx: see the constant. num_predict: a 60-step collectible list with
+        // a how-to on each one is several thousand tokens, and Ollama's default
+        // stop would truncate it mid-JSON, which parses as nothing at all.
+        options: { num_ctx: NUM_CTX, num_predict: 6144, temperature: 0.3 },
+      }),
     })
     if (!res.ok) {
       console.warn(`[guides] ollama ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`)
@@ -237,28 +273,54 @@ function outlinePrompt(title: string, order: string | undefined, pages: Page[], 
 }
 
 function stepsPrompt(title: string, section: GuideSection, pages: Page[]): string {
+  // The shape differs per kind in one way that matters more than the wording: what
+  // a step has to TEACH. A walkthrough step that says "clear Woodfall Temple" and a
+  // collectible step that says "Bunny Hood" are both useless — they restate the
+  // thing the player already knew they had to do. Each kind is told, concretely,
+  // what the player must be able to do after reading a step.
   const shape = section.kind === 'collectible'
-    ? `This is a COLLECTIBLE LIST. One step per collectible, named exactly, with where to find it in the note. ` +
-      `Be complete — if the sources say there are 24 masks, list 24 steps.`
+    ? `This is a COLLECTIBLE LIST — one step per collectible, named exactly as the sources name it.\n` +
+      `The list is worthless if it only names them: the player is holding this to find out HOW to get ` +
+      `each one. So every step's "note" must be the method — where it is, what you need to have first, ` +
+      `and what you actually do to obtain it ("Beneath the Deku Palace, in the Bean Seller's cave. Play ` +
+      `the Song of Storms to water the magic bean, ride it up to the ledge").\n` +
+      `Be complete: if the sources say there are 24 masks, write 24 steps, not a sample of them.`
     : section.kind === 'sidequest'
-      ? `This is a SIDE-QUEST LIST. One step per quest, with who gives it and the reward in the note.`
+      ? `This is a SIDE-QUEST LIST — one step per quest. The "note" must say who gives it, where and ` +
+        `when to find them, what the quest requires, and what it rewards.`
       : section.kind === 'reference'
-        ? `This is REFERENCE material. One step per entry, kept short.`
-        : `This is a WALKTHROUGH section. One step per meaningful action, in the order the player does ` +
-          `them: items to get, puzzles to solve, mini-bosses and the boss. Each step is something the ` +
-          `player can tick off when done.`
+        ? `This is REFERENCE material. One step per entry, kept short, detail in the note.`
+        : `This is a WALKTHROUGH section, and it must be a real walkthrough — someone who has never ` +
+          `played should be able to get through this part with nothing but these steps.\n` +
+          `Cover the whole span, in the order the player does it:\n` +
+          `  1. GETTING THERE — how you reach this place from where the last section left off, what you ` +
+          `need to have or be able to do before it will let you in, and how the way in is opened.\n` +
+          `  2. GETTING THROUGH IT — every room, puzzle, key, switch and item along the way, said ` +
+          `specifically enough to act on ("Shoot the ice arrow at the water below the platform to freeze ` +
+          `a stepping stone"), never vaguely ("solve the water puzzle").\n` +
+          `  3. THE MINI-BOSS AND THE BOSS — how each one is fought: what hurts it, what to dodge, and ` +
+          `the order of the phases. Put the actual tactic in the note.\n` +
+          `  4. WHAT YOU LEAVE WITH — the item, upgrade or ability this section grants.`
+
+  const depth = section.kind === 'progression'
+    ? `- Aim for 12 to 30 steps. A dungeon or chapter described in five steps has been summarized, not ` +
+      `written — break it down room by room and beat by beat.\n`
+    : `- Aim for one step per real entry, up to ${GUIDE_CAPS.MAX_STEPS_PER_SECTION}.\n`
 
   return (
     `Game: ${title}\nSection: ${section.title}\n\n` +
     `Research notes:\n\n${researchBlock(pages)}\n\n` +
     `TASK: write the step-by-step checklist for THIS SECTION ONLY.\n${shape}\n\n` +
     `Rules:\n` +
-    `- "text": the step itself, imperative and specific ("Freeze the water below the elevator to ` +
-    `reach the fourth floor"), under 140 characters. No step numbers — the app numbers them.\n` +
-    `- "note": optional, one short line of extra detail (exact location, a warning, a requirement).\n` +
-    `- Between 3 and ${GUIDE_CAPS.MAX_STEPS_PER_SECTION} steps.\n` +
-    `- Only what the research notes support. If they cover this section thinly, write fewer steps ` +
-    `rather than inventing any.\n` +
+    `- "text": the step itself, imperative and specific, under 160 characters. No step numbers — the ` +
+    `app numbers them.\n` +
+    `- "note": the detail that makes the step doable — the exact location, the method, the tactic, the ` +
+    `requirement. One or two sentences. Include it on every step that isn't self-explanatory.\n` +
+    depth +
+    `- Use the game's real names for places, items, characters and moves, spelled as the sources spell ` +
+    `them. "Use the Hookshot on the target above the door", not "use your grappling tool".\n` +
+    `- Only what the research notes support. If they cover something thinly, write what they do support ` +
+    `rather than inventing any — but do not leave out detail that IS in the notes.\n` +
     `- Do not mention the sources, the notes, or yourself.`
   )
 }
@@ -282,8 +344,8 @@ async function buildOutline(itemId: string, title: string, order?: string): Prom
   // that's the community's literal table of contents.
   const toc = await communityTableOfContents(title)
   const pages = [
-    ...(await researchGame(title, '', 1, RESEARCH_CHARS)),
-    ...(await researchGame(title, 'walkthrough 100% completion', 1, RESEARCH_CHARS)),
+    ...(await researchGame(title, '', 1, OUTLINE_CHARS)),
+    ...(await researchGame(title, 'walkthrough 100% completion', 1, OUTLINE_CHARS)),
   ]
 
   if (pages.length === 0) {
@@ -342,9 +404,6 @@ async function buildOutline(itemId: string, title: string, order?: string): Prom
   return saved ? { guide: saved, pages } : null
 }
 
-/** A section researched from less than this has nothing to write steps from. */
-const SECTION_MIN_CHARS = 700
-
 const totalChars = (pages: Page[]) => pages.reduce((n, p) => n + p.text.length, 0)
 
 /**
@@ -357,10 +416,21 @@ const totalChars = (pages: Page[]) => pages.reduce((n, p) => n + p.text.length, 
 function sectionQueries(gameTitle: string, section: GuideSection, wider: boolean): string[] {
   const t = section.title
   const queries = [t]
-  if (section.kind === 'collectible') queries.push(`List of ${t}`, `${t} locations`)
-  else if (section.kind === 'sidequest') queries.push(`${t} list`, 'Side quests')
-  else if (section.kind === 'reference') queries.push(`${t} list`)
-  else queries.push(`${t} walkthrough`)
+  if (section.kind === 'collectible') {
+    // "Locations" and "how to get" pages are the ones carrying the method; the
+    // bare "Masks" article is often just a gallery with no way to obtain any.
+    queries.push(`List of ${t}`, `${t} locations`, `How to get ${t}`)
+  } else if (section.kind === 'sidequest') {
+    queries.push(`${t} list`, 'Side quests')
+  } else if (section.kind === 'reference') {
+    queries.push(`${t} list`)
+  } else {
+    // Many wikis keep the prose walkthrough on a subpage, with the parent article
+    // holding only an overview box — which is what the guide was being written
+    // from, and why chapters read like a summary of a dungeon rather than a route
+    // through it. Ask for the walkthrough explicitly, and first.
+    queries.push(`${t}/Walkthrough`, `${t} walkthrough`, `${t} guide`)
+  }
   queries.push(`${gameTitle} ${t}`)
   // The repair pass casts wider, including terms that reach past the game's own
   // wiki into Wikipedia and the open web.
@@ -381,14 +451,30 @@ async function researchSection(
   wider: boolean,
 ): Promise<{ pages: Page[]; own: Page[] }> {
   const own: Page[] = []
-  for (const query of sectionQueries(gameTitle, section, wider)) {
-    if (totalChars(own) >= SECTION_MIN_CHARS) break
-    const got = await researchGame(gameTitle, query, 1, RESEARCH_CHARS)
+  const add = (got: Page[]) => {
     for (const page of got) {
       if (!own.some(p => p.url === page.url)) own.push(page)
     }
   }
-  if (totalChars(own) >= SECTION_MIN_CHARS) return { pages: own, own }
+
+  for (const query of sectionQueries(gameTitle, section, wider)) {
+    if (totalChars(own) >= SECTION_MIN_CHARS) break
+    add(await researchGame(gameTitle, query, 1, SECTION_CHARS))
+  }
+
+  // A wiki describes a dungeon; a walkthrough site routes you through one. The
+  // Woodfall Temple article is 14k chars of theme, layout and lore that never
+  // says which room the boss key is in — good background, not a guide. And
+  // because researchGame only falls through to the open web when the wiki
+  // returns NOTHING, a section like this would never reach the sites that do
+  // walk you through it. So progression sections ask the open web directly, on
+  // top of whatever the wiki gave. Best-effort: this is the scraped search path,
+  // and when it's throttled the wiki page still carries the section.
+  if (section.kind === 'progression' && own.length < 2) {
+    add(await researchPages(communityQuery(gameTitle, `${section.title} walkthrough`), 1))
+  }
+
+  if (totalChars(own) >= SECTION_MIN_CHARS) return { pages: capped(own), own }
 
   // Thin or nothing: pad with the shared pages rather than write from scratch.
   const merged = [...own]
@@ -398,7 +484,24 @@ async function researchSection(
   if (own.length === 0) {
     console.log(`[guides] "${gameTitle}" § ${section.title}: no page of its own — using the outline sources`)
   }
-  return { pages: merged, own }
+  return { pages: capped(merged), own }
+}
+
+/**
+ * Trim the tail of the page list to the context budget. Pages are in
+ * most-specific-first order, so dropping from the end sheds the padding rather
+ * than the article this section is actually about.
+ */
+function capped(pages: Page[]): Page[] {
+  const out: Page[] = []
+  let used = 0
+  for (const page of pages) {
+    if (used >= SECTION_MAX_CHARS) break
+    const room = SECTION_MAX_CHARS - used
+    out.push(page.text.length <= room ? page : { ...page, text: page.text.slice(0, room) })
+    used += Math.min(page.text.length, room)
+  }
+  return out
 }
 
 /** One model call for a section's steps, with a stricter second attempt if it comes back empty. */
@@ -438,6 +541,28 @@ async function writeSteps(
   ))
 }
 
+/**
+ * Carry ticked-off steps across a rewrite. Rewriting one chapter is something a
+ * player does mid-playthrough — usually because that chapter came out thin — and
+ * losing the boxes they already ticked would make the fix cost more than the
+ * problem. Matched on normalized text: the ids are regenerated, but a step that
+ * still says the same thing is still the same step.
+ */
+function carryTicks(previous: GuideStep[], next: GuideStep[]): GuideStep[] {
+  const key = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const wasDone = new Map(previous.filter(s => s.done).map(s => [key(s.text), s.doneAt]))
+  if (wasDone.size === 0) return next
+  let carried = 0
+  const out = next.map(step => {
+    if (!wasDone.has(key(step.text))) return step
+    carried++
+    const doneAt = wasDone.get(key(step.text))
+    return { ...step, done: true, ...(doneAt ? { doneAt } : {}) }
+  })
+  if (carried > 0) console.log(`[guides] carried ${carried} ticked step(s) across the rewrite`)
+  return out
+}
+
 async function fillSection(
   itemId: string,
   title: string,
@@ -469,7 +594,7 @@ async function fillSection(
   update(itemId, g => {
     const target = g.sections.find(s => s.id === sectionId)
     if (!target) return
-    if (steps.length > 0) target.steps = steps
+    if (steps.length > 0) target.steps = carryTicks(target.steps, steps)
     target.state = (steps.length > 0 || target.steps.length > 0) ? 'ready' : 'failed'
     if (video) target.video = video
     // Credit the page this section was actually written from, preferring one of
@@ -549,7 +674,85 @@ async function run(itemId: string, title: string, order?: string): Promise<void>
   }
 }
 
+/**
+ * Re-research and rewrite ONE section, leaving the rest of the guide alone.
+ *
+ * A guide is a dozen model calls over several minutes, and it is normal for one
+ * chapter to come back thin while the others are fine — one unlucky search, or a
+ * wiki that keeps that dungeon's walkthrough somewhere the others aren't. Making
+ * the user rebuild the whole guide to fix one chapter throws away every other
+ * chapter and every ticked box to repair a twentieth of the document.
+ *
+ * Runs with the wider search terms the repair pass uses, since a section worth
+ * rewriting is usually one the narrow terms already failed at.
+ */
+async function runSection(itemId: string, title: string, sectionId: string): Promise<void> {
+  const started = Date.now()
+  try {
+    const guide = loadGuide(itemId)
+    const section = guide?.sections.find(s => s.id === sectionId)
+    if (!guide || !section) return
+
+    // The outline's research isn't kept on disk, so re-fetch the broad pages to
+    // fall back on. One search, and only used if the section's own come up short.
+    const fallback = await researchGame(title, 'walkthrough 100% completion', 1, OUTLINE_CHARS)
+    await fillSection(itemId, title, sectionId, 0, 1, fallback, {
+      wider: true,
+      phase: `Rewriting ${section.title}…`,
+    })
+
+    const done = update(itemId, g => {
+      const target = g.sections.find(s => s.id === sectionId)
+      g.status = g.sections.some(s => s.steps.length > 0) ? 'ready' : 'failed'
+      // A rewrite that fixed the chapter also clears a guide-level error left over
+      // from the run that produced it.
+      if (g.status === 'ready') delete g.error
+      delete g.phase
+      if (target && target.steps.length === 0) target.state = 'failed'
+    })
+    const steps = done?.sections.find(s => s.id === sectionId)?.steps.length ?? 0
+    console.log(
+      `[guides] "${title}" § ${section.title}: rewritten in ` +
+      `${Math.round((Date.now() - started) / 1000)}s — ${steps} steps`,
+    )
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`[guides] "${title}" section rewrite crashed:`, err)
+    update(itemId, g => {
+      g.status = 'ready'   // the rest of the guide is still good
+      g.error = `Rewriting that chapter failed: ${msg.slice(0, 200)}`
+      delete g.phase
+    })
+  } finally {
+    inFlight.delete(itemId)
+  }
+}
+
 export type StartResult = 'started' | 'busy'
+export type SectionResult = StartResult | 'missing'
+
+/** Kick off a one-section rewrite and return immediately, like startGuide. */
+export function regenerateSection(itemId: string, sectionId: string): SectionResult {
+  if (inFlight.has(itemId)) return 'busy'
+  const guide = loadGuide(itemId)
+  const section = guide?.sections.find(s => s.id === sectionId)
+  if (!guide || !section) return 'missing'
+
+  inFlight.add(itemId)
+  // 'generating' at the guide level is what drives the spinner and disables the
+  // rebuild buttons; the section going back to 'pending' is what tells the
+  // chapter list this one specifically is being worked on.
+  update(itemId, g => {
+    g.status = 'generating'
+    g.phase = `Rewriting ${section.title}…`
+    const target = g.sections.find(s => s.id === sectionId)
+    if (target) target.state = 'pending'
+  })
+
+  console.log(`[guides] queued rewrite of "${guide.title}" § ${section.title}`)
+  enqueue(() => runSection(itemId, guide.title, sectionId))
+  return 'started'
+}
 
 /**
  * Kick off (or restart) generation for one media item and return immediately.

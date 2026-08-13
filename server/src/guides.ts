@@ -24,10 +24,15 @@ const FILE = 'guides.json'
 // Pi's disk or freeze the kiosk trying to render 4000 checkboxes.
 const MAX_GUIDES            = 40
 const MAX_SECTIONS          = 16
-const MAX_STEPS_PER_SECTION = 60
+// A full collectible list is the reason this is generous: Majora's Mask has 24
+// masks and 52 heart pieces, and a list that stops short of the real count is
+// worse than no list, because the bar then reads 100% on an unfinished game.
+const MAX_STEPS_PER_SECTION = 80
 const MAX_TITLE_CHARS       = 120
 const MAX_STEP_CHARS        = 300
-const MAX_NOTE_CHARS        = 400
+// The note is where "how do I actually get this" lives — for a collectible it
+// carries the whole method, so it has room for a couple of sentences.
+const MAX_NOTE_CHARS        = 700
 const MAX_SUMMARY_CHARS     = 400
 const MAX_SOURCES           = 12
 
@@ -394,6 +399,41 @@ export function setStepDone(
 }
 
 /**
+ * Tick or untick every step in one section at once — the "I already finished
+ * this dungeon" shortcut, from a tap or from a spoken sentence.
+ *
+ * One read-modify-write for the lot rather than a setStepDone per step: that
+ * would be sixty atomic file rewrites and sixty SSE frames for one gesture.
+ * Returns null when the guide or section is gone, so the caller can 404 instead
+ * of reporting success against a stale id.
+ */
+export function setSectionDone(itemId: string, sectionId: string, done: boolean): Guide | null {
+  const store = read()
+  const guide = store[itemId]
+  if (!guide) return null
+  const section = guide.sections.find(s => s.id === sectionId)
+  if (!section) return null
+
+  const now = new Date().toISOString()
+  let changed = 0
+  for (const step of section.steps) {
+    if (step.done !== done) changed++
+    step.done = done
+    if (done) step.doneAt = now
+    else delete step.doneAt
+  }
+
+  guide.updatedAt = now
+  write(store)
+  const p = guideProgress(guide)
+  console.log(
+    `[guides] ${guide.title}: "${section.title}" → all ${done ? 'done' : 'not done'} ` +
+    `(${changed} of ${section.steps.length} changed, ${p.percent}%)`,
+  )
+  return guide
+}
+
+/**
  * Drop guides whose media item is gone. Guides are keyed by item id and the
  * playlist is edited from three places (touch UI, voice tools, Settings), so a
  * periodic sweep is cheaper than trusting every delete path to remember.
@@ -415,16 +455,27 @@ export function pruneOrphans(validItemIds: Iterable<string>): number {
 /**
  * Called once at startup. Generation is in-memory and fire-and-forget, so a
  * container restart mid-job would otherwise leave a guide stuck on "generating"
- * forever — a spinner with nothing behind it. Fail it loudly instead, so the
- * view can offer Retry.
+ * forever — a spinner with nothing behind it.
+ *
+ * How it's resolved depends on what survived. A guide with finished chapters is
+ * marked ready with only the unfinished chapters flagged, because failing the
+ * whole document would point the user at "Try again" — which rebuilds from
+ * scratch and destroys every chapter that was fine and every box they had
+ * ticked, to recover the two that weren't. Per-chapter rewrite handles those.
+ * Only a guide with nothing in it at all is failed outright.
  */
 export function sweepInterrupted(): void {
   const store = read()
   let touched = 0
   for (const g of Object.values(store)) {
     if (g.status !== 'generating') continue
-    g.status = 'failed'
-    g.error = 'Generation was interrupted by a restart — tap retry.'
+    const salvageable = g.sections.some(s => s.steps.length > 0)
+    for (const s of g.sections) {
+      if (s.state === 'pending') s.state = s.steps.length > 0 ? 'ready' : 'failed'
+    }
+    g.status = salvageable ? 'ready' : 'failed'
+    if (salvageable) delete g.error
+    else g.error = 'Generation was interrupted by a restart — tap retry.'
     delete g.phase
     g.updatedAt = new Date().toISOString()
     touched++

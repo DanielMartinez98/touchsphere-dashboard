@@ -22,7 +22,7 @@ export function GuideOverlay() {
   // is only here so the overlay can resolve an id to a title and cover without
   // having them threaded through the store.
   const { items } = useMediaList()
-  const { guide, loading, toggleStep } = useGuide(target?.itemId ?? null)
+  const { guide, loading, toggleStep, toggleSection, rebuildSection } = useGuide(target?.itemId ?? null)
 
   if (!target) return null
   const item = items.find(i => i.id === target.itemId)
@@ -39,6 +39,8 @@ export function GuideOverlay() {
         hintSeq={target.seq}
         onClose={closeGuide}
         onToggleStep={toggleStep}
+        onToggleSection={toggleSection}
+        onRebuildSection={rebuildSection}
         onGenerate={order => requestGuide(item.id, item.title, order)}
         onDelete={() => removeGuide(item.id)}
       />

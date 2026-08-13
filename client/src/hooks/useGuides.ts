@@ -228,9 +228,70 @@ export function useGuide(itemId: string | null) {
       })
   }, [itemId, guide, load])
 
+  /**
+   * Tick or clear a whole chapter — the "I already finished that dungeon"
+   * shortcut. Optimistic like toggleStep, and one request rather than one per
+   * step: sixty PATCHes would blow the 60/min data budget on a single tap.
+   */
+  const toggleSection = useCallback((sectionId: string, done: boolean) => {
+    if (!itemId || !guide) return
+    setLoaded({
+      id: itemId,
+      guide: {
+        ...guide,
+        sections: guide.sections.map(sec => sec.id !== sectionId ? sec : {
+          ...sec,
+          steps: sec.steps.map(s => ({ ...s, done })),
+        }),
+      },
+    })
+
+    fetch(`${API}/${itemId}/sections/${sectionId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ done }),
+    })
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        return res.json() as Promise<Guide>
+      })
+      .then(updated => setLoaded({ id: itemId, guide: updated }))
+      .catch(err => {
+        console.error('[Guides] toggleSection failed — reloading:', err)
+        void load(itemId)
+      })
+  }, [itemId, guide, load])
+
+  /**
+   * Re-research one chapter. The rest of the guide, and every tick in it, stays
+   * put — so a chapter that came out thin is a one-tap fix rather than a reason
+   * to rebuild the whole thing.
+   */
+  const rebuildSection = useCallback((sectionId: string) => {
+    if (!itemId || !guide) return
+    // Show it working straight away: the first SSE frame is a research call away.
+    setLoaded({
+      id: itemId,
+      guide: {
+        ...guide,
+        status: 'generating',
+        phase: `Rewriting ${guide.sections.find(s => s.id === sectionId)?.title ?? 'chapter'}…`,
+        sections: guide.sections.map(sec => sec.id !== sectionId ? sec : { ...sec, state: 'pending' }),
+      },
+    })
+    console.log(`[Guides] rewrite section ${sectionId} of "${guide.title}"`)
+
+    fetch(`${API}/${itemId}/sections/${sectionId}/regenerate`, { method: 'POST' })
+      .then(res => { if (!res.ok) throw new Error(`HTTP ${res.status}`) })
+      .catch(err => {
+        console.error('[Guides] section rebuild failed — reloading:', err)
+        void load(itemId)
+      })
+  }, [itemId, guide, load])
+
   const refresh = useCallback(() => {
     if (itemId) void load(itemId)
   }, [itemId, load])
 
-  return { guide, loading, toggleStep, refresh }
+  return { guide, loading, toggleStep, toggleSection, rebuildSection, refresh }
 }

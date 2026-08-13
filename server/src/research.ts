@@ -262,42 +262,54 @@ function wikiPageUrl(host: string, pageTitle: string): string {
   return `https://${host}/wiki/${encodeURIComponent(pageTitle.replace(/ /g, '_'))}`
 }
 
+/** Below this a rendered page is chrome and stubs, not an article. */
+const MIN_RENDERED_CHARS = 1200
+
 /**
  * One wiki article as plain text.
  *
- * Two routes, because MediaWiki farms are not uniform: `prop=extracts` (the
- * TextExtracts extension) gives clean prose but simply isn't installed on some
- * Fandom wikis — hollowknight.fandom.com answers "Unrecognized value for
- * parameter prop". Those fall back to the rendered HTML through the same
- * readability pass the browser overlay's reader mode uses.
+ * RENDERED HTML FIRST, `prop=extracts` second — and the order matters more than
+ * it looks. TextExtracts returns clean prose, but "prose" is the whole problem:
+ * it drops lists and tables, and on a game wiki that is where the answers live.
+ * Zelda's "Mask" article is 5.9k chars through extracts and 20k rendered, and
+ * only the rendered one contains "To be sold for 20 Rupees to the Skull Kid in
+ * Lost Woods" — i.e. how you actually get the thing. Woodfall Temple is 3.2k
+ * versus 14.5k the same way. A guide built on extracts can list what exists and
+ * nothing about obtaining it, which is exactly the complaint it produced.
+ *
+ * extracts stays as the fallback, because `action=parse` can fail on a page that
+ * still has a readable extract, and because some Fandom wikis don't install
+ * TextExtracts at all (hollowknight.fandom.com answers "Unrecognized value for
+ * parameter prop") — so neither route can be the only one.
  */
 async function wikiExtract(host: string, pageTitle: string, maxChars: number): Promise<Page | null> {
+  const parsed = await wikiApi<ParseApiReply>(host, {
+    action: 'parse', page: pageTitle, prop: 'text', redirects: '1',
+  })
+  const html = parsed?.parse?.text?.['*']
+  if (typeof html === 'string' && html.length > 0) {
+    const { text } = extractReadable(html.slice(0, MAX_WIKI_HTML))
+    if (text.length >= MIN_RENDERED_CHARS) {
+      return {
+        url:   wikiPageUrl(host, pageTitle),
+        site:  host,
+        title: parsed?.parse?.title ?? pageTitle,
+        text:  text.slice(0, maxChars),
+      }
+    }
+  }
+
   const json = await wikiApi<ExtractApiReply>(host, {
     action: 'query', prop: 'extracts', explaintext: '1', exlimit: '1', redirects: '1', titles: pageTitle,
   })
   const page = Object.values(json?.query?.pages ?? {})[0]
   const extract = typeof page?.extract === 'string' ? page.extract.trim() : ''
-  if (extract.length >= 200) {
-    return {
-      url:   wikiPageUrl(host, pageTitle),
-      site:  host,
-      title: page?.title ?? pageTitle,
-      text:  extract.slice(0, maxChars),
-    }
-  }
-
-  const parsed = await wikiApi<ParseApiReply>(host, {
-    action: 'parse', page: pageTitle, prop: 'text', redirects: '1',
-  })
-  const html = parsed?.parse?.text?.['*']
-  if (typeof html !== 'string' || html.length === 0) return null
-  const { text } = extractReadable(html.slice(0, MAX_WIKI_HTML))
-  if (text.length < 200) return null
+  if (extract.length < 200) return null
   return {
     url:   wikiPageUrl(host, pageTitle),
     site:  host,
-    title: parsed?.parse?.title ?? pageTitle,
-    text:  text.slice(0, maxChars),
+    title: page?.title ?? pageTitle,
+    text:  extract.slice(0, maxChars),
   }
 }
 
