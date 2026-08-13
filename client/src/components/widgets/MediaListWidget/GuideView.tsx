@@ -1,18 +1,22 @@
-// The game guide, full screen.
+// The game guide, full screen, in two layers.
 //
-// A researched walkthrough for one game: a 100% bar across the top, then the
-// sections the way that game's community organizes them (a section per dungeon
-// or chapter, then collectibles and side quests), each with its own count, its
-// own YouTube walkthrough, and steps you tick off as you play.
+//   1. The chapter list — nothing but the chapters, the way that game's community
+//      divides it up, each with its own progress. Short enough to take in at a
+//      glance from arm's length.
+//   2. One chapter — tap a chapter and its whole checklist gets the screen, with
+//      its walkthrough video and its own scroll.
 //
-// Rendered inside the media widget's expanded overlay (which is already
-// full-screen and portalled to body), so it's an absolute layer here rather than
-// another portal. Generation streams in: sections arrive one at a time, and a
-// section is usable the moment it lands.
+// Steps deliberately do NOT appear in the list: a 12-chapter game is a few
+// hundred of them, and inline expansion turned the guide into an endless page you
+// had to scroll past to find anything.
+//
+// Both layers live inside the media widget's expanded overlay (already
+// full-screen and portalled to body), so they're absolute layers here rather than
+// portals of their own.
 
 import { useState } from 'react'
 import {
-  ArrowLeft, Check, ChevronDown, ChevronRight, Play, RefreshCw, ListOrdered, Trash2, Loader2, AlertTriangle,
+  ArrowLeft, Check, ChevronRight, Play, RefreshCw, ListOrdered, Trash2, Loader2, AlertTriangle,
 } from 'lucide-react'
 import type { Guide, GuideSection, GuideVideo, MediaItem, SectionKind } from '../../../types'
 import { guideProgress } from '../../../types'
@@ -27,7 +31,7 @@ const KIND_LABEL: Record<SectionKind, string> = {
   reference:   'Reference',
 }
 
-// Colour carries the same meaning as the label so the eye can group sections
+// Colour carries the same meaning as the label so the eye can group chapters
 // without reading them: cyan for the critical path, amber for things to find,
 // violet for optional quests, grey for material you don't "complete".
 const KIND_CLASS: Record<SectionKind, string> = {
@@ -47,7 +51,13 @@ function playVideo(video: GuideVideo) {
   })
 }
 
-/** Thin progress track. `accent` picks the fill colour. */
+const sectionCounts = (s: GuideSection) => {
+  const done = s.steps.filter(x => x.done).length
+  const total = s.steps.length
+  return { done, total, pct: total > 0 ? Math.round((done / total) * 100) : 0, complete: total > 0 && done === total }
+}
+
+/** Thin progress track. */
 function Bar({ pct, accent = 'bg-[var(--accent,#06b6d4)]', height = 'h-2' }: {
   pct: number
   accent?: string
@@ -64,7 +74,7 @@ function Bar({ pct, accent = 'bg-[var(--accent,#06b6d4)]', height = 'h-2' }: {
 function WatchRow({ video, label }: { video: GuideVideo; label: string }) {
   return (
     <button type="button" onClick={() => playVideo(video)}
-      className="w-full flex items-center gap-3 px-3 h-13 rounded-xl bg-red-500/12 border border-red-500/25 active:bg-red-500/20 text-left">
+      className="w-full flex items-center gap-3 px-3 h-14 rounded-xl bg-red-500/12 border border-red-500/25 active:bg-red-500/20 text-left">
       <span className="w-8 h-8 shrink-0 rounded-full bg-red-500/80 text-white flex items-center justify-center">
         <Play size={14} fill="currentColor" />
       </span>
@@ -78,98 +88,121 @@ function WatchRow({ video, label }: { video: GuideVideo; label: string }) {
   )
 }
 
-// ── One section ──────────────────────────────────────────────────────────────
+// ── Layer 2: one chapter ─────────────────────────────────────────────────────
 
-function Section({
-  section, index, open, onToggleOpen, onToggleStep,
+function ChapterPage({
+  section, index, total, onBack, onToggleStep, onJump,
 }: {
   section:      GuideSection
   index:        number
-  open:         boolean
-  onToggleOpen: () => void
+  total:        number
+  onBack:       () => void
   onToggleStep: (stepId: string) => void
+  /** Move to the previous/next chapter without going back to the list. */
+  onJump:       (delta: number) => void
 }) {
-  const done  = section.steps.filter(s => s.done).length
-  const total = section.steps.length
-  const pct   = total > 0 ? Math.round((done / total) * 100) : 0
-  const complete = total > 0 && done === total
+  const { done, total: steps, pct, complete } = sectionCounts(section)
 
   return (
-    <div className={`rounded-2xl border overflow-hidden ${
-      complete ? 'bg-emerald-500/[0.07] border-emerald-500/25' : 'bg-glass border-hairline'
-    }`}>
-      <button type="button" onClick={onToggleOpen}
-        className="w-full flex items-start gap-3 p-3.5 text-left active:bg-white/[0.04]">
-        <span className="mt-0.5 text-white/40 shrink-0">
-          {open ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-2 flex-wrap">
-            <span className="text-[15px] font-semibold text-white leading-tight">
-              {index + 1}. {section.title}
-            </span>
-            <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${KIND_CLASS[section.kind]}`}>
+    <div className="absolute inset-0 z-[55] flex flex-col bg-[#07090f]">
+      <div className="shrink-0 px-4 pt-16 pb-3 border-b border-hairline">
+        <div className="flex items-start gap-3">
+          <button type="button" onClick={onBack} aria-label="Back to chapters"
+            className="w-11 h-11 shrink-0 rounded-full bg-glass-2 text-white/70 flex items-center justify-center active:scale-90">
+            <ArrowLeft size={20} />
+          </button>
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-white/40">
+              Chapter {index + 1} of {total}
+            </p>
+            <p className="text-lg font-semibold text-white leading-tight mt-0.5">{section.title}</p>
+            <span className={`inline-block mt-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${KIND_CLASS[section.kind]}`}>
               {KIND_LABEL[section.kind]}
             </span>
             {!section.counts && (
-              <span className="text-[10px] text-white/35 uppercase tracking-wider">not counted</span>
+              <span className="ml-2 text-[10px] text-white/35 uppercase tracking-wider">not counted</span>
             )}
-          </span>
-          {section.summary && (
-            <span className="block text-xs text-white/45 mt-1 leading-snug">{section.summary}</span>
-          )}
-          {section.state === 'pending' ? (
-            <span className="flex items-center gap-2 mt-2 text-xs text-white/40">
-              <Loader2 size={12} className="animate-spin" /> waiting to be researched
-            </span>
-          ) : section.state === 'failed' && total === 0 ? (
-            <span className="flex items-center gap-2 mt-2 text-xs text-amber-300/70">
-              <AlertTriangle size={12} /> couldn’t research this section
-            </span>
-          ) : (
-            <span className="flex items-center gap-2 mt-2">
-              <Bar pct={pct} height="h-1.5"
-                   accent={complete ? 'bg-emerald-400/80' : 'bg-[var(--accent,#06b6d4)]'} />
-              <span className="text-xs tabular-nums text-white/50 shrink-0">{done}/{total}</span>
-            </span>
-          )}
-        </span>
-        {complete && <Check size={18} className="text-emerald-400 shrink-0 mt-0.5" />}
-      </button>
+          </div>
+          {complete && <Check size={22} className="text-emerald-400 shrink-0 mt-1" />}
+        </div>
 
-      {open && (
-        <div className="px-3.5 pb-3.5 flex flex-col gap-2">
-          {section.video && <WatchRow video={section.video} label="Watch this section" />}
+        {steps > 0 && (
+          <div className="mt-3 flex items-center gap-3">
+            <Bar pct={pct} accent={complete ? 'bg-emerald-400/80' : 'bg-[var(--accent,#06b6d4)]'} height="h-1.5" />
+            <span className="text-sm font-semibold text-white/70 tabular-nums shrink-0">{done}/{steps}</span>
+          </div>
+        )}
+      </div>
 
+      <div className="flex-1 min-h-0 overflow-auto scroll-fade-y px-4 py-3 flex flex-col gap-3">
+        {section.summary && (
+          <p className="text-sm text-white/55 leading-snug">{section.summary}</p>
+        )}
+
+        {section.video && <WatchRow video={section.video} label="Watch this chapter" />}
+
+        {steps === 0 && (
+          <div className="rounded-2xl bg-amber-500/10 border border-amber-500/30 p-4">
+            <p className="flex items-center gap-2 text-sm font-semibold text-amber-200">
+              <AlertTriangle size={16} /> Nothing researched for this chapter
+            </p>
+            <p className="text-xs text-amber-100/60 mt-1.5 leading-snug">
+              {section.state === 'pending'
+                ? 'It hasn’t been researched yet — this fills in while the guide is being built.'
+                : 'The sources didn’t cover it. Rebuilding the guide from the chapter list will try again.'}
+            </p>
+          </div>
+        )}
+
+        <div className="flex flex-col">
           {section.steps.map((step, i) => (
             <button key={step.id} type="button" onClick={() => onToggleStep(step.id)}
-              className="flex items-start gap-3 py-2.5 px-1 min-h-11 text-left active:bg-white/[0.04] rounded-lg">
-              <span className={`mt-0.5 w-6 h-6 shrink-0 rounded-md border-2 flex items-center justify-center transition-colors ${
+              className="flex items-start gap-3 py-3 px-1 min-h-13 text-left active:bg-white/[0.05] rounded-lg border-b border-white/[0.04] last:border-0">
+              <span className={`mt-0.5 w-7 h-7 shrink-0 rounded-md border-2 flex items-center justify-center transition-colors ${
                 step.done
                   ? 'bg-emerald-500/30 border-emerald-500/60 text-emerald-300'
                   : 'border-white/30'
               }`}>
-                {step.done && <Check size={14} strokeWidth={3} />}
+                {step.done && <Check size={16} strokeWidth={3} />}
               </span>
               <span className="min-w-0 flex-1">
-                <span className={`block text-sm leading-snug ${
-                  step.done ? 'line-through text-white/35' : 'text-white/85'
+                <span className={`block text-[15px] leading-snug ${
+                  step.done ? 'line-through text-white/35' : 'text-white/90'
                 }`}>
-                  <span className="text-white/30 tabular-nums mr-1.5">{i + 1}</span>
+                  <span className="text-white/30 tabular-nums mr-2">{i + 1}</span>
                   {step.text}
                 </span>
-                {step.note && !step.done && (
-                  <span className="block text-xs text-white/40 mt-1 leading-snug">{step.note}</span>
+                {step.note && (
+                  <span className={`block text-xs mt-1 leading-snug ${step.done ? 'text-white/20' : 'text-white/45'}`}>
+                    {step.note}
+                  </span>
                 )}
               </span>
             </button>
           ))}
-
-          {section.source && (
-            <p className="text-[11px] text-white/25 px-1 pt-1">source: {section.source.site}</p>
-          )}
         </div>
-      )}
+
+        {section.source && (
+          <button type="button"
+            onClick={() => openBrowse({ kind: 'web', url: section.source!.url, title: section.title, site: section.source!.site, embeddable: false })}
+            className="text-left text-[11px] text-white/30 active:text-white/60 pt-1">
+            researched from {section.source.site} — open the page
+          </button>
+        )}
+
+        {/* Straight into the next chapter, so a play session doesn't bounce back
+            through the list every time. */}
+        <div className="grid grid-cols-2 gap-2 pt-2 pb-4">
+          <button type="button" disabled={index === 0} onClick={() => onJump(-1)}
+            className="h-13 rounded-xl text-sm font-semibold bg-white/[0.06] text-white/70 active:bg-white/10 disabled:opacity-30">
+            ← Previous
+          </button>
+          <button type="button" disabled={index === total - 1} onClick={() => onJump(1)}
+            className="h-13 rounded-xl text-sm font-semibold bg-white/[0.06] text-white/70 active:bg-white/10 disabled:opacity-30">
+            Next →
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -220,7 +253,7 @@ function ReorderSheet({
   )
 }
 
-// ── The view ─────────────────────────────────────────────────────────────────
+// ── Layer 1: the chapter list ────────────────────────────────────────────────
 
 interface Props {
   item:         MediaItem
@@ -236,37 +269,22 @@ interface Props {
 export function GuideView({
   item, guide, loading, onClose, onToggleStep, onGenerate, onDelete,
 }: Props) {
-  // null = the user hasn't opened or closed anything yet, so the default applies.
-  const [openSections, setOpenSections] = useState<Set<string> | null>(null)
+  const [openId, setOpenId] = useState<string | null>(null)
   const [showReorder, setShowReorder]   = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
   const generating = guide?.status === 'generating'
-
-  // Default: the first section that actually has steps is open. While a guide is
-  // still generating that's the newest arrival, so the work in progress is what
-  // you're looking at without having to chase it down the list. Derived rather
-  // than an effect, so a section landing mid-read never yanks the view about.
-  const autoOpenId = guide?.sections.find(s => s.steps.length > 0)?.id
-  const isOpen = (id: string) => openSections ? openSections.has(id) : id === autoOpenId
-
-  const toggleSection = (id: string) => {
-    setOpenSections(prev => {
-      const next = new Set(prev ?? (autoOpenId ? [autoOpenId] : []))
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-
   const progress = guide ? guideProgress(guide) : null
+
+  const openIndex = guide ? guide.sections.findIndex(s => s.id === openId) : -1
+  const openSection = openIndex >= 0 ? guide!.sections[openIndex]! : null
 
   return (
     <div className="absolute inset-0 z-50 flex flex-col bg-[#07090f]">
-      {/* Header — stays put while the sections scroll */}
+      {/* Header — fixed, so the 100% bar is always in view while the list scrolls */}
       <div className="shrink-0 px-4 pt-16 pb-3 border-b border-hairline">
         <div className="flex items-start gap-3">
-          <button type="button" onClick={onClose} aria-label="Back"
+          <button type="button" onClick={onClose} aria-label="Back to the list"
             className="w-11 h-11 shrink-0 rounded-full bg-glass-2 text-white/70 flex items-center justify-center active:scale-90">
             <ArrowLeft size={20} />
           </button>
@@ -306,22 +324,21 @@ export function GuideView({
         )}
       </div>
 
-      {/* Body */}
-      <div className="flex-1 overflow-auto scroll-fade-y px-4 py-3 flex flex-col gap-2.5">
+      {/* Chapter list — the scrolling part */}
+      <div className="flex-1 min-h-0 overflow-auto scroll-fade-y px-4 py-3 flex flex-col gap-2.5">
         {loading && !guide && (
           <p className="text-white/45 text-sm text-center py-12">Loading guide…</p>
         )}
 
-        {/* No guide yet — the generate call to action. */}
         {!loading && !guide && (
           <div className="flex flex-col items-center text-center gap-4 py-10 px-4">
             <ListOrdered size={40} className="text-white/25" />
             <div>
               <p className="text-base font-semibold text-white">No guide yet</p>
               <p className="text-sm text-white/45 mt-1.5 leading-snug">
-                I’ll read what this game’s community has written and build a checklist the way they
+                I’ll read what this game’s community has written and build a chapter list the way they
                 organize it — dungeons or chapters first, then the collectibles and side quests that
-                count toward 100%. Each section gets a video too.
+                count toward 100%. Each chapter gets its own checklist and a video.
               </p>
               <p className="text-xs text-white/30 mt-2">Takes a few minutes. You can close this and come back.</p>
             </div>
@@ -347,29 +364,67 @@ export function GuideView({
 
         {guide?.video && <WatchRow video={guide.video} label="Watch the full walkthrough" />}
 
-        {guide?.sections.map((section, i) => (
-          <Section
-            key={section.id}
-            section={section}
-            index={i}
-            open={isOpen(section.id)}
-            onToggleOpen={() => toggleSection(section.id)}
-            onToggleStep={stepId => onToggleStep(section.id, stepId)}
-          />
-        ))}
+        {guide && guide.sections.length > 0 && (
+          <p className="text-xs font-medium uppercase tracking-[0.14em] text-white/40 px-1 pt-1">
+            {guide.sections.length} chapters
+          </p>
+        )}
+
+        {guide?.sections.map((section, i) => {
+          const { done, total, pct, complete } = sectionCounts(section)
+          return (
+            <button key={section.id} type="button" onClick={() => setOpenId(section.id)}
+              className={`w-full text-left rounded-2xl border p-3.5 flex items-center gap-3 active:bg-white/[0.05] transition-colors ${
+                complete ? 'bg-emerald-500/[0.07] border-emerald-500/25' : 'bg-glass border-hairline'
+              }`}>
+              <span className={`w-9 h-9 shrink-0 rounded-xl flex items-center justify-center text-sm font-bold tabular-nums ${
+                complete ? 'bg-emerald-500/25 text-emerald-300' : 'bg-white/[0.07] text-white/50'
+              }`}>
+                {complete ? <Check size={18} strokeWidth={3} /> : i + 1}
+              </span>
+
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[15px] font-semibold text-white leading-tight">{section.title}</span>
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${KIND_CLASS[section.kind]}`}>
+                    {KIND_LABEL[section.kind]}
+                  </span>
+                  {section.video && <Play size={11} className="text-red-400/80" fill="currentColor" />}
+                </span>
+
+                {section.state === 'pending' ? (
+                  <span className="flex items-center gap-2 mt-1.5 text-xs text-white/40">
+                    <Loader2 size={12} className="animate-spin" /> waiting to be researched
+                  </span>
+                ) : total === 0 ? (
+                  <span className="flex items-center gap-1.5 mt-1.5 text-xs text-amber-300/70">
+                    <AlertTriangle size={12} /> nothing found for this chapter
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-2 mt-1.5">
+                    <Bar pct={pct} height="h-1.5"
+                         accent={complete ? 'bg-emerald-400/80' : 'bg-[var(--accent,#06b6d4)]'} />
+                    <span className="text-xs tabular-nums text-white/50 shrink-0">{done}/{total}</span>
+                  </span>
+                )}
+              </span>
+
+              <ChevronRight size={20} className="text-white/25 shrink-0" />
+            </button>
+          )
+        })}
 
         {generating && (guide?.sections.length ?? 0) === 0 && (
           <div className="flex flex-col gap-2.5">
-            {/* Skeletons, so the wait for the outline has a shape to it. */}
-            {[0, 1, 2].map(i => (
-              <div key={i} className="h-20 rounded-2xl bg-white/[0.04] border border-hairline animate-pulse" />
+            {/* Skeletons, so the wait for the chapter list has a shape to it. */}
+            {[0, 1, 2, 3].map(i => (
+              <div key={i} className="h-[76px] rounded-2xl bg-white/[0.04] border border-hairline animate-pulse" />
             ))}
           </div>
         )}
 
-        {/* Footer actions + attribution */}
         {guide && (
-          <div className="mt-4 pt-4 border-t border-hairline flex flex-col gap-3">
+          <div className="mt-4 pt-4 border-t border-hairline flex flex-col gap-3 pb-4">
             {guide.sources.length > 0 && (
               <div>
                 <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-white/35 mb-1.5">
@@ -414,6 +469,20 @@ export function GuideView({
           </div>
         )}
       </div>
+
+      {openSection && guide && (
+        <ChapterPage
+          section={openSection}
+          index={openIndex}
+          total={guide.sections.length}
+          onBack={() => setOpenId(null)}
+          onToggleStep={stepId => onToggleStep(openSection.id, stepId)}
+          onJump={delta => {
+            const next = guide.sections[openIndex + delta]
+            if (next) setOpenId(next.id)
+          }}
+        />
+      )}
 
       {showReorder && guide && (
         <ReorderSheet

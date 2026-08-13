@@ -354,6 +354,102 @@ async function buildOutline(itemId: string, title: string, order?: string): Prom
   return saved ? { guide: saved, pages } : null
 }
 
+/** A section researched from less than this has nothing to write steps from. */
+const SECTION_MIN_CHARS = 700
+
+const totalChars = (pages: Page[]) => pages.reduce((n, p) => n + p.text.length, 0)
+
+/**
+ * Search terms to try for one section, most specific first. A section is usually
+ * an article of its own on the game's wiki ("Woodfall Temple"), but community
+ * wikis name things inconsistently — "Masks" may live at "Mask", "List of Masks",
+ * or only inside the game's own article — so several phrasings get a turn before
+ * anything is declared unresearchable.
+ */
+function sectionQueries(gameTitle: string, section: GuideSection, wider: boolean): string[] {
+  const t = section.title
+  const queries = [t]
+  if (section.kind === 'collectible') queries.push(`List of ${t}`, `${t} locations`)
+  else if (section.kind === 'sidequest') queries.push(`${t} list`, 'Side quests')
+  else if (section.kind === 'reference') queries.push(`${t} list`)
+  else queries.push(`${t} walkthrough`)
+  queries.push(`${gameTitle} ${t}`)
+  // The repair pass casts wider, including terms that reach past the game's own
+  // wiki into Wikipedia and the open web.
+  if (wider) queries.push(`${gameTitle} ${t} guide`, `${gameTitle} ${t} how to`)
+  return [...new Set(queries.map(q => q.trim()).filter(Boolean))]
+}
+
+/**
+ * Gather research for one section, accumulating pages until there's enough text
+ * to write from. Falls back to the broad walkthrough pages the outline was built
+ * from — a table-of-contents page usually covers each dungeon too, and a section
+ * written from that beats an empty one.
+ */
+async function researchSection(
+  gameTitle: string,
+  section: GuideSection,
+  fallbackPages: Page[],
+  wider: boolean,
+): Promise<{ pages: Page[]; own: Page[] }> {
+  const own: Page[] = []
+  for (const query of sectionQueries(gameTitle, section, wider)) {
+    if (totalChars(own) >= SECTION_MIN_CHARS) break
+    const got = await researchGame(gameTitle, query, 1, RESEARCH_CHARS)
+    for (const page of got) {
+      if (!own.some(p => p.url === page.url)) own.push(page)
+    }
+  }
+  if (totalChars(own) >= SECTION_MIN_CHARS) return { pages: own, own }
+
+  // Thin or nothing: pad with the shared pages rather than write from scratch.
+  const merged = [...own]
+  for (const page of fallbackPages) {
+    if (!merged.some(p => p.url === page.url)) merged.push(page)
+  }
+  if (own.length === 0) {
+    console.log(`[guides] "${gameTitle}" § ${section.title}: no page of its own — using the outline sources`)
+  }
+  return { pages: merged, own }
+}
+
+/** One model call for a section's steps, with a stricter second attempt if it comes back empty. */
+async function writeSteps(
+  gameTitle: string,
+  section: GuideSection,
+  pages: Page[],
+): Promise<GuideStep[]> {
+  const parse = (reply: StepsReply | null): GuideStep[] =>
+    (Array.isArray(reply?.steps) ? reply.steps : [])
+      .map((s, i): GuideStep | null => {
+        const text = str(s?.text)
+        if (!text) return null
+        const note = str(s?.note)
+        return { id: `${section.id}-${i + 1}`, text, ...(note ? { note } : {}), done: false }
+      })
+      .filter((s): s is GuideStep => s !== null)
+      .slice(0, GUIDE_CAPS.MAX_STEPS_PER_SECTION)
+
+  if (pages.length === 0) return []
+
+  const first = parse(await callOllamaJson<StepsReply>(
+    `section "${section.title}"`, SYSTEM, stepsPrompt(gameTitle, section, pages), STEPS_SCHEMA))
+  if (first.length > 0) return first
+
+  // Empty on a section we *did* find research for is usually the model being shy
+  // about a thin page, not an absence of content. Ask once more, plainly.
+  console.warn(`[guides] "${gameTitle}" § ${section.title}: no steps on the first pass — retrying`)
+  return parse(await callOllamaJson<StepsReply>(
+    `section "${section.title}" (retry)`,
+    SYSTEM,
+    `${stepsPrompt(gameTitle, section, pages)}\n\n` +
+    `IMPORTANT: your previous attempt returned no steps. The notes above DO describe this part of ` +
+    `the game — read them again and pull out every concrete thing the player does, gets, or fights. ` +
+    `If the notes are a list of things, write one step per thing. Return at least 3 steps.`,
+    STEPS_SCHEMA,
+  ))
+}
+
 async function fillSection(
   itemId: string,
   title: string,
@@ -361,61 +457,45 @@ async function fillSection(
   index: number,
   total: number,
   fallbackPages: Page[],
-): Promise<void> {
+  opts: { wider?: boolean; phase?: string } = {},
+): Promise<number> {
   const current = loadGuide(itemId)
   const section = current?.sections.find(s => s.id === sectionId)
-  if (!current || !section) return
+  if (!current || !section) return 0
 
-  update(itemId, g => { g.phase = `${section.title} (${index + 1} of ${total})` })
+  update(itemId, g => {
+    g.phase = opts.phase ?? `${section.title} (${index + 1} of ${total})`
+  })
 
-  // A section usually maps to an article of its own on the game's wiki — searching
-  // for "Woodfall Temple" lands on exactly the page describing it.
-  const topic = section.kind === 'collectible' || section.kind === 'sidequest'
-    ? `${section.title} list`
-    : section.title
-  const own = await researchGame(title, topic, 1, RESEARCH_CHARS)
-
-  // No page of its own? Fall back to the broad walkthrough pages the outline was
-  // built from — a table-of-contents page usually covers each dungeon too, and
-  // a section written from that beats an empty one. Only the fallback's own
-  // truncation limit differs, so the prompt is otherwise identical.
-  const pages = own.length > 0 ? own : fallbackPages
-  if (own.length === 0 && pages.length > 0) {
-    console.log(`[guides] "${title}" § ${section.title}: no page of its own — using the outline sources`)
-  }
-
-  const reply = pages.length > 0
-    ? await callOllamaJson<StepsReply>(`section "${section.title}"`, SYSTEM, stepsPrompt(title, section, pages), STEPS_SCHEMA)
-    : null
-
-  const steps: GuideStep[] = (Array.isArray(reply?.steps) ? reply!.steps : [])
-    .map((s, i): GuideStep | null => {
-      const text = str(s?.text)
-      if (!text) return null
-      const note = str(s?.note)
-      return { id: `${sectionId}-${i + 1}`, text, ...(note ? { note } : {}), done: false }
-    })
-    .filter((s): s is GuideStep => s !== null)
-    .slice(0, GUIDE_CAPS.MAX_STEPS_PER_SECTION)
+  const { pages, own } = await researchSection(title, section, fallbackPages, opts.wider === true)
+  const steps = await writeSteps(title, section, pages)
 
   // A video is worth having even when the steps didn't come through — often it's
   // the better answer for a fiddly dungeon anyway.
-  await sleep(YOUTUBE_GAP_MS)
-  const video = await searchYouTube(`${title} ${section.title} walkthrough`)
+  let video = section.video
+  if (!video) {
+    await sleep(YOUTUBE_GAP_MS)
+    video = (await searchYouTube(`${title} ${section.title} walkthrough`)) ?? undefined
+  }
 
   update(itemId, g => {
     const target = g.sections.find(s => s.id === sectionId)
     if (!target) return
-    target.steps = steps
-    target.state = steps.length > 0 ? 'ready' : 'failed'
+    if (steps.length > 0) target.steps = steps
+    target.state = (steps.length > 0 || target.steps.length > 0) ? 'ready' : 'failed'
     if (video) target.video = video
-    // Only credit a source the section was actually researched from; the shared
-    // outline pages are already listed on the guide itself.
-    const first = own[0]
-    if (first) target.source = { url: first.url, site: first.site }
-    g.phase = `${index + 1} of ${total} sections`
+    // Credit the page this section was actually written from, preferring one of
+    // its own over the shared outline sources.
+    const src = own[0] ?? pages[0]
+    if (src) target.source = { url: src.url, site: src.site }
+    if (!opts.phase) g.phase = `${index + 1} of ${total} sections`
   })
-  console.log(`[guides] "${title}" § ${section.title}: ${steps.length} steps${video ? ` + video ${video.videoId}` : ''}`)
+  console.log(
+    `[guides] "${title}" § ${section.title}: ${steps.length} steps ` +
+    `from ${totalChars(pages)} chars (${own.length > 0 ? own.map(p => p.site).join(', ') : 'shared sources'})` +
+    `${video ? ` + video ${video.videoId}` : ''}`,
+  )
+  return steps.length
 }
 
 async function run(itemId: string, title: string, order?: string): Promise<void> {
@@ -435,16 +515,35 @@ async function run(itemId: string, title: string, order?: string): Promise<void>
       await fillSection(itemId, title, ids[i]!, i, ids.length, outlined.pages)
     }
 
+    // Second pass over anything still empty. A chapter with no steps is the one
+    // outcome that makes the whole guide feel unfinished, and the usual cause is
+    // a single unlucky search — so each gets one more attempt with wider terms
+    // (which also reach past the game's wiki to Wikipedia and the open web).
+    const stillEmpty = (loadGuide(itemId)?.sections ?? []).filter(s => s.steps.length === 0)
+    if (stillEmpty.length > 0) {
+      console.log(`[guides] "${title}": ${stillEmpty.length} section(s) came back empty — researching again`)
+      for (let i = 0; i < stillEmpty.length; i++) {
+        if (!loadGuide(itemId)) return
+        const section = stillEmpty[i]!
+        await fillSection(itemId, title, section.id, i, stillEmpty.length, outlined.pages, {
+          wider: true,
+          phase: `Filling gaps — ${section.title} (${i + 1} of ${stillEmpty.length})`,
+        })
+      }
+    }
+
     const done = update(itemId, g => {
-      const anyReady = g.sections.some(s => s.state === 'ready')
+      const anyReady = g.sections.some(s => s.steps.length > 0)
       g.status = anyReady ? 'ready' : 'failed'
       if (!anyReady) g.error = 'None of the sections could be researched. Try retrying in a moment.'
       delete g.phase
     })
     const p = done ? guideProgress(done) : null
+    const empty = (done?.sections ?? []).filter(s => s.steps.length === 0)
     console.log(
       `[guides] "${title}" ${done?.status} in ${Math.round((Date.now() - started) / 1000)}s — ` +
-      `${done?.sections.length ?? 0} sections, ${p?.all.total ?? 0} steps (${p?.counted.total ?? 0} counting toward 100%)`,
+      `${done?.sections.length ?? 0} sections, ${p?.all.total ?? 0} steps (${p?.counted.total ?? 0} counting toward 100%)` +
+      `${empty.length > 0 ? `; still empty: ${empty.map(s => s.title).join(', ')}` : ''}`,
     )
   } catch (err) {
     // Belt and braces: every helper above already swallows its own failures, so

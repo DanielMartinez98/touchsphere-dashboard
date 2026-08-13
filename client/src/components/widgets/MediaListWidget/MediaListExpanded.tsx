@@ -667,7 +667,10 @@ export default function MediaListExpanded({
       )}
 
       {/* Sections */}
-      <div className={`flex-1 overflow-auto scroll-fade-y flex flex-col gap-2 ${showKeyboard ? 'pb-64' : 'pb-16'}`}>
+      {/* min-h-0 is load-bearing: without it this flex child refuses to shrink
+          below its content, so with more than a screenful of items the overflow
+          is simply clipped and the rows past the fold can't be reached at all. */}
+      <div className={`flex-1 min-h-0 overflow-auto scroll-fade-y flex flex-col gap-2 ${showKeyboard ? 'pb-64' : 'pb-16'}`}>
         {nothingVisible && (
           <p className="text-white/45 text-base text-center mt-8">
             {items.length === 0 ? 'Nothing added yet' : 'No items match this filter'}

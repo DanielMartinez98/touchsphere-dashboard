@@ -118,7 +118,9 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
               >
                 <X size={26} strokeWidth={2.25} />
               </button>
-              <div className="flex-1 overflow-auto scroll-fade-y">
+              {/* min-h-0 so a tall panel actually scrolls here instead of
+                  overflowing the dialog and getting clipped. */}
+              <div className="flex-1 min-h-0 overflow-auto scroll-fade-y">
                 {expanded}
               </div>
             </motion.div>
