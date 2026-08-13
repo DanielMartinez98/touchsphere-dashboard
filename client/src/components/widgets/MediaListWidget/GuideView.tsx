@@ -19,7 +19,7 @@ import {
   ArrowLeft, Check, CheckCheck, ChevronRight, Play, RefreshCw, ListOrdered, Square, Trash2,
   Loader2, AlertTriangle, X,
 } from 'lucide-react'
-import type { Guide, GuideSection, GuideVideo, MediaItem, SectionKind } from '../../../types'
+import type { Guide, GuideSection, GuideStep, GuideVideo, MediaItem, SectionKind } from '../../../types'
 import { guideProgress } from '../../../types'
 import { openBrowse } from '../../../hooks/useBrowse'
 import { MediaCover } from './MediaCover'
@@ -77,6 +77,40 @@ const sectionCounts = (s: GuideSection) => {
   return { done, total, pct: total > 0 ? Math.round((done / total) * 100) : 0, complete: total > 0 && done === total }
 }
 
+interface Part {
+  key:      string
+  title:    string
+  /** Steps with the number they carry in the chapter — the numbering stays 1..n across parts. */
+  steps:    Array<{ step: GuideStep; n: number }>
+  done:     number
+  complete: boolean
+}
+
+/**
+ * The chapter's sub-chapters, derived from runs of consecutive steps sharing a
+ * `group` (see GuideStep). A chapter written before sub-chapters existed, or by
+ * a model that ignored them, yields one untitled part — which renders as the
+ * plain step list it always was.
+ */
+function toParts(steps: GuideStep[]): Part[] {
+  const parts: Part[] = []
+  steps.forEach((step, i) => {
+    const title = step.group ?? ''
+    const last = parts[parts.length - 1]
+    // Compared against the previous *run*, not against every part, so a heading
+    // that legitimately recurs later in the chapter opens a new part rather than
+    // reaching back and scattering steps into an earlier one.
+    if (!last || last.title !== title) {
+      parts.push({ key: `${title}#${i}`, title, steps: [], done: 0, complete: false })
+    }
+    const part = parts[parts.length - 1]!
+    part.steps.push({ step, n: i + 1 })
+    if (step.done) part.done++
+  })
+  for (const p of parts) p.complete = p.steps.length > 0 && p.done === p.steps.length
+  return parts
+}
+
 /** Thin progress track. */
 function Bar({ pct, accent = 'bg-[var(--accent,#06b6d4)]', height = 'h-2' }: {
   pct: number
@@ -130,6 +164,15 @@ function ChapterPage({
 }) {
   const { done, total: steps, pct, complete } = sectionCounts(section)
   const rebuilding = busy && section.state === 'pending'
+  const parts = toParts(section.steps)
+
+  // Which parts the user has explicitly opened or shut. Everything not in here
+  // follows the default below, so the list keeps rearranging itself sensibly as
+  // boxes get ticked — right up until the user overrides one, which then stays
+  // put. Keyed by part, and a part with no heading is never collapsible.
+  const [overrides, setOverrides] = useState<Record<string, boolean>>({})
+  const isOpen = (p: Part) => overrides[p.key] ?? (!p.title || !p.complete)
+  const toggleOpen = (p: Part) => setOverrides(o => ({ ...o, [p.key]: !isOpen(p) }))
 
   return (
     <div className="absolute inset-0 z-[55] flex flex-col bg-[#07090f]">
@@ -215,33 +258,68 @@ function ChapterPage({
           </div>
         )}
 
-        <div className="flex flex-col">
-          {section.steps.map((step, i) => (
-            <button key={step.id} type="button" onClick={() => onToggleStep(step.id)}
-              className="flex items-start gap-3 py-3 px-1 min-h-13 text-left active:bg-white/[0.05] rounded-lg border-b border-white/[0.04] last:border-0">
-              <span className={`mt-0.5 w-7 h-7 shrink-0 rounded-md border-2 flex items-center justify-center transition-colors ${
-                step.done
-                  ? 'bg-emerald-500/30 border-emerald-500/60 text-emerald-300'
-                  : 'border-white/30'
-              }`}>
-                {step.done && <Check size={16} strokeWidth={3} />}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className={`block text-[15px] leading-snug ${
-                  step.done ? 'line-through text-white/35' : 'text-white/90'
-                }`}>
-                  <span className="text-white/30 tabular-nums mr-2">{i + 1}</span>
-                  {step.text}
-                </span>
-                {step.note && (
-                  <span className={`block text-xs mt-1 leading-snug ${step.done ? 'text-white/20' : 'text-white/45'}`}>
-                    {step.note}
+        {/* Sub-chapters. A finished part collapses to a single line, so a long
+            chapter you're half-way through shows the part you're actually on
+            rather than thirty struck-through steps you have to scroll past. */}
+        {parts.map(part => {
+          const open = isOpen(part)
+          return (
+            <div key={part.key} className="rounded-2xl border border-hairline bg-white/[0.02] overflow-hidden">
+              {part.title && (
+                <button type="button" onClick={() => toggleOpen(part)}
+                  aria-expanded={open}
+                  className="w-full flex items-center gap-3 px-3.5 py-3 text-left active:bg-white/[0.06]">
+                  <span className={`w-7 h-7 shrink-0 rounded-full flex items-center justify-center ${
+                    part.complete ? 'bg-emerald-500/25 text-emerald-300' : 'bg-white/[0.07] text-white/40'
+                  }`}>
+                    {part.complete ? <Check size={15} strokeWidth={3} /> : <ChevronRight size={16}
+                      className={`transition-transform ${open ? 'rotate-90' : ''}`} />}
                   </span>
-                )}
-              </span>
-            </button>
-          ))}
-        </div>
+                  <span className="min-w-0 flex-1">
+                    <span className={`block text-sm font-semibold leading-tight ${
+                      part.complete ? 'text-white/45' : 'text-white/85'
+                    }`}>
+                      {part.title}
+                    </span>
+                  </span>
+                  <span className="text-xs tabular-nums text-white/40 shrink-0">
+                    {part.done}/{part.steps.length}
+                  </span>
+                </button>
+              )}
+
+              {open && (
+                <div className="flex flex-col px-1 pb-1">
+                  {part.steps.map(({ step, n }) => (
+                    <button key={step.id} type="button" onClick={() => onToggleStep(step.id)}
+                      className="flex items-start gap-3 py-3 px-2.5 min-h-13 text-left active:bg-white/[0.05] rounded-lg border-b border-white/[0.04] last:border-0">
+                      <span className={`mt-0.5 w-7 h-7 shrink-0 rounded-md border-2 flex items-center justify-center transition-colors ${
+                        step.done
+                          ? 'bg-emerald-500/30 border-emerald-500/60 text-emerald-300'
+                          : 'border-white/30'
+                      }`}>
+                        {step.done && <Check size={16} strokeWidth={3} />}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className={`block text-[15px] leading-snug ${
+                          step.done ? 'line-through text-white/35' : 'text-white/90'
+                        }`}>
+                          <span className="text-white/30 tabular-nums mr-2">{n}</span>
+                          {step.text}
+                        </span>
+                        {step.note && (
+                          <span className={`block text-xs mt-1 leading-snug ${step.done ? 'text-white/20' : 'text-white/45'}`}>
+                            {step.note}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
 
         {section.source && (
           <button type="button"

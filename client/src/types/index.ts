@@ -88,6 +88,12 @@ export interface GuideStep {
   id: string
   text: string
   note?: string
+  /**
+   * Sub-chapter heading. Consecutive steps sharing a group ARE that sub-chapter;
+   * the chapter page derives its headings and per-part counts from those runs.
+   * See GuideStep in server/src/guides.ts for why it's a label, not a tree.
+   */
+  group?: string
   done: boolean
   doneAt?: string
 }

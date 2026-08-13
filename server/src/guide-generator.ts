@@ -228,12 +228,28 @@ const OUTLINE_SCHEMA: JsonSchema = {
 // note on each. Every call is small enough to finish, and a failure costs one
 // batch of detail rather than the chapter.
 
+// Pass one returns the chapter already divided into its own sub-chapters —
+// "Getting there", "The central chamber", "Boss: Odolwa" — each with its steps.
+// It's flattened into the one ordered step list the rest of the system works on,
+// with the part name kept on each step as `group` (see GuideStep in guides.ts).
+// Asking for the division and the steps together costs nothing: naming the parts
+// is what makes the model lay a long chapter out in order instead of drifting.
 const STEP_LIST_SCHEMA: JsonSchema = {
   type: 'object',
   properties: {
-    steps: { type: 'array', items: { type: 'string' } },
+    parts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          part:  { type: 'string' },
+          steps: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['part', 'steps'],
+      },
+    },
   },
-  required: ['steps'],
+  required: ['parts'],
 }
 
 const DETAILS_SCHEMA: JsonSchema = {
@@ -259,6 +275,8 @@ interface OutlineReply {
   sections?: Array<{ title?: unknown; kind?: unknown; counts?: unknown; summary?: unknown }>
 }
 interface StepListReply {
+  parts?: Array<{ part?: unknown; steps?: unknown }>
+  /** Tolerated: a model that ignores the parts and just lists steps. */
   steps?: unknown[]
 }
 interface DetailsReply {
@@ -328,34 +346,44 @@ function stepListPrompt(title: string, section: GuideSection, pages: Page[]): st
   // what the player already knew they had to do.
   const shape = section.kind === 'collectible'
     ? `This is a COLLECTIBLE LIST — one step per collectible, named exactly as the sources name it, in ` +
-      `the sources' order. Be complete: if the sources say there are 24 masks, list 24, not a sample.`
+      `the sources' order. Be complete: if the sources say there are 24 masks, list 24, not a sample.\n` +
+      `Group them the way the sources group them — by how they're obtained, by region, or by which are ` +
+      `needed for completion ("Transformation masks", "Sold in Clock Town", "Sidequest rewards").`
     : section.kind === 'sidequest'
-      ? `This is a SIDE-QUEST LIST — one step per quest, named as the sources name it.`
+      ? `This is a SIDE-QUEST LIST — one step per quest, named as the sources name it. Group the quests ` +
+        `by where or when they're taken on.`
       : section.kind === 'reference'
-        ? `This is REFERENCE material — one step per entry, kept short.`
+        ? `This is REFERENCE material — one step per entry, kept short. Group entries by category.`
         : `This is a WALKTHROUGH section, and it must be a real route — someone who has never played ` +
-          `should be able to get through this part with nothing but these steps. Cover the whole span in ` +
-          `order: how you REACH this place and what opens the way in; then every room, puzzle, key and ` +
-          `item through it; then the mini-boss and the boss; then the item or ability you leave with. ` +
-          `Be specific enough to act on ("Shoot an ice arrow at the water to freeze a stepping stone"), ` +
-          `never vague ("solve the water puzzle").`
+          `should be able to get through this part with nothing but these steps. Be specific enough to ` +
+          `act on ("Shoot an ice arrow at the water to freeze a stepping stone"), never vague ("solve ` +
+          `the water puzzle").\n` +
+          `Divide it into the parts the player experiences in order — typically: getting there and ` +
+          `opening the way in; then the areas or floors of the place itself, one part each; then the ` +
+          `mini-boss; then the boss. Name the parts after the real places and bosses, not "Part 1".`
 
   const count = section.kind === 'progression'
-    ? `- Between 12 and 30 steps. A dungeon described in five steps has been summarized, not written.\n`
-    : `- One step per real entry, up to ${GUIDE_CAPS.MAX_STEPS_PER_SECTION}.\n`
+    ? `- 3 to 6 parts, 3 to 8 steps in each. A dungeon described in five steps total has been ` +
+      `summarized, not written.\n`
+    : `- 2 to 6 parts. One step per real entry, ${GUIDE_CAPS.MAX_STEPS_PER_SECTION} steps across the ` +
+      `whole section at most.\n`
 
   return (
     chapterPreamble(title, section, pages) +
-    `TASK: list the steps of the checklist for THIS SECTION ONLY — just the steps themselves. ` +
-    `Do NOT explain them; the explanations are asked for separately afterwards.\n${shape}\n\n` +
+    `TASK: lay out the checklist for THIS SECTION ONLY, divided into its own parts — just the parts and ` +
+    `the steps in them. Do NOT explain the steps; the explanations are asked for separately ` +
+    `afterwards.\n${shape}\n\n` +
     `Rules:\n` +
+    `- "part": a short heading naming that stretch of the section, a few words, no numbering.\n` +
     `- Each step is one short imperative line, under 160 characters. No step numbers — the app ` +
     `numbers them. No sub-bullets, no explanation, no commentary.\n` +
     count +
+    `- The parts run in the order the player meets them, and the steps within a part likewise.\n` +
     `- Use the game's real names for places, items, characters and moves, spelled as the sources spell ` +
     `them. "Use the Hookshot on the target above the door", not "use your grappling tool".\n` +
-    `- Only steps the research notes support. Do not invent content.\n` +
-    `- Reply as {"steps": ["first step", "second step", ...]} and nothing else.`
+    `- Only parts and steps the research notes support. Do not invent content.\n` +
+    `- Reply as {"parts": [{"part": "Getting there", "steps": ["first step", "second step"]}, …]} ` +
+    `and nothing else.`
   )
 }
 
@@ -368,7 +396,7 @@ function detailsPrompt(
   title: string,
   section: GuideSection,
   pages: Page[],
-  batch: Array<{ n: number; text: string }>,
+  batch: Array<{ n: number; text: string; group?: string | undefined }>,
 ): string {
   const want = section.kind === 'collectible'
     ? `HOW TO GET IT: where it is, what you need to have first, and what you actually do to obtain it ` +
@@ -384,8 +412,16 @@ function detailsPrompt(
 
   return (
     chapterPreamble(title, section, pages) +
-    `These are steps ${batch[0]!.n}–${batch[batch.length - 1]!.n} of this section's checklist:\n` +
-    batch.map(s => `${s.n}. ${s.text}`).join('\n') + `\n\n` +
+    `These are steps ${batch[0]!.n}–${batch[batch.length - 1]!.n} of this section's checklist. ` +
+    `The headings tell you which part of the section each step belongs to:\n` +
+    batch
+      .map((s, i) => {
+        // Re-announce the part whenever it changes, so a batch that straddles a
+        // boundary doesn't leave the model guessing where it is.
+        const head = s.group && s.group !== batch[i - 1]?.group ? `[${s.group}]\n` : ''
+        return `${head}${s.n}. ${s.text}`
+      })
+      .join('\n') + `\n\n` +
     `TASK: for EACH numbered step above, write one short note giving ${want}\n\n` +
     `Rules:\n` +
     `- One or two sentences per note. No preamble, no repeating the step text back.\n` +
@@ -640,18 +676,40 @@ async function writeStepList(
   section: GuideSection,
   pages: Page[],
 ): Promise<GuideStep[]> {
-  const parse = (reply: StepListReply | null): GuideStep[] =>
-    (Array.isArray(reply?.steps) ? reply.steps : [])
-      // Tolerate {"steps": [{"text": "..."}]} — models reach for the object form
-      // even when asked for plain strings, and it would be perverse to drop a
-      // perfectly good chapter over the shape of its wrapper.
-      .map(s => (typeof s === 'string' ? s : str((s as { text?: unknown } | null)?.text)))
-      .map((text, i): GuideStep | null => {
-        const clean = str(text).replace(/^\s*\d+[.)]\s*/, '')   // strip a number the model added anyway
-        return clean ? { id: `${section.id}-${i + 1}`, text: clean, done: false } : null
-      })
-      .filter((s): s is GuideStep => s !== null)
-      .slice(0, GUIDE_CAPS.MAX_STEPS_PER_SECTION)
+  // Tolerate the step being {"text": "..."} instead of a plain string, and a
+  // number the model prepended despite being told not to. Dropping a good
+  // chapter over the shape of its wrapper would be perverse.
+  const asText = (s: unknown): string =>
+    str(typeof s === 'string' ? s : (s as { text?: unknown } | null)?.text)
+      .replace(/^\s*\d+[.)]\s*/, '')
+
+  /** Flatten {parts:[{part, steps}]} into the one ordered list, part name kept per step. */
+  const parse = (reply: StepListReply | null): GuideStep[] => {
+    const flat: Array<{ text: string; group: string }> = []
+
+    for (const p of Array.isArray(reply?.parts) ? reply.parts : []) {
+      const group = str(p?.part)
+      for (const s of Array.isArray(p?.steps) ? p.steps : []) {
+        const text = asText(s)
+        if (text) flat.push({ text, group })
+      }
+    }
+    // A model that ignored the parts and returned a bare step list still gives a
+    // perfectly good chapter — it just has no sub-chapters.
+    if (flat.length === 0) {
+      for (const s of Array.isArray(reply?.steps) ? reply.steps : []) {
+        const text = asText(s)
+        if (text) flat.push({ text, group: '' })
+      }
+    }
+
+    return flat.slice(0, GUIDE_CAPS.MAX_STEPS_PER_SECTION).map((s, i) => ({
+      id: `${section.id}-${i + 1}`,
+      text: s.text,
+      ...(s.group ? { group: s.group } : {}),
+      done: false,
+    }))
+  }
 
   if (pages.length === 0) return []
 
@@ -699,7 +757,7 @@ async function detailSteps(
   const section = loadGuide(itemId)?.sections.find(s => s.id === sectionId)
   if (!section || section.steps.length === 0 || pages.length === 0) return 0
 
-  const numbered = section.steps.map((s, i) => ({ n: i + 1, text: s.text, id: s.id }))
+  const numbered = section.steps.map((s, i) => ({ n: i + 1, text: s.text, id: s.id, group: s.group }))
   let written = 0
 
   for (let start = 0; start < numbered.length; start += DETAIL_BATCH) {
@@ -828,7 +886,8 @@ async function fillSection(
     level: steps.length === 0 ? 'error' : steps.length < 5 ? 'warn' : 'good',
     message: steps.length === 0
       ? `No steps listed — this chapter is empty and can be redone on its own`
-      : `Listed ${steps.length} steps from ${totalChars(pages).toLocaleString()} chars ` +
+      : `Listed ${steps.length} steps in ${new Set(steps.map(s => s.group ?? '')).size} part(s) ` +
+        `from ${totalChars(pages).toLocaleString()} chars ` +
         `(${own.length > 0 ? [...new Set(own.map(p => p.site))].join(', ') : 'guide-wide sources'})` +
         `${video ? ' + a walkthrough video' : ''}`,
   })

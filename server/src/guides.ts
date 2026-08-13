@@ -34,6 +34,8 @@ const MAX_STEP_CHARS        = 300
 // The note is where "how do I actually get this" lives — for a collectible it
 // carries the whole method, so it has room for a couple of sentences.
 const MAX_NOTE_CHARS        = 700
+/** Sub-chapter headings are a few words — "Getting there", "Boss: Odolwa". */
+const MAX_GROUP_CHARS       = 80
 const MAX_SUMMARY_CHARS     = 400
 const MAX_SOURCES           = 12
 
@@ -48,6 +50,21 @@ export interface GuideStep {
   id:      string
   text:    string
   note?:   string
+  /**
+   * The sub-chapter this step belongs to ("Getting there", "Boss: Odolwa").
+   * Consecutive steps sharing a group ARE that sub-chapter — there is no
+   * separate nested array.
+   *
+   * A label rather than a tree because a chapter's steps are, and must stay, one
+   * flat ordered list: the 1..n numbering the detail pass keys its notes to, the
+   * counting behind both progress bars, tick-one-step, tick-a-whole-chapter and
+   * carryTicks across a rewrite all walk `section.steps` and all of them are
+   * verified working. Nesting would fork every one of those into a two-shape
+   * traversal to gain nothing the UI can't derive by grouping consecutive runs —
+   * which is how the chapter page draws its sub-chapter headings and per-part
+   * counts. Steps with no group are simply an unlabelled run.
+   */
+  group?:  string
   done:    boolean
   doneAt?: string
 }
@@ -186,12 +203,14 @@ function normalizeStep(v: unknown, idx: number): GuideStep | null {
   const text = str(o['text'], MAX_STEP_CHARS)
   if (!text) return null
   const note   = str(o['note'], MAX_NOTE_CHARS)
+  const group  = str(o['group'], MAX_GROUP_CHARS)
   const doneAt = str(o['doneAt'], 40)
   const done   = o['done'] === true
   return {
     id: str(o['id'], 40) || `s${idx}`,
     text,
     ...(note ? { note } : {}),
+    ...(group ? { group } : {}),
     done,
     ...(done && doneAt ? { doneAt } : {}),
   }
