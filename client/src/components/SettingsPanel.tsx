@@ -2302,6 +2302,10 @@ function VTuberPreview({ spec, enabled, zoom, offsetY }: VTuberPreviewProps) {
               modelUrl={spec.model}
               zoom={zoom}
               offsetY={offsetY}
+              // The controls sit right beside her here, so head-tracking would
+              // turn her away from the camera on every slider drag and cue tap
+              // — exactly when you're trying to look at the face.
+              trackPointer={false}
               onStatus={(s, d) => { setStatus(s); setDetail(d) }}
               onFps={setFps}
             />
@@ -2316,6 +2320,7 @@ function VTuberPreview({ spec, enabled, zoom, offsetY }: VTuberPreviewProps) {
               animUrl={spec.anim}
               zoom={zoom}
               offsetY={offsetY}
+              trackPointer={false}
               onStatus={(s, d) => { setStatus(s); setDetail(d) }}
               onFps={setFps}
             />

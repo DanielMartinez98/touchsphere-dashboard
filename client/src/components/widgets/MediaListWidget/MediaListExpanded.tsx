@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Shuffle, Dices, Star, Plus, X, Circle, Play, Check, ChevronDown, ChevronRight, Trash2, Undo2, Image as ImageIcon, Pencil } from 'lucide-react'
-import type { ArtworkResult, MediaItem, MediaStatus, MediaType } from '../../../types'
+import { Shuffle, Dices, Star, Plus, X, Circle, Play, Check, ChevronDown, ChevronRight, Trash2, Undo2, Image as ImageIcon, Pencil, ListOrdered, Loader2 } from 'lucide-react'
+import type { ArtworkResult, GuideSummary, MediaItem, MediaStatus, MediaType } from '../../../types'
 import { statusesFor } from '../../../types'
 import { MediaTypeIcon } from './MediaTypeIcon'
+import { MediaCover } from './MediaCover'
+import { GuideView } from './GuideView'
+import { useGuide } from '../../../hooks/useGuides'
 import { TouchKeyboard } from '../../TouchKeyboard'
 
 const STATUS_LABEL: Record<MediaStatus, string> = {
@@ -36,47 +39,6 @@ const TYPE_LABEL: Record<MediaType, string> = {
   game: 'Game',
   show: 'Show',
   movie: 'Movie',
-}
-
-// ── Cover art ────────────────────────────────────────────────────────────────
-// Real posters come from the server (TMDB for movies/shows, IGDB for games),
-// cached to disk on add so they render offline. Anything without one — no
-// match, or added while the Pi had no WAN — keeps the old gradient tile derived
-// from the title, so the list is never a row of broken images.
-
-function hueFromTitle(title: string): number {
-  let h = 0
-  for (let i = 0; i < title.length; i++) h = (h * 31 + title.charCodeAt(i)) >>> 0
-  return h % 360
-}
-
-// Posters are 2:3 — a square crop throws away most of the artwork.
-const COVER_SIZE = 'w-[52px] h-[78px] rounded-lg'
-
-function MediaCover({ item, className = COVER_SIZE }: { item: MediaItem; className?: string }) {
-  // A cached file can still 404 if the volume was wiped under a stale media.json.
-  const [broken, setBroken] = useState(false)
-  const hue = hueFromTitle(item.title)
-
-  if (item.cover && !broken) {
-    return (
-      <img
-        src={`/api/artwork/cover/${item.cover}`}
-        alt=""
-        onError={() => setBroken(true)}
-        className={`${className} shrink-0 object-cover bg-white/5`}
-      />
-    )
-  }
-
-  return (
-    <div
-      className={`${className} flex items-center justify-center shrink-0 text-white/90`}
-      style={{ background: `linear-gradient(135deg, hsl(${hue} 60% 40%), hsl(${(hue + 45) % 360} 70% 24%))` }}
-    >
-      <MediaTypeIcon type={item.type} className="text-xl" />
-    </div>
-  )
 }
 
 // ── Cover picker ─────────────────────────────────────────────────────────────
@@ -212,15 +174,18 @@ function RenameSheet({
 // ── Bottom sheet: status / star / delete for one item ────────────────────────
 
 function ItemSheet({
-  item, onClose, onSetStatus, onToggleStar, onDelete, onChangeCover, onRename,
+  item, guide, onClose, onSetStatus, onToggleStar, onDelete, onChangeCover, onRename, onOpenGuide,
 }: {
   item:          MediaItem
+  /** Guide summary for this item, when it has one. Games only. */
+  guide:         GuideSummary | undefined
   onClose:       () => void
   onSetStatus:   (status: MediaStatus) => void
   onToggleStar:  () => void
   onDelete:      () => void
   onChangeCover: () => void
   onRename:      () => void
+  onOpenGuide:   () => void
 }) {
   return (
     <div className="absolute inset-0 z-40 flex flex-col justify-end" onClick={onClose}>
@@ -252,6 +217,21 @@ function ItemSheet({
               </button>
             ))}
           </div>
+
+          {/* Guides are a game thing — a step-by-step checklist for a film is
+              nothing anybody wants, and the generator's prompts assume a game. */}
+          {item.type === 'game' && (
+            <button type="button" onClick={onOpenGuide}
+              className="w-full h-13 mb-2 py-3.5 rounded-xl text-sm font-semibold bg-[var(--accent,#06b6d4)]/15 text-[var(--accent,#06b6d4)] border border-[var(--accent,#06b6d4)]/30 active:bg-[var(--accent,#06b6d4)]/25 flex items-center justify-center gap-2">
+              {guide?.status === 'generating'
+                ? <><Loader2 size={16} className="animate-spin" /> Building guide…</>
+                : guide?.status === 'ready'
+                  ? <><ListOrdered size={16} /> Guide · {guide.percent}%</>
+                  : guide?.status === 'failed'
+                    ? <><ListOrdered size={16} /> Guide · retry</>
+                    : <><ListOrdered size={16} /> Game guide</>}
+            </button>
+          )}
 
           <div className="grid grid-cols-2 gap-2 mb-2">
             <button type="button" onClick={onRename}
@@ -302,6 +282,10 @@ interface Props {
   setStatus: (id: string, status: MediaStatus) => void
   setCover: (id: string, coverUrl: string) => void
   renameItem: (id: string, title: string) => void
+  /** Guide progress per media item id — drives the row bars and the sheet button. */
+  guides: Record<string, GuideSummary>
+  generateGuide: (itemId: string, title: string, order?: string) => void
+  deleteGuide: (itemId: string) => void
 }
 
 export default function MediaListExpanded({
@@ -313,6 +297,9 @@ export default function MediaListExpanded({
   setStatus,
   setCover,
   renameItem,
+  guides,
+  generateGuide,
+  deleteGuide,
 }: Props) {
   const [title, setTitle] = useState('')
   const [type, setType] = useState<MediaType>('show')
@@ -325,7 +312,12 @@ export default function MediaListExpanded({
   const [sheetItemId, setSheetItemId] = useState<string | null>(null)
   const [coverItemId, setCoverItemId] = useState<string | null>(null)
   const [renameItemId, setRenameItemId] = useState<string | null>(null)
+  const [guideItemId, setGuideItemId]   = useState<string | null>(null)
   const [showFinished, setShowFinished] = useState(false)
+
+  // The full guide document for whichever item's guide is open. Fetches on open,
+  // then follows the server's `guide` events so a generation fills in live.
+  const { guide: openGuide, loading: guideLoading, toggleStep } = useGuide(guideItemId)
 
   // Stop a roulette mid-spin if the widget unmounts.
   useEffect(() => () => {
@@ -461,6 +453,7 @@ export default function MediaListExpanded({
   const sheetItem = sheetItemId ? items.find(i => i.id === sheetItemId) ?? null : null
   const coverItem  = coverItemId  ? items.find(i => i.id === coverItemId)  ?? null : null
   const renameTarget = renameItemId ? items.find(i => i.id === renameItemId) ?? null : null
+  const guideItem  = guideItemId  ? items.find(i => i.id === guideItemId)  ?? null : null
 
   const filterTabs: { key: Filter; label: string }[] = [
     { key: 'all',   label: 'All' },
@@ -472,6 +465,7 @@ export default function MediaListExpanded({
   const renderRow = (item: MediaItem, idx: number) => {
     const isRecommended = item.id === recommendedId
     const isInactive = item.status === 'done' || item.status === 'dropped'
+    const guide = guides[item.id]
     return (
       <motion.div
         key={item.id}
@@ -504,8 +498,26 @@ export default function MediaListExpanded({
           >
             {item.title}
           </div>
-          <div className="text-xs uppercase tracking-wider text-white/50 mt-1">
-            {TYPE_LABEL[item.type]}
+          <div className="flex items-center gap-2 mt-1">
+            <span className="text-xs uppercase tracking-wider text-white/50 shrink-0">
+              {TYPE_LABEL[item.type]}
+            </span>
+            {/* Guide progress, so how far you are through a game is visible
+                without opening anything. */}
+            {guide && guide.status === 'ready' && guide.counted.total > 0 && (
+              <>
+                <span className="flex-1 h-1 min-w-6 bg-white/10 rounded-full overflow-hidden">
+                  <span className="block h-full bg-[var(--accent,#06b6d4)]/70 rounded-full"
+                        style={{ width: `${guide.percent}%` }} />
+                </span>
+                <span className="text-xs text-white/40 tabular-nums shrink-0">{guide.percent}%</span>
+              </>
+            )}
+            {guide?.status === 'generating' && (
+              <span className="flex items-center gap-1 text-xs text-[var(--accent,#06b6d4)]/80 shrink-0">
+                <Loader2 size={11} className="animate-spin" /> guide
+              </span>
+            )}
           </div>
         </div>
         <button
@@ -710,12 +722,26 @@ export default function MediaListExpanded({
       {sheetItem && (
         <ItemSheet
           item={sheetItem}
+          guide={guides[sheetItem.id]}
           onClose={() => setSheetItemId(null)}
           onSetStatus={s => setStatus(sheetItem.id, s)}
           onToggleStar={() => toggleStar(sheetItem.id)}
           onDelete={() => requestDelete(sheetItem)}
           onChangeCover={() => { setCoverItemId(sheetItem.id); setSheetItemId(null) }}
           onRename={() => { setRenameItemId(sheetItem.id); setSheetItemId(null) }}
+          onOpenGuide={() => { setGuideItemId(sheetItem.id); setSheetItemId(null) }}
+        />
+      )}
+
+      {guideItem && (
+        <GuideView
+          item={guideItem}
+          guide={openGuide}
+          loading={guideLoading}
+          onClose={() => setGuideItemId(null)}
+          onToggleStep={toggleStep}
+          onGenerate={order => generateGuide(guideItem.id, guideItem.title, order)}
+          onDelete={() => deleteGuide(guideItem.id)}
         />
       )}
 

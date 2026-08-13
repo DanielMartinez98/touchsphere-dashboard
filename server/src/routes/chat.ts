@@ -136,6 +136,17 @@ const SYSTEM_PROMPT_BODY =
   "get_air_quality, get_calendar_today, get_calendar_day, get_calendar_week, get_calendar_range, get_device_status, " +
   "remember (save a fact), remember_preference (save how the user likes to be answered), " +
   "forget (remove memories matching a query), and list_memories. " +
+  "GAME GUIDES: create_game_guide / get_game_guide_progress / check_off_guide_step. " +
+  "When the user wants a guide, walkthrough, checklist, or 100% route for a GAME, call create_game_guide — " +
+  "it researches the game online and builds a tickable, section-by-section guide attached to that game in the " +
+  "Watch/Play list (adding the game first if it isn't there). It takes a few minutes and keeps working after " +
+  "the conversation ends, so confirm you have STARTED it and never describe it as finished or read out sections " +
+  "you have not seen. Pass `order` only if they asked for a particular organization (\"by boss order\", " +
+  "\"just the side quests\"); otherwise it follows how that game's community organizes guides. " +
+  "Use get_game_guide_progress for \"how far am I in X\", \"what's left\", or \"is the guide ready\". " +
+  "Use check_off_guide_step when they report finishing a specific step while playing (\"I got the bow\", " +
+  "\"beat Odolwa\") — pass a few distinctive words and let the tool find the step. " +
+  "For a single video or one quick fact, use play_video or web_search instead — a guide is for a whole game. " +
   "PERSISTENT MEMORY: anything you saved in a past conversation is auto-injected into your prompt below — " +
   "treat those as facts you already know and answer directly without re-asking. Use remember whenever the user shares " +
   "something they would not want to repeat (their name, recurring routines, what they're working on today). " +
@@ -698,11 +709,12 @@ router.post('/', async (req: Request, res: Response) => {
         }
 
         const result = await runTool(name, args)
-        if (MUTATING_TOOLS.has(name) && !/^(Error|No playlist|No timer|There are no|Already on the list|Nothing)/.test(result)) {
-          // Bucket each mutating tool under the client-side slice key its
+        if (MUTATING_TOOLS.has(name) && !/^(Error|No playlist|No timer|No step|No game|There are no|There is no|Already on the list|Nothing)/.test(result)) {
+          // Bucket each mutating tool under the client-side slice key(s) its
           // matching hook listens for. The voice hook fans these out as
           // ts:state-changed events so only the affected widgets refetch.
-          changed.add(TOOL_SLICE[name] ?? 'media')
+          const slices = TOOL_SLICE[name] ?? 'media'
+          for (const slice of Array.isArray(slices) ? slices : [slices]) changed.add(slice)
         }
         const truncated = result.slice(0, MAX_TOOL_MSG_CHARS)
         console.log(`[chat:tool] ${name} returned ${result.length} chars (sent ${truncated.length}): ${truncated.slice(0, 200).replace(/\s+/g, ' ')}\u2026`)

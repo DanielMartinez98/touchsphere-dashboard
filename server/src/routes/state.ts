@@ -4,6 +4,7 @@ import path from 'path'
 import crypto from 'crypto'
 import { ASSISTANT_PROFILES, DEFAULT_ASSISTANT_ID, type AssistantId } from '../config/assistant'
 import { autoCover, cacheCover, findCover } from './artwork'
+import { deleteGuide } from '../guides'
 
 const router = Router()
 
@@ -486,6 +487,9 @@ router.delete('/media/:id', (req: Request, res: Response) => {
   }
   try {
     saveMediaList(filtered)
+    // A game guide is keyed by item id, so it would otherwise outlive its item
+    // and be silently inherited by nothing (or, worse, by a recycled id).
+    if (id) deleteGuide(String(id))
     console.log(`[state] DELETE media/${id} — removed, remaining: ${filtered.length}`)
     res.json({ ok: true })
   } catch {

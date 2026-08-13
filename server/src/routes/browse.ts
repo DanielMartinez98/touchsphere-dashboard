@@ -54,7 +54,7 @@ export type DisplayPayload =
 // ── URL helpers ──────────────────────────────────────────────────────────────
 
 /** Parse + normalize a model-supplied URL. Returns null if it isn't usable. */
-function parseUrl(raw: string): URL | null {
+export function parseUrl(raw: string): URL | null {
   const trimmed = raw.trim().replace(/^<|>$/g, '')
   if (!trimmed) return null
   try {
@@ -70,7 +70,7 @@ function parseUrl(raw: string): URL | null {
 const PRIVATE_HOST = /^(localhost|.*\.local|.*\.internal|\[?::1\]?|0\.0\.0\.0)$/i
 const PRIVATE_IPV4 = /^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/
 
-function isPublicHttpUrl(u: URL): boolean {
+export function isPublicHttpUrl(u: URL): boolean {
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
   const host = u.hostname.toLowerCase()
   if (PRIVATE_HOST.test(host)) return false
@@ -80,7 +80,7 @@ function isPublicHttpUrl(u: URL): boolean {
 }
 
 /** Human-readable site name for the overlay header ("bbc.co.uk"). */
-function siteOf(u: URL): string {
+export function siteOf(u: URL): string {
   return u.hostname.replace(/^www\./, '')
 }
 
@@ -100,7 +100,7 @@ export function youtubeId(u: URL): string | null {
 
 // ── Fetch helpers ────────────────────────────────────────────────────────────
 
-async function fetchText(url: string, headers = BROWSER_HEADERS): Promise<string | null> {
+export async function fetchText(url: string, headers = BROWSER_HEADERS): Promise<string | null> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS)
   try {
@@ -199,7 +199,7 @@ function pageTitle(html: string): string {
  * port — on a 720×1280 kiosk we only need headings, paragraphs and list items in
  * a legible column, and the model has already told the user what the page says.
  */
-function extractReadable(html: string): { title: string; text: string; image: string } {
+export function extractReadable(html: string): { title: string; text: string; image: string } {
   const title = pageTitle(html)
   const image = metaContent(html, 'og:image')
 
@@ -235,7 +235,7 @@ function extractReadable(html: string): { title: string; text: string; image: st
 
 // ── YouTube search ───────────────────────────────────────────────────────────
 
-interface VideoHit { videoId: string; title: string; channel?: string }
+export interface VideoHit { videoId: string; title: string; channel?: string }
 
 async function youtubeViaApi(query: string): Promise<VideoHit | null> {
   const url = 'https://www.googleapis.com/youtube/v3/search'
@@ -329,7 +329,7 @@ async function youtubeViaResultsPage(query: string): Promise<VideoHit | null> {
   return { videoId: id, title, ...(channel ? { channel } : {}) }
 }
 
-async function searchYouTube(query: string): Promise<VideoHit | null> {
+export async function searchYouTube(query: string): Promise<VideoHit | null> {
   if (YOUTUBE_API_KEY) {
     const viaApi = await youtubeViaApi(query)
     if (viaApi) return viaApi
@@ -341,16 +341,19 @@ async function searchYouTube(query: string): Promise<VideoHit | null> {
 // ── Web search fallback ──────────────────────────────────────────────────────
 
 /**
- * Last-resort "find me a page about X" when the model calls open_website with a
- * query and no URL. The model is *told* to search first and pass a real URL —
- * this exists so a small local model that forgets still shows the user something.
+ * Keyless web search: scrape DuckDuckGo's HTML endpoint for organic results.
+ * Used as the fallback everywhere a real search API isn't configured — by
+ * open_website when the model passes a query instead of a URL, and by the guide
+ * researcher (research.ts) when there's no OLLAMA_API_KEY for hosted search.
  */
-async function searchOneUrl(query: string): Promise<{ url: string; title: string } | null> {
+export async function searchDuckDuckGo(query: string, limit = 1): Promise<Array<{ url: string; title: string }>> {
   const html = await fetchText(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`)
-  if (!html) return null
+  if (!html) return []
+  const out: Array<{ url: string; title: string }> = []
+  const seen = new Set<string>()
   const re = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi
   let m: RegExpExecArray | null
-  while ((m = re.exec(html)) !== null) {
+  while ((m = re.exec(html)) !== null && out.length < limit) {
     let href = decodeEntities(m[1] ?? '')
     // Organic results are wrapped in a redirect: //duckduckgo.com/l/?uddg=<encoded>.
     // Sponsored ones point at /y.js instead and never carry uddg — dropping
@@ -362,10 +365,22 @@ async function searchOneUrl(query: string): Promise<{ url: string; title: string
     const parsed = parseUrl(href)
     if (!parsed || !isPublicHttpUrl(parsed)) continue
     if (/(^|\.)duckduckgo\.com$/i.test(parsed.hostname)) continue
+    const url = parsed.toString()
+    if (seen.has(url)) continue
+    seen.add(url)
     const title = decodeEntities((m[2] ?? '').replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim()
-    return { url: parsed.toString(), title: title || siteOf(parsed) }
+    out.push({ url, title: title || siteOf(parsed) })
   }
-  return null
+  return out
+}
+
+/**
+ * Last-resort "find me a page about X" when the model calls open_website with a
+ * query and no URL. The model is *told* to search first and pass a real URL —
+ * this exists so a small local model that forgets still shows the user something.
+ */
+async function searchOneUrl(query: string): Promise<{ url: string; title: string } | null> {
+  return (await searchDuckDuckGo(query, 1))[0] ?? null
 }
 
 // ── Tools ────────────────────────────────────────────────────────────────────

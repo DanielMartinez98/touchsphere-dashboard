@@ -242,6 +242,20 @@ router.get('/events', (req: Request, res: Response) => {
   })
 })
 
+/**
+ * Push a named event to every connected dashboard. Used for anything the server
+ * finishes on its own schedule and the client can't know to ask about — the
+ * restart signal below, and guide generation progress (see guide-generator.ts).
+ * Silently drops clients whose socket has already gone away.
+ */
+export function broadcast(event: string, data: unknown = {}): void {
+  if (sseClients.size === 0) return
+  const frame = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+  for (const client of sseClients) {
+    try { client.write(frame) } catch { sseClients.delete(client) }
+  }
+}
+
 // GET /api/system/debug — runtime + config summary for the in-app Debug panel.
 // Secrets are reported as booleans only; never echo key material.
 router.get('/debug', (_req: Request, res: Response) => {
@@ -291,9 +305,7 @@ router.post('/restart', (_req: Request, res: Response) => {
   res.json({ ok: true })
   setTimeout(() => {
     console.log('[system] restart requested via API — broadcasting reload to clients')
-    for (const client of sseClients) {
-      client.write('event: reload\ndata: {}\n\n')
-    }
+    broadcast('reload')
   }, 100)
 })
 

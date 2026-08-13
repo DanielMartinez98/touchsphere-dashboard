@@ -15,6 +15,8 @@ import crypto from 'crypto'
 import { addMemory, loadMemories, removeMemories } from '../memory'
 import { nextRecurringFireAt, sanitizeRepeatDays } from './timers'
 import { findCover, artworkConfigured } from './artwork'
+import { guideProgress, listGuides, loadGuide, setStepDone } from '../guides'
+import { startGuide } from '../guide-generator'
 
 // ── State file helpers (mirror state.ts) ─────────────────────────────────────
 function stateDir(): string {
@@ -962,6 +964,129 @@ function cancelTimer(query: string): string {
   return `Cancelled the ${hit.kind}${hit.label ? ` for ${hit.label}` : ''}.`
 }
 
+// ── Game guides ──────────────────────────────────────────────────────────────
+// The heavy lifting (research, section generation, video lookups) happens in
+// guide-generator.ts and outlives the conversation. These tools only start it,
+// report on it, and tick boxes — each one has to return in the second or two the
+// user is waiting for a spoken reply.
+
+async function createGameGuide(title: string, order: string): Promise<string> {
+  const t = title.trim()
+  if (!t) return 'Error: title is required.'
+
+  const items = readMedia()
+  let hit = findByTitle(items, t)
+
+  // Asking for a guide is itself a statement of intent to play it, so a game
+  // that isn't on the list gets added rather than refused.
+  if (!hit) {
+    const added = await addMedia(t, 'game')
+    hit = findByTitle(readMedia(), t)
+    if (!hit) return `Error: could not add "${t}" to the playlist, so there is nothing to attach a guide to. (${added})`
+    console.log(`[chat:tool] create_game_guide → added "${hit.title}" to the playlist first`)
+  }
+
+  if (hit.type !== 'game') {
+    return `"${hit.title}" is a ${hit.type}, not a game — guides are only for games. Say so briefly.`
+  }
+
+  const existing = loadGuide(hit.id)
+  if (existing?.status === 'generating') {
+    return `A guide for "${hit.title}" is already being put together (${existing.phase ?? 'in progress'}). ` +
+           `Tell the user it's still working, and do not start another.`
+  }
+
+  const result = startGuide({ itemId: hit.id, title: hit.title, ...(order.trim() ? { order: order.trim() } : {}) })
+  if (result === 'busy') {
+    return `A guide for "${hit.title}" is already being generated. Tell the user it's on its way.`
+  }
+  const regenerated = existing ? ' This replaces the previous guide and its ticked-off steps.' : ''
+  return `Started researching a guide for "${hit.title}".${regenerated} It takes a few minutes and builds up ` +
+         `section by section; it appears under the game in the Watch/Play list, and the dashboard shows a ` +
+         `notice when it's done. Say one short sentence confirming you're on it — do not pretend it is ready yet.`
+}
+
+function getGameGuideProgress(title: string): string {
+  const items = readMedia()
+  const hit = title.trim() ? findByTitle(items, title) : undefined
+
+  if (!hit) {
+    // No title, or no match: report on everything that has a guide, so "how are
+    // my guides going?" works too.
+    const all = listGuides()
+    if (all.length === 0) return 'There are no game guides yet.'
+    return all
+      .map(g => `${g.title}: ${g.status === 'ready' ? `${g.percent}% (${g.counted.done} of ${g.counted.total} steps)` : g.status === 'generating' ? `still generating — ${g.phase ?? 'working'}` : 'failed to generate'}`)
+      .join('\n')
+  }
+
+  const guide = loadGuide(hit.id)
+  if (!guide) return `There is no guide for "${hit.title}" yet. Offer to make one with create_game_guide.`
+  if (guide.status === 'generating') {
+    return `The guide for "${hit.title}" is still being built — ${guide.phase ?? 'working on it'}. ` +
+           `${guide.sections.length} sections planned so far.`
+  }
+  if (guide.status === 'failed') {
+    return `The guide for "${hit.title}" failed to generate: ${guide.error ?? 'unknown error'}. ` +
+           `Offer to try again.`
+  }
+
+  const p = guideProgress(guide)
+  const perSection = guide.sections
+    .filter(s => s.steps.length > 0)
+    .map(s => `${s.title} ${s.steps.filter(x => x.done).length}/${s.steps.length}`)
+    .join(', ')
+  return `"${guide.title}" is ${p.percent}% complete — ${p.counted.done} of ${p.counted.total} steps that count ` +
+         `toward 100%${p.all.total !== p.counted.total ? ` (${p.all.total} including reference sections)` : ''}. ` +
+         `By section: ${perSection}.`
+}
+
+function checkOffGuideStep(title: string, step: string, done: boolean): string {
+  const q = step.trim().toLowerCase()
+  if (q.length < 4) return 'Error: describe the step in a few words so the right one can be found.'
+
+  const items = readMedia()
+  const hit = title.trim() ? findByTitle(items, title) : undefined
+  // With no title, fall back to the only game that has a guide in progress —
+  // usually exactly what "tick off the bow" means while playing one game.
+  const candidates = hit ? [hit] : items.filter(i => i.type === 'game' && loadGuide(i.id)?.status === 'ready')
+  if (candidates.length === 0) return `No game guide matching "${title}".`
+  if (candidates.length > 1) {
+    return `Which game? There are guides for: ${candidates.map(c => c.title).join(', ')}. Ask the user.`
+  }
+
+  const target = candidates[0]!
+  const guide = loadGuide(target.id)
+  if (!guide) return `There is no guide for "${target.title}" yet.`
+
+  // Same guard as `forget`: this is driven by a speech-to-text transcript, and
+  // ticking the wrong box silently corrupts the user's own record of what they
+  // have actually played.
+  const matches = guide.sections.flatMap(sec =>
+    sec.steps.filter(s => s.text.toLowerCase().includes(q)).map(s => ({ sec, step: s })),
+  )
+  if (matches.length === 0) return `No step in the "${guide.title}" guide mentions "${step}".`
+  if (matches.length > 3) {
+    return `"${step}" matches ${matches.length} steps in the "${guide.title}" guide — too many to be sure. ` +
+           `Ask the user to be more specific.`
+  }
+  if (matches.length > 1) {
+    return `"${step}" matches ${matches.length} steps: ${matches.map(m => `"${m.step.text}"`).join(' / ')}. ` +
+           `Ask the user which one they mean.`
+  }
+
+  const only = matches[0]!
+  if (only.step.done === done) {
+    return `"${only.step.text}" is already marked ${done ? 'done' : 'not done'} in the ${guide.title} guide.`
+  }
+  const updated = setStepDone(target.id, only.sec.id, only.step.id, done)
+  if (!updated) return `Error: could not update that step.`
+  const p = guideProgress(updated)
+  console.log(`[chat:tool] check_off_guide_step → "${only.step.text.slice(0, 50)}" ${done ? 'done' : 'undone'} (${p.percent}%)`)
+  return `Marked "${only.step.text}" as ${done ? 'done' : 'not done'} in the ${guide.title} guide — ` +
+         `now ${p.percent}% complete (${p.counted.done} of ${p.counted.total}).`
+}
+
 // ── Tool dispatch ────────────────────────────────────────────────────────────
 export const DASHBOARD_TOOLS = [
   {
@@ -1389,6 +1514,71 @@ export const DASHBOARD_TOOLS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'create_game_guide',
+      description:
+        'Research and build a step-by-step GAME GUIDE for one of the user\'s games, attached to it in the ' +
+        'Watch/Play list. Use this whenever the user asks for a guide, a walkthrough, a checklist, ' +
+        'a 100% completion route, or help getting through a game ("make me a guide for Majora\'s Mask", ' +
+        '"I want a checklist for Hollow Knight"). The guide is organized the way that game\'s community ' +
+        'organizes it (a section per dungeon or chapter, plus collectibles and side quests), every step is ' +
+        'tickable, and each section gets a video. If the game is not on the playlist yet it is added ' +
+        'automatically. Generation takes a few minutes and continues after the conversation ends, so ' +
+        'confirm that you have started it — never claim it is finished. For a single video or one quick ' +
+        'answer use play_video or web_search instead; this is for a whole game.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'The game\'s title, as the user said it.' },
+          order: {
+            type: 'string',
+            description:
+              'Only when the user asked for a specific organization, e.g. "by boss order", ' +
+              '"speedrun route", "just the side quests". Leave empty to use how the community organizes it.',
+          },
+        },
+        required: ['title'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_game_guide_progress',
+      description:
+        'Read how far the user has got in a game guide — the overall completion percentage and the ' +
+        'per-section counts. Use for "how far am I in Majora\'s Mask?", "what\'s left?", ' +
+        '"is my guide ready yet?". Pass no title to report on every guide.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'The game\'s title. Omit for all guides.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'check_off_guide_step',
+      description:
+        'Tick (or untick) one step in a game guide, for when the user reports progress out loud while ' +
+        'playing ("I got the bow", "beat Odolwa", "done with the Woodfall temple key"). Pass a few ' +
+        'distinctive words from the step; if they match more than one step you will be told to ask which. ' +
+        'Do not use this to mark a whole game finished — that is set_media_status.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'The game\'s title. Omit if only one game has a guide.' },
+          step:  { type: 'string', description: 'Distinctive words from the step, e.g. "Odolwa" or "hero\'s bow".' },
+          done:  { type: 'boolean', description: 'true to tick it off (default), false to un-tick it.' },
+        },
+        required: ['step'],
+      },
+    },
+  },
 ] as const
 
 export async function runDashboardTool(
@@ -1436,6 +1626,12 @@ export async function runDashboardTool(
     case 'set_alarm':          return setAlarm(str('time'), str('label'), str('repeat'))
     case 'list_timers':        return listTimers()
     case 'cancel_timer':       return cancelTimer(str('query'))
+    case 'create_game_guide':  return createGameGuide(str('title'), str('order'))
+    case 'get_game_guide_progress': return getGameGuideProgress(str('title'))
+    case 'check_off_guide_step': {
+      const done = typeof args['done'] === 'boolean' ? (args['done'] as boolean) : true
+      return checkOffGuideStep(str('title'), str('step'), done)
+    }
     default: return null
   }
 }
@@ -1457,11 +1653,14 @@ export const MUTATING_TOOLS = new Set([
   'set_timer',
   'set_alarm',
   'cancel_timer',
+  'create_game_guide',
+  'check_off_guide_step',
 ])
 
-// Maps a mutating tool to the client-side state slice it touches, so the chat
-// route can tell exactly which widgets/hooks should refetch.
-export const TOOL_SLICE: Record<string, string> = {
+// Maps a mutating tool to the client-side state slice(s) it touches, so the chat
+// route can tell exactly which widgets/hooks should refetch. A tool that writes
+// to two stores lists both.
+export const TOOL_SLICE: Record<string, string | string[]> = {
   set_app_mode:        'mode',
   add_notion_task:     'notion',
   set_timer:           'timers',
@@ -1472,5 +1671,9 @@ export const TOOL_SLICE: Record<string, string> = {
   remember:            'memory',
   remember_preference: 'memory',
   forget:              'memory',
+  // Guides live in their own store and their own hook. create_game_guide also
+  // adds the game to the playlist when it isn't there yet, so it touches both.
+  create_game_guide:   ['guides', 'media'],
+  check_off_guide_step: 'guides',
   // everything else defaults to 'media'
 }

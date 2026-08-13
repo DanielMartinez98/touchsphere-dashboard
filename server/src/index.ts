@@ -22,7 +22,10 @@ import notionRouter from './routes/notion'
 import timersRouter from './routes/timers'
 import memoryRouter from './routes/memory'
 import artworkRouter from './routes/artwork'
+import guidesRouter from './routes/guides'
 import { elevenLabsKeyState } from './config/keys'
+import { sweepInterrupted } from './guides'
+import { SEARCH_PROVIDER } from './research'
 
 dotenv.config()
 
@@ -58,7 +61,17 @@ console.log('[startup] DEFAULT_LAT/LON       :',
   (process.env['DEFAULT_LAT'] && process.env['DEFAULT_LON'])
     ? `${process.env['DEFAULT_LAT']}, ${process.env['DEFAULT_LON']}`
     : '— not set (will use ip-api.com)')
+// Which provider game-guide research will use. DuckDuckGo needs no key but
+// returns no snippets, so a guide built on it leans entirely on page reads.
+console.log('[startup] guide research        :', SEARCH_PROVIDER === 'ollama'
+  ? 'ollama hosted web_search'
+  : 'duckduckgo html (no OLLAMA_API_KEY)')
 console.log('[startup] ============================================')
+
+// Guide generation lives in memory and is fire-and-forget, so a restart in the
+// middle of one leaves a guide stuck on "generating" — a spinner with nothing
+// behind it. Fail those now so the view can offer Retry.
+sweepInterrupted()
 
 // Fail fast if the required API key is missing
 if (!process.env['OPENWEATHER_API_KEY']) {
@@ -162,6 +175,7 @@ app.use('/api/browse', dataLimiter, browseRouter)
 app.use('/api/notion', dataLimiter, notionRouter)
 app.use('/api/timers', dataLimiter, timersRouter)
 app.use('/api/memory', dataLimiter, memoryRouter)
+app.use('/api/guides', dataLimiter, guidesRouter)
 // Artwork is split across both limiters. Cached covers are served off local
 // disk and a full list fetches one per item, so they need the tile budget —
 // but /search calls TMDB/IGDB upstream, so it stays on the strict data budget

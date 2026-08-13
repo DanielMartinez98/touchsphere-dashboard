@@ -74,3 +74,95 @@ export interface ArtworkResult {
   year: number | null
   imageUrl: string
 }
+
+// ── Game guides ──────────────────────────────────────────────────────────────
+// A researched, tickable walkthrough attached to a game in the list. Mirrors
+// server/src/guides.ts — keep the two in sync.
+
+export type GuideStatus  = 'generating' | 'ready' | 'failed'
+/** `reference` sections (item tables, controls) never move the 100% bar. */
+export type SectionKind  = 'progression' | 'collectible' | 'sidequest' | 'reference'
+export type SectionState = 'pending' | 'ready' | 'failed'
+
+export interface GuideStep {
+  id: string
+  text: string
+  note?: string
+  done: boolean
+  doneAt?: string
+}
+
+export interface GuideVideo {
+  videoId: string
+  title: string
+  channel?: string
+}
+
+export interface GuideSection {
+  id: string
+  title: string
+  kind: SectionKind
+  /** Whether this section's steps feed the overall 100% bar. */
+  counts: boolean
+  summary?: string
+  video?: GuideVideo
+  source?: { url: string; site: string }
+  state: SectionState
+  steps: GuideStep[]
+}
+
+export interface Guide {
+  itemId: string
+  title: string
+  /** One line on how the community orders this game, shown under the title. */
+  organization: string
+  orderOverride?: string
+  status: GuideStatus
+  error?: string
+  createdAt: string
+  updatedAt: string
+  /** Generation phase, e.g. "Woodfall Temple (3 of 7)". Absent when finished. */
+  phase?: string
+  video?: GuideVideo
+  sections: GuideSection[]
+  sources: Array<{ url: string; site: string; title: string }>
+}
+
+/** The light row GET /api/guides returns — enough for a progress bar. */
+export interface GuideSummary {
+  itemId: string
+  title: string
+  status: GuideStatus
+  phase?: string
+  percent: number
+  counted: { done: number; total: number }
+  sections: number
+}
+
+/**
+ * Counts behind the bars. `counted` is the community "100%" definition — only
+ * sections the generator marked as counting — while `all` includes reference
+ * material, which is why a guide can read 100% with boxes still unticked.
+ */
+export function guideProgress(g: Guide): {
+  counted: { done: number; total: number }
+  all: { done: number; total: number }
+  percent: number
+} {
+  let cDone = 0, cTotal = 0, aDone = 0, aTotal = 0
+  for (const sec of g.sections) {
+    for (const step of sec.steps) {
+      aTotal++
+      if (step.done) aDone++
+      if (sec.counts) {
+        cTotal++
+        if (step.done) cDone++
+      }
+    }
+  }
+  return {
+    counted: { done: cDone, total: cTotal },
+    all:     { done: aDone, total: aTotal },
+    percent: cTotal > 0 ? Math.round((cDone / cTotal) * 100) : 0,
+  }
+}

@@ -47,6 +47,13 @@ interface Props {
   zoom: number
   /** Vertical shift as a fraction of the frame. Negative = up. */
   offsetY: number
+  /** Follow the touch point with head and gaze. Default on.
+   *
+   *  Off for the Settings preview: there, every touch lands on a slider or a
+   *  cue button right next to her, so tracking turns her head away from the
+   *  camera exactly when you're trying to judge the expression you just fired.
+   *  On the dashboard the same behaviour is the point — she looks at you. */
+  trackPointer?: boolean
   /** Reports load progress so the caller can fall back to the sphere on error. */
   onStatus?: (status: AvatarStatus, detail?: string) => void
   /** Measured framerate, emitted ~1×/s. Surfaced in Settings to check the Pi. */
@@ -332,7 +339,7 @@ function synthesizeExpressions(vrm: VRM, morphIndex: MorphIndex): string[] {
 }
 
 
-export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolume, modelUrl, animUrl, motions, zoom, offsetY, onStatus, onFps }: Props) {
+export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolume, modelUrl, animUrl, motions, zoom, offsetY, trackPointer = true, onStatus, onFps }: Props) {
   const mountRef       = useRef<HTMLDivElement>(null)
   const modeRef        = useRef(mode)
   const voiceListenRef = useRef(voiceListening)
@@ -344,7 +351,11 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
   // down and rebuild the whole scene on every render.
   const onStatusRef    = useRef(onStatus)
   const onFpsRef       = useRef(onFps)
+  // In a ref, not the effect's deps: flipping tracking must not tear down and
+  // reload the whole .vrm.
+  const trackRef       = useRef(trackPointer)
 
+  useEffect(() => { trackRef.current       = trackPointer   }, [trackPointer])
   useEffect(() => { modeRef.current        = mode           }, [mode])
   useEffect(() => { voiceListenRef.current = voiceListening }, [voiceListening])
   useEffect(() => { voiceSpeakRef.current  = voiceSpeaking  }, [voiceSpeaking])
@@ -455,6 +466,11 @@ export default function Avatar({ mode, voiceListening, voiceSpeaking, voiceVolum
     let pendingClientY = 0
     let pointerRafId: number | null = null
     const handlePointer = (e: MouseEvent | TouchEvent) => {
+      // Gated here rather than by skipping the listener, so the ref stays live.
+      // Leaving pointerX/Y at 0 is what parks her: trackedYaw/Pitch decay to
+      // zero and lookTarget sits dead ahead, while the idle sines keep her
+      // gently looking around rather than frozen.
+      if (!trackRef.current) { pointerX = 0; pointerY = 0; return }
       pendingClientX = 'touches' in e ? e.touches[0]!.clientX : e.clientX
       pendingClientY = 'touches' in e ? e.touches[0]!.clientY : e.clientY
       if (pointerRafId !== null) return

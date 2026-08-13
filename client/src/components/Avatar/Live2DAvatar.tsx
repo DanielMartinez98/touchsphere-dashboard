@@ -26,6 +26,13 @@ interface Props {
   zoom: number
   /** Vertical shift as a fraction of screen height. Negative = up. */
   offsetY: number
+  /** Follow the touch point with head and gaze. Default on.
+   *
+   *  Off for the Settings preview: there, every touch lands on a slider or a
+   *  cue button right next to her, so tracking turns her head away from the
+   *  camera exactly when you're trying to judge the expression you just fired.
+   *  On the dashboard the same behaviour is the point — she looks at you. */
+  trackPointer?: boolean
   onStatus?: (status: AvatarStatus, detail?: string) => void
   onFps?: (fps: number) => void
 }
@@ -65,7 +72,7 @@ interface CubismCoreModel {
   getParameterValueById(id: string): number
 }
 
-export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolume, modelUrl, zoom, offsetY, onStatus, onFps }: Props) {
+export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolume, modelUrl, zoom, offsetY, trackPointer = true, onStatus, onFps }: Props) {
   const mountRef       = useRef<HTMLDivElement>(null)
   const voiceListenRef = useRef(voiceListening)
   const voiceSpeakRef  = useRef(voiceSpeaking)
@@ -74,6 +81,9 @@ export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolum
   const offsetYRef     = useRef(offsetY)
   const onStatusRef    = useRef(onStatus)
   const onFpsRef       = useRef(onFps)
+  // In a ref, not the effect's deps: flipping tracking must not tear down and
+  // reload the model (and with it the Cubism scene).
+  const trackRef       = useRef(trackPointer)
   // Set once the model is on stage. Lets the framing effect below re-run the
   // fit without tearing down and rebuilding the whole PIXI scene.
   const refitRef       = useRef<(() => void) | null>(null)
@@ -83,6 +93,7 @@ export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolum
   useEffect(() => { voiceVolRef.current    = voiceVolume    }, [voiceVolume])
   useEffect(() => { onStatusRef.current    = onStatus       }, [onStatus])
   useEffect(() => { onFpsRef.current       = onFps          }, [onFps])
+  useEffect(() => { trackRef.current       = trackPointer   }, [trackPointer])
 
   // Live framing — dragging the sliders in Settings repositions her immediately.
   useEffect(() => {
@@ -241,6 +252,15 @@ export default function Live2DAvatar({ voiceListening, voiceSpeaking, voiceVolum
           const x = 'touches' in e ? e.touches[0]?.clientX : e.clientX
           const y = 'touches' in e ? e.touches[0]?.clientY : e.clientY
           if (x === undefined || y === undefined) return
+          // Tracking off: aim her at the centre of her own frame instead of
+          // ignoring the event. focus() holds its last target, so simply
+          // skipping would freeze her mid-turn wherever the last touch left
+          // her — the opposite of facing the camera.
+          if (!trackRef.current) {
+            const b = mount.getBoundingClientRect()
+            model.focus(b.left + b.width / 2, b.top + b.height / 2)
+            return
+          }
           model.focus(x, y)
         }
         window.addEventListener('mousemove', handlePointer)

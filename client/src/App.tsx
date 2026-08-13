@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, lazy, Suspense } from 'react'
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
 import Widget from './components/widgets/Widget'
 import ParticleSphere from './components/ParticleSphere/ParticleSphere'
 import { CalendarCollapsed } from './components/widgets/CalendarWidget/CalendarWidget'
@@ -12,6 +12,8 @@ import MediaListExpanded from './components/widgets/MediaListWidget/MediaListExp
 import { NotionCollapsed } from './components/widgets/NotionWidget/NotionWidget'
 import NotionExpanded from './components/widgets/NotionWidget/NotionExpanded'
 import { useMediaList } from './hooks/useMediaList'
+import { useGuides } from './hooks/useGuides'
+import { useServerEvent } from './hooks/useServerEvents'
 import { useNotion } from './hooks/useNotion'
 import { useAppMode } from './hooks/useAppMode'
 import { useVoice } from './hooks/useVoice'
@@ -58,6 +60,10 @@ function App() {
   const [orbBurst, setOrbBurst] = useState(0)
   const toggle = (w: OpenWidget) => setOpen(prev => prev === w ? null : w)
   const { items, nextItem, addItem, removeItem, markDone, toggleStar, setStatus, setCover, renameItem } = useMediaList()
+  const { byItem: guides, generate: generateGuide, remove: removeGuide } = useGuides()
+  // Announcement for a guide that finished while the user was doing something
+  // else — generation takes minutes, so nobody is watching the widget for it.
+  const [guideReady, setGuideReady] = useState<string | null>(null)
   const {
     schema:      notionSchema,
     schemas:     notionSchemas,
@@ -123,12 +129,16 @@ function App() {
     loadVoicePitchFromServer()
   }, [])
 
-  // Listen for server-sent reload event and refresh the page
-  useEffect(() => {
-    const es = new EventSource('/api/system/events')
-    es.addEventListener('reload', () => window.location.reload())
-    return () => es.close()
-  }, [])
+  // Server-sent events, over one shared connection (see useServerEvents).
+  useServerEvent('reload', useCallback(() => window.location.reload(), []))
+  useServerEvent('guide', useCallback((raw: unknown) => {
+    const e = (raw ?? {}) as { status?: string; title?: string }
+    if (e.status !== 'ready' || !e.title) return
+    setGuideReady(e.title)
+    // Long enough to notice from across the room, short enough not to sit on the
+    // sphere. Tapping it opens the list, where the game now shows a guide.
+    window.setTimeout(() => setGuideReady(null), 20_000)
+  }, []))
 
   // Close bottom-left widget when mode changes so stale panels don't linger
   useEffect(() => {
@@ -301,8 +311,8 @@ function App() {
           accent={ACCENT.media}
           isOpen={open === 'media'}
           onToggle={() => toggle('media')}
-          collapsed={<MediaCollapsed nextItem={nextItem} />}
-          expanded={<MediaListExpanded items={items} addItem={addItem} removeItem={removeItem} markDone={markDone} toggleStar={toggleStar} setStatus={setStatus} setCover={setCover} renameItem={renameItem} />}
+          collapsed={<MediaCollapsed nextItem={nextItem} guide={nextItem ? guides[nextItem.id] : undefined} />}
+          expanded={<MediaListExpanded items={items} addItem={addItem} removeItem={removeItem} markDone={markDone} toggleStar={toggleStar} setStatus={setStatus} setCover={setCover} renameItem={renameItem} guides={guides} generateGuide={generateGuide} deleteGuide={removeGuide} />}
         />
       )}
 
@@ -333,6 +343,27 @@ function App() {
 
       {/* Bedtime alert toast — driven by the schedule in settings */}
       <BedtimeBanner />
+
+      {/* A game guide finished researching. Generation runs for minutes in the
+          background, so this is the only moment the user is told — tapping opens
+          the list, where the game now carries its progress bar. */}
+      {guideReady && (
+        <button
+          type="button"
+          onClick={() => { setGuideReady(null); setOpen('media') }}
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-[600] max-w-[92%] w-[480px] bg-cyan-500/20 border border-cyan-400/45 backdrop-blur-md rounded-2xl px-5 py-4 shadow-xl flex items-center gap-4 text-left active:scale-[0.98] transition-transform"
+        >
+          <span className="w-10 h-10 rounded-xl bg-cyan-400/25 flex items-center justify-center flex-shrink-0 text-cyan-100">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 6h11M9 12h11M9 18h11" /><path d="M4 6h1v1H4zM4 12h1v1H4zM4 18h1v1H4z" />
+            </svg>
+          </span>
+          <span className="flex-1 min-w-0">
+            <span className="block text-cyan-50 text-sm font-semibold truncate">Guide ready</span>
+            <span className="block text-cyan-100/80 text-xs mt-0.5 truncate">{guideReady} — tap to open</span>
+          </span>
+        </button>
+      )}
 
       {/* Countdown timers & alarms — glanceable pills + ringing banner */}
       <TimersOverlay timers={timers} stopwatch={stopwatch} />
