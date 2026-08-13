@@ -14,6 +14,7 @@ import {
 } from '../guides'
 import { isGenerating, regenerateSection, startGuide } from '../guide-generator'
 import { pushGuide } from '../guide-events'
+import { note, recentActivity } from '../guide-activity'
 
 const router = Router()
 
@@ -32,6 +33,14 @@ router.use((_req, res, next) => {
 router.get('/', (_req: Request, res: Response) => {
   const summaries = listGuides()
   res.json(summaries)
+})
+
+// GET /api/guides/activity — what the guide system has been doing, newest last.
+// MUST stay above GET /:itemId: Express matches in order and "activity" would
+// otherwise be read as a media-item id and 404.
+router.get('/activity', (req: Request, res: Response) => {
+  const limit = Number(req.query['limit'])
+  res.json(recentActivity(Number.isFinite(limit) && limit > 0 ? limit : undefined))
 })
 
 // GET /api/guides/:itemId — the full document.
@@ -115,6 +124,13 @@ router.patch('/:itemId/sections/:sectionId', (req: Request, res: Response) => {
     return
   }
   pushGuide(updated)
+  const section = updated.sections.find(s => s.id === sectionId)
+  note({
+    itemId, title: updated.title, ...(section ? { section: section.title } : {}),
+    stage: 'progress', level: 'info',
+    message: `Marked the whole chapter ${body.done ? 'done' : 'not done'} ` +
+             `(${section?.steps.length ?? 0} steps) from the dashboard`,
+  })
   res.json(updated)
 })
 
@@ -139,11 +155,18 @@ router.post('/:itemId/sections/:sectionId/regenerate', (req: Request, res: Respo
 
 // DELETE /api/guides/:itemId
 router.delete('/:itemId', (req: Request, res: Response) => {
-  const removed = deleteGuide(String(req.params['itemId'] ?? ''))
+  const itemId = String(req.params['itemId'] ?? '')
+  // Read before removing, so the feed line can name what was deleted.
+  const existing = loadGuide(itemId)
+  const removed = deleteGuide(itemId)
   if (!removed) {
     res.status(404).json({ error: 'No guide for that item' })
     return
   }
+  note({
+    itemId, title: existing?.title ?? itemId, stage: 'deleted', level: 'warn',
+    message: `Deleted from the dashboard, along with ${existing?.sections.length ?? 0} chapter(s) of progress`,
+  })
   res.json({ ok: true })
 })
 

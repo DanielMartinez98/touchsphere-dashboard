@@ -16,6 +16,7 @@
 
 import fs from 'fs'
 import path from 'path'
+import { note } from './guide-activity'
 
 const FILE = 'guides.json'
 
@@ -479,6 +480,13 @@ export function sweepInterrupted(): void {
     delete g.phase
     g.updatedAt = new Date().toISOString()
     touched++
+    note({
+      itemId: g.itemId, title: g.title, stage: 'interrupted', level: 'warn',
+      message: salvageable
+        ? `Generation was cut short by a restart. The finished chapters were kept; ` +
+          `${g.sections.filter(s => s.steps.length === 0).length} empty one(s) can be redone individually`
+        : 'Generation was cut short by a restart with nothing finished — marked failed',
+    })
   }
   if (touched > 0) {
     console.log(`[guides] ${touched} guide(s) were mid-generation at shutdown — marked failed`)

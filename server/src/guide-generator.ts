@@ -41,6 +41,7 @@ import {
   type Page,
 } from './research'
 import { pushGuide } from './guide-events'
+import { note } from './guide-activity'
 import { searchYouTube } from './routes/browse'
 
 const OLLAMA_URL     = process.env['OLLAMA_URL']     ?? 'http://host.docker.internal:11434'
@@ -343,12 +344,29 @@ async function buildOutline(itemId: string, title: string, order?: string): Prom
   // how the community breaks it down. Their article headings come along too —
   // that's the community's literal table of contents.
   const toc = await communityTableOfContents(title)
-  const pages = [
-    ...(await researchGame(title, '', 1, OUTLINE_CHARS)),
-    ...(await researchGame(title, 'walkthrough 100% completion', 1, OUTLINE_CHARS)),
-  ]
+  note({
+    itemId, title, stage: 'research', level: toc.length > 0 ? 'info' : 'warn',
+    message: toc.length > 0
+      ? `Found the community's table of contents — ${toc.length} headings to organize around`
+      : `No community table of contents found; the outline will be built from the pages alone`,
+  })
+
+  // Deduped by URL: both searches run against the same wiki, and when a game has
+  // no separate walkthrough article they resolve to the same page — which would
+  // otherwise be handed to the model twice, spending half the outline's context
+  // on a copy of what it already read.
+  const pages: Page[] = []
+  for (const topic of ['', 'walkthrough 100% completion']) {
+    for (const page of await researchGame(title, topic, 1, OUTLINE_CHARS)) {
+      if (!pages.some(p => p.url === page.url)) pages.push(page)
+    }
+  }
 
   if (pages.length === 0) {
+    note({
+      itemId, title, stage: 'research', level: 'error',
+      message: 'No readable guide pages could be reached — nothing to build from',
+    })
     update(itemId, g => {
       g.status = 'failed'
       g.error = "Couldn't reach any guide pages for this game — check the dashboard's internet connection and try again."
@@ -356,6 +374,12 @@ async function buildOutline(itemId: string, title: string, order?: string): Prom
     })
     return null
   }
+
+  note({
+    itemId, title, stage: 'research', level: 'good',
+    message: `Read ${pages.length} page(s) — ` +
+             pages.map(p => `"${p.title}" on ${p.site} (${p.text.length.toLocaleString()} chars)`).join(', '),
+  })
 
   update(itemId, g => { g.phase = 'Planning the sections…' })
   const outline = await callOllamaJson<OutlineReply>('outline', SYSTEM, outlinePrompt(title, order, pages, toc), OUTLINE_SCHEMA)
@@ -381,6 +405,10 @@ async function buildOutline(itemId: string, title: string, order?: string): Prom
     .slice(0, GUIDE_CAPS.MAX_SECTIONS)
 
   if (sections.length === 0) {
+    note({
+      itemId, title, stage: 'outline', level: 'error',
+      message: 'The model returned no usable chapter list from the research',
+    })
     update(itemId, g => {
       g.status = 'failed'
       g.error = `The model couldn't lay out a guide for "${title}" from what was found online. Try retrying, or a more specific title.`
@@ -400,7 +428,10 @@ async function buildOutline(itemId: string, title: string, order?: string): Prom
     if (overall) g.video = overall
     g.phase = `0 of ${sections.length} sections`
   })
-  console.log(`[guides] "${title}": outline of ${sections.length} sections — ${saved?.organization?.slice(0, 80)}`)
+  note({
+    itemId, title, stage: 'outline', level: 'good',
+    message: `Planned ${sections.length} chapters — ${saved?.organization?.slice(0, 90) ?? ''}`,
+  })
   return saved ? { guide: saved, pages } : null
 }
 
@@ -445,6 +476,7 @@ function sectionQueries(gameTitle: string, section: GuideSection, wider: boolean
  * written from that beats an empty one.
  */
 async function researchSection(
+  itemId: string,
   gameTitle: string,
   section: GuideSection,
   fallbackPages: Page[],
@@ -471,19 +503,38 @@ async function researchSection(
   // top of whatever the wiki gave. Best-effort: this is the scraped search path,
   // and when it's throttled the wiki page still carries the section.
   if (section.kind === 'progression' && own.length < 2) {
+    const before = own.length
     add(await researchPages(communityQuery(gameTitle, `${section.title} walkthrough`), 1))
+    if (own.length === before) {
+      note({
+        itemId, title: gameTitle, section: section.title, stage: 'research', level: 'warn',
+        message: 'No walkthrough page came back from the open web (usually a throttled search) — ' +
+                 'working from the wiki article alone',
+      })
+    }
   }
 
-  if (totalChars(own) >= SECTION_MIN_CHARS) return { pages: capped(own), own }
+  if (totalChars(own) >= SECTION_MIN_CHARS) {
+    note({
+      itemId, title: gameTitle, section: section.title, stage: 'research', level: 'good',
+      message: `Read ${own.length} page(s), ${totalChars(own).toLocaleString()} chars — ` +
+               `${[...new Set(own.map(p => p.site))].join(', ')}`,
+    })
+    return { pages: capped(own), own }
+  }
 
   // Thin or nothing: pad with the shared pages rather than write from scratch.
   const merged = [...own]
   for (const page of fallbackPages) {
     if (!merged.some(p => p.url === page.url)) merged.push(page)
   }
-  if (own.length === 0) {
-    console.log(`[guides] "${gameTitle}" § ${section.title}: no page of its own — using the outline sources`)
-  }
+  note({
+    itemId, title: gameTitle, section: section.title, stage: 'research', level: 'warn',
+    message: own.length === 0
+      ? 'No page of its own could be found — falling back to the guide-wide sources'
+      : `Only ${totalChars(own).toLocaleString()} chars found (want ${SECTION_MIN_CHARS.toLocaleString()}) — ` +
+        `topping up from the guide-wide sources`,
+  })
   return { pages: capped(merged), own }
 }
 
@@ -506,6 +557,7 @@ function capped(pages: Page[]): Page[] {
 
 /** One model call for a section's steps, with a stricter second attempt if it comes back empty. */
 async function writeSteps(
+  itemId: string,
   gameTitle: string,
   section: GuideSection,
   pages: Page[],
@@ -529,7 +581,10 @@ async function writeSteps(
 
   // Empty on a section we *did* find research for is usually the model being shy
   // about a thin page, not an absence of content. Ask once more, plainly.
-  console.warn(`[guides] "${gameTitle}" § ${section.title}: no steps on the first pass — retrying`)
+  note({
+    itemId, title: gameTitle, section: section.title, stage: 'steps', level: 'warn',
+    message: 'The model returned no steps on the first pass — asking again, more firmly',
+  })
   return parse(await callOllamaJson<StepsReply>(
     `section "${section.title}" (retry)`,
     SYSTEM,
@@ -579,9 +634,13 @@ async function fillSection(
   update(itemId, g => {
     g.phase = opts.phase ?? `${section.title} (${index + 1} of ${total})`
   })
+  note({
+    itemId, title, section: section.title, stage: 'chapter', level: 'info',
+    message: `Started chapter ${index + 1} of ${total} (${section.kind})`,
+  })
 
-  const { pages, own } = await researchSection(title, section, fallbackPages, opts.wider === true)
-  const steps = await writeSteps(title, section, pages)
+  const { pages, own } = await researchSection(itemId, title, section, fallbackPages, opts.wider === true)
+  const steps = await writeSteps(itemId, title, section, pages)
 
   // A video is worth having even when the steps didn't come through — often it's
   // the better answer for a fiddly dungeon anyway.
@@ -603,11 +662,15 @@ async function fillSection(
     if (src) target.source = { url: src.url, site: src.site }
     if (!opts.phase) g.phase = `${index + 1} of ${total} sections`
   })
-  console.log(
-    `[guides] "${title}" § ${section.title}: ${steps.length} steps ` +
-    `from ${totalChars(pages)} chars (${own.length > 0 ? own.map(p => p.site).join(', ') : 'shared sources'})` +
-    `${video ? ` + video ${video.videoId}` : ''}`,
-  )
+  note({
+    itemId, title, section: section.title, stage: 'steps',
+    level: steps.length === 0 ? 'error' : steps.length < 5 ? 'warn' : 'good',
+    message: steps.length === 0
+      ? `No steps written — this chapter is empty and can be redone on its own`
+      : `Wrote ${steps.length} steps from ${totalChars(pages).toLocaleString()} chars ` +
+        `(${own.length > 0 ? [...new Set(own.map(p => p.site))].join(', ') : 'guide-wide sources'})` +
+        `${video ? ' + a walkthrough video' : ''}`,
+  })
   return steps.length
 }
 
@@ -622,7 +685,10 @@ async function run(itemId: string, title: string, order?: string): Promise<void>
       // The item can be deleted from the playlist mid-generation — its guide goes
       // with it, and there's nothing left to write to.
       if (!loadGuide(itemId)) {
-        console.log(`[guides] "${title}" disappeared mid-generation — stopping`)
+        note({
+          itemId, title, stage: 'stopped', level: 'warn',
+          message: 'The game was removed from the list mid-generation — stopping',
+        })
         return
       }
       await fillSection(itemId, title, ids[i]!, i, ids.length, outlined.pages)
@@ -634,7 +700,11 @@ async function run(itemId: string, title: string, order?: string): Promise<void>
     // (which also reach past the game's wiki to Wikipedia and the open web).
     const stillEmpty = (loadGuide(itemId)?.sections ?? []).filter(s => s.steps.length === 0)
     if (stillEmpty.length > 0) {
-      console.log(`[guides] "${title}": ${stillEmpty.length} section(s) came back empty — researching again`)
+      note({
+        itemId, title, stage: 'repair', level: 'warn',
+        message: `${stillEmpty.length} chapter(s) came back empty — researching them again with wider terms: ` +
+                 stillEmpty.map(s => s.title).join(', '),
+      })
       for (let i = 0; i < stillEmpty.length; i++) {
         if (!loadGuide(itemId)) return
         const section = stillEmpty[i]!
@@ -653,17 +723,20 @@ async function run(itemId: string, title: string, order?: string): Promise<void>
     })
     const p = done ? guideProgress(done) : null
     const empty = (done?.sections ?? []).filter(s => s.steps.length === 0)
-    console.log(
-      `[guides] "${title}" ${done?.status} in ${Math.round((Date.now() - started) / 1000)}s — ` +
-      `${done?.sections.length ?? 0} sections, ${p?.all.total ?? 0} steps (${p?.counted.total ?? 0} counting toward 100%)` +
-      `${empty.length > 0 ? `; still empty: ${empty.map(s => s.title).join(', ')}` : ''}`,
-    )
+    note({
+      itemId, title, stage: 'done', level: done?.status === 'ready' ? 'good' : 'error',
+      message:
+        `Finished in ${Math.round((Date.now() - started) / 1000)}s — ${done?.sections.length ?? 0} chapters, ` +
+        `${p?.all.total ?? 0} steps (${p?.counted.total ?? 0} count toward 100%)` +
+        `${empty.length > 0 ? `. Still empty: ${empty.map(s => s.title).join(', ')}` : ''}`,
+    })
   } catch (err) {
     // Belt and braces: every helper above already swallows its own failures, so
     // reaching here means something genuinely unexpected. Never let it escape
     // into an unhandled rejection that takes the server down.
     const msg = err instanceof Error ? err.message : String(err)
     console.error(`[guides] "${title}" generation crashed:`, err)
+    note({ itemId, title, stage: 'crashed', level: 'error', message: `Generation crashed: ${msg.slice(0, 200)}` })
     update(itemId, g => {
       g.status = 'failed'
       g.error = `Generation failed: ${msg.slice(0, 200)}`
@@ -711,13 +784,15 @@ async function runSection(itemId: string, title: string, sectionId: string): Pro
       if (target && target.steps.length === 0) target.state = 'failed'
     })
     const steps = done?.sections.find(s => s.id === sectionId)?.steps.length ?? 0
-    console.log(
-      `[guides] "${title}" § ${section.title}: rewritten in ` +
-      `${Math.round((Date.now() - started) / 1000)}s — ${steps} steps`,
-    )
+    note({
+      itemId, title, section: section.title, stage: 'rewrite',
+      level: steps > 0 ? 'good' : 'error',
+      message: `Rewritten in ${Math.round((Date.now() - started) / 1000)}s — ${steps} steps`,
+    })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error(`[guides] "${title}" section rewrite crashed:`, err)
+    note({ itemId, title, stage: 'crashed', level: 'error', message: `Chapter rewrite crashed: ${msg.slice(0, 200)}` })
     update(itemId, g => {
       g.status = 'ready'   // the rest of the guide is still good
       g.error = `Rewriting that chapter failed: ${msg.slice(0, 200)}`
@@ -749,7 +824,10 @@ export function regenerateSection(itemId: string, sectionId: string): SectionRes
     if (target) target.state = 'pending'
   })
 
-  console.log(`[guides] queued rewrite of "${guide.title}" § ${section.title}`)
+  note({
+    itemId, title: guide.title, section: section.title, stage: 'queued', level: 'info',
+    message: 'Queued a rewrite of this chapter on its own — the rest of the guide is untouched',
+  })
   enqueue(() => runSection(itemId, guide.title, sectionId))
   return 'started'
 }
@@ -783,7 +861,11 @@ export function startGuide(opts: { itemId: string; title: string; order?: string
   const fresh = loadGuide(itemId)
   if (fresh) pushGuide(fresh)
 
-  console.log(`[guides] queued "${title}"${order ? ` (order: ${order})` : ''} — model=${OLLAMA_MODEL}`)
+  note({
+    itemId, title, stage: 'queued', level: 'info',
+    message: `${existing ? 'Rebuilding from scratch' : 'Queued a new guide'}` +
+             `${order ? `, ordered "${order}"` : ''} — model ${OLLAMA_MODEL}, ${NUM_CTX} token context`,
+  })
   enqueue(() => run(itemId, title, order))
   return 'started'
 }

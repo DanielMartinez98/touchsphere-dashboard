@@ -20,6 +20,7 @@ import {
 } from '../guides'
 import { isGenerating, regenerateSection } from '../guide-generator'
 import { pushGuide } from '../guide-events'
+import { note } from '../guide-activity'
 import { findByTitle, readMedia, type MediaItem } from './dashboard-tools'
 import type { BrowseToolResult, DisplayPayload } from './browse'
 
@@ -328,6 +329,10 @@ function checkOffChapter(title: string, chapterHint: string, done: boolean): Bro
   const saved = setSectionDone(item.id, chapter.id, done)
   if (!saved) return noDisplay(`Couldn't update the "${chapter.title}" chapter — try again.`)
   pushGuide(saved)
+  note({
+    itemId: item.id, title: saved.title, section: chapter.title, stage: 'progress', level: 'info',
+    message: `Marked the whole chapter ${done ? 'done' : 'not done'} (${chapter.steps.length} steps) by voice`,
+  })
 
   const p = guideProgress(saved)
   console.log(`[chat:tool] check_off_guide_chapter → ${chapter.title} ${done ? 'done' : 'cleared'} (${p.percent}%)`)
@@ -399,7 +404,10 @@ function deleteGuideTool(title: string): BrowseToolResult {
   const p = guideProgress(guide)
   const removed = deleteGuide(item.id)
   if (!removed) return noDisplay(`There is no guide for "${item.title}" to delete.`)
-  console.log(`[chat:tool] delete_game_guide → "${guide.title}"`)
+  note({
+    itemId: item.id, title: guide.title, stage: 'deleted', level: 'warn',
+    message: `Deleted by voice, along with ${p.all.done} ticked step(s)`,
+  })
   return {
     text:
       `Deleted the guide for ${guide.title}, along with the ${p.all.done} step(s) that were ticked off. ` +

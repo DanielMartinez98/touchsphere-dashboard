@@ -14,9 +14,11 @@ import { useAutoSchedule, fireBedtimeAlert } from '../hooks/useAutoSchedule'
 import { useRipple } from '../hooks/useRipple'
 import { useDebugLog, clearDebugLog, getDebugLog } from '../utils/debugLog'
 import { useMemory, type MemoryItem, type MemoryKind } from '../hooks/useMemory'
+import { useGuides } from '../hooks/useGuides'
+import { useGuideActivity, type ActivityLevel } from '../hooks/useGuideActivity'
 import { TouchInput } from './TouchInput'
 
-type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'system' | 'debug'
+type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'system' | 'debug'
 
 // The preview reuses the dashboard's own renderers. Lazy, same chunks App
 // splits out — opening the VTuber tab is what pulls in the heavy deps, and
@@ -387,6 +389,7 @@ export function SettingsPanel() {
     { id: 'hardware',  label: 'Hardware'  },
     { id: 'schedule',  label: 'Schedule'  },
     { id: 'memory',    label: 'Memory'    },
+    { id: 'guides',    label: 'Guides'    },
     { id: 'system',    label: 'System'    },
     { id: 'debug',     label: 'Debug'     },
   ]
@@ -430,13 +433,16 @@ export function SettingsPanel() {
             </button>
           </div>
 
-          {/* ── Tab bar ── */}
-          <div className="flex gap-1 px-6 pb-4 flex-shrink-0">
+          {/* ── Tab bar ──
+              Wraps rather than squeezing: at nine tabs on a 720px screen, one
+              row puts every label under a fingertip's width. min-w keeps a
+              wrapped row from stretching two buttons across the panel. */}
+          <div className="flex flex-wrap gap-1.5 px-6 pb-4 flex-shrink-0">
             {TABS.map(t => (
               <button
                 key={t.id}
                 onClick={() => setTab(t.id)}
-                className={`flex-1 py-2.5 rounded-xl text-sm font-medium transition-all active:scale-95 ${
+                className={`flex-1 min-w-[110px] py-2.5 rounded-xl text-sm font-medium transition-all active:scale-95 ${
                   tab === t.id
                     ? 'bg-white/15 text-white border border-white/20'
                     : 'bg-white/5 text-white/40 border border-transparent hover:bg-white/8 hover:text-white/60'
@@ -1329,6 +1335,9 @@ export function SettingsPanel() {
             {/* Memory tab — what the assistant knows about you */}
             {tab === 'memory' && <MemoryTab />}
 
+            {/* Guides tab — what the guide researcher is doing, and why */}
+            {tab === 'guides' && <GuidesTab />}
+
             {/* Debug tab — config visibility, endpoint checks, error log */}
             {tab === 'debug' && <DebugTab />}
 
@@ -1336,6 +1345,157 @@ export function SettingsPanel() {
         </div>
       )}
     </>
+  )
+}
+
+// ── Guides tab ────────────────────────────────────────────────────────────────
+// What the guide system is doing, and what it did. Building a guide is a dozen
+// model calls and twice as many page fetches over several minutes, and until
+// this tab existed the only account of it was one overwritten `phase` line and
+// the container log. When a chapter comes back empty the useful question is
+// *why* — no wiki page, a throttled search, the model returning nothing twice —
+// and every one of those answers was being logged and thrown away.
+
+const ACTIVITY_LEVEL: Record<ActivityLevel, { dot: string; text: string }> = {
+  info:  { dot: 'bg-white/30',      text: 'text-white/60'    },
+  good:  { dot: 'bg-emerald-400',   text: 'text-white/75'    },
+  warn:  { dot: 'bg-amber-400',     text: 'text-amber-100/80' },
+  error: { dot: 'bg-red-400',       text: 'text-red-200/90'  },
+}
+
+const GUIDE_STATUS: Record<string, { label: string; cls: string }> = {
+  generating: { label: 'working',  cls: 'bg-cyan-500/20 text-cyan-200'      },
+  ready:      { label: 'ready',    cls: 'bg-emerald-500/20 text-emerald-200' },
+  failed:     { label: 'failed',   cls: 'bg-red-500/20 text-red-200'        },
+}
+
+function clockTime(iso: string): string {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime())
+    ? '--:--:--'
+    : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+}
+
+function GuidesTab() {
+  const { byItem } = useGuides()
+  const { entries, live } = useGuideActivity()
+  // One game's story at a time: a run interleaves research, model calls and
+  // video lookups, and with two guides in the buffer the feed stops reading as
+  // a sequence. Tapping a guide row filters to it.
+  const [only, setOnly] = useState<string | null>(null)
+
+  const guides = Object.values(byItem).sort((a, b) => {
+    if ((a.status === 'generating') !== (b.status === 'generating')) return a.status === 'generating' ? -1 : 1
+    return a.title.localeCompare(b.title)
+  })
+  const working = guides.filter(g => g.status === 'generating')
+  const shown = only ? entries.filter(e => e.itemId === only) : entries
+
+  return (
+    <div className="space-y-5 max-w-lg mx-auto pb-4">
+      {/* Working now — the answer to "is it doing anything?" without reading a log */}
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          Working now
+        </span>
+        <div className="bg-white/5 rounded-2xl px-5 py-4 border border-white/8">
+          {working.length === 0 ? (
+            <p className="text-white/25 text-sm">
+              Nothing being generated. Guides are built from the Watch/Play list, or by asking out loud.
+            </p>
+          ) : working.map(g => (
+            <div key={g.itemId} className="py-2 first:pt-0 last:pb-0">
+              <div className="flex items-center gap-2">
+                <RotateCw size={14} className="text-cyan-300 animate-spin flex-shrink-0" />
+                <span className="text-white/85 text-sm font-medium truncate">{g.title}</span>
+                <span className="text-cyan-200/70 text-xs tabular-nums ml-auto flex-shrink-0">{g.percent}%</span>
+              </div>
+              <p className="text-white/45 text-xs mt-1 pl-6 leading-snug">{g.phase ?? 'starting…'}</p>
+              <div className="h-1 mt-2 ml-6 bg-white/10 rounded-full overflow-hidden">
+                <div className="h-full bg-cyan-400/70 rounded-full transition-all duration-500"
+                     style={{ width: `${Math.min(100, Math.max(0, g.percent))}%` }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Every guide on disk, with its state */}
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          Guides {guides.length > 0 && <span className="text-white/25 normal-case">· {guides.length}</span>}
+        </span>
+        <div className="bg-white/5 rounded-2xl px-5 py-2 border border-white/8">
+          {guides.length === 0 ? (
+            <p className="text-white/25 text-sm py-4">No guides yet.</p>
+          ) : guides.map(g => {
+            const chip = GUIDE_STATUS[g.status] ?? GUIDE_STATUS['ready']!
+            const selected = only === g.itemId
+            return (
+              <button key={g.itemId} type="button"
+                onClick={() => setOnly(selected ? null : g.itemId)}
+                className={`w-full text-left flex items-center gap-3 py-3 border-b border-white/6 last:border-0 active:bg-white/5 rounded-lg px-1 -mx-1 ${
+                  selected ? 'bg-white/[0.06]' : ''
+                }`}>
+                <div className="flex-1 min-w-0">
+                  <p className="text-white/80 text-sm leading-snug truncate">{g.title}</p>
+                  <p className="text-white/25 text-xs mt-1">
+                    {g.sections} chapters · {g.counted.done}/{g.counted.total} steps done
+                    {selected ? ' · showing only this below' : ''}
+                  </p>
+                </div>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider flex-shrink-0 ${chip.cls}`}>
+                  {chip.label}
+                </span>
+                <span className="text-white/50 text-sm tabular-nums w-10 text-right flex-shrink-0">{g.percent}%</span>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* The feed */}
+      <div>
+        <div className="flex items-baseline justify-between mb-2">
+          <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">
+            Activity {shown.length > 0 && <span className="text-white/25 normal-case">· {shown.length}</span>}
+          </span>
+          {only && (
+            <button type="button" onClick={() => setOnly(null)}
+              className="text-cyan-300/70 text-xs active:text-cyan-200">show all</button>
+          )}
+        </div>
+        <div className="bg-white/5 rounded-2xl px-5 py-2 border border-white/8">
+          {!live ? (
+            <p className="text-white/25 text-sm py-4">Loading…</p>
+          ) : shown.length === 0 ? (
+            <p className="text-white/25 text-sm py-4">
+              Nothing recorded yet. This fills in as a guide is researched — each page read, each
+              chapter written, and why any of them came up empty.
+            </p>
+          ) : shown.map(e => {
+            const tone = ACTIVITY_LEVEL[e.level] ?? ACTIVITY_LEVEL.info
+            return (
+              <div key={e.id} className="flex items-start gap-3 py-2.5 border-b border-white/6 last:border-0">
+                <span className={`w-1.5 h-1.5 rounded-full mt-2 flex-shrink-0 ${tone.dot}`} />
+                <div className="flex-1 min-w-0">
+                  <p className={`text-sm leading-snug ${tone.text}`}>{e.message}</p>
+                  <p className="text-white/25 text-xs mt-1 truncate">
+                    <span className="tabular-nums">{clockTime(e.at)}</span>
+                    {' · '}{e.stage}
+                    {only ? '' : ` · ${e.title}`}
+                    {e.section ? ` · ${e.section}` : ''}
+                  </p>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+        <p className="text-white/25 text-xs mt-2 leading-relaxed px-1">
+          Kept in memory only, newest first — a restart clears it. The same lines go to the server log.
+        </p>
+      </div>
+    </div>
   )
 }
 
