@@ -7,8 +7,19 @@
 // about the other — and the guide can be on screen with the widget closed.
 //
 // Portalled to body like BrowserOverlay so it escapes every widget's stacking
-// context; sits just under the browser window's z-band so a video the assistant
-// opens from inside a chapter still lands on top.
+// context.
+//
+// THE STACK, top to bottom — the three portals that can be on screen together:
+//
+//   9200/9190  BrowserOverlay window / its backdrop — a video or page opened
+//              from inside a chapter has to land on top of the chapter
+//   9100       this guide
+//   9000       Widget's expanded overlay (the Watch/Play list itself)
+//
+// The guide sat at 8900 until it was reported invisible: tapping a game in the
+// expanded list calls openGuide, which rendered the guide UNDER the very widget
+// you tapped it from, so it only appeared once you closed the list. Anything
+// added here must keep the guide above 9000 and below the browser window.
 
 import { createPortal } from 'react-dom'
 import { useMediaList } from '../hooks/useMediaList'
@@ -30,7 +41,7 @@ export function GuideOverlay() {
   if (!item) return null
 
   return createPortal(
-    <div className="fixed inset-0 z-[8900]">
+    <div className="fixed inset-0 z-[9100]">
       <GuideView
         item={item}
         guide={guide}

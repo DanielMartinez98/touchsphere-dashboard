@@ -232,7 +232,10 @@ function BrowserWindow({ target, hold }: { target: BrowseTarget; hold: boolean }
       // stay glanceable while a video plays. max-w keeps it from becoming an
       // unusable slab on a desktop browser; on the 720×1280 kiosk the margins
       // are what's doing the work.
-      className="fixed left-4 right-4 top-10 bottom-10 mx-auto max-w-[880px] z-[9000]
+      // z: above the guide overlay (9100), because a chapter's walkthrough video
+      // is opened from inside the guide and has to land on top of it.
+      // See the stack comment in GuideOverlay.tsx.
+      className="fixed left-4 right-4 top-10 bottom-10 mx-auto max-w-[880px] z-[9200]
                  bg-black/95 backdrop-blur-xl flex flex-col
                  rounded-[28px] overflow-hidden border border-hairline shadow-2xl shadow-black/60"
       initial={{ opacity: 0, y: 40, scale: 0.97 }}
@@ -342,7 +345,7 @@ export function BrowserOverlay({ hold = false }: { hold?: boolean }) {
         // opened the widget behind the video instead of closing it.
         <motion.div
           key="backdrop"
-          className="fixed inset-0 z-[8990] bg-black/40"
+          className="fixed inset-0 z-[9190] bg-black/40"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}

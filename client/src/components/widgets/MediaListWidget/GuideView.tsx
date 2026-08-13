@@ -17,7 +17,7 @@
 import { useState } from 'react'
 import {
   ArrowLeft, Check, CheckCheck, ChevronRight, Play, RefreshCw, ListOrdered, Square, Trash2,
-  Loader2, AlertTriangle,
+  Loader2, AlertTriangle, X,
 } from 'lucide-react'
 import type { Guide, GuideSection, GuideVideo, MediaItem, SectionKind } from '../../../types'
 import { guideProgress } from '../../../types'
@@ -40,6 +40,25 @@ const KIND_CLASS: Record<SectionKind, string> = {
   collectible: 'bg-amber-400/20 text-amber-200',
   sidequest:   'bg-violet-400/20 text-violet-200',
   reference:   'bg-white/10 text-white/50',
+}
+
+/**
+ * Leave the guide entirely.
+ *
+ * Deliberately the same object as the close button on every expanded widget —
+ * round, 56px, top-right, same glass — because that is the one gesture in this
+ * app that already means "I'm done with this screen". The guide used to offer
+ * only a small back-arrow at the top LEFT, which reads as "up one level", is
+ * where nothing else in the app puts its exit, and from inside a chapter took
+ * two taps to get out of.
+ */
+function CloseGuideButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} aria-label="Close the guide"
+      className="w-14 h-14 shrink-0 rounded-full bg-glass-2 border border-hairline flex items-center justify-center text-white/80 active:scale-90 active:bg-white/25 transition-colors">
+      <X size={26} strokeWidth={2.25} />
+    </button>
+  )
 }
 
 function playVideo(video: GuideVideo) {
@@ -92,14 +111,17 @@ function WatchRow({ video, label }: { video: GuideVideo; label: string }) {
 // ── Layer 2: one chapter ─────────────────────────────────────────────────────
 
 function ChapterPage({
-  section, index, total, busy, onBack, onToggleStep, onToggleAll, onRebuild, onJump,
+  section, index, total, busy, onBack, onClose, onToggleStep, onToggleAll, onRebuild, onJump,
 }: {
   section:      GuideSection
   index:        number
   total:        number
   /** Something is already generating for this guide — no second rebuild. */
   busy:         boolean
+  /** Back to the chapter list. */
   onBack:       () => void
+  /** Out of the guide altogether, from inside a chapter. */
+  onClose:      () => void
   onToggleStep: (stepId: string) => void
   onToggleAll:  (done: boolean) => void
   onRebuild:    () => void
@@ -111,12 +133,20 @@ function ChapterPage({
 
   return (
     <div className="absolute inset-0 z-[55] flex flex-col bg-[#07090f]">
-      <div className="shrink-0 px-4 pt-16 pb-3 border-b border-hairline">
-        <div className="flex items-start gap-3">
-          <button type="button" onClick={onBack} aria-label="Back to chapters"
-            className="w-11 h-11 shrink-0 rounded-full bg-glass-2 text-white/70 flex items-center justify-center active:scale-90">
+      <div className="shrink-0 px-4 pt-4 pb-3 border-b border-hairline">
+        {/* Nav row: one tap back to the chapter list, one tap out of the guide.
+            Both are spelled out — the back arrow carries a word rather than
+            leaving the user to guess which level it goes up to. */}
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <button type="button" onClick={onBack}
+            className="h-14 pl-3 pr-5 rounded-full bg-glass-2 border border-hairline text-white/75 flex items-center gap-2 active:scale-95 active:bg-white/15 transition-colors">
             <ArrowLeft size={20} />
+            <span className="text-sm font-semibold">Chapters</span>
           </button>
+          <CloseGuideButton onClick={onClose} />
+        </div>
+
+        <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
             <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-white/40">
               Chapter {index + 1} of {total}
@@ -351,19 +381,16 @@ export function GuideView({
   return (
     <div className="absolute inset-0 z-50 flex flex-col bg-[#07090f]">
       {/* Header — fixed, so the 100% bar is always in view while the list scrolls */}
-      <div className="shrink-0 px-4 pt-16 pb-3 border-b border-hairline">
+      <div className="shrink-0 px-4 pt-4 pb-3 border-b border-hairline">
         <div className="flex items-start gap-3">
-          <button type="button" onClick={onClose} aria-label="Back to the list"
-            className="w-11 h-11 shrink-0 rounded-full bg-glass-2 text-white/70 flex items-center justify-center active:scale-90">
-            <ArrowLeft size={20} />
-          </button>
           <MediaCover item={item} className="w-[44px] h-[66px] rounded-lg" />
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0 flex-1 self-center">
             <p className="text-base font-semibold text-white leading-tight">{item.title}</p>
             <p className="text-xs text-white/40 mt-0.5 leading-snug line-clamp-2">
               {guide?.organization || 'Game guide'}
             </p>
           </div>
+          <CloseGuideButton onClick={onClose} />
         </div>
 
         {progress && (
@@ -568,6 +595,7 @@ export function GuideView({
           total={guide.sections.length}
           busy={generating}
           onBack={() => setOpenId(null)}
+          onClose={onClose}
           onToggleStep={stepId => onToggleStep(openSection.id, stepId)}
           onToggleAll={done => onToggleSection(openSection.id, done)}
           onRebuild={() => onRebuildSection(openSection.id)}
