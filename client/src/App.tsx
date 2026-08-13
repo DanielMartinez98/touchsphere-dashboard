@@ -28,6 +28,8 @@ import { VoiceInterface } from './components/VoiceInterface'
 import { BedtimeBanner } from './components/BedtimeBanner'
 import { TimersOverlay } from './components/TimersOverlay'
 import { BrowserOverlay } from './components/BrowserOverlay'
+import { GuideOverlay } from './components/GuideOverlay'
+import { openGuide } from './hooks/useGuideOverlay'
 import { useAutoMode } from './hooks/useAutoSchedule'
 import { useMuted } from './hooks/useMuted'
 import { useAvatarEnabled, useAvatarRuntime, useAvatarFraming, useAvatarModelOverride, setAvatarRuntime, setAvatarFps, loadAvatarFramingFromServer } from './hooks/useAvatar'
@@ -60,10 +62,10 @@ function App() {
   const [orbBurst, setOrbBurst] = useState(0)
   const toggle = (w: OpenWidget) => setOpen(prev => prev === w ? null : w)
   const { items, nextItem, addItem, removeItem, markDone, toggleStar, setStatus, setCover, renameItem } = useMediaList()
-  const { byItem: guides, generate: generateGuide, remove: removeGuide } = useGuides()
+  const { byItem: guides } = useGuides()
   // Announcement for a guide that finished while the user was doing something
   // else — generation takes minutes, so nobody is watching the widget for it.
-  const [guideReady, setGuideReady] = useState<string | null>(null)
+  const [guideReady, setGuideReady] = useState<{ itemId: string; title: string } | null>(null)
   const {
     schema:      notionSchema,
     schemas:     notionSchemas,
@@ -132,11 +134,11 @@ function App() {
   // Server-sent events, over one shared connection (see useServerEvents).
   useServerEvent('reload', useCallback(() => window.location.reload(), []))
   useServerEvent('guide', useCallback((raw: unknown) => {
-    const e = (raw ?? {}) as { status?: string; title?: string }
-    if (e.status !== 'ready' || !e.title) return
-    setGuideReady(e.title)
-    // Long enough to notice from across the room, short enough not to sit on the
-    // sphere. Tapping it opens the list, where the game now shows a guide.
+    const e = (raw ?? {}) as { status?: string; title?: string; itemId?: string }
+    if (e.status !== 'ready' || !e.title || !e.itemId) return
+    setGuideReady({ itemId: e.itemId, title: e.title })
+    // Long enough to notice from across the room, short enough to not sit on the
+    // sphere. Tapping it opens that guide.
     window.setTimeout(() => setGuideReady(null), 20_000)
   }, []))
 
@@ -312,7 +314,7 @@ function App() {
           isOpen={open === 'media'}
           onToggle={() => toggle('media')}
           collapsed={<MediaCollapsed nextItem={nextItem} guide={nextItem ? guides[nextItem.id] : undefined} />}
-          expanded={<MediaListExpanded items={items} addItem={addItem} removeItem={removeItem} markDone={markDone} toggleStar={toggleStar} setStatus={setStatus} setCover={setCover} renameItem={renameItem} guides={guides} generateGuide={generateGuide} deleteGuide={removeGuide} />}
+          expanded={<MediaListExpanded items={items} addItem={addItem} removeItem={removeItem} markDone={markDone} toggleStar={toggleStar} setStatus={setStatus} setCover={setCover} renameItem={renameItem} guides={guides} />}
         />
       )}
 
@@ -350,7 +352,7 @@ function App() {
       {guideReady && (
         <button
           type="button"
-          onClick={() => { setGuideReady(null); setOpen('media') }}
+          onClick={() => { openGuide(guideReady.itemId); setGuideReady(null) }}
           className="fixed top-4 left-1/2 -translate-x-1/2 z-[600] max-w-[92%] w-[480px] bg-cyan-500/20 border border-cyan-400/45 backdrop-blur-md rounded-2xl px-5 py-4 shadow-xl flex items-center gap-4 text-left active:scale-[0.98] transition-transform"
         >
           <span className="w-10 h-10 rounded-xl bg-cyan-400/25 flex items-center justify-center flex-shrink-0 text-cyan-100">
@@ -360,7 +362,7 @@ function App() {
           </span>
           <span className="flex-1 min-w-0">
             <span className="block text-cyan-50 text-sm font-semibold truncate">Guide ready</span>
-            <span className="block text-cyan-100/80 text-xs mt-0.5 truncate">{guideReady} — tap to open</span>
+            <span className="block text-cyan-100/80 text-xs mt-0.5 truncate">{guideReady.title} — tap to open</span>
           </span>
         </button>
       )}
@@ -372,6 +374,10 @@ function App() {
           keeps a video paused for as long as she has the floor, so playback and
           the voice loop never talk over each other. */}
       <BrowserOverlay hold={voice.isListening || voice.isThinking || voice.isSpeaking} />
+
+      {/* Game guide — opened by a tap in the Watch/Play list or by the assistant
+          (show_game_guide). Top-level so it can be up with every widget closed. */}
+      <GuideOverlay />
 
       {/* Lock screen — covers everything when mode is 'locked' */}
       {mode === 'locked' && (

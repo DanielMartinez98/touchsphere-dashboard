@@ -34,8 +34,8 @@ import {
   type SectionKind,
 } from './guides'
 import { communityTableOfContents, researchGame, type Page } from './research'
+import { pushGuide } from './guide-events'
 import { searchYouTube } from './routes/browse'
-import { broadcast } from './routes/system'
 
 const OLLAMA_URL     = process.env['OLLAMA_URL']     ?? 'http://host.docker.internal:11434'
 const OLLAMA_MODEL   = process.env['OLLAMA_MODEL']   ?? 'gemma3'
@@ -267,22 +267,10 @@ function stepsPrompt(title: string, section: GuideSection, pages: Page[]): strin
 
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
 
-function pushProgress(g: Guide): void {
-  const p = guideProgress(g)
-  broadcast('guide', {
-    itemId:  g.itemId,
-    status:  g.status,
-    percent: p.percent,
-    ...(g.phase ? { phase: g.phase } : {}),
-    title:   g.title,
-    sections: g.sections.length,
-  })
-}
-
 /** Save a mutation and tell every connected dashboard about it. */
 function update(itemId: string, mutate: (g: Guide) => void): Guide | null {
   const next = patchGuide(itemId, mutate)
-  if (next) pushProgress(next)
+  if (next) pushGuide(next)
   return next
 }
 
@@ -590,7 +578,7 @@ export function startGuide(opts: { itemId: string; title: string; order?: string
     sources: [],
   })
   const fresh = loadGuide(itemId)
-  if (fresh) pushProgress(fresh)
+  if (fresh) pushGuide(fresh)
 
   console.log(`[guides] queued "${title}"${order ? ` (order: ${order})` : ''} — model=${OLLAMA_MODEL}`)
   enqueue(() => run(itemId, title, order))

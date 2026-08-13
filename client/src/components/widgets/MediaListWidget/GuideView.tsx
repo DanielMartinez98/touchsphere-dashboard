@@ -255,6 +255,29 @@ function ReorderSheet({
 
 // ── Layer 1: the chapter list ────────────────────────────────────────────────
 
+/**
+ * Resolve a chapter the assistant named: a section id, a 1-based number
+ * ("chapter 3"), an exact title, or a distinctive part of one.
+ */
+function resolveChapter(guide: Guide | null, hint: string | undefined): string | null {
+  if (!guide || !hint) return null
+  const h = hint.trim().toLowerCase()
+  if (!h) return null
+  const byId = guide.sections.find(s => s.id === hint)
+  if (byId) return byId.id
+  const num = Number(h.replace(/^chapter\s*/, ''))
+  if (Number.isInteger(num) && num >= 1 && num <= guide.sections.length) {
+    return guide.sections[num - 1]!.id
+  }
+  const loose = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+  return (
+    guide.sections.find(s => s.title.toLowerCase() === h) ??
+    guide.sections.find(s => loose(s.title) === loose(h)) ??
+    guide.sections.find(s => loose(s.title).includes(loose(h))) ??
+    guide.sections.find(s => loose(h).includes(loose(s.title)))
+  )?.id ?? null
+}
+
 interface Props {
   item:         MediaItem
   guide:        Guide | null
@@ -264,17 +287,28 @@ interface Props {
   /** Start or rebuild. `order` overrides the community ordering. */
   onGenerate:   (order?: string) => void
   onDelete:     () => void
+  /** Chapter the assistant asked for — name, number, or id. */
+  chapterHint?: string | undefined
+  /** Bumped per command, so saying it again re-applies the hint after browsing. */
+  hintSeq?:     number
 }
 
 export function GuideView({
   item, guide, loading, onClose, onToggleStep, onGenerate, onDelete,
+  chapterHint, hintSeq = 0,
 }: Props) {
-  const [openId, setOpenId] = useState<string | null>(null)
+  // Taps win over the assistant's hint, but only until the next command: a new
+  // hintSeq makes the tap stale and the hint takes over again. Derived rather
+  // than an effect, so no render is spent syncing one to the other.
+  const [tapped, setTapped] = useState<{ seq: number; id: string | null } | null>(null)
   const [showReorder, setShowReorder]   = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
   const generating = guide?.status === 'generating'
   const progress = guide ? guideProgress(guide) : null
+
+  const openId = tapped?.seq === hintSeq ? tapped.id : resolveChapter(guide, chapterHint)
+  const setOpenId = (id: string | null) => setTapped({ seq: hintSeq, id })
 
   const openIndex = guide ? guide.sections.findIndex(s => s.id === openId) : -1
   const openSection = openIndex >= 0 ? guide!.sections[openIndex]! : null

@@ -17,6 +17,7 @@ import { nextRecurringFireAt, sanitizeRepeatDays } from './timers'
 import { findCover, artworkConfigured } from './artwork'
 import { guideProgress, listGuides, loadGuide, setStepDone } from '../guides'
 import { startGuide } from '../guide-generator'
+import { pushGuide } from '../guide-events'
 
 // ── State file helpers (mirror state.ts) ─────────────────────────────────────
 function stateDir(): string {
@@ -71,7 +72,7 @@ const STATUS_LABEL: Record<MediaStatus, string> = {
   dropped:     'dropped',
 }
 
-interface MediaItem {
+export interface MediaItem {
   id: string
   title: string
   type: MediaType
@@ -101,7 +102,9 @@ function normalize(raw: Partial<MediaItem> & { type: MediaType }): MediaItem {
   }
 }
 
-function readMedia(): MediaItem[] {
+// Exported for guide-view-tools, which resolves the game the user named the same
+// way every other voice tool does.
+export function readMedia(): MediaItem[] {
   const raw = readJSON<Array<Partial<MediaItem> & { type: MediaType }>>('media.json', [])
   return raw.map(normalize)
 }
@@ -225,7 +228,7 @@ async function renameMedia(title: string, newTitle: string): Promise<string> {
   return `Renamed "${old}" to "${t}", but still no cover art was found for that title.`
 }
 
-function findByTitle(items: MediaItem[], title: string): MediaItem | undefined {
+export function findByTitle(items: MediaItem[], title: string): MediaItem | undefined {
   const q = title.trim().toLowerCase()
   if (!q) return undefined
   // Exact match first, then substring.
@@ -1077,13 +1080,16 @@ function checkOffGuideStep(title: string, step: string, done: boolean): string {
 
   const only = matches[0]!
   if (only.step.done === done) {
-    return `"${only.step.text}" is already marked ${done ? 'done' : 'not done'} in the ${guide.title} guide.`
+    return `"${only.step.text}" is already marked ${done ? 'done' : 'not done'} in the guide for ${guide.title}.`
   }
   const updated = setStepDone(target.id, only.sec.id, only.step.id, done)
   if (!updated) return `Error: could not update that step.`
+  // Push it so an open guide ticks the box as the words land, rather than waiting
+  // for the next time the view is opened.
+  pushGuide(updated)
   const p = guideProgress(updated)
   console.log(`[chat:tool] check_off_guide_step → "${only.step.text.slice(0, 50)}" ${done ? 'done' : 'undone'} (${p.percent}%)`)
-  return `Marked "${only.step.text}" as ${done ? 'done' : 'not done'} in the ${guide.title} guide — ` +
+  return `Marked "${only.step.text}" as ${done ? 'done' : 'not done'} in the guide for ${guide.title} — ` +
          `now ${p.percent}% complete (${p.counted.done} of ${p.counted.total}).`
 }
 

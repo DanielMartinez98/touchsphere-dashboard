@@ -31,6 +31,7 @@
 import { Router, type Request, type Response } from 'express'
 import { DASHBOARD_TOOLS, MUTATING_TOOLS, TOOL_SLICE, runDashboardTool } from './dashboard-tools'
 import { BROWSE_TOOLS, runBrowseTool, type DisplayPayload } from './browse'
+import { GUIDE_VIEW_TOOLS, GUIDE_VIEW_MUTATING, runGuideViewTool } from './guide-view-tools'
 import { addMemory, formatForPrompt as formatMemoryForPrompt } from '../memory'
 import {
   saveSession, updateSessionSummary, loadSession, scoreContinuation, sessionAgeMinutes,
@@ -147,6 +148,17 @@ const SYSTEM_PROMPT_BODY =
   "Use check_off_guide_step when they report finishing a specific step while playing (\"I got the bow\", " +
   "\"beat Odolwa\") — pass a few distinctive words and let the tool find the step. " +
   "For a single video or one quick fact, use play_video or web_search instead — a guide is for a whole game. " +
+  "DRIVING THE GUIDE ON SCREEN: a guide that already exists can be put up full screen and operated by voice, " +
+  "so the user never has to touch it. show_game_guide puts it on screen — pass `chapter` (a name or a number) " +
+  "to open straight to one chapter, which is what they want when they ask about a specific dungeon, boss, " +
+  "region or list. list_guide_chapters tells you what the chapters are and which has work left, without " +
+  "showing anything. play_guide_video plays the walkthrough video already saved for a chapter (or for the " +
+  "whole game) — prefer it over play_video for a game that has a guide. check_off_guide_chapter ticks off a " +
+  "whole chapter at once (\"I finished Woodfall Temple\"), check_off_guide_step ticks one thing. " +
+  "close_screen clears whatever you have put up — a guide, a video, or a page. delete_game_guide throws a " +
+  "guide away for good; to reorganize instead, call create_game_guide with `order`. " +
+  "When the user asks to see or open a guide, SHOW it and say one short sentence — never read the chapter " +
+  "list or the steps aloud. " +
   "PERSISTENT MEMORY: anything you saved in a past conversation is auto-injected into your prompt below — " +
   "treat those as facts you already know and answer directly without re-asking. Use remember whenever the user shares " +
   "something they would not want to repeat (their name, recurring routines, what they're working on today). " +
@@ -280,7 +292,7 @@ const TURN_CONTROL_TOOLS = [
 // Dashboard + browsing tools are always exposed; web search/fetch layer on if
 // configured. (open_website / play_video do their own resolving, so they work
 // even without an Ollama web-search key.)
-const TOOLS = [...DASHBOARD_TOOLS, ...BROWSE_TOOLS, ...TURN_CONTROL_TOOLS, ...WEB_TOOLS]
+const TOOLS = [...DASHBOARD_TOOLS, ...BROWSE_TOOLS, ...GUIDE_VIEW_TOOLS, ...TURN_CONTROL_TOOLS, ...WEB_TOOLS]
 
 // ── Tool implementations ──────────────────────────────────────────────────
 async function runWebSearch(query: string): Promise<string> {
@@ -698,12 +710,17 @@ router.post('/', async (req: Request, res: Response) => {
           continue
         }
 
-        // Browsing tools return a payload for the client alongside the text
-        // the model reads, so they're dispatched here rather than in runTool.
-        const browsed = await runBrowseTool(name, args)
+        // Browsing and guide-view tools return a payload for the client alongside
+        // the text the model reads, so they're dispatched here rather than in
+        // runTool. Guide-view tools also mutate, so their slice is flagged too.
+        const browsed = (await runGuideViewTool(name, args)) ?? (await runBrowseTool(name, args))
+        if (browsed && GUIDE_VIEW_MUTATING.has(name) && !/^(There (is|are)|Which game|Every step|"|The guide)/.test(browsed.text)) {
+          changed.add('guides')
+        }
         if (browsed) {
           if (browsed.display) display = browsed.display
-          console.log(`[chat:tool] ${name} → ${browsed.display ? `${browsed.display.kind} "${browsed.display.title.slice(0, 60)}"` : 'no display'}`)
+          const shown = browsed.display
+          console.log(`[chat:tool] ${name} → ${shown ? `${shown.kind}${'title' in shown ? ` "${shown.title.slice(0, 60)}"` : ''}` : 'no display'}`)
           messages.push({ role: 'tool', content: browsed.text, tool_name: name })
           continue
         }

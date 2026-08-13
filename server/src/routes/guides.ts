@@ -12,8 +12,19 @@ import {
   setStepDone,
 } from '../guides'
 import { isGenerating, startGuide } from '../guide-generator'
+import { pushGuide } from '../guide-events'
 
 const router = Router()
+
+// A guide changes under the client's feet — the generator fills sections in, and
+// a voice command can tick a step while the view is open. With no cache headers
+// Chrome is free to reuse a "fresh enough" response without revalidating, which
+// it does: the SSE event fired, the client refetched, and the browser handed it
+// back the *old* document, so the open guide never moved.
+router.use((_req, res, next) => {
+  res.set('Cache-Control', 'no-store')
+  next()
+})
 
 // GET /api/guides — light summaries, one per guide. Drives the progress bars on
 // the media-list rows, so it must stay small even with 40 guides on disk.
@@ -75,11 +86,14 @@ router.patch('/:itemId/steps/:sectionId/:stepId', (req: Request, res: Response) 
     res.status(400).json({ error: 'done must be a boolean' })
     return
   }
-  const updated = setStepDone(itemId ?? '', sectionId ?? '', stepId ?? '', body.done)
+  const updated = setStepDone(itemId, sectionId, stepId, body.done)
   if (!updated) {
     res.status(404).json({ error: 'No such guide, section, or step' })
     return
   }
+  // Other screens (and the AI's view of progress) follow the same event the
+  // generator uses, so a tick here shows up everywhere at once.
+  pushGuide(updated)
   res.json(updated)
 })
 

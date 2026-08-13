@@ -10,6 +10,7 @@
 // voice hook's TTS callback — can open the window without prop-drilling.
 
 import { useSyncExternalStore } from 'react'
+import { closeGuide, openGuide } from './useGuideOverlay'
 
 /** Mirrors DisplayPayload in server/src/routes/browse.ts. */
 export type BrowseTarget =
@@ -46,6 +47,22 @@ export function closeBrowse() {
 export function openBrowseFromPayload(raw: unknown): void {
   if (!raw || typeof raw !== 'object') return
   const d = raw as Record<string, unknown>
+
+  // Not every thing the assistant puts on screen is a browser window. A guide is
+  // its own overlay, and "close that" clears whatever is up — both arrive on the
+  // same `display` field, so they're dispatched here rather than duplicating the
+  // validation at the call site.
+  if (d['kind'] === 'guide' && typeof d['itemId'] === 'string' && d['itemId']) {
+    closeBrowse()
+    openGuide(d['itemId'], typeof d['chapter'] === 'string' && d['chapter'] ? d['chapter'] : undefined)
+    return
+  }
+  if (d['kind'] === 'close') {
+    closeBrowse()
+    closeGuide()
+    return
+  }
+
   const url   = typeof d['url']   === 'string' ? d['url']   : ''
   const title = typeof d['title'] === 'string' ? d['title'] : ''
   if (!/^https?:\/\//i.test(url)) return

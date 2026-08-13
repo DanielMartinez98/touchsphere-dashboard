@@ -5,8 +5,7 @@ import type { ArtworkResult, GuideSummary, MediaItem, MediaStatus, MediaType } f
 import { statusesFor } from '../../../types'
 import { MediaTypeIcon } from './MediaTypeIcon'
 import { MediaCover } from './MediaCover'
-import { GuideView } from './GuideView'
-import { useGuide } from '../../../hooks/useGuides'
+import { openGuide } from '../../../hooks/useGuideOverlay'
 import { TouchKeyboard } from '../../TouchKeyboard'
 
 const STATUS_LABEL: Record<MediaStatus, string> = {
@@ -282,10 +281,9 @@ interface Props {
   setStatus: (id: string, status: MediaStatus) => void
   setCover: (id: string, coverUrl: string) => void
   renameItem: (id: string, title: string) => void
-  /** Guide progress per media item id — drives the row bars and the sheet button. */
+  /** Guide progress per media item id — drives the row bars and the sheet button.
+   *  Opening, building and editing a guide all happen in GuideOverlay. */
   guides: Record<string, GuideSummary>
-  generateGuide: (itemId: string, title: string, order?: string) => void
-  deleteGuide: (itemId: string) => void
 }
 
 export default function MediaListExpanded({
@@ -298,8 +296,6 @@ export default function MediaListExpanded({
   setCover,
   renameItem,
   guides,
-  generateGuide,
-  deleteGuide,
 }: Props) {
   const [title, setTitle] = useState('')
   const [type, setType] = useState<MediaType>('show')
@@ -312,12 +308,7 @@ export default function MediaListExpanded({
   const [sheetItemId, setSheetItemId] = useState<string | null>(null)
   const [coverItemId, setCoverItemId] = useState<string | null>(null)
   const [renameItemId, setRenameItemId] = useState<string | null>(null)
-  const [guideItemId, setGuideItemId]   = useState<string | null>(null)
   const [showFinished, setShowFinished] = useState(false)
-
-  // The full guide document for whichever item's guide is open. Fetches on open,
-  // then follows the server's `guide` events so a generation fills in live.
-  const { guide: openGuide, loading: guideLoading, toggleStep } = useGuide(guideItemId)
 
   // Stop a roulette mid-spin if the widget unmounts.
   useEffect(() => () => {
@@ -453,7 +444,6 @@ export default function MediaListExpanded({
   const sheetItem = sheetItemId ? items.find(i => i.id === sheetItemId) ?? null : null
   const coverItem  = coverItemId  ? items.find(i => i.id === coverItemId)  ?? null : null
   const renameTarget = renameItemId ? items.find(i => i.id === renameItemId) ?? null : null
-  const guideItem  = guideItemId  ? items.find(i => i.id === guideItemId)  ?? null : null
 
   const filterTabs: { key: Filter; label: string }[] = [
     { key: 'all',   label: 'All' },
@@ -732,19 +722,12 @@ export default function MediaListExpanded({
           onDelete={() => requestDelete(sheetItem)}
           onChangeCover={() => { setCoverItemId(sheetItem.id); setSheetItemId(null) }}
           onRename={() => { setRenameItemId(sheetItem.id); setSheetItemId(null) }}
-          onOpenGuide={() => { setGuideItemId(sheetItem.id); setSheetItemId(null) }}
-        />
-      )}
-
-      {guideItem && (
-        <GuideView
-          item={guideItem}
-          guide={openGuide}
-          loading={guideLoading}
-          onClose={() => setGuideItemId(null)}
-          onToggleStep={toggleStep}
-          onGenerate={order => generateGuide(guideItem.id, guideItem.title, order)}
-          onDelete={() => deleteGuide(guideItem.id)}
+          onOpenGuide={() => {
+            // The guide is a top-level overlay now (GuideOverlay), so the same
+            // store the assistant writes to is what opens it here.
+            openGuide(sheetItem.id)
+            setSheetItemId(null)
+          }}
         />
       )}
 

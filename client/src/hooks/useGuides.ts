@@ -28,6 +28,26 @@ function asEvent(raw: unknown): GuideEvent {
   return (raw && typeof raw === 'object' ? raw : {}) as GuideEvent
 }
 
+// ── Mutations ────────────────────────────────────────────────────────────────
+// Plain functions rather than hook methods: the guide is reachable from the media
+// widget, from the top-level overlay, and (indirectly) from the assistant, and
+// none of those should have to hold the summaries hook just to start a rebuild.
+
+/** Start or rebuild a guide. `order` overrides the community ordering. */
+export function requestGuide(itemId: string, title: string, order?: string): Promise<Response | void> {
+  console.log(`[Guides] generate "${title}"${order ? ` order="${order}"` : ''}`)
+  return fetch(`${API}/${itemId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, ...(order ? { order } : {}) }),
+  }).catch(err => console.error('[Guides] generate failed:', err))
+}
+
+export function removeGuide(itemId: string): Promise<Response | void> {
+  return fetch(`${API}/${itemId}`, { method: 'DELETE' })
+    .catch(err => console.error('[Guides] delete failed:', err))
+}
+
 /**
  * Summaries for every guide, keyed by media item id. Refetches when a guide
  * changes on the server (SSE) and when a chat tool touches the `guides` slice.
@@ -96,7 +116,6 @@ export function useGuides() {
 
   /** Start (or regenerate) a guide. `order` overrides the community ordering. */
   const generate = useCallback((itemId: string, title: string, order?: string) => {
-    console.log(`[Guides] generate "${title}"${order ? ` order="${order}"` : ''}`)
     // Show the spinner immediately rather than waiting for the first SSE frame —
     // on the Pi the outline research can take ten seconds before anything moves.
     setByItem(prev => ({
@@ -106,22 +125,7 @@ export function useGuides() {
         percent: 0, counted: { done: 0, total: 0 }, sections: 0,
       },
     }))
-    return fetch(`${API}/${itemId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, ...(order ? { order } : {}) }),
-    })
-      .then(res => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      })
-      .catch(err => {
-        console.error('[Guides] generate failed:', err)
-        setByItem(prev => {
-          const next = { ...prev }
-          delete next[itemId]
-          return next
-        })
-      })
+    return requestGuide(itemId, title, order)
   }, [])
 
   const remove = useCallback((itemId: string) => {
@@ -130,8 +134,7 @@ export function useGuides() {
       delete next[itemId]
       return next
     })
-    return fetch(`${API}/${itemId}`, { method: 'DELETE' })
-      .catch(err => console.error('[Guides] delete failed:', err))
+    return removeGuide(itemId)
   }, [])
 
   return { byItem, generate, remove }

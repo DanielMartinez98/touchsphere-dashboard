@@ -46,10 +46,19 @@ const BROWSER_HEADERS: Record<string, string> = {
   'cookie': 'CONSENT=YES+1',
 }
 
-/** What the client is told to put on screen. Mirrored in client/src/hooks/useBrowse.ts. */
+/**
+ * What the client is told to put on screen. Mirrored in client/src/hooks/useBrowse.ts,
+ * whose `openBrowseFromPayload` validates and routes each kind.
+ *
+ * `video`/`web` open the browser window; `guide` opens the full-screen game guide
+ * (a different overlay entirely — see client/src/components/GuideOverlay.tsx);
+ * `close` clears whatever is currently up.
+ */
 export type DisplayPayload =
   | { kind: 'video'; url: string; title: string; videoId: string; channel?: string }
   | { kind: 'web';   url: string; title: string; site: string; embeddable: boolean }
+  | { kind: 'guide'; itemId: string; title: string; chapter?: string }
+  | { kind: 'close' }
 
 // ── URL helpers ──────────────────────────────────────────────────────────────
 
