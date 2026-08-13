@@ -1,14 +1,23 @@
 // Builds a game guide from online research, in the background.
 //
-// Two stages, both bounded:
+// OVERVIEW FIRST, THEN DETAIL — at both levels, and for the same reason: every
+// model call has to be short enough to finish. A local model asked for a long
+// answer doesn't answer badly, it stops partway, and half a JSON object parses
+// as nothing at all. So nothing here is ever asked for a lot at once:
 //
 //   1. OUTLINE — research how this game's community lays a guide out, then one
 //      model call for the section list ("Woodfall Temple", "Masks", "Heart
 //      Pieces"...) plus which of those sections count toward 100%.
-//   2. SECTIONS — for each section, one targeted search + page read, one model
-//      call for its steps, and one YouTube lookup for its walkthrough video.
-//      The guide is saved and broadcast after EVERY section, so the view fills
-//      in as it goes instead of showing a spinner for five minutes.
+//   2a. STEP LIST — per section, a targeted search + page read, then one call
+//      for the steps as bare one-line strings. Saved and broadcast immediately:
+//      the chapter is a working, tickable checklist from this moment.
+//   2b. DETAIL — the same steps in batches of a few, one call per batch, asking
+//      only for the note on each. Written straight into the stored guide as
+//      each batch lands.
+//
+// The guide is saved and broadcast throughout, so the view fills in as it goes
+// instead of showing a spinner for five minutes — and a failure late in a
+// chapter costs the explanations, not the chapter.
 //
 // Why not run this through the chat tool loop: tool results are truncated to
 // 8000 chars and the loop is capped at 5 rounds (see chat.ts), neither of which
@@ -132,10 +141,11 @@ async function postChat(
         think: false,
         format,
         messages,
-        // num_ctx: see the constant. num_predict: a 60-step collectible list with
-        // a how-to on each one is several thousand tokens, and Ollama's default
-        // stop would truncate it mid-JSON, which parses as nothing at all.
-        options: { num_ctx: NUM_CTX, num_predict: 6144, temperature: 0.3 },
+        // num_ctx: see the constant. num_predict is generous rather than large:
+        // no single call here is asked for more than a list of short strings or
+        // a handful of notes, precisely so none of them can run long enough to
+        // be cut off mid-JSON — a truncated object parses as nothing at all.
+        options: { num_ctx: NUM_CTX, num_predict: 3072, temperature: 0.3 },
       }),
     })
     if (!res.ok) {
@@ -204,30 +214,55 @@ const OUTLINE_SCHEMA: JsonSchema = {
   required: ['organization', 'sections'],
 }
 
-const STEPS_SCHEMA: JsonSchema = {
+// A chapter is written in two passes, and each has its own small schema.
+//
+// It used to be one call: "here are 26,000 characters of research, now give me
+// thirty steps each with a note." That is several thousand tokens of JSON from
+// one generation, and on a local model it either runs past the timeout or stops
+// mid-object — and a truncated object doesn't parse, so the whole chapter lands
+// empty. The length of the answer was the failure.
+//
+// Now: pass one asks only for the step TEXTS (short, and the model can hold the
+// whole shape in view), which is saved and broadcast immediately so the chapter
+// is usable. Pass two walks those steps in small batches asking only for the
+// note on each. Every call is small enough to finish, and a failure costs one
+// batch of detail rather than the chapter.
+
+const STEP_LIST_SCHEMA: JsonSchema = {
   type: 'object',
   properties: {
-    steps: {
+    steps: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['steps'],
+}
+
+const DETAILS_SCHEMA: JsonSchema = {
+  type: 'object',
+  properties: {
+    details: {
       type: 'array',
       items: {
         type: 'object',
         properties: {
-          text: { type: 'string' },
+          n:    { type: 'integer' },
           note: { type: 'string' },
         },
-        required: ['text'],
+        required: ['n', 'note'],
       },
     },
   },
-  required: ['steps'],
+  required: ['details'],
 }
 
 interface OutlineReply {
   organization?: unknown
   sections?: Array<{ title?: unknown; kind?: unknown; counts?: unknown; summary?: unknown }>
 }
-interface StepsReply {
-  steps?: Array<{ text?: unknown; note?: unknown }>
+interface StepListReply {
+  steps?: unknown[]
+}
+interface DetailsReply {
+  details?: Array<{ n?: unknown; note?: unknown }>
 }
 
 // ── Prompts ──────────────────────────────────────────────────────────────────
@@ -273,56 +308,92 @@ function outlinePrompt(title: string, order: string | undefined, pages: Page[], 
   )
 }
 
-function stepsPrompt(title: string, section: GuideSection, pages: Page[]): string {
-  // The shape differs per kind in one way that matters more than the wording: what
-  // a step has to TEACH. A walkthrough step that says "clear Woodfall Temple" and a
-  // collectible step that says "Bunny Hood" are both useless — they restate the
-  // thing the player already knew they had to do. Each kind is told, concretely,
-  // what the player must be able to do after reading a step.
-  const shape = section.kind === 'collectible'
-    ? `This is a COLLECTIBLE LIST — one step per collectible, named exactly as the sources name it.\n` +
-      `The list is worthless if it only names them: the player is holding this to find out HOW to get ` +
-      `each one. So every step's "note" must be the method — where it is, what you need to have first, ` +
-      `and what you actually do to obtain it ("Beneath the Deku Palace, in the Bean Seller's cave. Play ` +
-      `the Song of Storms to water the magic bean, ride it up to the ledge").\n` +
-      `Be complete: if the sources say there are 24 masks, write 24 steps, not a sample of them.`
-    : section.kind === 'sidequest'
-      ? `This is a SIDE-QUEST LIST — one step per quest. The "note" must say who gives it, where and ` +
-        `when to find them, what the quest requires, and what it rewards.`
-      : section.kind === 'reference'
-        ? `This is REFERENCE material. One step per entry, kept short, detail in the note.`
-        : `This is a WALKTHROUGH section, and it must be a real walkthrough — someone who has never ` +
-          `played should be able to get through this part with nothing but these steps.\n` +
-          `Cover the whole span, in the order the player does it:\n` +
-          `  1. GETTING THERE — how you reach this place from where the last section left off, what you ` +
-          `need to have or be able to do before it will let you in, and how the way in is opened.\n` +
-          `  2. GETTING THROUGH IT — every room, puzzle, key, switch and item along the way, said ` +
-          `specifically enough to act on ("Shoot the ice arrow at the water below the platform to freeze ` +
-          `a stepping stone"), never vaguely ("solve the water puzzle").\n` +
-          `  3. THE MINI-BOSS AND THE BOSS — how each one is fought: what hurts it, what to dodge, and ` +
-          `the order of the phases. Put the actual tactic in the note.\n` +
-          `  4. WHAT YOU LEAVE WITH — the item, upgrade or ability this section grants.`
+/**
+ * The research block goes FIRST and byte-identical in both passes on purpose:
+ * Ollama caches the KV for a shared prompt prefix, so the ~7k tokens of wiki
+ * text are processed once for a chapter and reused by every detail batch after
+ * it. Put anything section-specific ahead of it and each batch pays full price.
+ */
+function chapterPreamble(title: string, section: GuideSection, pages: Page[]): string {
+  return (
+    `Research notes:\n\n${researchBlock(pages)}\n\n` +
+    `Game: ${title}\nSection: ${section.title}\n\n`
+  )
+}
 
-  const depth = section.kind === 'progression'
-    ? `- Aim for 12 to 30 steps. A dungeon or chapter described in five steps has been summarized, not ` +
-      `written — break it down room by room and beat by beat.\n`
-    : `- Aim for one step per real entry, up to ${GUIDE_CAPS.MAX_STEPS_PER_SECTION}.\n`
+/** Pass one: the chapter's skeleton — step texts only, no notes. */
+function stepListPrompt(title: string, section: GuideSection, pages: Page[]): string {
+  // What a step has to TEACH differs per kind, and that matters more than wording.
+  // "Clear Woodfall Temple" and "Bunny Hood" are both useless steps — they restate
+  // what the player already knew they had to do.
+  const shape = section.kind === 'collectible'
+    ? `This is a COLLECTIBLE LIST — one step per collectible, named exactly as the sources name it, in ` +
+      `the sources' order. Be complete: if the sources say there are 24 masks, list 24, not a sample.`
+    : section.kind === 'sidequest'
+      ? `This is a SIDE-QUEST LIST — one step per quest, named as the sources name it.`
+      : section.kind === 'reference'
+        ? `This is REFERENCE material — one step per entry, kept short.`
+        : `This is a WALKTHROUGH section, and it must be a real route — someone who has never played ` +
+          `should be able to get through this part with nothing but these steps. Cover the whole span in ` +
+          `order: how you REACH this place and what opens the way in; then every room, puzzle, key and ` +
+          `item through it; then the mini-boss and the boss; then the item or ability you leave with. ` +
+          `Be specific enough to act on ("Shoot an ice arrow at the water to freeze a stepping stone"), ` +
+          `never vague ("solve the water puzzle").`
+
+  const count = section.kind === 'progression'
+    ? `- Between 12 and 30 steps. A dungeon described in five steps has been summarized, not written.\n`
+    : `- One step per real entry, up to ${GUIDE_CAPS.MAX_STEPS_PER_SECTION}.\n`
 
   return (
-    `Game: ${title}\nSection: ${section.title}\n\n` +
-    `Research notes:\n\n${researchBlock(pages)}\n\n` +
-    `TASK: write the step-by-step checklist for THIS SECTION ONLY.\n${shape}\n\n` +
+    chapterPreamble(title, section, pages) +
+    `TASK: list the steps of the checklist for THIS SECTION ONLY — just the steps themselves. ` +
+    `Do NOT explain them; the explanations are asked for separately afterwards.\n${shape}\n\n` +
     `Rules:\n` +
-    `- "text": the step itself, imperative and specific, under 160 characters. No step numbers — the ` +
-    `app numbers them.\n` +
-    `- "note": the detail that makes the step doable — the exact location, the method, the tactic, the ` +
-    `requirement. One or two sentences. Include it on every step that isn't self-explanatory.\n` +
-    depth +
+    `- Each step is one short imperative line, under 160 characters. No step numbers — the app ` +
+    `numbers them. No sub-bullets, no explanation, no commentary.\n` +
+    count +
     `- Use the game's real names for places, items, characters and moves, spelled as the sources spell ` +
     `them. "Use the Hookshot on the target above the door", not "use your grappling tool".\n` +
-    `- Only what the research notes support. If they cover something thinly, write what they do support ` +
-    `rather than inventing any — but do not leave out detail that IS in the notes.\n` +
-    `- Do not mention the sources, the notes, or yourself.`
+    `- Only steps the research notes support. Do not invent content.\n` +
+    `- Reply as {"steps": ["first step", "second step", ...]} and nothing else.`
+  )
+}
+
+/**
+ * Pass two: the detail on one batch of steps. Steps arrive pre-numbered and the
+ * reply is keyed by that number, so a batch that comes back short or out of
+ * order still lands on the right steps instead of shifting every note by one.
+ */
+function detailsPrompt(
+  title: string,
+  section: GuideSection,
+  pages: Page[],
+  batch: Array<{ n: number; text: string }>,
+): string {
+  const want = section.kind === 'collectible'
+    ? `HOW TO GET IT: where it is, what you need to have first, and what you actually do to obtain it ` +
+      `("Beneath the Deku Palace in the Bean Seller's cave. Play the Song of Storms to water the magic ` +
+      `bean, then ride it up to the ledge"). A list that only names the collectibles is worthless — the ` +
+      `method is the whole reason the player opened it.`
+    : section.kind === 'sidequest'
+      ? `who gives the quest, where and when to find them, what it requires, and what it rewards.`
+      : section.kind === 'reference'
+        ? `the concrete figures or facts for that entry, kept to one line.`
+        : `what makes the step doable: the exact location, the method, the tactic for a fight (what hurts ` +
+          `it, what to dodge, the order of the phases), or the thing you need to have first.`
+
+  return (
+    chapterPreamble(title, section, pages) +
+    `These are steps ${batch[0]!.n}–${batch[batch.length - 1]!.n} of this section's checklist:\n` +
+    batch.map(s => `${s.n}. ${s.text}`).join('\n') + `\n\n` +
+    `TASK: for EACH numbered step above, write one short note giving ${want}\n\n` +
+    `Rules:\n` +
+    `- One or two sentences per note. No preamble, no repeating the step text back.\n` +
+    `- Only what the research notes support. If the notes genuinely say nothing about a step, give it ` +
+    `an empty note rather than inventing a location or a tactic.\n` +
+    `- Use the game's real names, spelled as the sources spell them.\n` +
+    `- Cover every number listed above, and use those same numbers in "n".\n` +
+    `- Reply as {"details": [{"n": ${batch[0]!.n}, "note": "…"}, …]} and nothing else.`
   )
 }
 
@@ -555,45 +626,130 @@ function capped(pages: Page[]): Page[] {
   return out
 }
 
-/** One model call for a section's steps, with a stricter second attempt if it comes back empty. */
-async function writeSteps(
+/**
+ * PASS ONE — the chapter's skeleton: step texts, no notes.
+ *
+ * Small output by construction (an array of short strings), which is the point:
+ * this is the call that must not fail, because everything downstream hangs off
+ * it. A stricter second attempt covers a model that came back shy about a thin
+ * page — which is what an empty first pass usually means, not a genuine absence.
+ */
+async function writeStepList(
   itemId: string,
   gameTitle: string,
   section: GuideSection,
   pages: Page[],
 ): Promise<GuideStep[]> {
-  const parse = (reply: StepsReply | null): GuideStep[] =>
+  const parse = (reply: StepListReply | null): GuideStep[] =>
     (Array.isArray(reply?.steps) ? reply.steps : [])
-      .map((s, i): GuideStep | null => {
-        const text = str(s?.text)
-        if (!text) return null
-        const note = str(s?.note)
-        return { id: `${section.id}-${i + 1}`, text, ...(note ? { note } : {}), done: false }
+      // Tolerate {"steps": [{"text": "..."}]} — models reach for the object form
+      // even when asked for plain strings, and it would be perverse to drop a
+      // perfectly good chapter over the shape of its wrapper.
+      .map(s => (typeof s === 'string' ? s : str((s as { text?: unknown } | null)?.text)))
+      .map((text, i): GuideStep | null => {
+        const clean = str(text).replace(/^\s*\d+[.)]\s*/, '')   // strip a number the model added anyway
+        return clean ? { id: `${section.id}-${i + 1}`, text: clean, done: false } : null
       })
       .filter((s): s is GuideStep => s !== null)
       .slice(0, GUIDE_CAPS.MAX_STEPS_PER_SECTION)
 
   if (pages.length === 0) return []
 
-  const first = parse(await callOllamaJson<StepsReply>(
-    `section "${section.title}"`, SYSTEM, stepsPrompt(gameTitle, section, pages), STEPS_SCHEMA))
+  const first = parse(await callOllamaJson<StepListReply>(
+    `chapter "${section.title}"`, SYSTEM, stepListPrompt(gameTitle, section, pages), STEP_LIST_SCHEMA))
   if (first.length > 0) return first
 
-  // Empty on a section we *did* find research for is usually the model being shy
-  // about a thin page, not an absence of content. Ask once more, plainly.
   note({
     itemId, title: gameTitle, section: section.title, stage: 'steps', level: 'warn',
-    message: 'The model returned no steps on the first pass — asking again, more firmly',
+    message: 'The model listed no steps on the first pass — asking again, more firmly',
   })
-  return parse(await callOllamaJson<StepsReply>(
-    `section "${section.title}" (retry)`,
+  return parse(await callOllamaJson<StepListReply>(
+    `chapter "${section.title}" (retry)`,
     SYSTEM,
-    `${stepsPrompt(gameTitle, section, pages)}\n\n` +
+    `${stepListPrompt(gameTitle, section, pages)}\n\n` +
     `IMPORTANT: your previous attempt returned no steps. The notes above DO describe this part of ` +
     `the game — read them again and pull out every concrete thing the player does, gets, or fights. ` +
     `If the notes are a list of things, write one step per thing. Return at least 3 steps.`,
-    STEPS_SCHEMA,
+    STEP_LIST_SCHEMA,
   ))
+}
+
+/** How many steps get explained per model call. Small enough that a batch always finishes. */
+const DETAIL_BATCH = 8
+
+/**
+ * PASS TWO — the notes, a batch at a time, written straight into the stored
+ * guide as each batch lands.
+ *
+ * Patched in by step id rather than by rewriting the array, because the chapter
+ * has been on screen and tickable since pass one: the player may well be ticking
+ * boxes in it while this runs, and writing back a whole array built a minute ago
+ * would silently un-tick them.
+ *
+ * Returns how many notes were written. A batch that fails is skipped — a chapter
+ * with steps and no notes is still a usable checklist, which is exactly the
+ * property the old one-shot call didn't have.
+ */
+async function detailSteps(
+  itemId: string,
+  gameTitle: string,
+  sectionId: string,
+  pages: Page[],
+): Promise<number> {
+  const section = loadGuide(itemId)?.sections.find(s => s.id === sectionId)
+  if (!section || section.steps.length === 0 || pages.length === 0) return 0
+
+  const numbered = section.steps.map((s, i) => ({ n: i + 1, text: s.text, id: s.id }))
+  let written = 0
+
+  for (let start = 0; start < numbered.length; start += DETAIL_BATCH) {
+    if (!loadGuide(itemId)) return written          // guide deleted under us
+    const batch = numbered.slice(start, start + DETAIL_BATCH)
+
+    update(itemId, g => {
+      g.phase = `${section.title} — detail ${batch[0]!.n}–${batch[batch.length - 1]!.n} of ${numbered.length}`
+    })
+
+    const reply = await callOllamaJson<DetailsReply>(
+      `chapter "${section.title}" detail ${batch[0]!.n}-${batch[batch.length - 1]!.n}`,
+      SYSTEM,
+      detailsPrompt(gameTitle, section, pages, batch),
+      DETAILS_SCHEMA,
+    )
+
+    // Key the reply by the step id it belongs to, ignoring numbers outside this
+    // batch — a model that renumbers from 1 must not overwrite the first steps
+    // of the chapter with notes meant for the last.
+    const byId = new Map<string, string>()
+    for (const d of Array.isArray(reply?.details) ? reply.details : []) {
+      const n = typeof d?.n === 'number' ? d.n : Number(d?.n)
+      const note = str(d?.note)
+      if (!note || !Number.isInteger(n)) continue
+      const target = batch.find(b => b.n === n)
+      if (target) byId.set(target.id, note)
+    }
+
+    if (byId.size === 0) {
+      note({
+        itemId, title: gameTitle, section: section.title, stage: 'detail', level: 'warn',
+        message: `No detail came back for steps ${batch[0]!.n}–${batch[batch.length - 1]!.n} — ` +
+                 `those steps stay as plain checkboxes`,
+      })
+      continue
+    }
+
+    update(itemId, g => {
+      const target = g.sections.find(s => s.id === sectionId)
+      if (!target) return
+      for (const step of target.steps) {
+        const note = byId.get(step.id)
+        if (note) step.note = note
+      }
+    })
+    written += byId.size
+  }
+
+  return written
 }
 
 /**
@@ -640,7 +796,13 @@ async function fillSection(
   })
 
   const { pages, own } = await researchSection(itemId, title, section, fallbackPages, opts.wider === true)
-  const steps = await writeSteps(itemId, title, section, pages)
+
+  // ── Pass one: the skeleton, saved and broadcast on its own ──────────────────
+  // The chapter becomes usable here — every step tickable, nothing explained yet.
+  // Saving between the passes is what makes a failure in the second one cost only
+  // the explanations.
+  update(itemId, g => { g.phase = `${section.title} — outlining the steps` })
+  const steps = await writeStepList(itemId, title, section, pages)
 
   // A video is worth having even when the steps didn't come through — often it's
   // the better answer for a fiddly dungeon anyway.
@@ -660,16 +822,31 @@ async function fillSection(
     // its own over the shared outline sources.
     const src = own[0] ?? pages[0]
     if (src) target.source = { url: src.url, site: src.site }
-    if (!opts.phase) g.phase = `${index + 1} of ${total} sections`
   })
   note({
     itemId, title, section: section.title, stage: 'steps',
     level: steps.length === 0 ? 'error' : steps.length < 5 ? 'warn' : 'good',
     message: steps.length === 0
-      ? `No steps written — this chapter is empty and can be redone on its own`
-      : `Wrote ${steps.length} steps from ${totalChars(pages).toLocaleString()} chars ` +
+      ? `No steps listed — this chapter is empty and can be redone on its own`
+      : `Listed ${steps.length} steps from ${totalChars(pages).toLocaleString()} chars ` +
         `(${own.length > 0 ? [...new Set(own.map(p => p.site))].join(', ') : 'guide-wide sources'})` +
         `${video ? ' + a walkthrough video' : ''}`,
+  })
+
+  // ── Pass two: fill in the detail, a few steps per call ──────────────────────
+  if (steps.length > 0) {
+    const written = await detailSteps(itemId, title, sectionId, pages)
+    note({
+      itemId, title, section: section.title, stage: 'detail',
+      level: written === 0 ? 'warn' : written < steps.length ? 'info' : 'good',
+      message: written === 0
+        ? 'No detail could be written — the steps stand as a plain checklist'
+        : `Explained ${written} of ${steps.length} steps`,
+    })
+  }
+
+  update(itemId, g => {
+    if (!opts.phase) g.phase = `${index + 1} of ${total} sections`
   })
   return steps.length
 }
