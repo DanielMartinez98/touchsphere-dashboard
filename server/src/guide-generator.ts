@@ -444,7 +444,7 @@ function update(itemId: string, mutate: (g: Guide) => void): Guide | null {
   return next
 }
 
-async function buildOutline(itemId: string, title: string, order?: string): Promise<{ guide: Guide; pages: Page[] } | null> {
+async function buildOutline(itemId: string, title: string, order?: string, sourceSite?: string): Promise<{ guide: Guide; pages: Page[] } | null> {
   update(itemId, g => { g.phase = 'Reading community guides…' })
 
   // The game's own wiki article plus its walkthrough page: what the game is, and
@@ -457,6 +457,12 @@ async function buildOutline(itemId: string, title: string, order?: string): Prom
       ? `Found the community's table of contents — ${toc.length} headings to organize around`
       : `No community table of contents found; the outline will be built from the pages alone`,
   })
+  if (sourceSite) {
+    note({
+      itemId, title, stage: 'research', level: 'info',
+      message: `Building from the requested source site first: ${sourceSite} (the wiki is the fallback)`,
+    })
+  }
 
   // Deduped by URL: both searches run against the same wiki, and when a game has
   // no separate walkthrough article they resolve to the same page — which would
@@ -464,7 +470,7 @@ async function buildOutline(itemId: string, title: string, order?: string): Prom
   // on a copy of what it already read.
   const pages: Page[] = []
   for (const topic of ['', 'walkthrough 100% completion']) {
-    for (const page of await researchGame(title, topic, 1, OUTLINE_CHARS)) {
+    for (const page of await researchGame(title, topic, 1, OUTLINE_CHARS, sourceSite)) {
       if (!pages.some(p => p.url === page.url)) pages.push(page)
     }
   }
@@ -588,6 +594,7 @@ async function researchSection(
   section: GuideSection,
   fallbackPages: Page[],
   wider: boolean,
+  preferredSite?: string,
 ): Promise<{ pages: Page[]; own: Page[] }> {
   const own: Page[] = []
   const add = (got: Page[]) => {
@@ -598,7 +605,7 @@ async function researchSection(
 
   for (const query of sectionQueries(gameTitle, section, wider)) {
     if (totalChars(own) >= SECTION_MIN_CHARS) break
-    add(await researchGame(gameTitle, query, 1, SECTION_CHARS))
+    add(await researchGame(gameTitle, query, 1, SECTION_CHARS, preferredSite))
   }
 
   // A wiki describes a dungeon; a walkthrough site routes you through one. The
@@ -611,7 +618,10 @@ async function researchSection(
   // and when it's throttled the wiki page still carries the section.
   if (section.kind === 'progression' && own.length < 2) {
     const before = own.length
-    add(await researchPages(communityQuery(gameTitle, `${section.title} walkthrough`), 1))
+    const webQuery = preferredSite
+      ? `${section.title} walkthrough site:${preferredSite}`
+      : communityQuery(gameTitle, `${section.title} walkthrough`)
+    add(await researchPages(webQuery, 1))
     if (own.length === before) {
       note({
         itemId, title: gameTitle, section: section.title, stage: 'research', level: 'warn',
@@ -853,7 +863,7 @@ async function fillSection(
     message: `Started chapter ${index + 1} of ${total} (${section.kind})`,
   })
 
-  const { pages, own } = await researchSection(itemId, title, section, fallbackPages, opts.wider === true)
+  const { pages, own } = await researchSection(itemId, title, section, fallbackPages, opts.wider === true, current.sourceSite)
 
   // ── Pass one: the skeleton, saved and broadcast on its own ──────────────────
   // The chapter becomes usable here — every step tickable, nothing explained yet.
@@ -910,10 +920,10 @@ async function fillSection(
   return steps.length
 }
 
-async function run(itemId: string, title: string, order?: string): Promise<void> {
+async function run(itemId: string, title: string, order?: string, sourceSite?: string): Promise<void> {
   const started = Date.now()
   try {
-    const outlined = await buildOutline(itemId, title, order)
+    const outlined = await buildOutline(itemId, title, order, sourceSite)
     if (!outlined) return
 
     const ids = outlined.guide.sections.map(s => s.id)
@@ -1004,7 +1014,7 @@ async function runSection(itemId: string, title: string, sectionId: string): Pro
 
     // The outline's research isn't kept on disk, so re-fetch the broad pages to
     // fall back on. One search, and only used if the section's own come up short.
-    const fallback = await researchGame(title, 'walkthrough 100% completion', 1, OUTLINE_CHARS)
+    const fallback = await researchGame(title, 'walkthrough 100% completion', 1, OUTLINE_CHARS, guide.sourceSite)
     await fillSection(itemId, title, sectionId, 0, 1, fallback, {
       wider: true,
       phase: `Rewriting ${section.title}…`,
@@ -1073,8 +1083,8 @@ export function regenerateSection(itemId: string, sectionId: string): SectionRes
  * The assistant calls this and speaks its confirmation while the job runs, the
  * same fire-and-forget shape as the end-of-conversation summarizer in chat.ts.
  */
-export function startGuide(opts: { itemId: string; title: string; order?: string }): StartResult {
-  const { itemId, title, order } = opts
+export function startGuide(opts: { itemId: string; title: string; order?: string; sourceSite?: string }): StartResult {
+  const { itemId, title, order, sourceSite } = opts
   if (inFlight.has(itemId)) return 'busy'
   inFlight.add(itemId)
 
@@ -1087,6 +1097,7 @@ export function startGuide(opts: { itemId: string; title: string; order?: string
     title,
     organization: '',
     ...(order ? { orderOverride: order } : {}),
+    ...(sourceSite ? { sourceSite } : {}),
     status: 'generating',
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
@@ -1100,8 +1111,9 @@ export function startGuide(opts: { itemId: string; title: string; order?: string
   note({
     itemId, title, stage: 'queued', level: 'info',
     message: `${existing ? 'Rebuilding from scratch' : 'Queued a new guide'}` +
-             `${order ? `, ordered "${order}"` : ''} — model ${OLLAMA_MODEL}, ${NUM_CTX} token context`,
+             `${order ? `, ordered "${order}"` : ''}${sourceSite ? `, sourced from ${sourceSite}` : ''} — ` +
+             `model ${OLLAMA_MODEL}, ${NUM_CTX} token context`,
   })
-  enqueue(() => run(itemId, title, order))
+  enqueue(() => run(itemId, title, order, sourceSite))
   return 'started'
 }

@@ -17,6 +17,7 @@ import { nextRecurringFireAt, sanitizeRepeatDays } from './timers'
 import { findCover, artworkConfigured } from './artwork'
 import { guideProgress, listGuides, loadGuide, setStepDone } from '../guides'
 import { startGuide } from '../guide-generator'
+import { normalizeSiteHost } from '../research'
 import { pushGuide } from '../guide-events'
 
 // ── State file helpers (mirror state.ts) ─────────────────────────────────────
@@ -973,9 +974,10 @@ function cancelTimer(query: string): string {
 // report on it, and tick boxes — each one has to return in the second or two the
 // user is waiting for a spoken reply.
 
-async function createGameGuide(title: string, order: string): Promise<string> {
+async function createGameGuide(title: string, order: string, source: string): Promise<string> {
   const t = title.trim()
   if (!t) return 'Error: title is required.'
+  const sourceSite = source.trim() ? normalizeSiteHost(source) : null
 
   const items = readMedia()
   let hit = findByTitle(items, t)
@@ -999,12 +1001,22 @@ async function createGameGuide(title: string, order: string): Promise<string> {
            `Tell the user it's still working, and do not start another.`
   }
 
-  const result = startGuide({ itemId: hit.id, title: hit.title, ...(order.trim() ? { order: order.trim() } : {}) })
+  const result = startGuide({
+    itemId: hit.id,
+    title: hit.title,
+    ...(order.trim() ? { order: order.trim() } : {}),
+    ...(sourceSite ? { sourceSite } : {}),
+  })
   if (result === 'busy') {
     return `A guide for "${hit.title}" is already being generated. Tell the user it's on its way.`
   }
   const regenerated = existing ? ' This replaces the previous guide and its ticked-off steps.' : ''
-  return `Started researching a guide for "${hit.title}".${regenerated} It takes a few minutes and builds up ` +
+  const sourced = sourceSite
+    ? ` It's being built from ${sourceSite} first, falling back to the game's wiki for anything that site doesn't cover.`
+    : source.trim()
+      ? ` (Couldn't use "${source.trim()}" as a source site — building from the community wiki instead.)`
+      : ''
+  return `Started researching a guide for "${hit.title}".${regenerated}${sourced} It takes a few minutes and builds up ` +
          `section by section; it appears under the game in the Watch/Play list, and the dashboard shows a ` +
          `notice when it's done. Say one short sentence confirming you're on it — do not pretend it is ready yet.`
 }
@@ -1544,6 +1556,13 @@ export const DASHBOARD_TOOLS = [
               'Only when the user asked for a specific organization, e.g. "by boss order", ' +
               '"speedrun route", "just the side quests". Leave empty to use how the community organizes it.',
           },
+          source: {
+            type: 'string',
+            description:
+              'Only when the user named a specific website to build the guide from ("use zeldadungeon.net", ' +
+              '"base it on ign.com"). Pass the site\'s domain or URL. That site is researched first and the ' +
+              'game\'s wiki is the fallback. Leave empty to use the community wiki as the primary source.',
+          },
         },
         required: ['title'],
       },
@@ -1632,7 +1651,7 @@ export async function runDashboardTool(
     case 'set_alarm':          return setAlarm(str('time'), str('label'), str('repeat'))
     case 'list_timers':        return listTimers()
     case 'cancel_timer':       return cancelTimer(str('query'))
-    case 'create_game_guide':  return createGameGuide(str('title'), str('order'))
+    case 'create_game_guide':  return createGameGuide(str('title'), str('order'), str('source'))
     case 'get_game_guide_progress': return getGameGuideProgress(str('title'))
     case 'check_off_guide_step': {
       const done = typeof args['done'] === 'boolean' ? (args['done'] as boolean) : true

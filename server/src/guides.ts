@@ -95,6 +95,8 @@ export interface Guide {
   organization:   string
   /** Set when the user asked for a different order than the community default. */
   orderOverride?: string
+  /** Bare hostname the user asked the guide to be built from, e.g. "zeldadungeon.net". */
+  sourceSite?:    string
   status:         GuideStatus
   error?:         string
   createdAt:      string
@@ -257,6 +259,7 @@ function normalize(itemId: string, v: unknown): Guide | null {
     statusRaw === 'ready' || statusRaw === 'failed' || statusRaw === 'generating' ? statusRaw : 'ready'
   const now = new Date().toISOString()
   const order = str(o['orderOverride'], 200)
+  const sourceSite = str(o['sourceSite'], 120)
   const phase = str(o['phase'], 120)
   const error = str(o['error'], 400)
   const video = normalizeVideo(o['video'])
@@ -276,6 +279,7 @@ function normalize(itemId: string, v: unknown): Guide | null {
     title:        str(o['title'], MAX_TITLE_CHARS),
     organization: str(o['organization'], MAX_SUMMARY_CHARS),
     ...(order ? { orderOverride: order } : {}),
+    ...(sourceSite ? { sourceSite } : {}),
     status,
     ...(error ? { error } : {}),
     createdAt: str(o['createdAt'], 40) || now,

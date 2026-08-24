@@ -171,6 +171,58 @@ export function communityQuery(title: string, topic: string): string {
   return `${title} ${t} ${hints.join(' ')}`.replace(/\s+/g, ' ').trim()
 }
 
+// ── A user-named source site ──────────────────────────────────────────────────
+// The wiki chain below is the default because it needs no key and is never
+// throttled — but a user can name a specific site to build from ("make the
+// Majora's Mask guide from zeldadungeon.net"), and dedicated walkthrough sites
+// often route you through a dungeon where a wiki only describes it. That site is
+// reached the ordinary way (site: search + reader extraction), not the MediaWiki
+// API, because most of them aren't wikis.
+
+/**
+ * Turn "zeldadungeon.net", "https://www.zeldadungeon.net/majoras-mask/", or
+ * "www.zeldadungeon.net" into a bare lowercased hostname ("zeldadungeon.net"),
+ * or null when there's no usable host. A bare word with no dot ("ign") is
+ * rejected: it's too ambiguous to aim a site: search at.
+ */
+export function normalizeSiteHost(input: string): string | null {
+  const raw = (input ?? '').trim().toLowerCase()
+  if (!raw) return null
+  let host = raw
+  if (/^[a-z][a-z0-9+.-]*:\/\//.test(raw)) {
+    try { host = new URL(raw).hostname } catch { return null }
+  } else {
+    host = raw.split('/')[0] ?? raw
+  }
+  host = host.replace(/^www\./, '')
+  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(host)) return null
+  return host
+}
+
+/**
+ * Pages from one specific site, via a `site:` search then the same reader
+ * extraction the open-web path uses. Best-effort: a `site:` query on the scraped
+ * search path can be throttled to nothing, so the caller keeps the wiki chain as
+ * a fallback — naming a site can only add sources, never empty the guide.
+ */
+async function researchSiteScoped(host: string, query: string, limit: number, maxChars: number): Promise<Page[]> {
+  const hits = await searchWeb(`site:${host} ${query}`.replace(/\s+/g, ' ').trim(), Math.max(limit + 3, 5))
+  const pages: Page[] = []
+  for (const hit of hits) {
+    if (pages.length >= limit) break
+    // A `site:` search can still leak the odd off-site result on the scraped
+    // path — keep only pages actually on the named host.
+    const parsed = parseUrl(hit.url)
+    if (!parsed || !parsed.hostname.replace(/^www\./, '').endsWith(host)) continue
+    const page = await readPage(hit.url, maxChars)
+    if (!page) continue
+    pages.push({ ...page, title: hit.title || page.title })
+    console.log(`[research] ${host}: "${page.title.slice(0, 50)}" (${page.text.length} chars) for "${query.slice(0, 50)}"`)
+  }
+  if (pages.length === 0) console.warn(`[research] nothing usable from ${host} for "${query.slice(0, 60)}"`)
+  return pages
+}
+
 // ── The community's own wiki ──────────────────────────────────────────────────
 // Scraped search engines answer a burst of queries with a CAPTCHA, and one guide
 // fires a dozen — so the primary source is the game's wiki, read through the
@@ -397,11 +449,23 @@ export async function researchGame(
   topic: string,
   limit = 1,
   maxChars = 6000,
+  preferredSite?: string,
 ): Promise<Page[]> {
   const pages: Page[] = []
+
+  // A user-named source site is honoured first — it's an explicit "build it from
+  // here". The wiki chain below still runs when the site comes up short, so a
+  // throttled site: search degrades to the wiki instead of emptying the guide.
+  if (preferredSite) {
+    for (const p of await researchSiteScoped(preferredSite, topic || gameTitle, limit, maxChars)) {
+      if (pages.length >= limit) break
+      if (!pages.some(x => x.url === p.url)) pages.push(p)
+    }
+  }
+
   const host = await findGameWiki(gameTitle)
 
-  if (host) {
+  if (host && pages.length < limit) {
     // A section topic is usually an article in its own right ("Woodfall Temple"),
     // so search the wiki for the topic and read the best matches.
     const titles = await wikiSearchBestFirst(host, topic || gameTitle, limit + 2)

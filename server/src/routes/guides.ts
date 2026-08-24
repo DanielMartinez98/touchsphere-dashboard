@@ -13,6 +13,7 @@ import {
   setStepDone,
 } from '../guides'
 import { isGenerating, regenerateSection, startGuide } from '../guide-generator'
+import { normalizeSiteHost } from '../research'
 import { pushGuide } from '../guide-events'
 import { note, recentActivity } from '../guide-activity'
 
@@ -58,9 +59,10 @@ router.get('/:itemId', (req: Request, res: Response) => {
 // via the `guide` SSE event (see guide-generator.ts).
 router.post('/:itemId', (req: Request, res: Response) => {
   const itemId = String(req.params['itemId'] ?? '')
-  const body = (req.body ?? {}) as { title?: unknown; order?: unknown }
+  const body = (req.body ?? {}) as { title?: unknown; order?: unknown; source?: unknown }
   const title = typeof body.title === 'string' ? body.title.trim().slice(0, 120) : ''
   const order = typeof body.order === 'string' ? body.order.trim().slice(0, 200) : ''
+  const sourceSite = typeof body.source === 'string' ? normalizeSiteHost(body.source) : null
 
   if (!itemId) {
     res.status(400).json({ error: 'itemId is required' })
@@ -78,8 +80,8 @@ router.post('/:itemId', (req: Request, res: Response) => {
     return
   }
 
-  const result = startGuide({ itemId, title: effectiveTitle, ...(order ? { order } : {}) })
-  console.log(`[guides] POST /${itemId} "${effectiveTitle}" → ${result}`)
+  const result = startGuide({ itemId, title: effectiveTitle, ...(order ? { order } : {}), ...(sourceSite ? { sourceSite } : {}) })
+  console.log(`[guides] POST /${itemId} "${effectiveTitle}"${sourceSite ? ` from ${sourceSite}` : ''} → ${result}`)
   res.status(202).json({ status: 'generating', started: result === 'started' })
 })
 
