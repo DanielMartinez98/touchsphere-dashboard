@@ -78,7 +78,18 @@ const MAX_PROMPT = 900
 // the LLM can reach, so it gets a higher ceiling than MAX_DIM — the same
 // distinction COMFYUI_URL makes against isPublicHttpUrl(). 3 MP in portrait is
 // already 1408×2112, which a 2B model like Anima renders happily on a 4090.
-const MAX_USER_DIM = 2048
+//
+// Raised from 2048 when the panel's megapixel field became typeable. The
+// number is chosen so this clamp is a GUARD rather than a second, hidden cap:
+// the longest side any of the three orientations needs at the panel's 16 MP
+// ceiling is 4899 (2:3 portrait), so nothing reachable from the panel ever
+// meets it. At 2048 someone could set 12 MP and quietly be rendered 8, with
+// nothing on screen saying the setting had been overruled — which is the one
+// failure this whole file is trying not to have. Whether the card can hold a
+// render this size is the operator's business, and a visible one: the panel's
+// resolution readout is live, so what is about to be asked of the GPU is on
+// screen before the button is tapped.
+const MAX_USER_DIM = 6144
 
 // ── Checkpoint selection ─────────────────────────────────────────────────────
 
@@ -433,7 +444,9 @@ const clampDim = (n: number, fallback: number): number => {
 function sizeForMegapixels(
   width: number, height: number, megapixels: number, multipleOf: number,
 ): { width: number; height: number } {
-  const mult = multipleOf >= 8 ? multipleOf : 8
+  // Snapped, not just floored, so a stored value that predates the 8px rule (or
+  // one hand-edited into the JSON) can't produce a side ComfyUI rejects.
+  const mult = multipleOf >= 8 ? Math.round(multipleOf / 8) * 8 : 8
   const aspect = width / height
   const target = megapixels * 1_000_000
   // Solve w*h = target with w/h = aspect, then snap both sides to the grid.

@@ -25,7 +25,7 @@ import {
 } from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
 import {
-  MEGAPIXELS, MULTIPLES, resolutionFor,
+  LIMITS, MEGAPIXELS, MULTIPLES, resolutionFor,
   type ImageParams, type Orientation, type SeedMode, type StyleDefaults,
 } from '../../../hooks/useImages'
 
@@ -54,14 +54,20 @@ const CHIP_OFF = 'bg-white/5 text-white/50 border border-transparent'
 const LABEL = 'text-xs uppercase tracking-widest text-white/35 font-semibold flex items-center gap-1.5'
 
 /**
- * A −/+ number row.
+ * A number row: − / typed value / + .
+ *
+ * The steppers are for nudging — one more step, half a point of cfg — and stay
+ * the fastest way to make a small change. The middle is a real field: tapping
+ * it opens the number pad, because "eight taps of +" is not a way to ask for
+ * 96 steps, and every knob here has a value somebody eventually knows exactly.
  *
  * `auto` is what value 0 means, spelled out — "Auto (26 from Quality)" rather
  * than a bare 0, because the whole point of leaving it at zero is that
- * something else decides and you should be able to see what.
+ * something else decides and you should be able to see what. In the field it is
+ * the placeholder, so clearing the pad and tapping Done hands the knob back.
  */
-function Stepper({
-  value, onChange, min, max, step, decimals = 0, auto, unit = '',
+function NumberField({
+  value, onChange, min, max, step, decimals = 0, auto, ariaLabel,
 }: {
   value:    number
   onChange: (v: number) => void
@@ -71,7 +77,7 @@ function Stepper({
   decimals?: number
   /** Text shown instead of the number when value is 0. Omit if 0 is a real value. */
   auto?:    string
-  unit?:    string
+  ariaLabel: string
 }) {
   // Float steps (cfg 0.5, strength 0.05) accumulate error fast; round to the
   // control's own precision on every change rather than letting 0.7000000001
@@ -85,19 +91,48 @@ function Stepper({
     onChange(Math.max(auto ? 0 : min, Math.min(max, next)))
   }
 
+  /**
+   * Take whatever came off the number pad.
+   *
+   * It can be anything — empty, '.', '1.2.3' — and a NaN reaching the server
+   * comes back as the field's previous value with no explanation, which reads
+   * as the panel refusing to save. So: strip, parse, and clamp HERE, to the
+   * same bounds the server uses (LIMITS mirrors image-params.ts), so the number
+   * that lands in the box is the number that will be rendered with.
+   */
+  const commit = (raw: string) => {
+    const cleaned = raw.replace(/[^\d.]/g, '')
+    const n = parseFloat(cleaned)
+    // Emptying the field is how you get back to Auto without hunting for the
+    // Auto button; on a knob where 0 isn't special it means the minimum.
+    if (!Number.isFinite(n)) return onChange(auto ? 0 : min)
+    if (auto && n <= 0) return onChange(0)
+    onChange(round(Math.max(min, Math.min(max, n))))
+  }
+
   const btn = 'w-14 h-12 rounded-xl bg-white/5 border border-hairline text-white/70 ' +
     'text-xl font-semibold flex items-center justify-center active:scale-95 active:bg-white/15 ' +
     'disabled:opacity-25'
+
+  // Trailing zeros are noise on a field you type into: 1.5, not 1.50, and 4
+  // rather than 4.0 — the decimals only bound the precision, they don't have to
+  // be spelled out.
+  const shown = value === 0 && auto ? '' : String(round(value))
 
   return (
     <div className="flex items-center gap-2">
       <button type="button" className={btn} onClick={() => bump(-1)}
               disabled={value === 0 && !!auto} aria-label="Less">−</button>
-      <div className="flex-1 h-12 rounded-xl bg-white/[0.07] border border-hairline
-                      flex items-center justify-center text-white text-[15px] font-semibold tabular-nums">
-        {value === 0 && auto ? <span className="text-white/45 text-[13px]">{auto}</span>
-                             : `${value.toFixed(decimals)}${unit}`}
-      </div>
+      <TouchInput
+        value={shown}
+        onChange={commit}
+        placeholder={auto ?? ''}
+        ariaLabel={ariaLabel}
+        numeric
+        className="flex-1 min-w-0 h-12 rounded-xl bg-white/[0.07] border border-hairline text-center
+                   text-white text-[15px] font-semibold tabular-nums
+                   placeholder:text-white/45 placeholder:text-[13px] placeholder:font-normal"
+      />
       <button type="button" className={btn} onClick={() => bump(1)}
               disabled={value >= max} aria-label="More">+</button>
       {/* Getting BACK to auto has to be one tap. Without it, a stepper you
@@ -113,6 +148,15 @@ function Stepper({
         </button>
       )}
     </div>
+  )
+}
+
+/** The allowed range, said out loud next to the knob it applies to. */
+function Range({ min, max, unit = '' }: { min: number; max: number; unit?: string }) {
+  return (
+    <span className="ml-auto normal-case tracking-normal text-white/30 tabular-nums">
+      {min}–{max}{unit}
+    </span>
   )
 }
 
@@ -188,9 +232,26 @@ export default function AdvancedPanel({
                 </button>
               ))}
             </div>
+            {/* The chips are shortcuts, not the range — 2.4 MP is a perfectly
+                reasonable thing to want and there is no chip for it. Empty
+                means Preset, so clearing the pad is how you get back out. */}
+            <div className={LABEL}>
+              Megapixels
+              <Range min={LIMITS.megapixels.min} max={LIMITS.megapixels.max} unit=" MP" />
+            </div>
+            <NumberField
+              value={params.megapixels}
+              onChange={megapixels => onChange({ megapixels })}
+              min={LIMITS.megapixels.min} max={LIMITS.megapixels.max} step={0.25} decimals={2}
+              auto="Preset — the fixed orientation sizes"
+              ariaLabel="Megapixels"
+            />
             {params.megapixels > 0 && (
               <>
-                <div className={LABEL}>Align each side to</div>
+                <div className={LABEL}>
+                  Align each side to
+                  <Range min={LIMITS.multipleOf.min} max={LIMITS.multipleOf.max} />
+                </div>
                 <div className="flex gap-2">
                   {MULTIPLES.map(m => (
                     <button
@@ -203,9 +264,16 @@ export default function AdvancedPanel({
                     </button>
                   ))}
                 </div>
+                <NumberField
+                  value={params.multipleOf}
+                  onChange={multipleOf => onChange({ multipleOf })}
+                  min={LIMITS.multipleOf.min} max={LIMITS.multipleOf.max} step={8}
+                  ariaLabel="Align each side to"
+                />
                 <span className="text-[11px] text-white/25 leading-snug">
                   Models are trained on a grid. 8 suits SDXL; some newer models seam
-                  unless both sides land on 64.
+                  unless both sides land on 64. Anything typed here is rounded to a
+                  multiple of 8 — ComfyUI's latent space leaves no choice about that.
                 </span>
               </>
             )}
@@ -216,12 +284,14 @@ export default function AdvancedPanel({
             <div className={LABEL}>
               <Gauge size={13} />
               Steps
+              <Range min={LIMITS.steps.min} max={LIMITS.steps.max} />
             </div>
-            <Stepper
+            <NumberField
               value={params.steps}
               onChange={steps => onChange({ steps })}
-              min={1} max={150} step={1}
+              min={LIMITS.steps.min} max={LIMITS.steps.max} step={1}
               auto={`Auto — ${qualitySteps} from Quality`}
+              ariaLabel="Sampling steps"
             />
           </div>
 
@@ -235,12 +305,14 @@ export default function AdvancedPanel({
               <div className={LABEL}>
                 <Sliders size={13} />
                 Guidance (CFG)
+                <Range min={LIMITS.cfg.min} max={LIMITS.cfg.max} />
               </div>
-              <Stepper
+              <NumberField
                 value={params.cfg}
                 onChange={cfg => onChange({ cfg })}
-                min={1} max={20} step={0.5} decimals={1}
+                min={LIMITS.cfg.min} max={LIMITS.cfg.max} step={0.5} decimals={1}
                 auto={defaults ? `Auto — ${defaults.cfg} from this style` : 'Auto'}
+                ariaLabel="Guidance scale"
               />
               <span className="text-[11px] text-white/25 leading-snug">
                 How hard the model is pushed toward the prompt. Too high burns the
@@ -309,11 +381,16 @@ export default function AdvancedPanel({
                   </span>
                 )}
 
-                <div className={LABEL}>Strength</div>
-                <Stepper
+                <div className={LABEL}>
+                  Strength
+                  <Range min={LIMITS.loraStrength.min} max={LIMITS.loraStrength.max} />
+                </div>
+                <NumberField
                   value={params.loraStrength}
                   onChange={loraStrength => onChange({ loraStrength })}
-                  min={0} max={2} step={0.05} decimals={2}
+                  min={LIMITS.loraStrength.min} max={LIMITS.loraStrength.max}
+                  step={0.05} decimals={2}
+                  ariaLabel="LoRA strength"
                 />
                 <span className="text-[11px] text-white/25 leading-snug">
                   A turbo LoRA cuts the steps it needs, so drop Steps to around 8 and
@@ -366,9 +443,12 @@ export default function AdvancedPanel({
                     // The touch keyboard can produce anything; a NaN seed would
                     // be rejected server-side and silently snap back to 0.
                     const n = parseInt(v.replace(/\D/g, ''), 10)
-                    onChange({ seed: Number.isFinite(n) ? n : 0 })
+                    onChange({
+                      seed: Number.isFinite(n) ? Math.min(n, LIMITS.seed.max) : 0,
+                    })
                   }}
                   ariaLabel="Seed value"
+                  numeric
                   className="flex-1 h-12 bg-white/[0.07] text-white rounded-xl px-4 text-[15px]
                              font-semibold tabular-nums border border-hairline"
                 />

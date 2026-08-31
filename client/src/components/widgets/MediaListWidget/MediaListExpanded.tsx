@@ -131,6 +131,9 @@ function RenameSheet({
   onSave:  (title: string) => void
 }) {
   const [value, setValue] = useState(item.title)
+  // Handed to the keyboard so its caret, selection and toolbar act on this
+  // field rather than blindly appending at the end.
+  const inputRef = useRef<HTMLInputElement>(null)
 
   const commit = () => {
     const trimmed = value.trim()
@@ -154,6 +157,8 @@ function RenameSheet({
               type="text"
               inputMode="none"
               readOnly
+              autoFocus
+              ref={inputRef}
               value={value}
               className="flex-1 bg-glass-2 text-white rounded-xl px-4 py-3 text-base outline-none"
             />
@@ -164,7 +169,7 @@ function RenameSheet({
           </div>
         </div>
 
-        <TouchKeyboard value={value} onChange={setValue} onDone={commit} />
+        <TouchKeyboard value={value} onChange={setValue} onDone={commit} targetRef={inputRef} />
       </div>
     </div>
   )
@@ -300,6 +305,8 @@ export default function MediaListExpanded({
   const [title, setTitle] = useState('')
   const [type, setType] = useState<MediaType>('show')
   const [showKeyboard, setShowKeyboard] = useState(false)
+  // The add field, so the keyboard edits at its caret rather than appending.
+  const addRef = useRef<HTMLInputElement>(null)
   const [filter, setFilter] = useState<Filter>('all')
   const [shuffleSeed, setShuffleSeed] = useState(0)
   const [recommendedId, setRecommendedId] = useState<string | null>(null)
@@ -549,6 +556,7 @@ export default function MediaListExpanded({
           onKeyDown={hasMouse ? e => { if (e.key === 'Enter') handleAdd(e) } : undefined}
           onClick={hasMouse ? undefined : () => setShowKeyboard(true)}
           onPointerDown={hasMouse ? undefined : () => setShowKeyboard(true)}
+          ref={addRef}
           placeholder="Add title..."
           className={`flex-1 bg-glass-2 text-white placeholder-white/35 rounded-xl px-4 py-3 text-base outline-none ${hasMouse ? '' : 'cursor-pointer'}`}
         />
@@ -752,6 +760,7 @@ export default function MediaListExpanded({
           value={title}
           onChange={setTitle}
           onDone={handleAdd}
+          targetRef={addRef}
         />
       )}
     </div>

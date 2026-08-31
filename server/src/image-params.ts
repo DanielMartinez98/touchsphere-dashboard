@@ -61,11 +61,33 @@ export const DEFAULT_PARAMS: ImageParams = {
 // looser than the guards in image.ts on what the LLM may ask for — but a
 // fat-fingered 400-step render on a kiosk with no keyboard to cancel it is
 // still worth preventing.
-export const MEGAPIXEL_CHOICES = [0, 0.5, 1, 1.5, 2, 3]
-export const MULTIPLE_CHOICES  = [8, 16, 32, 64]
-const MAX_STEPS = 150
-const MAX_CFG   = 30
-const MAX_LORA  = 2
+//
+// The chip rows in the panel are PRESETS, not the range: every one of these
+// numbers is also typeable on the panel's number pad, so the arrays below only
+// decide what gets a one-tap shortcut while the MIN/MAX constants decide what
+// is actually allowed. That split is why the caps can be generous — nobody
+// reaches 16 MP by mis-tapping a chip.
+export const MEGAPIXEL_CHOICES = [0, 0.5, 1, 1.5, 2, 3, 4, 6, 8, 12, 16]
+export const MULTIPLE_CHOICES  = [8, 16, 32, 64, 128]
+export const MIN_MEGAPIXELS = 0.25
+// 16 MP is where the budget stops. It is a deliberate cap rather than a
+// technical one: MAX_USER_DIM in image.ts is set high enough that every
+// orientation reaches 16 MP exactly (4000² square, 3264×4896 portrait), so the
+// number asked for is the number rendered right up to the ceiling instead of
+// being quietly trimmed by a dimension clamp on the long side. What the card
+// can actually hold is a separate question, and one only the person watching
+// VRAM can answer — SDXL well past its training resolution produces duplicated
+// limbs and repeated horizons long before it runs out of memory.
+export const MAX_MEGAPIXELS = 16
+// The multiple is a rounding grid, not a model capability, so nothing in the
+// stack breaks at a large one — it just rounds harder, and a side is still
+// clamped to MAX_USER_DIM afterwards. 512 is where it stops being a grid and
+// starts being the resolution.
+export const MIN_MULTIPLE = 8
+export const MAX_MULTIPLE = 512
+export const MAX_STEPS = 150
+export const MAX_CFG   = 30
+export const MAX_LORA  = 2
 export const MAX_SEED = 2 ** 31 - 1
 
 const num = (v: unknown): number | null =>
@@ -86,10 +108,18 @@ export function normalizeParams(raw: unknown, base: ImageParams = DEFAULT_PARAMS
 
   return {
     // 0 is a real value here ("off"), so it can't be filtered out by truthiness.
-    megapixels:   mp === null ? base.megapixels : (mp <= 0 ? 0 : clamp(mp, 0.25, 4)),
-    multipleOf:   mult === null || !MULTIPLE_CHOICES.includes(mult)
+    // Two decimals because the value is typed now rather than picked off a
+    // chip, and 1.3333333 would come back looking like a different number.
+    megapixels:   mp === null
+      ? base.megapixels
+      : (mp <= 0 ? 0 : Math.round(clamp(mp, MIN_MEGAPIXELS, MAX_MEGAPIXELS) * 100) / 100),
+    // Any multiple of 8 in range, not one of five fixed choices — but STILL a
+    // multiple of 8, because that is the one part of this that is a real
+    // constraint: ComfyUI's latent space is 8px, and a side of 1000 (a perfectly
+    // reasonable-looking "multiple of 100") errors inside the graph.
+    multipleOf:   mult === null || mult <= 0
       ? base.multipleOf
-      : mult,
+      : clamp(Math.round(mult / 8) * 8, MIN_MULTIPLE, MAX_MULTIPLE),
     steps:        steps === null ? base.steps : clamp(Math.round(steps), 0, MAX_STEPS),
     cfg:          cfg === null ? base.cfg : clamp(Math.round(cfg * 10) / 10, 0, MAX_CFG),
     turbo:        typeof o['turbo'] === 'boolean' ? o['turbo'] : base.turbo,

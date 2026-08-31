@@ -14,7 +14,7 @@
 // full-screen and portalled to body), so they're absolute layers here rather than
 // portals of their own.
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   ArrowLeft, Check, CheckCheck, ChevronRight, Play, RefreshCw, ListOrdered, Square, Trash2,
   Loader2, AlertTriangle, X,
@@ -358,6 +358,9 @@ function ReorderSheet({
   onSubmit: (order: string) => void
 }) {
   const [value, setValue] = useState(guide.orderOverride ?? '')
+  // Handed to the keyboard so its caret, selection and toolbar act on this
+  // field rather than blindly appending at the end.
+  const inputRef = useRef<HTMLInputElement>(null)
 
   const commit = () => {
     onSubmit(value.trim())
@@ -377,7 +380,8 @@ function ReorderSheet({
             the community organizes it. This replaces the guide and every ticked step.
           </p>
           <div className="flex gap-2">
-            <input type="text" inputMode="none" readOnly value={value}
+            <input type="text" inputMode="none" readOnly value={value} ref={inputRef}
+              autoFocus
               placeholder="how should it be organized?"
               className="flex-1 bg-glass-2 text-white rounded-xl px-4 py-3 text-base outline-none placeholder:text-white/25" />
             <button type="button" onClick={commit}
@@ -386,7 +390,7 @@ function ReorderSheet({
             </button>
           </div>
         </div>
-        <TouchKeyboard value={value} onChange={setValue} onDone={commit} />
+        <TouchKeyboard value={value} onChange={setValue} onDone={commit} targetRef={inputRef} />
       </div>
     </div>
   )

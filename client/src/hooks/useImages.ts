@@ -81,9 +81,30 @@ export const DEFAULT_PARAMS: ImageParams = {
 
 // Mirrors MEGAPIXEL_CHOICES / MULTIPLE_CHOICES in server/src/image-params.ts.
 // Duplicated for the same reason SIZES is: the panel has to draw its buttons
-// before it has spoken to the server, and these are six constants.
-export const MEGAPIXELS = [0, 0.5, 1, 1.5, 2, 3]
-export const MULTIPLES  = [8, 16, 32, 64]
+// before it has spoken to the server, and these are a handful of constants.
+//
+// These are the one-tap PRESETS, not the range. Every numeric knob in the
+// Advanced panel can also be typed on the number pad, and the LIMITS below are
+// what actually bounds it — kept in step with the server so a typed value is
+// clamped identically on both sides. A field that let you type 400 steps and
+// then showed 150 without saying so would read as the panel losing the setting.
+export const MEGAPIXELS = [0, 0.5, 1, 1.5, 2, 3, 4, 6, 8, 12, 16]
+export const MULTIPLES  = [8, 16, 32, 64, 128]
+
+export const LIMITS = {
+  megapixels:   { min: 0.25, max: 16  },
+  multipleOf:   { min: 8,    max: 512 },
+  steps:        { min: 1,    max: 150 },
+  cfg:          { min: 1,    max: 30  },
+  loraStrength: { min: 0,    max: 2   },
+  seed:         { min: 0,    max: 2 ** 31 - 1 },
+}
+
+// MIN_DIM / MAX_USER_DIM in server/src/image.ts. Mirrored so the panel's
+// resolution readout is the size that will actually be rendered rather than the
+// one that was asked for.
+const MIN_SIDE = 256
+const MAX_SIDE = 6144
 
 interface ParamsResponse {
   values?:   Partial<ImageParams>
@@ -422,11 +443,11 @@ export function useImages() {
 export function resolutionFor(o: Orientation, p: ImageParams): { width: number; height: number } {
   const base = SIZES[o]
   if (p.megapixels <= 0) return base
-  const mult = p.multipleOf >= 8 ? p.multipleOf : 8
+  const mult = p.multipleOf >= 8 ? Math.round(p.multipleOf / 8) * 8 : 8
   const aspect = base.width / base.height
   const target = p.megapixels * 1_000_000
   const snap = (n: number) =>
-    Math.max(256, Math.min(2048, Math.max(mult, Math.round(n / mult) * mult)))
+    Math.max(MIN_SIDE, Math.min(MAX_SIDE, Math.max(mult, Math.round(n / mult) * mult)))
   return {
     width:  snap(Math.sqrt(target * aspect)),
     height: snap(Math.sqrt(target / aspect)),
