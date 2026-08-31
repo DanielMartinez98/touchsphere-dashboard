@@ -277,7 +277,12 @@ router.post('/job/:id/cancel', (req: Request, res: Response) => {
   res.status(404).json({ error: 'no such job' })
 })
 
-// POST /api/image/generate  { prompt, negative?, width?, height?, seed? }
+// POST /api/image/generate  { prompt, negative?, width?, height?, seed?, source?, denoise? }
+//
+// `source` is the id of a picture already in the gallery and turns this into a
+// REDRAW: it is encoded to a latent and the sampler starts from that, with
+// `denoise` saying how much of it to throw away. The size then comes from the
+// source, so width/height are ignored — see startImage().
 // Returns the queued job — NOT the finished image. Renders take seconds to
 // minutes and holding the request open for that would tie up the Pi's socket
 // and time out behind Caddy.
@@ -314,6 +319,13 @@ router.post('/generate', (req: Request, res: Response) => {
     ...(num('width')  !== undefined ? { width:  num('width')!  } : {}),
     ...(num('height') !== undefined ? { height: num('height')! } : {}),
     ...(num('seed')   !== undefined ? { seed:   num('seed')!   } : {}),
+    // Validated against the gallery in startImage() rather than here, so the
+    // refusal arrives on the same channel every other outcome does — as a
+    // failed job with a sentence in it, not as a 400 the overlay has no frame
+    // for. The shape check is here because an id is a filename stem.
+    ...(typeof body?.['source'] === 'string' && /^[a-f0-9]{32}$/.test(body['source'])
+      ? { source: body['source'] } : {}),
+    ...(num('denoise') !== undefined ? { denoise: num('denoise')! } : {}),
   })
   res.status(202).json(jobWire(job))
 })

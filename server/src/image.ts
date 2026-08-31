@@ -74,6 +74,19 @@ const MAX_STORED = Number(process.env['IMAGE_MAX_STORED'] ?? 60)
 const MIN_DIM = 256
 const MAX_DIM = 1536
 const MAX_PROMPT = 900
+
+// How much of the source picture a REDRAW is allowed to throw away.
+//
+// denoise is the img2img dial: 1.0 ignores the source entirely (which is just
+// txt2img with extra steps), and 0 returns it untouched. The model authors'
+// own guidance is 0.5-0.6 for a small edit and 0.75-0.85 for a creative
+// reinterpretation, which is the range the three strength chips sit in.
+//
+// The floor is not 0: below about 0.05 the sampler has nothing to do and the
+// answer is a copy of the input, which reads as the feature being broken rather
+// than as a very light touch.
+const MIN_DENOISE = 0.05
+const MAX_DENOISE = 1
 // The megapixel budget in the Advanced panel is OPERATOR config, not something
 // the LLM can reach, so it gets a higher ceiling than MAX_DIM — the same
 // distinction COMFYUI_URL makes against isPublicHttpUrl(). 3 MP in portrait is
@@ -349,6 +362,17 @@ export interface ImageJob {
   lora:     string
   /** Strength of that LoRA. Only meaningful when `lora` is set. */
   loraStrength: number
+  /**
+   * REDRAW: the id of the stored picture this one starts from. '' = from
+   * scratch. An id out of the gallery rather than a path or a URL, because it
+   * is reachable by the assistant and the gallery is the only closed set of
+   * images this app is willing to hand to the GPU box.
+   */
+  source:   string
+  /** The source's file on the volume, resolved at queue time. '' when none. */
+  sourceFile: string
+  /** How much of the source to throw away, 0.05-1. Meaningless without a source. */
+  denoise:  number
   status:   JobStatus
   /** Human phrase for the overlay — "waiting for the GPU", "drawing"… */
   phase:    string
@@ -460,6 +484,13 @@ function wire(job: ImageJob) {
     steps:    job.steps,
     cfg:      job.cfg,
     ...(job.lora ? { lora: job.lora, loraStrength: job.loraStrength } : {}),
+    // Only on a redraw, so a client can tell the two kinds of job apart without
+    // having to know that denoise 1 means "from scratch".
+    ...(job.source ? {
+      source:    job.source,
+      sourceUrl: `/api/image/file/${job.sourceFile}`,
+      denoise:   job.denoise,
+    } : {}),
     ...(job.file  ? { file: job.file, url: `/api/image/file/${job.file}` } : {}),
     ...(job.error ? { error: job.error } : {}),
     // The client orders its own copy of the queue by this. Position can't be
@@ -490,7 +521,25 @@ export interface ImageRequest {
   steps?:    number
   /** Guidance override. Omit to use the style's saved cfg, then the graph's. */
   cfg?:      number
+  /**
+   * REDRAW: the id of a picture in the gallery to start from. The size comes
+   * from that picture and `width`/`height` are ignored — an img2img latent is
+   * the source's own shape, and quietly rendering a different one would be the
+   * silent-override failure this file keeps trying not to have.
+   */
+  source?:   string
+  /** How much of the source to throw away, 0.05-1. Ignored without a source. */
+  denoise?:  number
 }
+
+// The middle chip in the Draw panel, and what the assistant gets when it asks
+// for a redraw without saying how much to change. 0.65 keeps the composition
+// and the palette while genuinely repainting the subject, which is what "change
+// this picture" almost always means.
+const DEFAULT_DENOISE = 0.65
+
+const clampDenoise = (n: number): number =>
+  Number.isFinite(n) ? Math.max(MIN_DENOISE, Math.min(MAX_DENOISE, n)) : DEFAULT_DENOISE
 
 const clampDim = (n: number, fallback: number): number => {
   if (!Number.isFinite(n) || n <= 0) return fallback
@@ -565,15 +614,29 @@ export function startImage(req: ImageRequest): ImageJob {
   const style = (req.model ?? '').trim() || selectedModel()
   const p = paramsFor(style)
 
+  // A redraw starts from a picture already in the gallery. Resolved here rather
+  // than in run() so a bad id is refused while someone is still looking at the
+  // button they pressed, and so the job carries the file it will need.
+  const sourceId = (req.source ?? '').trim()
+  const source = sourceId ? listImages().find(e => e.id === sourceId) : undefined
+
   const asked = {
     width:  clampDim(req.width  ?? DEFAULT_W, DEFAULT_W),
     height: clampDim(req.height ?? DEFAULT_H, DEFAULT_H),
   }
   // The orientation gives the shape; the megapixel budget, when set, gives the
   // size. Unset (0) leaves the fixed orientation sizes exactly as they were.
-  const size = p.megapixels > 0
-    ? sizeForMegapixels(asked.width, asked.height, p.megapixels, p.multipleOf)
-    : asked
+  //
+  // A redraw overrides both. VAEEncode produces a latent the shape of the image
+  // it was given, so the source's own size IS the output size — asking for
+  // anything else here would put a number on screen that the render then
+  // ignores. Orientation and the megapixel budget simply don't apply, and the
+  // Draw panel says so rather than showing controls that do nothing.
+  const size = source
+    ? { width: source.width, height: source.height }
+    : p.megapixels > 0
+      ? sizeForMegapixels(asked.width, asked.height, p.megapixels, p.multipleOf)
+      : asked
 
   const job: ImageJob = {
     id:        crypto.randomBytes(16).toString('hex'),
@@ -590,13 +653,27 @@ export function startImage(req: ImageRequest): ImageJob {
     // Same reasoning as the style: resolved when the picture is ASKED for, so
     // changing quality mid-queue doesn't retroactively change what's waiting.
     // Precedence: this request → the style's own steps → the quality preset.
+    // Precedence: this request → the style's own saved steps → the quality
+    // preset. A distilled style skips the last of those and keeps the number in
+    // its graph: 44 steps at cfg 1 is not a better picture, it is the same
+    // picture four times slower.
     steps:     Number.isFinite(req.steps) && Number(req.steps) > 0
       ? Math.max(1, Math.min(150, Math.round(Number(req.steps))))
-      : p.steps > 0 ? p.steps : (QUALITY_STEPS[selectedQuality()] ?? 0),
+      : p.steps > 0 ? p.steps
+      : styleIgnoresQuality(style) ? 0
+      : (QUALITY_STEPS[selectedQuality()] ?? 0),
     // cfg has no quality-preset layer on purpose — it is per-model tuning, not
     // a speed/quality dial. 0 all the way down means "whatever the graph says".
     cfg:       Number.isFinite(req.cfg) && Number(req.cfg) > 0 ? Number(req.cfg) : p.cfg,
     turbo:     p.turbo,
+    source:     source?.id ?? '',
+    sourceFile: source?.file ?? '',
+    // Clamped here so the number the UI shows and the number the sampler gets
+    // are the same one. Without a source it stays 1 — a full render — which is
+    // also exactly what the sampler wants for txt2img.
+    denoise:    source
+      ? clampDenoise(Number.isFinite(req.denoise) ? Number(req.denoise) : DEFAULT_DENOISE)
+      : 1,
     // May be '' here and filled in by run(), which can ask ComfyUI what LoRAs
     // exist; startImage must stay synchronous for the chat tool that calls it.
     lora:      p.turbo ? p.lora : '',
@@ -607,6 +684,20 @@ export function startImage(req: ImageRequest): ImageJob {
     startedAt: Date.now(),
   }
   jobs.set(job.id, job)
+
+  // Asked to redraw something that isn't there any more — pruned past the cap,
+  // deleted, or a model that invented an id. Refused rather than quietly drawn
+  // from scratch: "redraw this" and "draw this" produce very different pictures
+  // and substituting one for the other silently is the failure this file's
+  // header is about.
+  if (sourceId && !source) {
+    job.status = 'failed'
+    job.error = 'the picture to redraw is no longer in the gallery'
+    job.endedAt = Date.now()
+    console.warn(`[image] refused ${job.id}: no stored image ${sourceId}`)
+    push(job, 'failed')
+    return job
+  }
 
   // Refused, not enqueued — but still a real job with a real id, so whoever
   // asked gets the reason on the same channel every other outcome arrives on.
@@ -624,7 +715,8 @@ export function startImage(req: ImageRequest): ImageJob {
   console.log(
     `[image] queued ${job.id} "${job.prompt.slice(0, 60)}" ${job.width}×${job.height} ` +
     `seed=${job.seed} steps=${job.steps || 'graph'} cfg=${job.cfg || 'graph'}` +
-    `${job.turbo ? ' turbo' : ''}${waiting > 0 ? ` (${waiting} ahead of it)` : ''}`,
+    `${job.turbo ? ' turbo' : ''}${job.source ? ` redraw of ${job.source} denoise=${job.denoise}` : ''}` +
+    `${waiting > 0 ? ` (${waiting} ahead of it)` : ''}`,
   )
   push(job, waiting > 0 ? `waiting behind ${waiting} more` : 'waiting for the GPU')
 
@@ -664,7 +756,17 @@ async function run(job: ImageJob): Promise<void> {
       }
     }
 
-    const graph = buildGraph(job)
+    // A redraw needs its source on the GPU box before the graph can name it.
+    // ComfyUI's LoadImage reads from its own input/ directory, and that machine
+    // is on the other end of a tailnet with no shared filesystem — so the bytes
+    // go up over /upload/image and come back as a filename to put in the node.
+    let sourceName = ''
+    if (job.source) {
+      push(job, 'sending the picture over')
+      sourceName = await uploadSource(job)
+    }
+
+    const graph = buildGraph(job, sourceName)
     const promptId = await queuePrompt(graph)
     console.log(`[image] ${job.id} → comfy prompt ${promptId}`)
 
@@ -744,7 +846,7 @@ const BUILTIN_GRAPH: ComfyGraph = {
 }
 
 /**
- * Anima Base v1.0 — a WORKFLOW style, not a checkpoint.
+ * Anima — a family of WORKFLOW styles, not checkpoints.
  *
  * Anima doesn't ship as one .safetensors the way SDXL does; it's three files
  * (a 2B diffusion model, a Qwen-3 0.6B text encoder, a VAE) loaded by three
@@ -752,29 +854,49 @@ const BUILTIN_GRAPH: ComfyGraph = {
  * same list as the checkpoints without the "style" idea covering both.
  *
  * Transcribed from ComfyUI's own bundled template (image_anima_base_v1.json) —
- * its sampler settings are the model author's, not guesses: euler/simple at
- * cfg 4, where SDXL wants 8. The template wraps this in a frontend "subgraph"
- * and offers an optional turbo LoRA behind switch nodes; both are flattened
- * away here, because /prompt takes a flat API graph and the LoRA is off by
- * default anyway.
+ * the sampler settings are the model author's, not guesses. The template wraps
+ * this in a frontend "subgraph" and offers an optional turbo LoRA behind switch
+ * nodes; both are flattened away here, because /prompt takes a flat API graph.
+ *
+ * The three published variants share this graph exactly and differ only in the
+ * unet filename and the numbers their author recommends, so they are one
+ * factory rather than three transcriptions:
+ *
+ *   base      v1.0  the pretrained model — most diversity and style adherence
+ *   aesthetic v1.1  fine-tuned on high-quality images only; the best default
+ *   turbo     v1.1  distilled: ~8-12 steps at cfg 1, no negative prompt
+ *
+ * euler/simple is kept for all three rather than the author's newer `er_sde`
+ * suggestion, deliberately: a sampler_name ComfyUI doesn't have fails as a bare
+ * "value not in list" naming a sampler the user never chose, and er_sde is
+ * recent enough that the GPU box may predate it. Anyone who wants it can put it
+ * in a workflow of their own on the volume.
  */
-const ANIMA_GRAPH: ComfyGraph = {
-  '1': { class_type: 'UNETLoader', inputs: { unet_name: 'anima-base-v1.0.safetensors', weight_dtype: 'default' } },
-  '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen_3_06b_base.safetensors', type: 'stable_diffusion', device: 'default' } },
-  '3': { class_type: 'VAELoader', inputs: { vae_name: 'qwen_image_vae.safetensors' } },
-  '4': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
-  '5': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
-  '6': { class_type: 'EmptyLatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
-  '7': {
-    class_type: 'KSampler',
-    inputs: {
-      seed: 0, steps: 30, cfg: 4, sampler_name: 'euler', scheduler: 'simple', denoise: 1,
-      model: ['1', 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0],
+function animaGraph(unet: string, steps: number, cfg: number): ComfyGraph {
+  return {
+    '1': { class_type: 'UNETLoader', inputs: { unet_name: unet, weight_dtype: 'default' } },
+    '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen_3_06b_base.safetensors', type: 'stable_diffusion', device: 'default' } },
+    '3': { class_type: 'VAELoader', inputs: { vae_name: 'qwen_image_vae.safetensors' } },
+    '4': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
+    '5': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
+    '6': { class_type: 'EmptyLatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
+    '7': {
+      class_type: 'KSampler',
+      inputs: {
+        seed: 0, steps, cfg, sampler_name: 'euler', scheduler: 'simple', denoise: 1,
+        model: ['1', 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0],
+      },
     },
-  },
-  '8': { class_type: 'VAEDecode', inputs: { samples: ['7', 0], vae: ['3', 0] } },
-  '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['8', 0] } },
+    '8': { class_type: 'VAEDecode', inputs: { samples: ['7', 0], vae: ['3', 0] } },
+    '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['8', 0] } },
+  }
 }
+
+/** The text encoder and VAE every Anima variant shares. */
+const ANIMA_SHARED = [
+  'text_encoders/qwen_3_06b_base.safetensors',
+  'vae/qwen_image_vae.safetensors',
+]
 
 /**
  * Styles that are a whole graph rather than a checkpoint name.
@@ -789,10 +911,35 @@ const BUILTIN_WORKFLOWS: Record<string, {
   needs: string[]
   /** Substrings that identify this style's turbo LoRA among the installed ones. */
   turboHints?: string[]
+  /**
+   * True for a style whose step count is a property of the MODEL rather than a
+   * quality dial — a distilled one, trained to land in ~10 steps and gaining
+   * nothing from 44. The draft/standard/high preset is skipped for these and
+   * the graph's own number is used, which is what stops "High" reading as four
+   * times the wait for an identical picture. The Draw panel greys the Quality
+   * row and says so, the same way it already does when Advanced's Steps
+   * overrides it — a preset that isn't in effect must never look like it is.
+   */
+  ignoresQuality?: boolean
 }> = {
+  'anima-aesthetic-v1-1': {
+    label: 'Anima Aesthetic v1.1',
+    graph: animaGraph('anima-aesthetic-v1.1.safetensors', 30, 4),
+    turboHints: ['anima', 'turbo'],
+    needs: ['diffusion_models/anima-aesthetic-v1.1.safetensors', ...ANIMA_SHARED],
+  },
+  'anima-turbo-v1-1': {
+    label: 'Anima Turbo v1.1',
+    // No turboHints: this IS the distilled model, and stacking a turbo LoRA on
+    // top of a turbo checkpoint is how a picture comes out flat and over-baked.
+    // Leaving them off is also what makes the Advanced panel hide the toggle.
+    graph: animaGraph('anima-turbo-v1.1.safetensors', 10, 1),
+    ignoresQuality: true,
+    needs: ['diffusion_models/anima-turbo-v1.1.safetensors', ...ANIMA_SHARED],
+  },
   'anima-base-v1': {
     label: 'Anima Base v1',
-    graph: ANIMA_GRAPH,
+    graph: animaGraph('anima-base-v1.0.safetensors', 30, 4),
     // The bundled template offers this LoRA behind a switch node; flattening
     // the switch away is what the Advanced panel's Turbo toggle puts back.
     // Matched rather than hardcoded — the filename is a thing on the GPU box's
@@ -801,11 +948,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
     // Surfaced in the picker when they're missing, because the alternative is a
     // render that fails with a bare "value not in list" naming a file the user
     // has never heard of.
-    needs: [
-      'diffusion_models/anima-base-v1.0.safetensors',
-      'text_encoders/qwen_3_06b_base.safetensors',
-      'vae/qwen_image_vae.safetensors',
-    ],
+    needs: ['diffusion_models/anima-base-v1.0.safetensors', ...ANIMA_SHARED],
   },
 }
 
@@ -815,6 +958,12 @@ export const WORKFLOW_PREFIX = 'wf:'
 function turboHints(style: string): string[] {
   if (!style.startsWith(WORKFLOW_PREFIX)) return []
   return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.turboHints ?? []
+}
+
+/** True for a distilled style, whose step count is the model's, not a preference. */
+export function styleIgnoresQuality(style: string): boolean {
+  if (!style.startsWith(WORKFLOW_PREFIX)) return false
+  return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.ignoresQuality === true
 }
 
 /** Workflow styles available: the built-ins plus any JSON on the cache volume. */
@@ -898,7 +1047,7 @@ function findNode(graph: ComfyGraph, classes: string[]): string | null {
  * sampler's own `positive`/`negative` links, which is the only place that
  * distinction actually exists.
  */
-function buildGraph(job: ImageJob): ComfyGraph {
+function buildGraph(job: ImageJob, sourceName = ''): ComfyGraph {
   // A `wf:` style brings its own whole graph (Anima, or one the user dropped in);
   // anything else is a checkpoint name patched into the default txt2img graph.
   const isWorkflow = job.model.startsWith(WORKFLOW_PREFIX)
@@ -943,6 +1092,50 @@ function buildGraph(job: ImageJob): ComfyGraph {
     graph[latentId]!.inputs['width'] = job.width
     graph[latentId]!.inputs['height'] = job.height
     graph[latentId]!.inputs['batch_size'] = 1
+  }
+
+  // ── Redraw: start from a picture instead of from noise ──
+  //
+  // This is plain img2img, and it works on every model this app can select
+  // rather than being an Anima feature: the source is encoded to a latent, the
+  // sampler starts from that instead of from an empty one, and `denoise` says
+  // how much of it to throw away. ComfyUI's own Anima template ships the same
+  // thing behind a "Load Image" switch node — the same kind of switch the turbo
+  // LoRA was behind, and flattened away for the same reason.
+  //
+  // Spliced by REWIRING, exactly like the turbo LoRA: whatever fed the sampler's
+  // `latent_image` is replaced, and the empty latent above is left in place but
+  // unreferenced, so ComfyUI never executes it. The VAE is found by following
+  // the VAEDecode's own `vae` link rather than by hunting for a loader class,
+  // because that link is the only place in a graph that says which VAE this
+  // pipeline actually uses — the same reasoning as resolving the two
+  // CLIPTextEncode boxes through the sampler's positive/negative links.
+  if (sourceName) {
+    const decodeId = findNode(graph, ['VAEDecode', 'VAEDecodeTiled'])
+    const vae = decodeId ? graph[decodeId]!.inputs['vae'] : undefined
+    if (!Array.isArray(vae)) {
+      throw new Error("workflow's VAE could not be found, so it cannot redraw an existing picture")
+    }
+    // Names, not numbers: node ids are object keys and a numeric one could
+    // collide with a node in someone's own workflow.
+    const loadId = 'touchsphere_source_image'
+    const encId  = 'touchsphere_source_latent'
+    // `image` is LoadImage's only real input — the `upload` key ComfyUI's own
+    // exports carry is a frontend widget hint, not something /prompt reads.
+    graph[loadId] = { class_type: 'LoadImage', inputs: { image: sourceName } }
+    graph[encId]  = { class_type: 'VAEEncode', inputs: { pixels: [loadId, 0], vae } }
+    sampler.inputs['latent_image'] = [encId, 0]
+
+    // KSamplerAdvanced has no denoise input — it expresses the same idea as
+    // start_at_step over a step count, which is a different conversation. Say so
+    // rather than letting the render come back as an untouched copy.
+    if ('denoise' in sampler.inputs) {
+      sampler.inputs['denoise'] = job.denoise
+    } else {
+      throw new Error(
+        `this workflow's ${sampler.class_type} has no denoise setting, so it cannot redraw a picture`,
+      )
+    }
   }
 
   // Only a checkpoint style names a ckpt_name; a workflow style already has its
@@ -1001,6 +1194,8 @@ export interface StyleDefaults {
   hasCfg:    boolean
   /** Whether a turbo LoRA is even a sensible offer for this style. */
   turboKnown: boolean
+  /** False for a distilled style, whose steps come from the model, not the preset. */
+  qualityApplies: boolean
 }
 
 /**
@@ -1016,6 +1211,7 @@ export function styleDefaults(style: string): StyleDefaults {
     steps: 20, cfg: 8, width: DEFAULT_W, height: DEFAULT_H,
     sampler: 'euler', scheduler: 'normal', hasCfg: true,
     turboKnown: turboHints(style).length > 0,
+    qualityApplies: !styleIgnoresQuality(style),
   }
   const graph = style.startsWith(WORKFLOW_PREFIX)
     ? workflowGraph(style.slice(WORKFLOW_PREFIX.length))
@@ -1038,6 +1234,7 @@ export function styleDefaults(style: string): StyleDefaults {
     scheduler: s(inputs['scheduler'], fallback.scheduler),
     hasCfg:    'cfg' in inputs,
     turboKnown: fallback.turboKnown,
+    qualityApplies: fallback.qualityApplies,
   }
 }
 
@@ -1060,6 +1257,47 @@ async function comfyFetch(pathname: string, init?: RequestInit, timeoutMs = HTTP
   } finally {
     clearTimeout(timer)
   }
+}
+
+/**
+ * Put a stored picture into ComfyUI's input directory and return the name a
+ * LoadImage node can use.
+ *
+ * Named after the image id with overwrite on, so redrawing the same picture
+ * five times leaves one file on the GPU box rather than five. There is no
+ * cleanup pass and deliberately so: these are the same PNGs the gallery already
+ * caps at MAX_STORED, ComfyUI's input directory is the operator's disk, and a
+ * dashboard that deletes files out of someone else's ComfyUI install is a worse
+ * idea than a few megabytes.
+ */
+async function uploadSource(job: ImageJob): Promise<string> {
+  const full = path.join(imagesDir(), job.sourceFile)
+  let bytes: Buffer
+  try {
+    bytes = fs.readFileSync(full)
+  } catch {
+    throw new Error('the picture to redraw is missing from this server')
+  }
+
+  const name = `touchsphere-src-${job.source}.png`
+  const form = new FormData()
+  form.append('image', new Blob([new Uint8Array(bytes)], { type: 'image/png' }), name)
+  form.append('type', 'input')
+  form.append('overwrite', 'true')
+
+  // No Content-Type header: fetch sets it with the multipart boundary, and
+  // setting it by hand is the classic way to get a 400 with an empty body.
+  const res = await comfyFetch('/upload/image', { method: 'POST', body: form }, 60_000)
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`ComfyUI would not accept the source picture (${res.status}): ${body.slice(0, 200)}`)
+  }
+  const j = await res.json().catch(() => ({})) as { name?: string; subfolder?: string }
+  // ComfyUI may rename on collision, so its answer wins over the name we sent.
+  const saved = j.name ?? name
+  const ref = j.subfolder ? `${j.subfolder}/${saved}` : saved
+  console.log(`[image] ${job.id} uploaded source as ${ref} (${(bytes.length / 1024).toFixed(0)} KB)`)
+  return ref
 }
 
 async function queuePrompt(graph: ComfyGraph): Promise<string> {

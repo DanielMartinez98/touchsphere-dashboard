@@ -23,19 +23,19 @@
 // happening — the alternative is half a minute of silence after "drawing that
 // for you now".
 //
-// Once the picture DOES exist, this is also where the two things anyone actually
-// does with one live: step to the picture either side of it, and take its prompt
-// back to the compose field. Both belong here rather than in the gallery grid,
-// because looking at a render full size is the moment you decide it's nearly
-// right and want another go at it.
+// Once the picture DOES exist, this is also where everything anyone actually
+// does with one lives: step to the picture either side of it, take its prompt
+// back to the compose field, or redraw the picture itself with a change. They
+// belong here rather than in the gallery grid, because looking at a render full
+// size is the moment you decide it's nearly right and want another go at it.
 
 import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  X, AlertTriangle, RefreshCw, ChevronLeft, ChevronRight, Copy, Check, Wand2,
+  X, AlertTriangle, RefreshCw, ChevronLeft, ChevronRight, Copy, Check, Wand2, Brush,
 } from 'lucide-react'
 import { closeImage, openImage, useImageJob, useImageTarget } from '../hooks/useImageOverlay'
-import { reuseImagePrompt } from '../hooks/useImagePrompt'
+import { redrawImage, reuseImagePrompt } from '../hooks/useImagePrompt'
 import { onServerEvent } from '../hooks/useServerEvents'
 
 /** Just enough of a StoredImage to step between them. */
@@ -129,14 +129,18 @@ export function ImageOverlay() {
     fetch('/api/image/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: target.prompt }),
+      // A failed redraw is retried AS a redraw — same source, same strength.
+      body: JSON.stringify({
+        prompt: target.prompt,
+        ...(job?.source ? { source: job.source, denoise: job.denoise ?? 0.65 } : {}),
+      }),
     })
       .then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       // Re-open on the NEW job id: the overlay follows one job, so pointing it
       // at the retry is what makes the frame start filling in again.
       .then((j: { id: string }) => openImage(j.id, target.prompt))
       .catch(err => console.error('[image] retry failed:', err))
-  }, [target])
+  }, [target, job])
 
   if (!target) return null
 
@@ -197,6 +201,10 @@ export function ImageOverlay() {
         {url && target.prompt !== '' && (
           <PromptActions
             prompt={target.prompt}
+            // A redraw needs the picture itself, not just its words, and only a
+            // picture that is IN the gallery has an id the GPU box can be handed
+            // — which is the same condition that gives it a position.
+            source={index >= 0 ? { id: target.jobId, url, prompt: target.prompt } : null}
             position={index >= 0 ? `${index + 1} of ${gallery.length}` : ''}
           />
         )}
@@ -238,20 +246,36 @@ export function ImageOverlay() {
 }
 
 /**
- * Copy the prompt, or take it back to the Draw panel.
+ * The three things you do with a finished picture.
  *
- * "Use as prompt" is the one that matters. Looking at a picture full size is
- * exactly when you decide it's nearly right, and re-typing forty words on an
- * on-screen keyboard is the most expensive thing this app can ask of anyone. It
- * fills the compose field and opens the Draw corner on it — filling a field
- * nobody can see would not be reuse — and closes this frame so the field is the
- * thing in front of you.
+ * All of them are here, on the full-screen view, because that is where you
+ * decide a picture is nearly right — and all three exist to avoid re-typing
+ * forty words on an on-screen keyboard, which is the most expensive thing this
+ * app can ask of anyone.
  *
- * Copy is the phone half: `navigator.clipboard` needs a secure context, which
- * Caddy provides, and the label reports what happened either way rather than
- * failing silently into the console.
+ *   • Change this — a REDRAW. The picture becomes the base the next render
+ *     paints over, and its own prompt is the first draft of the new one, since
+ *     the model redraws from a description of the whole picture rather than
+ *     from the change. This is the img2img half of the Draw panel.
+ *   • Reuse prompt — the same words, a fresh render. Deliberately a separate
+ *     button rather than a mode of the first: "another go at this idea" and
+ *     "this exact picture but at night" want different starting points, and
+ *     guessing wrong wastes a minute of GPU either way.
+ *   • Copy — the phone half. `navigator.clipboard` needs a secure context,
+ *     which Caddy provides, and the label reports what happened either way
+ *     rather than failing silently into the console.
+ *
+ * Both of the first two fill the compose field and open the Draw corner on it,
+ * then close this frame: filling a field nobody can see would not be reuse.
  */
-function PromptActions({ prompt, position }: { prompt: string; position: string }) {
+function PromptActions({
+  prompt, source, position,
+}: {
+  prompt:   string
+  /** The picture itself, when it is one the server can redraw. */
+  source:   { id: string; url: string; prompt: string } | null
+  position: string
+}) {
   const [copied, setCopied] = useState<'yes' | 'no' | null>(null)
 
   useEffect(() => {
@@ -267,28 +291,47 @@ function PromptActions({ prompt, position }: { prompt: string; position: string 
   }, [prompt])
 
   return (
-    <div className="flex items-center gap-2 px-4 pb-3 shrink-0">
+    // Wraps rather than scrolls: on a 390px phone three pills and a counter do
+    // not fit on one line, and a row that has to be scrolled sideways to reach
+    // its last button is a button nobody finds.
+    <div className="flex flex-wrap items-center gap-2 px-4 pb-3 shrink-0">
+      {source && (
+        <button
+          type="button"
+          onClick={() => { redrawImage(source); closeImage() }}
+          className="h-11 px-4 rounded-full bg-pink-500/20 border border-pink-400/35 text-white
+                     text-[13px] font-semibold flex items-center gap-2
+                     active:scale-95 active:bg-pink-500/35 transition"
+        >
+          <Brush size={16} />
+          Change this
+        </button>
+      )}
+
       <button
         type="button"
         onClick={() => { reuseImagePrompt(prompt); closeImage() }}
-        className="h-11 px-4 rounded-full bg-pink-500/20 border border-pink-400/35 text-white
+        className="h-11 px-4 rounded-full bg-white/10 border border-hairline text-white/70
                    text-[13px] font-semibold flex items-center gap-2
-                   active:scale-95 active:bg-pink-500/35 transition"
+                   active:scale-95 active:bg-white/20 transition"
       >
         <Wand2 size={16} />
-        Use as prompt
+        Reuse prompt
       </button>
 
       <button
         type="button"
         onClick={copy}
-        aria-label="Copy the prompt"
-        className="h-11 px-4 rounded-full bg-white/10 border border-hairline text-white/70
-                   text-[13px] font-semibold flex items-center gap-2
+        aria-label={copied === 'no' ? "Couldn't copy the prompt" : 'Copy the prompt'}
+        // Icon only, unlike the two beside it: it is the least-used of the three
+        // and the row has to fit a phone. The check mark is the confirmation.
+        className="w-11 h-11 rounded-full bg-white/10 border border-hairline text-white/70
+                   flex items-center justify-center
                    active:scale-95 active:bg-white/20 transition"
       >
-        {copied === 'yes' ? <Check size={16} /> : <Copy size={16} />}
-        {copied === 'yes' ? 'Copied' : copied === 'no' ? "Couldn't copy" : 'Copy'}
+        {copied === 'yes' ? <Check size={16} className="text-green-300" />
+          : copied === 'no' ? <X size={16} className="text-amber-300" />
+          : <Copy size={16} />}
       </button>
 
       {/* Where this picture sits in the gallery — the thing that makes the two

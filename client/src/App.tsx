@@ -82,8 +82,10 @@ function App() {
   // generate_image opens, on the same job. Without this the picture would land
   // silently in the grid behind the panel — and the twenty seconds it takes are
   // exactly when someone needs to see that something is happening.
-  const drawImage = useCallback(async (prompt: string, orientation: Orientation) => {
-    const id = await generateImage(prompt, orientation)
+  const drawImage = useCallback(async (
+    prompt: string, orientation: Orientation, source: string, denoise: number,
+  ) => {
+    const id = await generateImage(prompt, orientation, source, denoise)
     if (id) openImage(id, prompt)
   }, [generateImage])
   const { byItem: guides } = useGuides()

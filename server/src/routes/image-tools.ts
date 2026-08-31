@@ -12,7 +12,10 @@
 // all — and a model that can see a `generate_image` tool will cheerfully
 // promise a picture before discovering there's no GPU behind it.
 
-import { imagesEnabled, listImages, pendingJobs, startImage, type ImageJob } from '../image'
+import {
+  imagesEnabled, listImages, pendingJobs, startImage,
+  type ImageJob, type StoredImage,
+} from '../image'
 import type { BrowseToolResult, DisplayPayload } from './browse'
 
 // ── Framing ──────────────────────────────────────────────────────────────────
@@ -55,6 +58,48 @@ export const IMAGE_TOOLS = !imagesEnabled() ? [] : [
             description:
               'Shape of the picture. The screen is tall, so prefer portrait unless the subject is ' +
               'obviously wide (a landscape, a car) or the user asks for a wallpaper for something else.',
+          },
+        },
+        required: ['prompt'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'redraw_image',
+      description:
+        'Draw a NEW picture that starts from one you already drew, instead of from nothing. Use ' +
+        'when the user wants a change to a picture that is on screen or was just made — "make it ' +
+        'night time", "same cat but blue", "try that again with more detail", "add a hat". The ' +
+        'original is kept; this makes another one beside it. Takes the same few seconds as ' +
+        'generate_image and appears on screen by itself, so say one short sentence and do NOT ' +
+        'claim it is done. For something unrelated to any existing picture, use generate_image.',
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: {
+            type: 'string',
+            description:
+              'A full description of the picture you want OUT — not just the change. The model ' +
+              'redraws from the description, so "a ginger cat in a spacesuit, floating in a ' +
+              'nebula, at night" is right and "make it night" is not. Start from what the ' +
+              'original was of and fold the change into it, as a comma-separated list of details.',
+          },
+          about: {
+            type: 'string',
+            description:
+              'Words from what the ORIGINAL picture was of, to pick it out of the recent ones. ' +
+              'Omit for the most recent picture, which is usually what "it" means.',
+          },
+          strength: {
+            type: 'string',
+            enum: ['light', 'balanced', 'strong'],
+            description:
+              'How far from the original to go. "light" keeps the composition and changes ' +
+              'details (a colour, the lighting); "balanced" is the default and repaints the ' +
+              'subject while keeping the layout; "strong" keeps only the rough idea. Prefer ' +
+              'light for a small fix and strong when they ask for something quite different.',
           },
         },
         required: ['prompt'],
@@ -145,32 +190,114 @@ function generate(prompt: string, orientation: string): BrowseToolResult {
 
 const loose = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 
-function showLast(about: string): BrowseToolResult {
+/**
+ * How much of the original a redraw throws away.
+ *
+ * Three words rather than a number, because a language model asked for a
+ * denoise value returns 0.5 for everything, and the difference between 0.45 and
+ * 0.85 is the difference between "the same picture at night" and "a different
+ * picture of roughly that". The numbers are the model author's own guidance:
+ * 0.5-0.6 for a small edit, 0.75-0.85 for a creative reinterpretation.
+ */
+const STRENGTH: Record<string, number> = {
+  light:    0.45,
+  balanced: 0.65,
+  strong:   0.85,
+}
+
+/**
+ * Pick a stored picture out of the recent ones by what it was of.
+ *
+ * The cheapest thing that works: count how many of the asked-for words appear
+ * in each stored prompt. These are a handful of entries the user described out
+ * loud a minute ago, not a corpus. Shared by redraw_image and show_last_image,
+ * which ask the same question of the same list.
+ */
+function findImage(about: string): StoredImage | null {
   const all = listImages()
-  if (all.length === 0) {
-    return noDisplay("You haven't drawn any pictures yet. Offer to make one with generate_image.")
+  if (all.length === 0) return null
+  if (!about.trim()) return all[0]!
+
+  const words = loose(about).split(' ').filter(w => w.length > 2)
+  let best = 0
+  let hit: StoredImage | null = null
+  for (const img of all) {
+    const hay = loose(img.prompt)
+    const score = words.filter(w => hay.includes(w)).length
+    if (score > best) { best = score; hit = img }
+  }
+  return hit
+}
+
+/** "None of them look like that, here are the ones there are" — used by both tools. */
+function noMatch(about: string): BrowseToolResult {
+  const all = listImages()
+  return noDisplay(
+    `None of the recent pictures look like "${about}". The recent ones are: ` +
+    `${all.slice(0, 5).map(i => `"${i.prompt.slice(0, 50)}"`).join(', ')}. ` +
+    `Ask which one they meant, or offer to draw it.`,
+  )
+}
+
+function redraw(prompt: string, about: string, strength: string): BrowseToolResult {
+  if (!imagesEnabled()) {
+    return noDisplay(
+      'Image generation is not configured on this server (COMFYUI_URL is unset). ' +
+      'Tell the user you cannot draw right now and why, in one sentence.',
+    )
+  }
+  if (!prompt.trim()) {
+    return noDisplay('redraw_image error: pass a `prompt` describing the picture you want out.')
   }
 
-  let hit = all[0]!
-  if (about.trim()) {
-    // Cheapest thing that works: count how many of the asked-for words appear in
-    // each stored prompt. These are a handful of entries the user described out
-    // loud a minute ago, not a corpus — a real index would be overkill.
-    const words = loose(about).split(' ').filter(w => w.length > 2)
-    let best = 0
-    for (const img of all) {
-      const hay = loose(img.prompt)
-      const score = words.filter(w => hay.includes(w)).length
-      if (score > best) { best = score; hit = img }
-    }
-    if (best === 0) {
-      return noDisplay(
-        `None of the recent pictures look like "${about}". The recent ones are: ` +
-        `${all.slice(0, 5).map(i => `"${i.prompt.slice(0, 50)}"`).join(', ')}. ` +
-        `Ask which one they meant, or offer to draw it.`,
-      )
-    }
+  const all = listImages()
+  if (all.length === 0) {
+    return noDisplay(
+      "There are no pictures to redraw yet — nothing has been drawn on this dashboard. " +
+      'Offer to draw it from scratch with generate_image instead.',
+    )
   }
+  const source = findImage(about)
+  if (!source) return noMatch(about)
+
+  const ahead = pendingJobs().length
+  const job: ImageJob = startImage({
+    prompt:  prompt.trim(),
+    source:  source.id,
+    denoise: STRENGTH[strength] ?? STRENGTH['balanced']!,
+  })
+
+  if (job.status === 'failed') {
+    return noDisplay(
+      `Could not start that picture: ${job.error ?? 'the render queue is full'}. ` +
+      `Tell the user in one sentence and offer to try again once the ones already going are done.`,
+    )
+  }
+
+  const display: DisplayPayload = { kind: 'image', jobId: job.id, prompt: job.prompt }
+  console.log(`[chat:tool] redraw_image → ${job.id} from ${source.id} (${strength || 'balanced'})`)
+
+  return {
+    text:
+      `Started redrawing the picture of "${source.prompt.slice(0, 60)}" as "${job.prompt}". ` +
+      `A frame is already on the user's screen and the new picture will appear in it by itself, ` +
+      `usually in a few seconds. The original is untouched and still in the gallery. ` +
+      (ahead > 0
+        ? `It is QUEUED behind ${ahead} other picture${ahead === 1 ? '' : 's'}, so mention it will ` +
+          `take a little longer. `
+        : '') +
+      `Say ONE short sentence telling them it's coming — do not describe the picture, ` +
+      `you have not seen it, and do not say it is ready.`,
+    display,
+  }
+}
+
+function showLast(about: string): BrowseToolResult {
+  if (listImages().length === 0) {
+    return noDisplay("You haven't drawn any pictures yet. Offer to make one with generate_image.")
+  }
+  const hit = findImage(about)
+  if (!hit) return noMatch(about)
 
   console.log(`[chat:tool] show_last_image → ${hit.id}`)
   return {
@@ -193,6 +320,7 @@ export async function runImageTool(
   const str = (k: string) => (typeof args[k] === 'string' ? (args[k] as string) : '')
   switch (name) {
     case 'generate_image':  return generate(str('prompt'), str('orientation'))
+    case 'redraw_image':    return redraw(str('prompt'), str('about'), str('strength'))
     case 'show_last_image': return showLast(str('about'))
     default: return null
   }

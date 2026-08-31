@@ -96,6 +96,8 @@ export interface StyleDefaults {
   scheduler:  string
   hasCfg:     boolean
   turboKnown: boolean
+  /** False for a distilled style (Anima Turbo), whose steps come from the model. */
+  qualityApplies: boolean
 }
 
 export const DEFAULT_PARAMS: ImageParams = {
@@ -115,6 +117,23 @@ export const DEFAULT_PARAMS: ImageParams = {
 // then showed 150 without saying so would read as the panel losing the setting.
 export const MEGAPIXELS = [0, 0.5, 1, 1.5, 2, 3, 4, 6, 8, 12, 16]
 export const MULTIPLES  = [8, 16, 32, 64, 128]
+
+/**
+ * How much of the source picture a redraw throws away, behind three words.
+ *
+ * Named rather than numbered for the same reason the orientation buttons are
+ * shapes rather than pixel counts: nobody standing at a kiosk knows what 0.65
+ * means, and a fingertip cannot land it on a slider anyway. The numbers are the
+ * model author's own guidance — 0.5-0.6 for a small edit, 0.75-0.85 for a
+ * creative reinterpretation — and they match STRENGTH in the server's
+ * image-tools.ts, so a redraw asked for out loud and one tapped here land in
+ * the same place.
+ */
+export const STRENGTHS: { id: string; label: string; hint: string; denoise: number }[] = [
+  { id: 'light',    label: 'Light',    hint: 'tweak details', denoise: 0.45 },
+  { id: 'balanced', label: 'Balanced', hint: 'keep the layout', denoise: 0.65 },
+  { id: 'strong',   label: 'Strong',   hint: 'just the idea', denoise: 0.85 },
+]
 
 export const LIMITS = {
   megapixels:   { min: 0.25, max: 16  },
@@ -430,14 +449,27 @@ export function useImages() {
    * race, and on a touchscreen a tap that appears to do nothing for half a
    * second reads as a tap that missed.
    */
-  const generate = useCallback(async (prompt: string, orientation: Orientation): Promise<string | null> => {
+  const generate = useCallback(async (
+    prompt: string,
+    orientation: Orientation,
+    /** Redraw: the id of the gallery picture to start from. '' = draw fresh. */
+    source = '',
+    /** How much of that source to throw away. Ignored without a source. */
+    denoise = 0,
+  ): Promise<string | null> => {
     const size = SIZES[orientation]
     setDrawError('')
     try {
       const res = await fetch('/api/image/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, width: size.width, height: size.height }),
+        // Width and height go up regardless, and the server ignores them for a
+        // redraw: an img2img latent is the source's own shape. Sending them
+        // anyway keeps one request shape instead of two.
+        body: JSON.stringify({
+          prompt, width: size.width, height: size.height,
+          ...(source ? { source, denoise } : {}),
+        }),
       })
       if (!res.ok) {
         const j = await res.json().catch(() => ({})) as { error?: string }

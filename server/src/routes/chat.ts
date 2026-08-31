@@ -200,7 +200,10 @@ const SYSTEM_PROMPT_BODY =
     ? " DRAWING: generate_image invents a picture and puts it on screen — use it when they ask you to draw, " +
       "paint, or imagine something, NOT to find a picture of something real (that is open_website). " +
       "It takes a few seconds and fills in on screen by itself, so tell them it is coming and " +
-      "never describe the picture as if you had seen it. show_last_image puts an earlier one back up."
+      "never describe the picture as if you had seen it. redraw_image makes a new picture STARTING " +
+      "FROM one already drawn — that is the tool for \"make it night time\", \"same cat but blue\", " +
+      "\"add a hat\"; pass the whole picture you want, not just the change, because it redraws from " +
+      "the description. show_last_image puts an earlier one back up."
     : "")
 
 // Compose the full system prompt for a given assistant: its personality up

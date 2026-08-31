@@ -11,11 +11,14 @@
 // second viewer, so a picture looks the same however it was asked for.
 
 import { useState } from 'react'
-import { Sparkles, Trash2, AlertTriangle, Check, Layers, Gauge, X, Clock } from 'lucide-react'
+import { Sparkles, Trash2, AlertTriangle, Check, Layers, Gauge, X, Clock, Brush } from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
 import { openImage } from '../../../hooks/useImageOverlay'
-import { setImagePrompt, useImagePrompt } from '../../../hooks/useImagePrompt'
+import {
+  clearImageSource, setImagePrompt, useImagePrompt, useImageSource,
+} from '../../../hooks/useImagePrompt'
 import AdvancedPanel from './AdvancedPanel'
+import { STRENGTHS } from '../../../hooks/useImages'
 import type {
   ImageParams, ImageStyle, Orientation, QueuedJob, StoredImage, StyleDefaults,
 } from '../../../hooks/useImages'
@@ -67,7 +70,8 @@ interface Props {
   onQuality:  (quality: string) => void
   onParams:   (patch: Partial<ImageParams>) => void
   onResetParams: () => void
-  onGenerate: (prompt: string, orientation: Orientation) => void
+  /** `source`/`denoise` are set only for a redraw; '' / 0 means draw from scratch. */
+  onGenerate: (prompt: string, orientation: Orientation, source: string, denoise: number) => void
   onDelete:   (id: string) => void
 }
 
@@ -194,6 +198,11 @@ export default function ImageExpanded({
   // expensive thing in the app.
   const prompt = useImagePrompt()
   const setPrompt = setImagePrompt
+  // The picture this render starts from, when the user tapped "Change this" on
+  // one. Same store as the prompt, and for the same reason: both are pieces of
+  // the request being composed, and both are set from the full-screen viewer.
+  const source = useImageSource()
+  const [strength, setStrength] = useState('balanced')
   const [orientation, setOrientation] = useState<Orientation>('portrait')
   // Two-step delete. These take real time and GPU to make, so a stray fingertip
   // on a 7" screen must not be able to destroy one in a single tap.
@@ -205,10 +214,15 @@ export default function ImageExpanded({
   // missing. The only thing that closes the button is a full queue.
   const full = queue.length >= queueMax
   const canDraw = enabled !== false && prompt.trim().length > 0 && !full
+  // A distilled style carries its own step count; the draft/standard/high preset
+  // does not reach it. Defaults to true so a server that predates the field —
+  // Watchtower updates the two halves independently — keeps the row live.
+  const qualityApplies = defaults?.qualityApplies !== false
 
   function draw() {
     if (!canDraw) return
-    onGenerate(prompt.trim(), orientation)
+    const d = STRENGTHS.find(x => x.id === strength)?.denoise ?? 0.65
+    onGenerate(prompt.trim(), orientation, source?.id ?? '', source ? d : 0)
     // The prompt is deliberately KEPT, not cleared: the common next action is
     // another go at the same idea with a word changed, and re-typing it on an
     // on-screen keyboard is the most expensive thing in this panel.
@@ -244,6 +258,78 @@ export default function ImageExpanded({
         </div>
       )}
 
+      {/* ── Redrawing this one ──
+          Above the prompt because it changes what the prompt MEANS: with a
+          source, the text describes the picture you want out, not a fresh idea.
+          Seeded with the original's own words for exactly that reason, so the
+          edit is usually two of them rather than forty.
+
+          The × is a second tap target beside the body, the same split the queue
+          rows and the guide's chapter rows use — going back to drawing from
+          scratch must never be the same guess as opening the original. */}
+      {source && (
+        <div className="flex flex-col gap-3 rounded-2xl bg-pink-500/10 border border-pink-400/30 p-3 shrink-0">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => openImage(source.id, source.prompt, source.url)}
+              className="w-16 h-16 shrink-0 rounded-xl overflow-hidden border border-hairline
+                         active:scale-95 transition-transform"
+            >
+              <img src={source.url} alt={source.prompt} className="w-full h-full object-cover" />
+            </button>
+            <div className="min-w-0 flex-1">
+              <span className="text-[11px] uppercase tracking-widest text-pink-300/80 font-semibold
+                               flex items-center gap-1.5">
+                <Brush size={12} />
+                Changing this one
+              </span>
+              <p className="text-[13px] text-white/60 leading-snug line-clamp-2 mt-0.5">
+                {source.prompt}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={clearImageSource}
+              aria-label="Draw from scratch instead"
+              className="w-11 h-11 shrink-0 rounded-xl bg-white/5 border border-hairline
+                         flex items-center justify-center text-white/45
+                         active:scale-90 active:bg-red-500/40"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          {/* How far to go. Three words, not a slider: nobody standing at a
+              kiosk knows what 0.65 means, and a fingertip can't land it on a
+              7" screen anyway. Same three numbers the assistant's redraw_image
+              uses, so asking out loud and tapping land in the same place. */}
+          <div className="flex gap-2">
+            {STRENGTHS.map(st => (
+              <button
+                key={st.id}
+                type="button"
+                onClick={() => setStrength(st.id)}
+                className={`flex-1 h-14 rounded-xl flex flex-col items-center justify-center leading-tight
+                            transition-colors active:scale-95 ${
+                  strength === st.id
+                    ? 'bg-white/20 text-white border border-white/25'
+                    : 'bg-white/5 text-white/45 border border-transparent'
+                }`}
+              >
+                <span className="text-[13px] font-semibold">{st.label}</span>
+                <span className="text-[10px] text-white/35">{st.hint}</span>
+              </button>
+            ))}
+          </div>
+
+          <span className="text-[11px] text-white/30 leading-snug">
+            The original is kept — this makes another picture beside it. Its size and
+            shape come from the original, so the orientation buttons don't apply.
+          </span>
+        </div>
+      )}
+
       {/* ── Compose ── */}
       <div className="shrink-0">
         <TouchInput
@@ -258,7 +344,9 @@ export default function ImageExpanded({
         />
       </div>
 
-      {prompt.trim() === '' && (
+      {/* Not offered while redrawing: the starters are ideas for a blank box, and
+          swapping one in would silently throw away the picture being changed. */}
+      {prompt.trim() === '' && !source && (
         <div className="flex flex-col gap-2 shrink-0">
           <span className="text-xs uppercase tracking-widest text-white/35 font-semibold">Try one</span>
           {SUGGESTIONS.map(s => (
@@ -330,15 +418,21 @@ export default function ImageExpanded({
           <Gauge size={13} />
           Quality
           {/* A preset that isn't in effect must not look like it is. Advanced's
-              Steps wins when it's set, and the only way to notice otherwise is
-              to wonder why "High" renders as fast as "Draft". */}
-          {params.steps > 0 && (
+              Steps wins when it's set, and a distilled style (Anima Turbo) wins
+              over both — it is trained to land in about ten steps and gains
+              nothing from forty-four. Either way the only way to notice
+              otherwise is to wonder why "High" renders as fast as "Draft". */}
+          {params.steps > 0 ? (
             <span className="ml-auto normal-case tracking-normal text-pink-300/70">
               overridden — {params.steps} steps
             </span>
-          )}
+          ) : !qualityApplies ? (
+            <span className="ml-auto normal-case tracking-normal text-pink-300/70">
+              set by this style
+            </span>
+          ) : null}
         </span>
-        <div className={`flex gap-2 ${params.steps > 0 ? 'opacity-40' : ''}`}>
+        <div className={`flex gap-2 ${params.steps > 0 || !qualityApplies ? 'opacity-40' : ''}`}>
           {QUALITIES.map(q => (
             <button
               key={q.id}
@@ -358,7 +452,11 @@ export default function ImageExpanded({
         </div>
       </div>
 
-      <div className="flex gap-2 shrink-0">
+      {/* Hidden on a redraw rather than disabled: an img2img latent is the source
+          picture's own shape, so these genuinely have nothing to set, and three
+          dead buttons read as the panel having broken. The source card above
+          says where the size comes from instead. */}
+      <div className={`flex gap-2 shrink-0 ${source ? 'hidden' : ''}`}>
         {ORIENTATIONS.map(o => (
           <button
             key={o.id}
@@ -417,8 +515,13 @@ export default function ImageExpanded({
           </>
         ) : busy ? (
           <>
-            <Sparkles size={20} />
+            {source ? <Brush size={20} /> : <Sparkles size={20} />}
             Add to the queue
+          </>
+        ) : source ? (
+          <>
+            <Brush size={20} />
+            Redraw it
           </>
         ) : (
           <>

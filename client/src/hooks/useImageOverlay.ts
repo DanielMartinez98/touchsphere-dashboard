@@ -65,6 +65,9 @@ export interface ImageJobState {
   elapsedMs: number
   /** How long the last successful render on this box took. 0 = no history yet. */
   etaMs:     number
+  /** Set only on a REDRAW: the gallery id this one started from, and how far it went. */
+  source?:   string
+  denoise?:  number
 }
 
 /**
@@ -95,6 +98,11 @@ export function useImageJob(jobId: string | null, alreadyDone: boolean): ImageJo
       ...(typeof d['error'] === 'string' ? { error: d['error'] as string } : {}),
       elapsedMs: typeof d['elapsedMs'] === 'number' ? d['elapsedMs'] : 0,
       etaMs:     typeof d['etaMs']     === 'number' ? d['etaMs']     : 0,
+      // Carried so "Try again" can retry the same THING. A redraw retried as a
+      // fresh render would quietly produce a different kind of picture from the
+      // one that failed, which is the one substitution this feature must not make.
+      ...(typeof d['source']  === 'string' ? { source:  d['source']  as string } : {}),
+      ...(typeof d['denoise'] === 'number' ? { denoise: d['denoise'] as number } : {}),
     })
   }, [jobId])
 
