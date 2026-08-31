@@ -228,7 +228,12 @@ export function ImageOverlay() {
               onRetry={retry}
             />
           ) : (
-            <Drawing phase={job?.phase ?? 'starting'} etaMs={job?.etaMs ?? 0} waiting={waiting} />
+            <Drawing
+              phase={job?.phase ?? 'starting'}
+              etaMs={job?.etaMs ?? 0}
+              waiting={waiting}
+              elapsedMs={job?.elapsedMs ?? 0}
+            />
           )}
 
           {/* Stepping between pictures. Over the image rather than in a row under
@@ -408,22 +413,45 @@ function CloseImageButton({ onClick }: { onClick: () => void }) {
  * ones in front of it, and an elapsed-vs-eta bar would fill to 95% while the
  * GPU had not yet touched it.
  */
-function Drawing({ phase, etaMs, waiting }: { phase: string; etaMs: number; waiting: boolean }) {
-  const [elapsed, setElapsed] = useState(0)
-
+function Drawing({
+  phase, etaMs, waiting, elapsedMs,
+}: { phase: string; etaMs: number; waiting: boolean; elapsedMs: number }) {
   // SSE frames only arrive on phase changes, which can be twenty seconds apart.
   // The seconds have to tick locally or the screen looks frozen.
-  //
-  // Restarted when the render actually begins, which is what keeps the estimate
-  // truthful for a queued picture: the minute it spent in the line is not part
-  // of how long it takes to draw.
+  const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
-    const started = Date.now()
-    // No setElapsed(0) here: the next tick is 250ms away and re-zeroing from
-    // inside an effect is a cascading render for a quarter-second of staleness.
-    const t = setInterval(() => setElapsed(Date.now() - started), 250)
+    const t = setInterval(() => setNow(Date.now()), 250)
     return () => clearInterval(t)
-  }, [waiting])
+  }, [])
+
+  // The clock is anchored to the SERVER's own elapsed figure, never to when
+  // this component mounted.
+  //
+  // It used to start at `Date.now()` inside an effect, which measured how long
+  // the OVERLAY had been open rather than how long the picture had been
+  // drawing — so closing the frame and reopening it to check on a render
+  // restarted the count at 0s every time, and something two minutes in read as
+  // five seconds.
+  //
+  // What's stored is the last figure the server sent plus the local instant it
+  // arrived, so the seconds are `server elapsed + time since that frame`. Anchoring
+  // to a duration rather than to an absolute start timestamp off the wire means
+  // no agreement is needed between the server's clock and the browser's — a
+  // phone with a skewed clock still counts from the right place — and re-anchoring
+  // on every frame makes it self-correcting rather than free-running.
+  //
+  // `waiting` is deliberately not part of this any more. The server resets its
+  // own `startedAt` when the render actually begins, so elapsedMs is queue time
+  // while queued and draw time once drawing — the distinction the old effect
+  // tried to recreate locally, and got wrong on every remount.
+  //
+  // The setState sits in the render body rather than an effect on purpose:
+  // that's React's "derive state from props" pattern. `now` rather than a fresh
+  // Date.now() because reading the clock during render is impure, and `now` is
+  // at most one 250ms tick stale — invisible at whole-second resolution.
+  const [frame, setFrame] = useState(() => ({ elapsedMs, at: Date.now() }))
+  if (frame.elapsedMs !== elapsedMs) setFrame({ elapsedMs, at: now })
+  const elapsed = Math.max(0, frame.elapsedMs + (now - frame.at))
 
   const pct = !waiting && etaMs > 0 ? Math.min(95, (elapsed / etaMs) * 100) : null
 
