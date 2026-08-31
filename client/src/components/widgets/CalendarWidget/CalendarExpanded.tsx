@@ -602,7 +602,7 @@ export default function CalendarExpanded({ nested = false }: { nested?: boolean 
     <>
       <style>{`@keyframes tsSlideUp { from { transform: translateY(100%) } to { transform: translateY(0) } }`}</style>
 
-      <div className={`flex flex-col h-full ${nested ? 'pt-2' : 'pt-16'} relative`}>
+      <div className={`flex flex-col ${nested ? 'pt-2' : 'h-full pt-16'} relative`}>
 
         {/* ══ Month strip ════════════════════════════════════════════════════ */}
         <div className="flex-shrink-0 px-3 pb-2">

@@ -60,9 +60,20 @@ export function ImageOverlay() {
           window's backdrop, so the two overlays behave identically. */}
       <div className="fixed inset-0 z-[9390] bg-black/70" onClick={closeImage} />
 
-      <div className="fixed left-4 right-4 top-10 bottom-10 mx-auto max-w-[880px] z-[9400]
-                      bg-black/95 backdrop-blur-xl rounded-3xl border border-hairline
-                      flex flex-col overflow-hidden shadow-2xl">
+      {/* Insets are max()'d against the safe area so the frame clears a notch and
+          a home indicator on a phone, and sits exactly where it always did on
+          the kiosk, where every env() is 0. */}
+      <div
+        className="fixed mx-auto max-w-[880px] z-[9400]
+                   bg-black/95 backdrop-blur-xl rounded-3xl border border-hairline
+                   flex flex-col overflow-hidden shadow-2xl"
+        style={{
+          left:   'max(1rem, env(safe-area-inset-left))',
+          right:  'max(1rem, env(safe-area-inset-right))',
+          top:    'max(2.5rem, env(safe-area-inset-top))',
+          bottom: 'max(2.5rem, env(safe-area-inset-bottom))',
+        }}
+      >
 
         {/* ── Header: what was asked for, and the way out ── */}
         <div className="flex items-start gap-3 px-4 pt-4 pb-3 shrink-0">

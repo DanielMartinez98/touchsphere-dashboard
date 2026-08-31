@@ -15,11 +15,14 @@ interface WidgetProps {
   accent?: string
 }
 
+// Corners are offset by the safe-area insets so a notched phone doesn't put the
+// top pills under the notch or the bottom pills under the home indicator.
+// env() resolves to 0 everywhere else, so the 720x1280 kiosk is untouched.
 const positionClasses: Record<WidgetPosition, string> = {
-  'top-left':     'top-0 left-0',
-  'top-right':    'top-0 right-0',
-  'bottom-left':  'bottom-0 left-0',
-  'bottom-right': 'bottom-0 right-0',
+  'top-left':     'top-[env(safe-area-inset-top)] left-[env(safe-area-inset-left)]',
+  'top-right':    'top-[env(safe-area-inset-top)] right-[env(safe-area-inset-right)]',
+  'bottom-left':  'bottom-[env(safe-area-inset-bottom)] left-[env(safe-area-inset-left)]',
+  'bottom-right': 'bottom-[env(safe-area-inset-bottom)] right-[env(safe-area-inset-right)]',
 }
 
 const expandOrigin: Record<WidgetPosition, string> = {
@@ -64,8 +67,12 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
           ${position.endsWith('right') ? 'rounded-r-none' : 'rounded-l-none'}
         `}
         style={{
-          minWidth: 230,
-          maxWidth: 290,
+          // Two pills sit side by side, so each may take at most ~46% of the
+          // viewport or they collide. On the 720px kiosk min() picks the fixed
+          // px and nothing changes; on a 390px iPhone it picks the percentage
+          // and the corners stop overlapping across the middle of the screen.
+          minWidth: 'min(230px, 44vw)',
+          maxWidth: 'min(290px, 46vw)',
           // Hairline accent edge + one soft halo — calmer than a full neon bloom
           // but keeps each corner's colour identity.
           borderColor: accent ? `${accent}59` : undefined,
@@ -103,7 +110,8 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
               {/* Grab handle — swipe down anywhere on it to dismiss */}
               <div
                 onPointerDown={e => dragControls.start(e)}
-                className="absolute top-0 left-1/2 -translate-x-1/2 w-44 h-9 z-[9500] flex items-start justify-center pt-2.5 touch-none cursor-grab active:cursor-grabbing"
+                className="absolute left-1/2 -translate-x-1/2 w-44 h-9 z-[9500] flex items-start justify-center pt-2.5 touch-none cursor-grab active:cursor-grabbing"
+                style={{ top: 'env(safe-area-inset-top)' }}
                 aria-hidden
               >
                 <div className="w-12 h-1.5 rounded-full bg-white/20" />
@@ -114,7 +122,11 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
                 type="button"
                 onClick={onToggle}
                 aria-label="Close"
-                className="absolute top-3 right-3 z-[9999] w-14 h-14 rounded-full bg-glass-2 border border-hairline flex items-center justify-center text-white/80 active:scale-90 active:bg-white/25 transition-colors"
+                className="absolute z-[9999] w-14 h-14 rounded-full bg-glass-2 border border-hairline flex items-center justify-center text-white/80 active:scale-90 active:bg-white/25 transition-colors"
+                style={{
+                  top:   'calc(0.75rem + env(safe-area-inset-top))',
+                  right: 'calc(0.75rem + env(safe-area-inset-right))',
+                }}
               >
                 <X size={26} strokeWidth={2.25} />
               </button>

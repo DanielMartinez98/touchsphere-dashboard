@@ -196,7 +196,11 @@ function App() {
   }
 
   return (
-    <div className={`relative w-screen h-screen bg-black overflow-hidden ${isRest ? '[--accent:#8b5cf6]' : '[--accent:#06b6d4]'}`}>
+    // h-dvh, not h-screen: on iOS Safari 100vh counts the URL bar as visible
+    // space, so the bottom row of widgets sits permanently below the fold and
+    // the "fixed" canvas is taller than the window. dvh tracks the bar as it
+    // hides and shows. Identical to 100vh on the kiosk, which has no chrome.
+    <div className={`relative w-screen h-dvh bg-black overflow-hidden ${isRest ? '[--accent:#8b5cf6]' : '[--accent:#06b6d4]'}`}>
       {/* Background gradient — blue tint for work, purple tint for rest/locked */}
       <div
         className={`absolute inset-0 ${
