@@ -996,7 +996,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
   'anima-aesthetic-v1-1': {
     label: 'Anima Aesthetic v1.1',
     graph: animaGraph('anima-aesthetic-v1.1.safetensors', 30, 4),
-    // No turboHints — see the note on the base style below.
+    turboHints: ['anima', 'turbo'],
     needs: ['diffusion_models/anima-aesthetic-v1.1.safetensors', ...ANIMA_SHARED],
   },
   'anima-turbo-v1-1': {
@@ -1011,15 +1011,18 @@ const BUILTIN_WORKFLOWS: Record<string, {
   'anima-base-v1': {
     label: 'Anima Base v1',
     graph: animaGraph('anima-base-v1.0.safetensors', 30, 4),
-    // NO turboHints, and deliberately so: for Anima, "turbo" is a separate
-    // distilled CHECKPOINT (anima-turbo-v1.x, the style above), not a LoRA.
-    // circlestone-labs/Anima publishes no loras/ folder at all. These hints used
-    // to say ['anima', 'turbo'], which could never match an Anima file — and
-    // worse, on a box that happens to have some *other* turbo LoRA (an SDXL
-    // lightning one, say) the auto-pick would splice a foreign model family into
-    // the Anima graph and quietly wreck the picture. Turbo here means: pick the
-    // Anima Turbo style. The Advanced toggle stays for someone who installs a
-    // LoRA of their own and names it by hand.
+    // Anima ships turbo TWO ways, and both are real:
+    //
+    //   • anima-turbo-v1.x, a separate distilled CHECKPOINT — the style above,
+    //     and the better option when you want turbo for a whole session;
+    //   • anima-turbo-lora-v0.2, a LoRA that speeds up THIS model without
+    //     swapping it — what the Advanced toggle splices in.
+    //
+    // The LoRA is not in the circlestone-labs/Anima repo (which publishes no
+    // loras/ folder), which is why it briefly looked like it didn't exist. It
+    // does; these hints are how it gets found. Matched rather than hardcoded —
+    // the filename is a thing on the GPU box's disk and its version moves, so
+    // listLoras() stays the only honest source for it.
     // Surfaced in the picker when they're missing, because the alternative is a
     // render that fails with a bare "value not in list" naming a file the user
     // has never heard of.
