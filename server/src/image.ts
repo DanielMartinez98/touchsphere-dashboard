@@ -99,6 +99,49 @@ function savedModel(): string {
   }
 }
 
+// ── Quality ──────────────────────────────────────────────────────────────────
+//
+// Sampling steps, which is the one honest quality/time lever here. cfg and
+// sampler are left to whatever the graph specifies, because those are per-model
+// TUNING, not quality — Anima wants cfg 4 where SDXL wants 8, and overriding
+// that from a "quality" button would quietly wreck one of them.
+export const QUALITY_STEPS: Record<string, number> = {
+  draft:    12,   // rough idea, fastest
+  standard: 26,
+  high:     44,   // diminishing returns past here on most models
+}
+export const DEFAULT_QUALITY = 'standard'
+
+function qualityFile(): string {
+  return path.join(process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache', 'image-quality.json')
+}
+
+/** The quality preset in effect. Own file, like voice-pitch.json — one concern each. */
+export function selectedQuality(): string {
+  try {
+    const v = (JSON.parse(fs.readFileSync(qualityFile(), 'utf8')) as { quality?: string }).quality
+    return typeof v === 'string' && v in QUALITY_STEPS ? v : DEFAULT_QUALITY
+  } catch {
+    return DEFAULT_QUALITY
+  }
+}
+
+export function setSelectedQuality(quality: string): void {
+  if (!(quality in QUALITY_STEPS)) throw new Error(`unknown quality: ${quality}`)
+  const dir = process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache'
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  const p = qualityFile()
+  const tmp = `${p}.tmp-${process.pid}`
+  try {
+    fs.writeFileSync(tmp, JSON.stringify({ quality }, null, 2), 'utf8')
+    fs.renameSync(tmp, p)
+    console.log(`[image] quality set to ${quality} (${QUALITY_STEPS[quality]} steps)`)
+  } catch (err) {
+    try { fs.unlinkSync(tmp) } catch { /* nothing to clean up */ }
+    console.error('[image] failed to save quality:', err)
+  }
+}
+
 /** The checkpoint currently in effect, by precedence. '' = whatever the workflow says. */
 export function selectedModel(): string {
   return savedModel() || MODEL
@@ -241,8 +284,10 @@ export interface ImageJob {
   width:    number
   height:   number
   seed:     number
-  /** Checkpoint this picture was drawn with. '' = the workflow's own. */
+  /** Style this picture was drawn with — a checkpoint filename, or `wf:<id>`. */
   model:    string
+  /** Sampling steps. 0 = leave whatever the graph specifies. */
+  steps:    number
   status:   JobStatus
   /** Human phrase for the overlay — "waiting for the GPU", "drawing"… */
   phase:    string
@@ -285,6 +330,7 @@ function wire(job: ImageJob) {
     height:   job.height,
     seed:     job.seed,
     model:    job.model,
+    steps:    job.steps,
     ...(job.file  ? { file: job.file, url: `/api/image/file/${job.file}` } : {}),
     ...(job.error ? { error: job.error } : {}),
     elapsedMs: (job.endedAt ?? Date.now()) - job.startedAt,
@@ -307,6 +353,8 @@ export interface ImageRequest {
   seed?:     number
   /** Checkpoint override for this one picture. Omit to use the user's choice. */
   model?:    string
+  /** Sampling steps override. Omit to use the selected quality preset. */
+  steps?:    number
 }
 
 const clampDim = (n: number, fallback: number): number => {
@@ -336,6 +384,11 @@ export function startImage(req: ImageRequest): ImageJob {
     // the model that was selected when it was asked for, even if the user
     // switches checkpoints while it sits in the queue.
     model:     (req.model ?? '').trim() || selectedModel(),
+    // Same reasoning as the model: resolved when the picture is ASKED for, so
+    // changing quality mid-queue doesn't retroactively change what's waiting.
+    steps:     Number.isFinite(req.steps) && Number(req.steps) > 0
+      ? Math.max(1, Math.min(150, Math.round(Number(req.steps))))
+      : (QUALITY_STEPS[selectedQuality()] ?? 0),
     status:    'queued',
     phase:     'waiting for the GPU',
     startedAt: Date.now(),
@@ -440,6 +493,97 @@ const BUILTIN_GRAPH: ComfyGraph = {
   '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['8', 0] } },
 }
 
+/**
+ * Anima Base v1.0 — a WORKFLOW style, not a checkpoint.
+ *
+ * Anima doesn't ship as one .safetensors the way SDXL does; it's three files
+ * (a 2B diffusion model, a Qwen-3 0.6B text encoder, a VAE) loaded by three
+ * separate nodes. There is no ckpt_name to swap, so it cannot be offered in the
+ * same list as the checkpoints without the "style" idea covering both.
+ *
+ * Transcribed from ComfyUI's own bundled template (image_anima_base_v1.json) —
+ * its sampler settings are the model author's, not guesses: euler/simple at
+ * cfg 4, where SDXL wants 8. The template wraps this in a frontend "subgraph"
+ * and offers an optional turbo LoRA behind switch nodes; both are flattened
+ * away here, because /prompt takes a flat API graph and the LoRA is off by
+ * default anyway.
+ */
+const ANIMA_GRAPH: ComfyGraph = {
+  '1': { class_type: 'UNETLoader', inputs: { unet_name: 'anima-base-v1.0.safetensors', weight_dtype: 'default' } },
+  '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen_3_06b_base.safetensors', type: 'stable_diffusion', device: 'default' } },
+  '3': { class_type: 'VAELoader', inputs: { vae_name: 'qwen_image_vae.safetensors' } },
+  '4': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
+  '5': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
+  '6': { class_type: 'EmptyLatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
+  '7': {
+    class_type: 'KSampler',
+    inputs: {
+      seed: 0, steps: 30, cfg: 4, sampler_name: 'euler', scheduler: 'simple', denoise: 1,
+      model: ['1', 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0],
+    },
+  },
+  '8': { class_type: 'VAEDecode', inputs: { samples: ['7', 0], vae: ['3', 0] } },
+  '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['8', 0] } },
+}
+
+/**
+ * Styles that are a whole graph rather than a checkpoint name.
+ *
+ * Keyed by the id used on the wire as `wf:<id>`. A user-supplied API-format
+ * graph at $CACHE_DIR/workflows/<name>.json joins this list at runtime, so
+ * "bring your own workflow" and "pick Anima" are the same mechanism.
+ */
+const BUILTIN_WORKFLOWS: Record<string, { label: string; graph: ComfyGraph; needs: string[] }> = {
+  'anima-base-v1': {
+    label: 'Anima Base v1',
+    graph: ANIMA_GRAPH,
+    // Surfaced in the picker when they're missing, because the alternative is a
+    // render that fails with a bare "value not in list" naming a file the user
+    // has never heard of.
+    needs: [
+      'diffusion_models/anima-base-v1.0.safetensors',
+      'text_encoders/qwen_3_06b_base.safetensors',
+      'vae/qwen_image_vae.safetensors',
+    ],
+  },
+}
+
+export const WORKFLOW_PREFIX = 'wf:'
+
+/** Workflow styles available: the built-ins plus any JSON on the cache volume. */
+export function listWorkflowStyles(): { id: string; label: string }[] {
+  const out = Object.entries(BUILTIN_WORKFLOWS).map(([id, w]) => ({ id: WORKFLOW_PREFIX + id, label: w.label }))
+  try {
+    const dir = path.join(process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache', 'workflows')
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith('.json')) continue
+      const id = f.replace(/\.json$/, '')
+      // txt2img.json is the OVERRIDE for the default checkpoint graph, not a
+      // style of its own — listing it would offer the same thing twice.
+      if (id === 'txt2img' || id in BUILTIN_WORKFLOWS) continue
+      out.push({ id: WORKFLOW_PREFIX + id, label: id.replace(/[_-]+/g, ' ') })
+    }
+  } catch { /* no workflows directory */ }
+  return out
+}
+
+/** The graph for a `wf:` style, or null if there isn't one by that name. */
+function workflowGraph(id: string): ComfyGraph | null {
+  const builtin = BUILTIN_WORKFLOWS[id]
+  if (builtin) return structuredClone(builtin.graph)
+  try {
+    const p = path.join(process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache', 'workflows', `${id}.json`)
+    const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as ComfyGraph
+    if ('nodes' in parsed || 'links' in parsed) {
+      throw new Error('this looks like a UI workflow — re-export it with "Save (API Format)"')
+    }
+    return parsed
+  } catch (err) {
+    console.error(`[image] workflow "${id}" unusable: ${err instanceof Error ? err.message : err}`)
+    return null
+  }
+}
+
 function workflowPath(): string {
   return process.env['COMFYUI_WORKFLOW']
     ?? path.join(process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache', 'workflows', 'txt2img.json')
@@ -488,7 +632,13 @@ function findNode(graph: ComfyGraph, classes: string[]): string | null {
  * distinction actually exists.
  */
 function buildGraph(job: ImageJob): ComfyGraph {
-  const graph = baseGraph()
+  // A `wf:` style brings its own whole graph (Anima, or one the user dropped in);
+  // anything else is a checkpoint name patched into the default txt2img graph.
+  const isWorkflow = job.model.startsWith(WORKFLOW_PREFIX)
+  const graph = isWorkflow
+    ? workflowGraph(job.model.slice(WORKFLOW_PREFIX.length))
+    : baseGraph()
+  if (!graph) throw new Error(`the "${job.model}" style is not installed on this server`)
 
   const samplerId = findNode(graph, ['KSampler', 'KSamplerAdvanced', 'SamplerCustom'])
   if (!samplerId) throw new Error('workflow has no KSampler node')
@@ -498,7 +648,9 @@ function buildGraph(job: ImageJob): ComfyGraph {
   // key the node actually declares rather than adding a bogus one.
   if ('seed' in sampler.inputs) sampler.inputs['seed'] = job.seed
   if ('noise_seed' in sampler.inputs) sampler.inputs['noise_seed'] = job.seed
-  if (STEPS > 0 && 'steps' in sampler.inputs) sampler.inputs['steps'] = STEPS
+  // Job steps win; COMFYUI_STEPS is the fallback for a server with no UI choice.
+  const steps = job.steps > 0 ? job.steps : STEPS
+  if (steps > 0 && 'steps' in sampler.inputs) sampler.inputs['steps'] = steps
 
   const link = (key: string): string | null => {
     const v = sampler.inputs[key]
@@ -522,7 +674,9 @@ function buildGraph(job: ImageJob): ComfyGraph {
     graph[latentId]!.inputs['batch_size'] = 1
   }
 
-  if (job.model) {
+  // Only a checkpoint style names a ckpt_name; a workflow style already has its
+  // loaders wired and must not have a .safetensors filename forced into them.
+  if (job.model && !isWorkflow) {
     const ckptId = findNode(graph, ['CheckpointLoaderSimple', 'CheckpointLoader'])
     if (ckptId) graph[ckptId]!.inputs['ckpt_name'] = job.model
   }

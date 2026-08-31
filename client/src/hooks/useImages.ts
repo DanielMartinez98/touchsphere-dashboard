@@ -25,6 +25,33 @@ export interface StoredImage {
 
 export type Orientation = 'portrait' | 'landscape' | 'square'
 
+export interface ImageStyle {
+  /** Checkpoint filename, or `wf:<id>` for a whole-workflow style. */
+  id:    string
+  label: string
+  kind:  'checkpoint' | 'workflow'
+}
+
+interface StylesResponse {
+  models?:  string[]
+  styles?:  ImageStyle[]
+  selected?: string
+  quality?:  string
+}
+
+/**
+ * Styles from the response, tolerating a server that predates them.
+ *
+ * The dashboard and the server update independently (Watchtower pulls the image
+ * on its own schedule), so a client can briefly be newer than the API it talks
+ * to. Falling back to the flat `models` list keeps the picker working instead of
+ * rendering empty.
+ */
+function stylesOf(j: StylesResponse): ImageStyle[] {
+  if (j.styles?.length) return j.styles
+  return (j.models ?? []).map(m => ({ id: m, label: m, kind: 'checkpoint' as const }))
+}
+
 // Mirrors SIZES in server/src/routes/image-tools.ts. Duplicated rather than
 // fetched: it's three constants, and the widget has to draw the aspect-ratio
 // buttons before it has spoken to the server at all.
@@ -45,8 +72,12 @@ export function useImages() {
   // Installed checkpoints and the one in effect. Asked of the server rather
   // than configured here, because ComfyUI is the only thing that knows what is
   // actually on the GPU box's disk.
-  const [models, setModels]       = useState<string[]>([])
-  const [model,  setModelState]   = useState('')
+  // Styles cover BOTH kinds: a checkpoint filename, and a `wf:` workflow style
+  // like Anima that is three files behind three loader nodes and has no
+  // ckpt_name to swap. The picker shouldn't care which is which.
+  const [styles,  setStyles]     = useState<ImageStyle[]>([])
+  const [model,   setModelState] = useState('')
+  const [quality, setQualityState] = useState('standard')
 
   const refresh = useCallback(async () => {
     try {
@@ -87,9 +118,10 @@ export function useImages() {
   const loadModels = useCallback(async () => {
     try {
       const res = await fetch('/api/image/models')
-      const j = await res.json() as { models?: string[]; selected?: string }
-      setModels(j.models ?? [])
+      const j = await res.json() as StylesResponse
+      setStyles(stylesOf(j))
       setModelState(j.selected ?? '')
+      setQualityState(j.quality ?? 'standard')
     } catch (err) {
       console.warn('[images] model list failed:', err)
     }
@@ -101,10 +133,11 @@ export function useImages() {
     let cancelled = false
     fetch('/api/image/models')
       .then(r => r.json())
-      .then((j: { models?: string[]; selected?: string }) => {
+      .then((j: StylesResponse) => {
         if (cancelled) return
-        setModels(j.models ?? [])
+        setStyles(stylesOf(j))
         setModelState(j.selected ?? '')
+        setQualityState(j.quality ?? 'standard')
       })
       .catch(err => { if (!cancelled) console.warn('[images] model list failed:', err) })
     return () => { cancelled = true }
@@ -130,6 +163,22 @@ export function useImages() {
     } catch (err) {
       console.warn('[images] setting model failed:', err)
       void loadModels()          // put the real value back
+    }
+  }, [loadModels])
+
+  /** Change the quality preset. Same optimistic-then-reconciled shape as setModel. */
+  const setQuality = useCallback(async (next: string) => {
+    setQualityState(next)
+    try {
+      const res = await fetch('/api/image/quality', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quality: next }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    } catch (err) {
+      console.warn('[images] setting quality failed:', err)
+      void loadModels()
     }
   }, [loadModels])
 
@@ -209,7 +258,8 @@ export function useImages() {
 
   return {
     images, enabled, loading, busy, phase: busy ? (job?.phase ?? '') : '',
-    models, model, setModel,
+    styles, model, setModel,
+    quality, setQuality,
     generate, remove, refresh,
   }
 }

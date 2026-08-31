@@ -19,9 +19,14 @@ import {
   jobWire,
   listImages,
   listModels,
+  listWorkflowStyles,
+  QUALITY_STEPS,
   selectedModel,
+  selectedQuality,
   setSelectedModel,
+  setSelectedQuality,
   startImage,
+  WORKFLOW_PREFIX,
 } from '../image'
 
 const router = Router()
@@ -80,9 +85,24 @@ router.get('/models', async (_req: Request, res: Response) => {
     return
   }
   try {
-    const models = await listModels()
+    // Checkpoints and workflow styles in ONE list. Anima is three files behind
+    // three loader nodes rather than a ckpt_name, so it can only appear beside
+    // the checkpoints if "style" covers both kinds — which is also what makes a
+    // user-supplied workflow selectable instead of a hidden global override.
+    const checkpoints = await listModels()
+    const styles = [
+      ...checkpoints.map(name => ({ id: name, label: name, kind: 'checkpoint' as const })),
+      ...listWorkflowStyles().map(w => ({ id: w.id, label: w.label, kind: 'workflow' as const })),
+    ]
     res.setHeader('Cache-Control', 'no-store')
-    res.json({ models, selected: selectedModel() })
+    res.json({
+      // `models` kept for older clients that predate workflow styles.
+      models: checkpoints,
+      styles,
+      selected: selectedModel(),
+      quality: selectedQuality(),
+      qualities: Object.keys(QUALITY_STEPS),
+    })
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
     console.warn('[image] listing checkpoints failed:', detail)
@@ -103,7 +123,14 @@ router.post('/model', async (req: Request, res: Response) => {
   // '' is legitimate — it means "go back to whatever the workflow specifies".
   // Anything else has to be a checkpoint ComfyUI actually has, or every later
   // render fails with a "value not in list" that points nowhere near this route.
-  if (model) {
+  if (model.startsWith(WORKFLOW_PREFIX)) {
+    // A workflow style is validated against what this server can build, not
+    // against ComfyUI's checkpoint list — it has no ckpt_name at all.
+    if (!listWorkflowStyles().some(w => w.id === model)) {
+      res.status(400).json({ error: `no such style: ${model}` })
+      return
+    }
+  } else if (model) {
     try {
       const models = await listModels()
       if (!models.includes(model)) {
@@ -117,6 +144,26 @@ router.post('/model', async (req: Request, res: Response) => {
   }
   setSelectedModel(model)
   res.json({ ok: true, selected: model })
+})
+
+// POST /api/image/quality  { quality: 'draft' | 'standard' | 'high' }
+//
+// Sampling steps only — see QUALITY_STEPS. Shared with the assistant for the
+// same reason the style is: it's a preference about how pictures get drawn on
+// this dashboard, not a property of who asked.
+router.post('/quality', (req: Request, res: Response) => {
+  const quality = typeof (req.body as { quality?: unknown })?.quality === 'string'
+    ? (req.body as { quality: string }).quality.trim()
+    : ''
+  try {
+    setSelectedQuality(quality)
+    res.json({ ok: true, quality, steps: QUALITY_STEPS[quality] })
+  } catch (err) {
+    res.status(400).json({
+      error: err instanceof Error ? err.message : String(err),
+      qualities: Object.keys(QUALITY_STEPS),
+    })
+  }
 })
 
 // GET /api/image/job/:id — one job's state, for a client that reconnected.
@@ -159,6 +206,7 @@ router.post('/generate', (req: Request, res: Response) => {
     prompt,
     ...(typeof body?.['model'] === 'string' && body['model'] ? { model: body['model'] } : {}),
     ...(typeof body?.['negative'] === 'string' ? { negative: body['negative'] } : {}),
+    ...(num('steps') !== undefined ? { steps: num('steps')! } : {}),
     ...(num('width')  !== undefined ? { width:  num('width')!  } : {}),
     ...(num('height') !== undefined ? { height: num('height')! } : {}),
     ...(num('seed')   !== undefined ? { seed:   num('seed')!   } : {}),

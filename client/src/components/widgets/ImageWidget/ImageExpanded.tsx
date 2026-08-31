@@ -11,10 +11,10 @@
 // second viewer, so a picture looks the same however it was asked for.
 
 import { useState } from 'react'
-import { Sparkles, Trash2, AlertTriangle, Check, Layers } from 'lucide-react'
+import { Sparkles, Trash2, AlertTriangle, Check, Layers, Gauge } from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
 import { openImage } from '../../../hooks/useImageOverlay'
-import type { Orientation, StoredImage } from '../../../hooks/useImages'
+import type { ImageStyle, Orientation, StoredImage } from '../../../hooks/useImages'
 
 // Starters, not a menu. A blank box is the hardest thing to hand someone on a
 // touchscreen with no keyboard, and these show the SHAPE of a prompt that works
@@ -40,11 +40,14 @@ interface Props {
   busy:     boolean
   /** Phase text of the render in flight, if any — straight from the server. */
   phase:    string
-  /** Checkpoints installed on the GPU box. */
-  models:   string[]
+  /** Styles available — checkpoints and whole-workflow styles alike. */
+  styles:   ImageStyle[]
   /** The one in effect. '' = whatever the workflow specifies. */
   model:    string
+  /** Sampling-quality preset: more steps, slower, better. */
+  quality:  string
   onModel:    (model: string) => void
+  onQuality:  (quality: string) => void
   onGenerate: (prompt: string, orientation: Orientation) => void
   onDelete:   (id: string) => void
 }
@@ -67,8 +70,16 @@ function pretty(file: string): string {
     .join(' ')
 }
 
+// Steps are the honest quality lever; the labels say what that costs, because
+// on a kiosk "High" with no warning just reads as the thing having got slower.
+const QUALITIES: { id: string; label: string; hint: string }[] = [
+  { id: 'draft',    label: 'Draft',    hint: 'fastest' },
+  { id: 'standard', label: 'Standard', hint: 'balanced' },
+  { id: 'high',     label: 'High',     hint: 'slowest' },
+]
+
 export default function ImageExpanded({
-  images, enabled, busy, phase, models, model, onModel, onGenerate, onDelete,
+  images, enabled, busy, phase, styles, model, quality, onModel, onQuality, onGenerate, onDelete,
 }: Props) {
   const [prompt, setPrompt] = useState('')
   const [orientation, setOrientation] = useState<Orientation>('portrait')
@@ -140,7 +151,7 @@ export default function ImageExpanded({
           you get anime or photoreal, and swapping it is the difference between
           "this isn't what I wanted" and one more tap. Only shown when there is
           a choice to make — one installed checkpoint is not a decision. */}
-      {models.length > 1 && (
+      {styles.length > 1 && (
         <div className="flex flex-col gap-2 shrink-0">
           <span className="text-xs uppercase tracking-widest text-white/35 font-semibold flex items-center gap-1.5">
             <Layers size={13} />
@@ -150,20 +161,22 @@ export default function ImageExpanded({
               kiosk opens an OS popup that TouchKio renders badly, and these are
               a handful of options, not a hundred. */}
           <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
-            {models.map(m => (
+            {styles.map(st => (
               <button
-                key={m}
+                key={st.id}
                 type="button"
-                onClick={() => onModel(m)}
+                onClick={() => onModel(st.id)}
                 className={`shrink-0 h-12 px-4 rounded-2xl text-[13px] font-semibold whitespace-nowrap
                             flex items-center gap-2 transition-colors active:scale-95 ${
-                  model === m
+                  model === st.id
                     ? 'bg-pink-500/25 text-white border border-pink-400/40'
                     : 'bg-white/5 text-white/50 border border-transparent'
                 }`}
               >
-                {model === m && <Check size={15} />}
-                {pretty(m)}
+                {model === st.id && <Check size={15} />}
+                {/* A workflow style already has a human label from the server;
+                    only raw checkpoint FILENAMES need prettifying. */}
+                {st.kind === 'workflow' ? st.label : pretty(st.label)}
               </button>
             ))}
           </div>
@@ -175,6 +188,36 @@ export default function ImageExpanded({
           </span>
         </div>
       )}
+
+      {/* ── Quality ──
+          Sampling steps and nothing else. cfg and sampler stay at whatever the
+          chosen style specifies, because those are per-model tuning — Anima
+          wants cfg 4 where SDXL wants 8 — and bending them from a "quality"
+          button would quietly wreck one of them. */}
+      <div className="flex flex-col gap-2 shrink-0">
+        <span className="text-xs uppercase tracking-widest text-white/35 font-semibold flex items-center gap-1.5">
+          <Gauge size={13} />
+          Quality
+        </span>
+        <div className="flex gap-2">
+          {QUALITIES.map(q => (
+            <button
+              key={q.id}
+              type="button"
+              onClick={() => onQuality(q.id)}
+              className={`flex-1 h-14 rounded-2xl flex flex-col items-center justify-center leading-tight
+                          transition-colors active:scale-95 ${
+                quality === q.id
+                  ? 'bg-white/20 text-white border border-white/25'
+                  : 'bg-white/5 text-white/45 border border-transparent'
+              }`}
+            >
+              <span className="text-[13px] font-semibold">{q.label}</span>
+              <span className="text-[10px] text-white/35">{q.hint}</span>
+            </button>
+          ))}
+        </div>
+      </div>
 
       <div className="flex gap-2 shrink-0">
         {ORIENTATIONS.map(o => (
