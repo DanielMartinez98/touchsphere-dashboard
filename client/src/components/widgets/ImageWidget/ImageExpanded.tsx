@@ -14,7 +14,10 @@ import { useState } from 'react'
 import { Sparkles, Trash2, AlertTriangle, Check, Layers, Gauge } from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
 import { openImage } from '../../../hooks/useImageOverlay'
-import type { ImageStyle, Orientation, StoredImage } from '../../../hooks/useImages'
+import AdvancedPanel from './AdvancedPanel'
+import type {
+  ImageParams, ImageStyle, Orientation, StoredImage, StyleDefaults,
+} from '../../../hooks/useImages'
 
 // Starters, not a menu. A blank box is the hardest thing to hand someone on a
 // touchscreen with no keyboard, and these show the SHAPE of a prompt that works
@@ -46,11 +49,23 @@ interface Props {
   model:    string
   /** Sampling-quality preset: more steps, slower, better. */
   quality:  string
+  /** Advanced per-style knobs — megapixels, steps, cfg, turbo LoRA, seed. */
+  params:   ImageParams
+  /** What the selected style's own graph specifies, under those knobs. */
+  defaults: StyleDefaults | null
+  loras:    string[]
+  autoLora: string
   onModel:    (model: string) => void
   onQuality:  (quality: string) => void
+  onParams:   (patch: Partial<ImageParams>) => void
+  onResetParams: () => void
   onGenerate: (prompt: string, orientation: Orientation) => void
   onDelete:   (id: string) => void
 }
+
+// Mirrors QUALITY_STEPS in server/src/image.ts — only so the Steps control's
+// "Auto" can say which number it means. Duplicated for the same reason SIZES is.
+const QUALITY_STEP_COUNT: Record<string, number> = { draft: 12, standard: 26, high: 44 }
 
 /**
  * "animagine-xl-4.0.safetensors" → "Animagine Xl 4.0".
@@ -79,7 +94,9 @@ const QUALITIES: { id: string; label: string; hint: string }[] = [
 ]
 
 export default function ImageExpanded({
-  images, enabled, busy, phase, styles, model, quality, onModel, onQuality, onGenerate, onDelete,
+  images, enabled, busy, phase, styles, model, quality,
+  params, defaults, loras, autoLora,
+  onModel, onQuality, onParams, onResetParams, onGenerate, onDelete,
 }: Props) {
   const [prompt, setPrompt] = useState('')
   const [orientation, setOrientation] = useState<Orientation>('portrait')
@@ -205,13 +222,23 @@ export default function ImageExpanded({
           Sampling steps and nothing else. cfg and sampler stay at whatever the
           chosen style specifies, because those are per-model tuning — Anima
           wants cfg 4 where SDXL wants 8 — and bending them from a "quality"
-          button would quietly wreck one of them. */}
+          button would quietly wreck one of them. Advanced below has a cfg
+          control of its own for exactly that reason: it's per style, not a
+          speed dial. */}
       <div className="flex flex-col gap-2 shrink-0">
         <span className="text-xs uppercase tracking-widest text-white/35 font-semibold flex items-center gap-1.5">
           <Gauge size={13} />
           Quality
+          {/* A preset that isn't in effect must not look like it is. Advanced's
+              Steps wins when it's set, and the only way to notice otherwise is
+              to wonder why "High" renders as fast as "Draft". */}
+          {params.steps > 0 && (
+            <span className="ml-auto normal-case tracking-normal text-pink-300/70">
+              overridden — {params.steps} steps
+            </span>
+          )}
         </span>
-        <div className="flex gap-2">
+        <div className={`flex gap-2 ${params.steps > 0 ? 'opacity-40' : ''}`}>
           {QUALITIES.map(q => (
             <button
               key={q.id}
@@ -251,6 +278,22 @@ export default function ImageExpanded({
           </button>
         ))}
       </div>
+
+      {/* ── Advanced ──
+          Collapsed by default: the two decisions above cover almost every
+          session, and a kiosk panel that opens on nine controls is a panel
+          nobody reads. It lives below orientation because the resolution
+          readout inside it depends on the shape chosen there. */}
+      <AdvancedPanel
+        params={params}
+        defaults={defaults}
+        loras={loras}
+        autoLora={autoLora}
+        qualitySteps={QUALITY_STEP_COUNT[quality] ?? 26}
+        orientation={orientation}
+        onChange={onParams}
+        onReset={onResetParams}
+      />
 
       <button
         type="button"

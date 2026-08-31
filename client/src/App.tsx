@@ -70,6 +70,8 @@ function App() {
     images, enabled: imagesEnabled, busy: imageBusy, phase: imagePhase,
     styles: imageStyles, model: imageModel, setModel: setImageModel,
     quality: imageQuality, setQuality: setImageQuality,
+    params: imageParams, defaults: imageDefaults, loras: imageLoras,
+    autoLora: imageAutoLora, setParams: setImageParams, resetParams: resetImageParams,
     generate: generateImage, remove: removeImage,
   } = useImages()
 
@@ -332,8 +334,14 @@ function App() {
             styles={imageStyles}
             model={imageModel}
             quality={imageQuality}
+            params={imageParams}
+            defaults={imageDefaults}
+            loras={imageLoras}
+            autoLora={imageAutoLora}
             onModel={setImageModel}
             onQuality={setImageQuality}
+            onParams={setImageParams}
+            onResetParams={resetImageParams}
             onGenerate={drawImage}
             onDelete={removeImage}
           />

@@ -25,6 +25,7 @@ import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
 import { broadcast } from './routes/system'
+import { advanceSeed, paramsFor, type ImageParams } from './image-params'
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -73,6 +74,11 @@ const MAX_STORED = Number(process.env['IMAGE_MAX_STORED'] ?? 60)
 const MIN_DIM = 256
 const MAX_DIM = 1536
 const MAX_PROMPT = 900
+// The megapixel budget in the Advanced panel is OPERATOR config, not something
+// the LLM can reach, so it gets a higher ceiling than MAX_DIM — the same
+// distinction COMFYUI_URL makes against isPublicHttpUrl(). 3 MP in portrait is
+// already 1408×2112, which a 2B model like Anima renders happily on a 4090.
+const MAX_USER_DIM = 2048
 
 // ── Checkpoint selection ─────────────────────────────────────────────────────
 
@@ -178,6 +184,42 @@ export async function listModels(): Promise<string[]> {
   }>
   const raw = j['CheckpointLoaderSimple']?.input?.required?.ckpt_name?.[0]
   return Array.isArray(raw) ? raw.filter((n): n is string => typeof n === 'string') : []
+}
+
+/**
+ * Which LoRAs the server has installed.
+ *
+ * Asked of ComfyUI for exactly the reason listModels() is: the turbo LoRA's
+ * filename is a thing that lives on the GPU box's disk, and hardcoding a guess
+ * at it here would fail as a bare "value not in list" naming a file nobody
+ * chose. The picker offers what is actually there.
+ */
+export async function listLoras(): Promise<string[]> {
+  const res = await comfyFetch('/object_info/LoraLoaderModelOnly', undefined, 10_000)
+  if (!res.ok) throw new Error(`HTTP ${res.status} listing LoRAs`)
+  const j = await res.json() as Record<string, {
+    input?: { required?: { lora_name?: unknown[] } }
+  }>
+  const raw = j['LoraLoaderModelOnly']?.input?.required?.lora_name?.[0]
+  return Array.isArray(raw) ? raw.filter((n): n is string => typeof n === 'string') : []
+}
+
+/**
+ * The LoRA to insert when turbo is on and the user hasn't named one.
+ *
+ * Hints come from the style itself (Anima's are ['anima', 'turbo']), so the
+ * guess is "the turbo LoRA that belongs to the model you picked" rather than
+ * "whatever LoRA sorts first". Falls back to any turbo-ish name, then to
+ * nothing at all — an unresolvable LoRA is skipped rather than guessed at,
+ * because a wrong one silently changes the picture instead of failing.
+ */
+export function pickLora(installed: string[], hints: string[]): string {
+  const low = installed.map(n => ({ n, l: n.toLowerCase() }))
+  if (hints.length > 0) {
+    const all = low.find(x => hints.every(h => x.l.includes(h)))
+    if (all) return all.n
+  }
+  return low.find(x => x.l.includes('turbo'))?.n ?? ''
 }
 
 // ── Disk ─────────────────────────────────────────────────────────────────────
@@ -288,6 +330,14 @@ export interface ImageJob {
   model:    string
   /** Sampling steps. 0 = leave whatever the graph specifies. */
   steps:    number
+  /** Guidance scale. 0 = leave whatever the graph specifies. */
+  cfg:      number
+  /** Turbo mode: splice a model-only LoRA in ahead of the sampler. */
+  turbo:    boolean
+  /** LoRA to splice in ahead of the sampler. '' = none (turbo off, or none found). */
+  lora:     string
+  /** Strength of that LoRA. Only meaningful when `lora` is set. */
+  loraStrength: number
   status:   JobStatus
   /** Human phrase for the overlay — "waiting for the GPU", "drawing"… */
   phase:    string
@@ -331,6 +381,8 @@ function wire(job: ImageJob) {
     seed:     job.seed,
     model:    job.model,
     steps:    job.steps,
+    cfg:      job.cfg,
+    ...(job.lora ? { lora: job.lora, loraStrength: job.loraStrength } : {}),
     ...(job.file  ? { file: job.file, url: `/api/image/file/${job.file}` } : {}),
     ...(job.error ? { error: job.error } : {}),
     elapsedMs: (job.endedAt ?? Date.now()) - job.startedAt,
@@ -355,12 +407,57 @@ export interface ImageRequest {
   model?:    string
   /** Sampling steps override. Omit to use the selected quality preset. */
   steps?:    number
+  /** Guidance override. Omit to use the style's saved cfg, then the graph's. */
+  cfg?:      number
 }
 
 const clampDim = (n: number, fallback: number): number => {
   if (!Number.isFinite(n) || n <= 0) return fallback
   // ComfyUI's latent space is 8px-aligned; a stray 777 errors inside the graph.
   return Math.max(MIN_DIM, Math.min(MAX_DIM, Math.round(n / 8) * 8))
+}
+
+/**
+ * Re-size a requested shape to a megapixel budget.
+ *
+ * The orientation buttons (and the assistant's `orientation` argument) decide
+ * the ASPECT; this decides how big that shape is. Keeping the two separate is
+ * what makes one megapixel setting apply to all three orientations instead of
+ * needing nine fixed sizes — and it's how ComfyUI's own Anima template works,
+ * where a megapixel widget and a "multiple of" widget feed the empty latent.
+ *
+ * `multipleOf` matters because models are trained at particular grid sizes:
+ * SDXL is happy at any multiple of 8, but several newer models produce seams
+ * unless each side lands on 64.
+ */
+function sizeForMegapixels(
+  width: number, height: number, megapixels: number, multipleOf: number,
+): { width: number; height: number } {
+  const mult = multipleOf >= 8 ? multipleOf : 8
+  const aspect = width / height
+  const target = megapixels * 1_000_000
+  // Solve w*h = target with w/h = aspect, then snap both sides to the grid.
+  const raw = { w: Math.sqrt(target * aspect), h: Math.sqrt(target / aspect) }
+  const snap = (n: number) =>
+    Math.max(MIN_DIM, Math.min(MAX_USER_DIM, Math.max(mult, Math.round(n / mult) * mult)))
+  return { width: snap(raw.w), height: snap(raw.h) }
+}
+
+/**
+ * The seed for a render nobody passed one for.
+ *
+ * 'increment' advances the stored value as a side effect, which is why it goes
+ * through image-params.ts rather than being computed here: the store is the
+ * only thing that knows what the last one was, and it's the only thing that
+ * writes it.
+ */
+function nextSeed(style: string, p: ImageParams): number {
+  if (p.seedMode === 'fixed') return p.seed
+  if (p.seedMode === 'increment') {
+    advanceSeed(style, p.seed)
+    return p.seed
+  }
+  return crypto.randomInt(0, 2 ** 31)
 }
 
 /**
@@ -371,30 +468,59 @@ const clampDim = (n: number, fallback: number): number => {
  * readable from GET /api/image/job/:id.
  */
 export function startImage(req: ImageRequest): ImageJob {
+  // Resolved at QUEUE time, not render time: the picture should be drawn with
+  // the style that was selected when it was asked for, even if the user
+  // switches while it sits in the queue. Everything below hangs off it, because
+  // the knobs are stored PER STYLE — see image-params.ts.
+  const style = (req.model ?? '').trim() || selectedModel()
+  const p = paramsFor(style)
+
+  const asked = {
+    width:  clampDim(req.width  ?? DEFAULT_W, DEFAULT_W),
+    height: clampDim(req.height ?? DEFAULT_H, DEFAULT_H),
+  }
+  // The orientation gives the shape; the megapixel budget, when set, gives the
+  // size. Unset (0) leaves the fixed orientation sizes exactly as they were.
+  const size = p.megapixels > 0
+    ? sizeForMegapixels(asked.width, asked.height, p.megapixels, p.multipleOf)
+    : asked
+
   const job: ImageJob = {
     id:        crypto.randomBytes(16).toString('hex'),
     prompt:    req.prompt.slice(0, MAX_PROMPT),
     negative:  (req.negative ?? DEFAULT_NEGATIVE).slice(0, MAX_PROMPT),
-    width:     clampDim(req.width  ?? DEFAULT_W, DEFAULT_W),
-    height:    clampDim(req.height ?? DEFAULT_H, DEFAULT_H),
-    // A fixed seed makes every image of "a cat" identical, which reads as the
-    // feature being broken when someone asks twice.
-    seed:      Number.isFinite(req.seed) ? Number(req.seed) : crypto.randomInt(0, 2 ** 31),
-    // Resolved at QUEUE time, not render time: the picture should be drawn with
-    // the model that was selected when it was asked for, even if the user
-    // switches checkpoints while it sits in the queue.
-    model:     (req.model ?? '').trim() || selectedModel(),
-    // Same reasoning as the model: resolved when the picture is ASKED for, so
+    width:     size.width,
+    height:    size.height,
+    // Random by default: a fixed seed makes every image of "a cat" identical,
+    // which reads as the feature being broken when someone asks twice. 'fixed'
+    // and 'increment' exist for the opposite job — iterating on one picture by
+    // changing a word and holding everything else still.
+    seed:      Number.isFinite(req.seed) ? Number(req.seed) : nextSeed(style, p),
+    model:     style,
+    // Same reasoning as the style: resolved when the picture is ASKED for, so
     // changing quality mid-queue doesn't retroactively change what's waiting.
+    // Precedence: this request → the style's own steps → the quality preset.
     steps:     Number.isFinite(req.steps) && Number(req.steps) > 0
       ? Math.max(1, Math.min(150, Math.round(Number(req.steps))))
-      : (QUALITY_STEPS[selectedQuality()] ?? 0),
+      : p.steps > 0 ? p.steps : (QUALITY_STEPS[selectedQuality()] ?? 0),
+    // cfg has no quality-preset layer on purpose — it is per-model tuning, not
+    // a speed/quality dial. 0 all the way down means "whatever the graph says".
+    cfg:       Number.isFinite(req.cfg) && Number(req.cfg) > 0 ? Number(req.cfg) : p.cfg,
+    turbo:     p.turbo,
+    // May be '' here and filled in by run(), which can ask ComfyUI what LoRAs
+    // exist; startImage must stay synchronous for the chat tool that calls it.
+    lora:      p.turbo ? p.lora : '',
+    loraStrength: p.loraStrength,
     status:    'queued',
     phase:     'waiting for the GPU',
     startedAt: Date.now(),
   }
   jobs.set(job.id, job)
-  console.log(`[image] queued ${job.id} "${job.prompt.slice(0, 60)}" ${job.width}×${job.height} seed=${job.seed}`)
+  console.log(
+    `[image] queued ${job.id} "${job.prompt.slice(0, 60)}" ${job.width}×${job.height} ` +
+    `seed=${job.seed} steps=${job.steps || 'graph'} cfg=${job.cfg || 'graph'}` +
+    `${job.turbo ? ' turbo' : ''}`,
+  )
   push(job)
 
   queue = queue.then(() => run(job)).catch(err => {
@@ -414,6 +540,21 @@ async function run(job: ImageJob): Promise<void> {
   push(job, 'drawing')
 
   try {
+    // Turbo with no LoRA named: ask ComfyUI what it has and pick the one that
+    // belongs to this style. Done here rather than in startImage() because it
+    // needs the network and startImage() is called from a chat tool with a
+    // person waiting to be spoken to. A miss leaves `lora` empty and the render
+    // proceeds without it — a wrong LoRA silently changes the picture, which is
+    // worse than turbo quietly not engaging.
+    if (job.turbo && !job.lora) {
+      try {
+        job.lora = pickLora(await listLoras(), turboHints(job.model))
+        if (!job.lora) console.warn(`[image] ${job.id}: turbo is on but no LoRA matched ${job.model}`)
+      } catch (err) {
+        console.warn('[image] could not list LoRAs:', err instanceof Error ? err.message : err)
+      }
+    }
+
     const graph = buildGraph(job)
     const promptId = await queuePrompt(graph)
     console.log(`[image] ${job.id} → comfy prompt ${promptId}`)
@@ -533,10 +674,21 @@ const ANIMA_GRAPH: ComfyGraph = {
  * graph at $CACHE_DIR/workflows/<name>.json joins this list at runtime, so
  * "bring your own workflow" and "pick Anima" are the same mechanism.
  */
-const BUILTIN_WORKFLOWS: Record<string, { label: string; graph: ComfyGraph; needs: string[] }> = {
+const BUILTIN_WORKFLOWS: Record<string, {
+  label: string
+  graph: ComfyGraph
+  needs: string[]
+  /** Substrings that identify this style's turbo LoRA among the installed ones. */
+  turboHints?: string[]
+}> = {
   'anima-base-v1': {
     label: 'Anima Base v1',
     graph: ANIMA_GRAPH,
+    // The bundled template offers this LoRA behind a switch node; flattening
+    // the switch away is what the Advanced panel's Turbo toggle puts back.
+    // Matched rather than hardcoded — the filename is a thing on the GPU box's
+    // disk, and listLoras() is the only honest source for it.
+    turboHints: ['anima', 'turbo'],
     // Surfaced in the picker when they're missing, because the alternative is a
     // render that fails with a bare "value not in list" naming a file the user
     // has never heard of.
@@ -549,6 +701,12 @@ const BUILTIN_WORKFLOWS: Record<string, { label: string; graph: ComfyGraph; need
 }
 
 export const WORKFLOW_PREFIX = 'wf:'
+
+/** Hints for auto-picking a style's turbo LoRA. Empty for anything unknown. */
+function turboHints(style: string): string[] {
+  if (!style.startsWith(WORKFLOW_PREFIX)) return []
+  return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.turboHints ?? []
+}
 
 /** Workflow styles available: the built-ins plus any JSON on the cache volume. */
 export function listWorkflowStyles(): { id: string; label: string }[] {
@@ -651,6 +809,10 @@ function buildGraph(job: ImageJob): ComfyGraph {
   // Job steps win; COMFYUI_STEPS is the fallback for a server with no UI choice.
   const steps = job.steps > 0 ? job.steps : STEPS
   if (steps > 0 && 'steps' in sampler.inputs) sampler.inputs['steps'] = steps
+  // cfg is only ever set when someone explicitly asked for one. Left alone the
+  // graph keeps its own value, which for a style like Anima is the model
+  // author's number and not something to overwrite with a house default.
+  if (job.cfg > 0 && 'cfg' in sampler.inputs) sampler.inputs['cfg'] = job.cfg
 
   const link = (key: string): string | null => {
     const v = sampler.inputs[key]
@@ -681,12 +843,93 @@ function buildGraph(job: ImageJob): ComfyGraph {
     if (ckptId) graph[ckptId]!.inputs['ckpt_name'] = job.model
   }
 
+  // ── Turbo: splice a model-only LoRA in front of the sampler ──
+  //
+  // ComfyUI's Anima template ships this as a switch node the user flips in the
+  // graph; flattening the graph for /prompt threw the switch away, so the
+  // toggle rebuilds it. Inserted by REWIRING rather than by editing a loader:
+  // whatever currently feeds the sampler's `model` input becomes the LoRA's
+  // input, and the LoRA becomes the sampler's. That works the same whether the
+  // model comes from a UNETLoader (Anima), a CheckpointLoaderSimple (SDXL) or
+  // an existing LoRA stack in someone's own workflow.
+  //
+  // LoraLoaderModelOnly, not LoraLoader, because a text encoder that isn't CLIP
+  // — Anima's is Qwen-3 — has no `clip` output to hand it, and the turbo LoRAs
+  // these models ship are UNet-side anyway.
+  if (job.lora) {
+    const src = sampler.inputs['model']
+    if (Array.isArray(src)) {
+      // A name, not a number: node ids are object keys and a numeric one could
+      // collide with a node the user's own workflow already has.
+      const loraId = 'touchsphere_turbo_lora'
+      graph[loraId] = {
+        class_type: 'LoraLoaderModelOnly',
+        inputs: { lora_name: job.lora, strength_model: job.loraStrength, model: src },
+      }
+      sampler.inputs['model'] = [loraId, 0]
+    } else {
+      console.warn(`[image] ${job.id}: sampler model input isn't a link, skipping the turbo LoRA`)
+    }
+  }
+
   // Without a SaveImage the render happens and produces nothing we can fetch —
   // a PreviewImage lands in `temp` and is not listed in history outputs.
   if (!findNode(graph, ['SaveImage'])) {
     throw new Error('workflow has no SaveImage node — a preview-only graph produces nothing to download')
   }
   return graph
+}
+
+export interface StyleDefaults {
+  /** What the graph's own sampler says, so the UI's "Auto" can name a number. */
+  steps:     number
+  cfg:       number
+  width:     number
+  height:    number
+  sampler:   string
+  scheduler: string
+  /** False for a graph whose sampler has no cfg input at all (SamplerCustom). */
+  hasCfg:    boolean
+  /** Whether a turbo LoRA is even a sensible offer for this style. */
+  turboKnown: boolean
+}
+
+/**
+ * What a style's own graph specifies, before any of the user's knobs.
+ *
+ * This is what makes the Advanced panel honest: a control whose "off" position
+ * says "Auto" is useless if you can't see what auto IS — and auto is cfg 8 for
+ * SDXL and cfg 4 for Anima. Read straight from the graph rather than tabulated
+ * here, so a workflow the user dropped on the volume describes itself too.
+ */
+export function styleDefaults(style: string): StyleDefaults {
+  const fallback: StyleDefaults = {
+    steps: 20, cfg: 8, width: DEFAULT_W, height: DEFAULT_H,
+    sampler: 'euler', scheduler: 'normal', hasCfg: true,
+    turboKnown: turboHints(style).length > 0,
+  }
+  const graph = style.startsWith(WORKFLOW_PREFIX)
+    ? workflowGraph(style.slice(WORKFLOW_PREFIX.length))
+    : baseGraph()
+  if (!graph) return fallback
+
+  const samplerId = findNode(graph, ['KSampler', 'KSamplerAdvanced', 'SamplerCustom'])
+  const inputs = samplerId ? graph[samplerId]!.inputs : {}
+  const latentId = findNode(graph, ['EmptyLatentImage', 'EmptySD3LatentImage', 'EmptyLatentImageAdvanced'])
+  const latent = latentId ? graph[latentId]!.inputs : {}
+  const n = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d)
+  const s = (v: unknown, d: string) => (typeof v === 'string' ? v : d)
+
+  return {
+    steps:     n(inputs['steps'], fallback.steps),
+    cfg:       n(inputs['cfg'], fallback.cfg),
+    width:     n(latent['width'], fallback.width),
+    height:    n(latent['height'], fallback.height),
+    sampler:   s(inputs['sampler_name'], fallback.sampler),
+    scheduler: s(inputs['scheduler'], fallback.scheduler),
+    hasCfg:    'cfg' in inputs,
+    turboKnown: fallback.turboKnown,
+  }
 }
 
 // ── Talking to ComfyUI ───────────────────────────────────────────────────────

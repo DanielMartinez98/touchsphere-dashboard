@@ -39,6 +39,59 @@ interface StylesResponse {
   quality?:  string
 }
 
+export type SeedMode = 'random' | 'fixed' | 'increment'
+
+/**
+ * The advanced render knobs, stored PER STYLE on the server.
+ *
+ * Every zero means "leave it alone": steps 0 falls through to the quality
+ * preset, cfg 0 to whatever the style's graph specifies, megapixels 0 to the
+ * fixed orientation sizes. So a panel nobody has opened behaves exactly as it
+ * did before these existed.
+ */
+export interface ImageParams {
+  megapixels:   number
+  multipleOf:   number
+  steps:        number
+  cfg:          number
+  turbo:        boolean
+  lora:         string
+  loraStrength: number
+  seedMode:     SeedMode
+  seed:         number
+}
+
+/** What the selected style's own graph specifies, so "Auto" can name a number. */
+export interface StyleDefaults {
+  steps:      number
+  cfg:        number
+  width:      number
+  height:     number
+  sampler:    string
+  scheduler:  string
+  hasCfg:     boolean
+  turboKnown: boolean
+}
+
+export const DEFAULT_PARAMS: ImageParams = {
+  megapixels: 0, multipleOf: 8, steps: 0, cfg: 0,
+  turbo: false, lora: '', loraStrength: 1,
+  seedMode: 'random', seed: 0,
+}
+
+// Mirrors MEGAPIXEL_CHOICES / MULTIPLE_CHOICES in server/src/image-params.ts.
+// Duplicated for the same reason SIZES is: the panel has to draw its buttons
+// before it has spoken to the server, and these are six constants.
+export const MEGAPIXELS = [0, 0.5, 1, 1.5, 2, 3]
+export const MULTIPLES  = [8, 16, 32, 64]
+
+interface ParamsResponse {
+  values?:   Partial<ImageParams>
+  defaults?: Partial<StyleDefaults>
+  loras?:    string[]
+  autoLora?: string
+}
+
 /**
  * Styles from the response, tolerating a server that predates them.
  *
@@ -78,6 +131,13 @@ export function useImages() {
   const [styles,  setStyles]     = useState<ImageStyle[]>([])
   const [model,   setModelState] = useState('')
   const [quality, setQualityState] = useState('standard')
+  // The advanced knobs for the style currently selected, what that style's own
+  // graph specifies underneath them, and the LoRAs turbo mode can choose from.
+  // Reloaded whenever `model` changes, because the knobs are stored per style.
+  const [params,   setParamsState] = useState<ImageParams>(DEFAULT_PARAMS)
+  const [defaults, setDefaults]    = useState<StyleDefaults | null>(null)
+  const [loras,    setLoras]       = useState<string[]>([])
+  const [autoLora, setAutoLora]    = useState('')
 
   const refresh = useCallback(async () => {
     try {
@@ -165,6 +225,91 @@ export function useImages() {
       void loadModels()          // put the real value back
     }
   }, [loadModels])
+
+  /**
+   * Fetch the advanced knobs for one style. Returns them rather than setting
+   * them, so the caller decides whether its answer is still wanted — see the
+   * effect below.
+   *
+   * Takes the style explicitly rather than reading `model` from state, so a
+   * save can reload exactly the style it wrote without waiting for a re-render.
+   */
+  const fetchParams = useCallback(async (style: string): Promise<ParamsResponse | null> => {
+    try {
+      const res = await fetch(`/api/image/params?style=${encodeURIComponent(style)}`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return await res.json() as ParamsResponse
+    } catch (err) {
+      // A server that predates this endpoint 404s. Null falls back to defaults,
+      // and every zero in those means "leave it alone" anyway.
+      console.warn('[images] params load failed:', err)
+      return null
+    }
+  }, [])
+
+  const applyParams = useCallback((j: ParamsResponse | null) => {
+    setParamsState({ ...DEFAULT_PARAMS, ...(j?.values ?? {}) })
+    setDefaults(j?.defaults ? { ...j.defaults } as StyleDefaults : null)
+    setLoras(j?.loras ?? [])
+    setAutoLora(j?.autoLora ?? '')
+  }, [])
+
+  // Follow the selected style. Runs on mount too (model starts '' and settles
+  // to the real value once /models answers), which is what loads them initially.
+  //
+  // The cancelled guard is load-bearing rather than hygiene here: tapping
+  // through three styles fires three requests, and without it the slowest one
+  // wins and the panel ends up describing a style you aren't on — which the
+  // next tap would then SAVE against the style you are.
+  useEffect(() => {
+    let cancelled = false
+    void fetchParams(model).then(j => { if (!cancelled) applyParams(j) })
+    return () => { cancelled = true }
+  }, [model, fetchParams, applyParams])
+
+  /**
+   * Change one knob.
+   *
+   * A PATCH: only the changed field goes up, and the server's normalized answer
+   * comes back as the new truth. Optimistic first, like setModel — on a
+   * touchscreen a control that waits for a round trip before it moves reads as
+   * a control that didn't register the tap.
+   */
+  const setParams = useCallback(async (patch: Partial<ImageParams>) => {
+    const style = model
+    setParamsState(prev => ({ ...prev, ...patch }))
+    try {
+      const res = await fetch('/api/image/params', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ style, ...patch }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const j = await res.json() as ParamsResponse
+      if (j.values) setParamsState({ ...DEFAULT_PARAMS, ...j.values })
+    } catch (err) {
+      console.warn('[images] params save failed:', err)
+      void fetchParams(style).then(applyParams)     // put the real values back
+    }
+  }, [model, fetchParams, applyParams])
+
+  /** Forget this style's knobs — back to whatever its own graph specifies. */
+  const resetParams = useCallback(async () => {
+    const style = model
+    setParamsState(DEFAULT_PARAMS)
+    try {
+      await fetch('/api/image/params', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ style, reset: true }),
+      })
+    } catch (err) {
+      console.warn('[images] params reset failed:', err)
+    }
+    // Reload regardless: a reset also re-reads the style's own defaults, which
+    // is the half of the panel the local DEFAULT_PARAMS above can't guess.
+    applyParams(await fetchParams(style))
+  }, [model, fetchParams, applyParams])
 
   /** Change the quality preset. Same optimistic-then-reconciled shape as setModel. */
   const setQuality = useCallback(async (next: string) => {
@@ -260,6 +405,30 @@ export function useImages() {
     images, enabled, loading, busy, phase: busy ? (job?.phase ?? '') : '',
     styles, model, setModel,
     quality, setQuality,
+    params, defaults, loras, autoLora, setParams, resetParams,
     generate, remove, refresh,
+  }
+}
+
+/**
+ * The size a render will actually come out at.
+ *
+ * Mirrors sizeForMegapixels() in server/src/image.ts — the server is still the
+ * one that decides, but the panel has to be able to say "1.5 MP portrait means
+ * 1024×1536" at the moment you tap it, and a round trip per tap to find out
+ * would make the control feel broken. The formula is four lines; keeping it in
+ * step is cheaper than an endpoint.
+ */
+export function resolutionFor(o: Orientation, p: ImageParams): { width: number; height: number } {
+  const base = SIZES[o]
+  if (p.megapixels <= 0) return base
+  const mult = p.multipleOf >= 8 ? p.multipleOf : 8
+  const aspect = base.width / base.height
+  const target = p.megapixels * 1_000_000
+  const snap = (n: number) =>
+    Math.max(256, Math.min(2048, Math.max(mult, Math.round(n / mult) * mult)))
+  return {
+    width:  snap(Math.sqrt(target * aspect)),
+    height: snap(Math.sqrt(target / aspect)),
   }
 }

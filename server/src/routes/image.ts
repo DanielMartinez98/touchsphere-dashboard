@@ -18,16 +18,26 @@ import {
   imagesEnabled,
   jobWire,
   listImages,
+  listLoras,
   listModels,
   listWorkflowStyles,
+  pickLora,
   QUALITY_STEPS,
   selectedModel,
   selectedQuality,
   setSelectedModel,
   setSelectedQuality,
   startImage,
+  styleDefaults,
   WORKFLOW_PREFIX,
 } from '../image'
+import {
+  clearParamsFor,
+  MEGAPIXEL_CHOICES,
+  MULTIPLE_CHOICES,
+  paramsFor,
+  setParamsFor,
+} from '../image-params'
 
 const router = Router()
 
@@ -166,6 +176,57 @@ router.post('/quality', (req: Request, res: Response) => {
   }
 })
 
+// GET /api/image/params[?style=] — the render knobs for one style.
+//
+// Returns three things at once because the panel needs all three to draw an
+// honest control: the user's saved `values`, the `defaults` the style's own
+// graph specifies (so a control sitting on "Auto" can say what auto actually
+// is — cfg 8 for SDXL, cfg 4 for Anima), and the installed `loras` the turbo
+// toggle can choose from.
+//
+// `style` defaults to the one currently selected, which is what the Draw panel
+// always wants; the query parameter exists so a future settings screen can
+// inspect one it isn't using.
+router.get('/params', async (req: Request, res: Response) => {
+  const style = typeof req.query['style'] === 'string' ? req.query['style'] : selectedModel()
+  const values = paramsFor(style)
+  // The LoRA list is the only part that needs the GPU box, and it must not be
+  // able to blank the whole panel: a dead ComfyUI still has saved knobs worth
+  // showing. Empty list, no error.
+  let loras: string[] = []
+  try {
+    if (imagesEnabled()) loras = await listLoras()
+  } catch (err) {
+    console.warn('[image] listing LoRAs failed:', err instanceof Error ? err.message : err)
+  }
+  res.setHeader('Cache-Control', 'no-store')
+  res.json({
+    style,
+    values,
+    defaults: styleDefaults(style),
+    loras,
+    // What turbo would use if the user leaves the LoRA on "Auto" — shown in the
+    // panel so "Auto" names a file instead of being a shrug.
+    autoLora: pickLora(loras, []),
+    choices: { megapixels: MEGAPIXEL_CHOICES, multipleOf: MULTIPLE_CHOICES },
+    quality: selectedQuality(),
+    qualitySteps: QUALITY_STEPS[selectedQuality()] ?? 0,
+  })
+})
+
+// POST /api/image/params  { style?, reset?, ...knobs }
+//
+// A PATCH in spirit — every field is optional and anything omitted keeps its
+// current value, so the panel can send one knob per tap instead of round-
+// tripping the whole object and risking a stale overwrite. `reset: true`
+// forgets the style's knobs entirely and hands back the defaults.
+router.post('/params', (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>
+  const style = typeof body['style'] === 'string' ? body['style'] : selectedModel()
+  const values = body['reset'] === true ? clearParamsFor(style) : setParamsFor(style, body)
+  res.json({ ok: true, style, values, defaults: styleDefaults(style) })
+})
+
 // GET /api/image/job/:id — one job's state, for a client that reconnected.
 router.get('/job/:id', (req: Request, res: Response) => {
   const job = getJob(String(req.params['id'] ?? ''))
@@ -207,6 +268,7 @@ router.post('/generate', (req: Request, res: Response) => {
     ...(typeof body?.['model'] === 'string' && body['model'] ? { model: body['model'] } : {}),
     ...(typeof body?.['negative'] === 'string' ? { negative: body['negative'] } : {}),
     ...(num('steps') !== undefined ? { steps: num('steps')! } : {}),
+    ...(num('cfg')   !== undefined ? { cfg:   num('cfg')!   } : {}),
     ...(num('width')  !== undefined ? { width:  num('width')!  } : {}),
     ...(num('height') !== undefined ? { height: num('height')! } : {}),
     ...(num('seed')   !== undefined ? { seed:   num('seed')!   } : {}),
