@@ -32,6 +32,7 @@ import { GuideOverlay } from './components/GuideOverlay'
 import { ImageOverlay } from './components/ImageOverlay'
 import { openGuide } from './hooks/useGuideOverlay'
 import { openImage } from './hooks/useImageOverlay'
+import { onDrawPanelRequest } from './hooks/useImagePrompt'
 import { useImages, type Orientation } from './hooks/useImages'
 import { useAutoMode } from './hooks/useAutoSchedule'
 import { useMuted } from './hooks/useMuted'
@@ -164,6 +165,13 @@ function App() {
     // sphere. Tapping it opens that guide.
     window.setTimeout(() => setGuideReady(null), 20_000)
   }, []))
+
+  // "Use as prompt" in the full-screen picture viewer. It has already put the
+  // prompt in the compose field; the Draw corner has to come up on it, because a
+  // field nobody can see is not a prompt anyone can edit. A subscription rather
+  // than a piece of derived state, because this is an event — asking twice in a
+  // row has to open the panel twice, and nothing should reopen it at boot.
+  useEffect(() => onDrawPanelRequest(() => setOpen('images')), [])
 
   // Close the mode-dependent widget when mode changes so stale panels don't
   // linger. That pair lives in the bottom-RIGHT corner now (it moved when the

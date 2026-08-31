@@ -6,8 +6,23 @@
     <!-- viewport-fit=cover is what makes env(safe-area-inset-*) resolve to real
          numbers on a notched iPhone; without it they are always 0 and the
          corner widgets sit under the notch and the home indicator. It is a
-         no-op on the kiosk display. -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+         no-op on the kiosk display.
+
+         maximum-scale=1 / user-scalable=no are here for ONE failure that only
+         happens on a phone: iOS Safari zooms the whole viewport in whenever a
+         text field with a computed font-size under 16px takes focus, and this
+         app's fields are 13-14px by design. Because our fields also carry
+         inputMode='none' no keyboard comes up with it, so the zoom arrives with
+         nothing to explain it and nothing to dismiss it — the app is just
+         suddenly half off-screen and stays that way.
+
+         This is NOT an attempt to switch pinch-zoom off. iOS has ignored both
+         attributes for genuine user gestures since iOS 10, so pinch stays
+         available as the accessibility escape hatch; it still honours them for
+         the automatic focus zoom, which is the only thing being asked for here.
+         Android Chrome does honour user-scalable, and losing pinch there is the
+         accepted trade for a kiosk UI that is already sized for a fingertip. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>TouchSphere Dashboard</title>
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />

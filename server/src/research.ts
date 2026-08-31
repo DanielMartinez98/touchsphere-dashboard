@@ -126,12 +126,48 @@ export async function readPage(url: string, maxChars = 6000): Promise<Page | nul
 }
 
 /**
- * Search, then read the first pages that actually come back with prose.
- * `limit` is how many readable pages are wanted, not how many are attempted —
+ * Nav chrome off a hosted-search `content` blob.
+ *
+ * Hosted search returns the page as markdown-ish text, and a walkthrough site's
+ * page opens with its whole navigation — forty link-only lines advertising every
+ * other game the site covers. That is not merely wasted context: on a franchise
+ * site those links NAME other games, which is precisely the confusion this file
+ * is trying to stop. Drop link-only lines and repeated lines; keep prose.
+ */
+function stripNavChrome(raw: string): string {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const line of raw.split('\n')) {
+    const t = line.trim()
+    if (!t) { if (out[out.length - 1] !== '') out.push(''); continue }
+    // "* [Breath of the Wild](https://…)" / "[](https://…)" — navigation.
+    const bare = t.replace(/^[*\-+]\s*/, '')
+    if (/^\[[^\]]*\]\([^)]*\)$/.test(bare)) continue
+    // A menu repeats itself across a page; prose almost never does verbatim.
+    if (t.length < 60) {
+      if (seen.has(t)) continue
+      seen.add(t)
+    }
+    out.push(line)
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+/**
+ * Search, then get the text of the first pages that actually come back readable.
+ * `limit` is how many usable pages are wanted, not how many are attempted —
  * paywalls, consent walls and JS-only pages are common enough that a fixed
  * "read the top 2 hits" would often come back with nothing.
+ *
+ * The hosted provider returns the page's full text inline (tens of thousands of
+ * characters, not a snippet), so when that's what came back it is used directly
+ * rather than re-fetched. That is not just a saved round trip: the fetch is the
+ * step that fails: the dedicated walkthrough sites worth reading — StrategyWiki
+ * among them — sit behind a Cloudflare interstitial that answers this server
+ * with a 403, while the hosted searcher has already been through it. Re-fetching
+ * would throw away the good text and keep the wiki-only diet.
  */
-export async function researchPages(query: string, limit = 2): Promise<Page[]> {
+export async function researchPages(query: string, limit = 2, maxChars = 6000): Promise<Page[]> {
   const hits = await searchWeb(query, Math.max(limit + 3, 5))
   if (hits.length === 0) {
     // Worth distinguishing from "found pages but none readable": one means the
@@ -143,7 +179,19 @@ export async function researchPages(query: string, limit = 2): Promise<Page[]> {
   const pages: Page[] = []
   for (const hit of hits) {
     if (pages.length >= limit) break
-    const page = await readPage(hit.url)
+    const inline = stripNavChrome(hit.content ?? '')
+    let page: Page | null = null
+    if (inline.length >= 1200) {
+      const parsed = parseUrl(hit.url)
+      page = {
+        url:   hit.url,
+        site:  parsed ? siteOf(parsed) : hit.url,
+        title: hit.title || hit.url,
+        text:  inline.slice(0, maxChars),
+      }
+    } else {
+      page = await readPage(hit.url, maxChars)
+    }
     if (!page) continue
     // Prefer the search provider's title: it's the article's name, where
     // extractReadable's is whatever the site put in <title> (often with SEO
@@ -236,8 +284,101 @@ const WIKI_TIMEOUT_MS = 8000
 
 const STOPWORDS = new Set(['the', 'of', 'a', 'an', 'and', 'in', 'on', 'to', 'for', 'ii', 'iii', 'iv'])
 
-/** Resolved wiki host per game title, for the life of the process. */
-const wikiHostCache = new Map<string, string | null>()
+// ── Which game is this, exactly? ─────────────────────────────────────────────
+// The single worst failure this file can produce is research about a DIFFERENT
+// GAME, because everything downstream is told "write only from the notes" and
+// dutifully obeys. It has happened at scale: a Majora's Mask guide whose final
+// chapter was Age of Calamity, whose item list was Spirit Tracks, and whose side
+// quests were Skyward Sword's — all of it faithfully transcribed from pages the
+// research handed over.
+//
+// The mechanism is franchise wikis. majorasmask.fandom.com 301s to
+// zelda.fandom.com, which covers twenty games, so an unscoped search for a
+// section called "Sidequests" or "The Final Battle" exact-matches some other
+// Zelda game's article — and title-matching then PROMOTES it. Hence the two
+// tools here: a qualifier to scope searches with, and a containment check to
+// throw away a page that isn't about this game after all.
+
+/** Words that identify no game on their own and must never be the only match. */
+const GENERIC_TITLE_WORDS = new Set([
+  'legend', 'game', 'edition', 'remastered', 'remaster', 'deluxe', 'definitive',
+  'hd', '3d', 'ultimate', 'collection', 'complete', 'version', 'remake',
+])
+
+const looseWords = (s: string): string[] =>
+  s.toLowerCase().replace(/['’]/g, '').split(/[^a-z0-9]+/).filter(Boolean)
+
+/**
+ * The words that actually pick this game out of its franchise — "majoras",
+ * "mask" for Majora's Mask; "hollow", "knight" for Hollow Knight. Stopwords and
+ * words like "legend" or "remastered" are dropped: they identify a series or an
+ * edition, never a game.
+ */
+export function titleKeywords(gameTitle: string): string[] {
+  return [...new Set(looseWords(gameTitle))]
+    .filter(w => w.length >= 3 && !STOPWORDS.has(w) && !GENERIC_TITLE_WORDS.has(w))
+}
+
+/**
+ * The shortest phrase that names this game unambiguously, for scoping a search
+ * on a shared wiki: "Majora's Mask" out of "The Legend of Zelda: Majora's Mask".
+ * A subtitle is the distinctive half of a franchise title, so it's preferred
+ * when it carries any identifying word of its own; otherwise the whole title is
+ * the best we have (and for "The Legend of Zelda" it genuinely is).
+ */
+export function gameQualifier(gameTitle: string): string {
+  const [, afterColon] = gameTitle.split(/[:–-]/).map(s => s.trim())
+  if (afterColon && titleKeywords(afterColon).length > 0) return afterColon
+  return gameTitle.trim()
+}
+
+/**
+ * Does this text actually talk about this game?
+ *
+ * Deliberately cheap and deliberately generous — it is a guard against pages
+ * about a *different* game, not a relevance score. A Spirit Tracks item table
+ * never says "Majora", which is the whole point: one string check is all it
+ * takes to reject the failure that ruined every guide in the store.
+ *
+ * Generous, because a false negative here silently narrows the research: a page
+ * passes on any distinctive word of the title, and a title with no distinctive
+ * words at all (the franchise-named "The Legend of Zelda") can't be filtered on,
+ * so it isn't — the caller keeps the page rather than pretending to know better.
+ */
+export function mentionsGame(text: string, gameTitle: string, minMentions = 1): boolean {
+  const keywords = titleKeywords(gameTitle)
+  if (keywords.length === 0) return true
+  const hay = ` ${looseWords(text).join(' ')} `
+  // The rarest word carries the most signal: "majoras" identifies the game where
+  // "mask" appears on every page of that wiki.
+  const ranked = [...keywords].sort((a, b) => b.length - a.length)
+  for (const word of ranked.slice(0, 3)) {
+    let count = 0
+    let at = hay.indexOf(` ${word} `)
+    while (at !== -1 && count < minMentions) {
+      count++
+      at = hay.indexOf(` ${word} `, at + 1)
+    }
+    if (count >= minMentions) return true
+  }
+  return false
+}
+
+/**
+ * A game's wiki, and whether that wiki is the game's alone.
+ *
+ * `shared` is the important half. On a wiki covering one game, a search for
+ * "Bosses" can only mean this game's bosses; on a franchise wiki it means
+ * twenty games' bosses, and every query has to be scoped by name and every page
+ * checked before it's believed.
+ */
+export interface GameWiki {
+  host:   string
+  shared: boolean
+}
+
+/** Resolved wiki per game title, for the life of the process. */
+const wikiHostCache = new Map<string, GameWiki | null>()
 
 /**
  * Where a host keeps api.php. Fandom and wiki.gg serve it at the root; Wikimedia
@@ -270,10 +411,15 @@ async function wikiApi<T>(host: string, params: Record<string, string>): Promise
 
 interface SearchApiReply { query?: { search?: Array<{ title?: string }> } }
 
-/** Page titles matching `query` on one wiki. */
-async function wikiSearch(host: string, query: string, limit: number): Promise<string[]> {
+/**
+ * Page titles matching `query` on one wiki. `namespace` is MediaWiki's numeric
+ * namespace — 0 is articles, 14 is categories (which come back "Category:"-
+ * prefixed, and are how the chapter list is found).
+ */
+async function wikiSearch(host: string, query: string, limit: number, namespace = 0): Promise<string[]> {
   const json = await wikiApi<SearchApiReply>(host, {
     action: 'query', list: 'search', srsearch: query, srlimit: String(limit),
+    srnamespace: String(namespace),
   })
   return (json?.query?.search ?? [])
     .map(s => (typeof s.title === 'string' ? s.title : ''))
@@ -283,17 +429,39 @@ async function wikiSearch(host: string, query: string, limit: number): Promise<s
 const looseTitle = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
 
 /**
+ * Articles that carry the game's name and are not about playing the game:
+ * adaptations, soundtracks, and the wiki's entries for published strategy-guide
+ * books ("… — Prima Official Game Guide"), which describe a book rather than
+ * contain a walkthrough and outrank real pages on exactly the words used here.
+ */
+const NOT_THE_GAME =
+  /\((himekawa|manga|comic|novel|soundtrack|album|cd|book|character|item|disambiguation)\)|[—–]\s*.*\b(guide|manual|magazine|soundtrack|art book)\b/i
+
+/**
  * Search, then promote an article whose title actually matches what was asked
  * for. Relevance ranking alone picks the wrong page often enough to matter — a
  * search for "Super Mario Odyssey" on that wiki ranks a character page above the
  * game's own article, and the guide would then be outlined from the wrong thing.
  */
-async function wikiSearchBestFirst(host: string, query: string, limit: number): Promise<string[]> {
+async function wikiSearchBestFirst(
+  host: string,
+  query: string,
+  limit: number,
+  matchAgainst?: string,
+): Promise<string[]> {
   const titles = (await wikiSearch(host, query, Math.max(limit, 3)))
     // Landing pages and namespace pages are navigation, not content — a guide
     // outlined from "Join the conversation" is worse than no hint at all.
     .filter(t => !/^(main page|.*\bwiki)$/i.test(t.trim()) && !/^[A-Z][a-z]+:/.test(t))
-  const want = looseTitle(query)
+    // Articles that carry the game's name but aren't the game: its manga
+    // adaptation (whose plot differs), and the wiki's articles ABOUT published
+    // strategy guides, which are a few thousand characters of publisher, ISBN
+    // and page count — they rank well for "walkthrough" and contain none.
+    .filter(t => !NOT_THE_GAME.test(t))
+  // Title-matching is done against what was actually asked for, which is not
+  // always what was searched for: a shared-wiki query carries the game's name
+  // as a scope ("Sidequests Majora's Mask") and would then exact-match nothing.
+  const want = looseTitle(matchAgainst ?? query)
   const exact = titles.filter(t => looseTitle(t) === want)
   const prefixed = titles.filter(t => !exact.includes(t) && looseTitle(t).startsWith(want))
   return [...exact, ...prefixed, ...titles.filter(t => !exact.includes(t) && !prefixed.includes(t))]
@@ -393,25 +561,67 @@ function wikiSlugCandidates(gameTitle: string): string[] {
   ])].filter(s => s.length >= 3 && s.length <= 40)
 }
 
+interface SiteInfoReply { query?: { general?: { server?: string; sitename?: string } } }
+
+/**
+ * The host a wiki actually lives on, which is not always the one asked for:
+ * majorasmask.fandom.com answers every request as zelda.fandom.com. Following
+ * that redirect is how a franchise wiki gets mistaken for a game's own.
+ */
+async function canonicalWikiHost(host: string): Promise<string | null> {
+  const json = await wikiApi<SiteInfoReply>(host, { action: 'query', meta: 'siteinfo' })
+  const server = json?.query?.general?.server
+  if (!server) return null
+  try {
+    return new URL(server.startsWith('//') ? `https:${server}` : server).hostname
+  } catch {
+    return host
+  }
+}
+
+/**
+ * Does this wiki's own name account for the whole game title? "hollowknight"
+ * covers "Hollow Knight"; "zelda" does not cover "Majora's Mask", so a wiki
+ * living at zelda.fandom.com is a franchise wiki however it was reached.
+ *
+ * This is the second of the two shared-wiki signals and it catches what the
+ * redirect check can't: a slug candidate that hits the franchise wiki head-on
+ * (the title's own word "zelda" is a candidate) never redirects anywhere.
+ */
+function hostCoversTitle(host: string, gameTitle: string): boolean {
+  const slug = (host.split('.')[0] ?? '').replace(/(game|wiki)$/, '')
+  return titleKeywords(gameTitle).every(w => slug.includes(w))
+}
+
 /**
  * Find the wiki that covers this game, by probing slug candidates until one
  * answers a search for the game's own title. Cached — the probe is a handful of
  * requests and the answer never changes within a run.
  */
-export async function findGameWiki(gameTitle: string): Promise<string | null> {
+export async function findGameWiki(gameTitle: string): Promise<GameWiki | null> {
   const key = gameTitle.toLowerCase().trim()
   const cached = wikiHostCache.get(key)
   if (cached !== undefined) return cached
 
   for (const slug of wikiSlugCandidates(gameTitle)) {
     for (const farm of WIKI_FARMS) {
-      const host = `${slug}.${farm}`
-      const hits = await wikiSearch(host, gameTitle, 1)
-      if (hits.length > 0) {
-        console.log(`[research] wiki for "${gameTitle}" → ${host}`)
-        wikiHostCache.set(key, host)
-        return host
-      }
+      const probe = `${slug}.${farm}`
+      const hits = await wikiSearch(probe, gameTitle, 1)
+      if (hits.length === 0) continue
+
+      // Two independent ways to be a franchise wiki, and both happen: the probe
+      // redirected somewhere else, or it landed on a wiki whose name is only
+      // part of this game's title.
+      const host = (await canonicalWikiHost(probe)) ?? probe
+      const shared = host !== probe || !hostCoversTitle(host, gameTitle)
+      const wiki: GameWiki = { host, shared }
+      console.log(
+        `[research] wiki for "${gameTitle}" → ${host}` +
+        (host !== probe ? ` (probed ${probe}, redirected)` : '') +
+        (shared ? ' — SHARED across a franchise: queries will be scoped and pages checked' : ''),
+      )
+      wikiHostCache.set(key, wiki)
+      return wiki
     }
   }
   console.warn(`[research] no wiki found for "${gameTitle}" — falling back to Wikipedia and web search`)
@@ -419,80 +629,274 @@ export async function findGameWiki(gameTitle: string): Promise<string | null> {
   return null
 }
 
-interface SectionsApiReply { parse?: { sections?: Array<{ line?: string; level?: string }> } }
+// ── The community's own chapter list ─────────────────────────────────────────
+// A wiki article's section headings describe the ARTICLE ("Plot", "Development",
+// "Reception"), and outlining a guide from those is how a nine-dungeon game came
+// out as three story-arc chapters that recap the cutscenes.
+//
+// A wiki's CATEGORIES describe the GAME, and on a franchise wiki they are
+// per-game by necessity — "Category:Dungeons in Majora's Mask" lists exactly the
+// ten dungeons of exactly that game. That is the chapter list, written by the
+// community, with no model involved and nothing to hallucinate.
 
-/**
- * The section headings of the game's own wiki article — the community's literal
- * table of contents, which is the best possible answer to "how do they organize
- * this game?". Empty array when there's no wiki or no such article.
- */
-export async function communityTableOfContents(gameTitle: string): Promise<string[]> {
-  const host = await findGameWiki(gameTitle)
-  if (!host) return []
-  const [article] = await wikiSearchBestFirst(host, gameTitle, 3)
-  if (!article) return []
-  const json = await wikiApi<SectionsApiReply>(host, { action: 'parse', page: article, prop: 'sections' })
-  const lines = (json?.parse?.sections ?? [])
-    .map(s => (typeof s.line === 'string' ? s.line.trim() : ''))
-    .filter(l => l.length > 0 && l.length < 60)
-  if (lines.length > 0) console.log(`[research] ${host} lists ${lines.length} sections for "${article}"`)
-  return lines.slice(0, 40)
+/** Category names that are chapters of a guide. Worth two of anything else. */
+const PROGRESSION_WORDS =
+  /\b(dungeons?|temples?|levels?|chapters?|bosses|areas?|regions?|missions?|worlds?|stages?|acts?|episodes?)\b/i
+
+/** Category names that are the collectible lists a completion guide tracks. */
+const COLLECTIBLE_WORDS =
+  /\b(masks?|items?|songs?|collectibles?|upgrades?|quests?|sidequests?|hearts?|weapons?|armou?rs?|charms?|abilities|skills?|spells?|equipment|treasures?|secrets?|achievements?|trophies)\b/i
+
+/** Categories that are wiki housekeeping or lore, never a guide chapter. */
+const NON_CHAPTER_WORDS =
+  /\b(characters?|enemies|enemy|images?|files?|galler(y|ies)|templates?|stubs?|articles?|media|videos?|music|soundtracks?|albums?|staff|credits?|glitch(es)?|translations?|beta|unused|cutscenes?|quotes?|voice|actors?|manga|comics?|books?|guides?|merchandise|categor(y|ies)|pages?|disambiguation)\b/i
+
+/** Past this a category is a gazetteer, not a table of contents. */
+const MAX_CATEGORY_MEMBERS = 40
+
+/** How many category listings to put in front of the outline model. */
+const MAX_CHAPTER_CATEGORIES = 6
+
+interface CategoryMembersReply { query?: { categorymembers?: Array<{ title?: string }> } }
+
+/** The pages filed under one category, or [] when it's missing or far too broad. */
+async function categoryMembers(host: string, category: string): Promise<string[]> {
+  const json = await wikiApi<CategoryMembersReply>(host, {
+    action: 'query', list: 'categorymembers', cmtitle: category,
+    cmlimit: String(MAX_CATEGORY_MEMBERS + 10), cmtype: 'page',
+  })
+  const members = (json?.query?.categorymembers ?? [])
+    .map(m => (typeof m.title === 'string' ? m.title.trim() : ''))
+    .filter(t => t.length > 0 && !/^[A-Z][a-z]+:/.test(t))
+  return members.length > MAX_CATEGORY_MEMBERS ? [] : members
+}
+
+export interface ChapterCategory {
+  /** The category's own name, e.g. "Dungeons in Majora's Mask". */
+  label:   string
+  members: string[]
 }
 
 /**
- * Research one topic about one game. Wiki first (reliable, clean, and the
- * community's own words), Wikipedia next, scraped web search last — so a
- * throttled search engine degrades the guide instead of emptying it.
+ * The game's own dungeons, masks, songs and bosses, as its wiki files them.
+ *
+ * Found by searching the CATEGORY namespace for the game's name and keeping the
+ * lists that look like guide chapters, rather than by guessing category names:
+ * the two conventions in the wild are "Dungeons in Majora's Mask" and "Bosses
+ * (Hollow Knight)", a search matches both, and searching the game's name alone
+ * also turns up the lists no fixed guess would have asked for — "Masks in
+ * Majora's Mask" being exactly the one whose absence shipped a mask chapter
+ * with 5 of the game's 24.
+ *
+ * On a shared wiki a category is only accepted when its NAME contains the game,
+ * or "Dungeons" franchise-wide comes back as this game's chapter list.
+ */
+export async function communityChapters(gameTitle: string): Promise<ChapterCategory[]> {
+  const wiki = await findGameWiki(gameTitle)
+  if (!wiki) return []
+  const qualifier = gameQualifier(gameTitle)
+
+  const found = await wikiSearch(wiki.host, qualifier, 25, 14)
+  const scored = found
+    .filter(t => /^category:/i.test(t))
+    .map(t => ({ title: t, name: t.replace(/^category:/i, '').trim() }))
+    .filter(c => !NON_CHAPTER_WORDS.test(c.name))
+    // On a franchise wiki the name has to say which game — and say THIS one, so
+    // "Dungeons in Majora's Mask 3D" doesn't answer for the N64 original.
+    .filter(c => !wiki.shared || mentionsGame(c.name, gameTitle))
+    .map(c => ({
+      ...c,
+      score: PROGRESSION_WORDS.test(c.name) ? 2 : COLLECTIBLE_WORDS.test(c.name) ? 1 : 0,
+    }))
+    .filter(c => c.score > 0)
+    .sort((a, b) => b.score - a.score)
+
+  const out: ChapterCategory[] = []
+  for (const c of scored) {
+    if (out.length >= MAX_CHAPTER_CATEGORIES) break
+    const members = await categoryMembers(wiki.host, c.title)
+    if (members.length < 3) continue
+    out.push({ label: c.name, members })
+    console.log(`[research] ${wiki.host}: "${c.name}" lists ${members.length} — ${members.slice(0, 6).join(', ')}`)
+  }
+  return out
+}
+
+interface SectionsApiReply {
+  parse?: { sections?: Array<{ line?: string; level?: string; toclevel?: number }> }
+}
+
+/**
+ * Headings that describe the ARTICLE rather than the GAME.
+ *
+ * These are the reason guides came out as story recaps. A wiki article about a
+ * game is an encyclopedia entry: its headings are Plot, Development, Reception,
+ * Legacy — and its Plot section subdivides into "Arrival to a Doomed Land",
+ * "The Boy Without a Fairy". Fed to the outline prompt as "this is how the
+ * community organizes the game", those became the chapters, and a nine-dungeon
+ * game shipped as three chapters recapping the cutscenes. Nothing else in the
+ * prompt was a strong enough signal to overrule them.
+ */
+const ENCYCLOPEDIA_HEADINGS =
+  /^(plot|story|synopsis|summary|premise|setting|characters?|development|production|design|music|sound|audio|release|marketing|reception|reviews?|sales|awards?|legacy|sequels?|merchandise|trivia|gallery|references?|notes?|external links|see also|further reading|bibliography|credits|cast|voice cast|versions?|ports?|re-?releases?|history|background|overview|introduction|contents|graphics|translations?|glitch(es)?|nomenclature|speedrun|timeline|beta|unused)\b/i
+
+/**
+ * Headings whose entire SUBTREE is encyclopedia material.
+ *
+ * This is the one that matters, and dropping only the heading itself was not
+ * enough. "Story" is a single innocuous line; its four CHILDREN are "Arrival to
+ * a Doomed Land", "The Four Giants", "The Final Battle", "Dawn of a New Day" —
+ * and those four, passed to the outline as the community's structure, are
+ * verbatim the four chapters a shipped guide was built from. The parent is
+ * filtered by name; the children can only be caught by their ancestry.
+ *
+ * Deliberately narrower than the per-heading list: "Gameplay" stays, because on
+ * a game wiki its children are things like "Masks and transformations" — real
+ * content that a completion guide wants.
+ */
+const ENCYCLOPEDIA_SUBTREES =
+  /^(plot|story|synopsis|summary|premise|development|production|reception|reviews?|sales|awards?|legacy|merchandise|marketing|credits|references?|external links|see also|further reading|bibliography|gallery|trivia|cast|voice cast|game information|versions?|ports?|re-?releases?|nomenclature|translations?)\b/i
+
+/**
+ * The section headings of the game's own wiki article, with the encyclopedia
+ * furniture removed. What survives is usually the genuinely useful part —
+ * "Dungeons", "Items", "Sidequests" — and is only a hint anyway: the real
+ * chapter list comes from communityChapters().
+ */
+export async function communityTableOfContents(gameTitle: string): Promise<string[]> {
+  const wiki = await findGameWiki(gameTitle)
+  if (!wiki) return []
+  const [article] = await wikiSearchBestFirst(wiki.host, gameTitle, 3)
+  if (!article) return []
+  const json = await wikiApi<SectionsApiReply>(wiki.host, { action: 'parse', page: article, prop: 'sections' })
+  const all = (json?.parse?.sections ?? [])
+    .map(s => ({
+      line:  typeof s.line === 'string' ? s.line.trim() : '',
+      depth: typeof s.toclevel === 'number' ? s.toclevel : 1,
+    }))
+    .filter(s => s.line.length > 0 && s.line.length < 60)
+
+  // Walk in document order, skipping everything nested under a heading that was
+  // dropped as encyclopedia material — that is what removes the plot summary's
+  // per-act subheadings, which is where the story-recap chapters came from.
+  const lines: string[] = []
+  let skipBelow: number | null = null
+  for (const { line, depth } of all) {
+    if (skipBelow !== null && depth > skipBelow) continue
+    skipBelow = null
+    if (ENCYCLOPEDIA_SUBTREES.test(line)) { skipBelow = depth; continue }
+    if (ENCYCLOPEDIA_HEADINGS.test(line)) continue
+    lines.push(line)
+  }
+  if (all.length > 0) {
+    console.log(
+      `[research] ${wiki.host} lists ${all.length} sections for "${article}" — ` +
+      `${lines.length} left after dropping encyclopedia headings`,
+    )
+  }
+  return lines.slice(0, 40)
+}
+
+export interface ResearchOptions {
+  /** How many usable pages are wanted. */
+  limit?:         number
+  maxChars?:      number
+  /** A site the user explicitly asked the guide to be built from. */
+  preferredSite?: string
+  /**
+   * Ask the open web before the wiki. Worth it for a walkthrough section when
+   * hosted search is configured; pointless (and CAPTCHA-prone) without a key.
+   */
+  webFirst?:      boolean
+  /**
+   * Throw away pages that never mention this game. On a franchise wiki this is
+   * the guard that stops another game's article being written up as a chapter.
+   */
+  requireGameMention?: boolean
+}
+
+/**
+ * Research one topic about one game.
+ *
+ * Source order is deliberately conditional rather than fixed. The wiki-first
+ * chain below exists because scraped search answers a burst of queries with a
+ * CAPTCHA — a real constraint on a keyless box, and still the default there.
+ * But when hosted search IS configured that constraint is gone, and wiki-first
+ * becomes actively wrong for a walkthrough: a wiki DESCRIBES a dungeon (theme,
+ * layout, lore) where a walkthrough site ROUTES you through it, and the old
+ * order only reached the open web if the wiki returned nothing at all — which
+ * it almost never does. That is why chapters read like encyclopedia summaries
+ * instead of directions. `webFirst` inverts it where it pays.
  */
 export async function researchGame(
   gameTitle: string,
   topic: string,
-  limit = 1,
-  maxChars = 6000,
-  preferredSite?: string,
+  opts: ResearchOptions = {},
 ): Promise<Page[]> {
+  const { limit = 1, maxChars = 6000, preferredSite, webFirst = false, requireGameMention = false } = opts
   const pages: Page[] = []
+  const qualifier = gameQualifier(gameTitle)
 
-  // A user-named source site is honoured first — it's an explicit "build it from
-  // here". The wiki chain below still runs when the site comes up short, so a
-  // throttled site: search degrades to the wiki instead of emptying the guide.
-  if (preferredSite) {
-    for (const p of await researchSiteScoped(preferredSite, topic || gameTitle, limit, maxChars)) {
-      if (pages.length >= limit) break
-      if (!pages.some(x => x.url === p.url)) pages.push(p)
+  const accept = (candidates: Page[], why: string): void => {
+    for (const p of candidates) {
+      if (pages.length >= limit) return
+      if (pages.some(x => x.url === p.url)) continue
+      if (requireGameMention && !mentionsGame(`${p.title}\n${p.text}`, gameTitle)) {
+        console.warn(
+          `[research] rejected ${p.site} "${p.title.slice(0, 60)}" (${why}) — ` +
+          `never mentions "${qualifier}", so it is about a different game`,
+        )
+        continue
+      }
+      pages.push(p)
     }
   }
 
-  const host = await findGameWiki(gameTitle)
+  // A user-named source site is honoured first — it's an explicit "build it from
+  // here". The chain below still runs when the site comes up short, so a
+  // throttled site: search degrades to the wiki instead of emptying the guide.
+  if (preferredSite) {
+    accept(await researchSiteScoped(preferredSite, topic || gameTitle, limit, maxChars), 'named site')
+  }
 
-  if (host && pages.length < limit) {
+  // The open web, scoped by name so a franchise search can't wander off.
+  if (webFirst && pages.length < limit) {
+    accept(await researchPages(communityQuery(qualifier, topic), limit, maxChars), 'web search')
+  }
+
+  const wiki = await findGameWiki(gameTitle)
+
+  if (wiki && pages.length < limit) {
     // A section topic is usually an article in its own right ("Woodfall Temple"),
-    // so search the wiki for the topic and read the best matches.
-    const titles = await wikiSearchBestFirst(host, topic || gameTitle, limit + 2)
+    // so search the wiki for the topic and read the best matches. On a shared
+    // wiki the query carries the game's name too, or "Sidequests" resolves to
+    // whichever game in the franchise happens to rank first.
+    const want = topic || gameTitle
+    const query = wiki.shared && topic ? `${topic} ${qualifier}` : want
+    const titles = await wikiSearchBestFirst(wiki.host, query, limit + 2, want)
+    const found: Page[] = []
     for (const t of titles) {
-      if (pages.length >= limit) break
-      const page = await wikiExtract(host, t, maxChars)
+      if (found.length >= limit + 1) break
+      const page = await wikiExtract(wiki.host, t, maxChars)
       if (!page) continue
-      pages.push(page)
-      console.log(`[research] ${host}: "${t}" (${page.text.length} chars) for "${topic || gameTitle}"`)
+      found.push(page)
+      console.log(`[research] ${wiki.host}: "${t}" (${page.text.length} chars) for "${query.slice(0, 60)}"`)
     }
+    accept(found, `${wiki.host}${wiki.shared ? ', shared wiki' : ''}`)
   }
 
   if (pages.length === 0) {
     const [wikipediaArticle] = await wikiSearch('en.wikipedia.org', `${gameTitle} ${topic}`.trim(), 1)
     if (wikipediaArticle) {
       const page = await wikiExtract('en.wikipedia.org', wikipediaArticle, maxChars)
-      if (page) {
-        pages.push(page)
-        console.log(`[research] wikipedia: "${wikipediaArticle}" (${page.text.length} chars)`)
-      }
+      if (page) accept([page], 'wikipedia')
     }
   }
 
-  if (pages.length === 0) {
-    // Last resort: the open web. Frequently CAPTCHA-walled without an API key,
-    // which is exactly why it is last and not first.
-    pages.push(...(await researchPages(communityQuery(gameTitle, topic), limit)))
+  if (pages.length === 0 && !webFirst) {
+    // Last resort on the keyless path: the open web, frequently CAPTCHA-walled,
+    // which is exactly why it is last there and first under `webFirst`.
+    accept(await researchPages(communityQuery(qualifier, topic), limit, maxChars), 'web search (fallback)')
   }
 
   return pages.map(p => ({ ...p, text: p.text.slice(0, maxChars) }))

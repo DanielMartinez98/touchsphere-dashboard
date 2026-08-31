@@ -14,6 +14,7 @@ import { useState } from 'react'
 import { Sparkles, Trash2, AlertTriangle, Check, Layers, Gauge, X, Clock } from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
 import { openImage } from '../../../hooks/useImageOverlay'
+import { setImagePrompt, useImagePrompt } from '../../../hooks/useImagePrompt'
 import AdvancedPanel from './AdvancedPanel'
 import type {
   ImageParams, ImageStyle, Orientation, QueuedJob, StoredImage, StyleDefaults,
@@ -185,7 +186,14 @@ export default function ImageExpanded({
   params, defaults, loras, autoLora,
   onModel, onQuality, onParams, onResetParams, onGenerate, onDelete, onCancel,
 }: Props) {
-  const [prompt, setPrompt] = useState('')
+  // The compose field lives in a module store rather than here, so the
+  // full-screen viewer's "Use as prompt" can hand a finished picture's prompt
+  // back to it — a portal at the top of the tree cannot reach into this
+  // component's useState. It also means the text survives closing the panel,
+  // which is what you want on a device where typing a prompt is the most
+  // expensive thing in the app.
+  const prompt = useImagePrompt()
+  const setPrompt = setImagePrompt
   const [orientation, setOrientation] = useState<Orientation>('portrait')
   // Two-step delete. These take real time and GPU to make, so a stray fingertip
   // on a 7" screen must not be able to destroy one in a single tap.

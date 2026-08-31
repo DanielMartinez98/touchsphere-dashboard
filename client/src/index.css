@@ -39,12 +39,33 @@
        on the fixed 720×1280 canvas never bounces the whole viewport. */
     overscroll-behavior: none;
   }
+  html {
+    /* Safari inflates text on its own when it decides a column is too narrow,
+       which on a phone silently rescales a layout that is already sized for a
+       fingertip. Pin it. */
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  /* Drop the legacy double-tap-zoom (and the 300ms tap delay that comes with
+     it) WITHOUT disabling pinch, which stays as the accessibility escape hatch.
+     `manipulation` is `auto` minus double-tap, so panning and pinching are
+     untouched and no scroll region changes behaviour.
+
+     On `*` rather than on `body`, which is where it used to be and where it did
+     almost nothing: touch-action is not inherited, so a double-tap landing on a
+     button — which is every control in this app — still zoomed the viewport in.
+     That is the "it randomly zooms in" bug on a phone, together with the focus
+     zoom the viewport meta now handles.
+
+     Layered, so Tailwind's own touch-action utilities (`touch-none` on the
+     widget grab handle, `pan-x` on the chip rows below) still win, and so does
+     Leaflet's unlayered stylesheet on the map. */
+  * {
+    touch-action: manipulation;
+  }
   body {
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
-    /* Kiosk: drop the legacy 300ms double-tap-zoom delay so taps register
-       instantly, without disabling pinch-zoom (keeps the a11y escape hatch). */
-    touch-action: manipulation;
     /* Kiosk touch hygiene, applied once so every tappable surface behaves the
        same: no blue tap-flash rectangle, no iOS long-press callout, and no
        accidental text selection when a tap lingers a beat too long. Genuinely
@@ -59,6 +80,18 @@
     -webkit-user-select: text;
     user-select: text;
   }
+}
+
+/* Text a finger is meant to be able to select and copy — currently the prompt
+   under a generated picture, which is the one string in this app worth lifting
+   out and reusing. Three properties rather than Tailwind's `select-text`,
+   because the body rules above switch off two things it doesn't restore:
+   iOS needs the -webkit- prefix below Safari 17, and -webkit-touch-callout must
+   go back to `default` or a long press selects nothing and offers no Copy. */
+.selectable-text {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
 }
 
 /* Time scrubber slider */

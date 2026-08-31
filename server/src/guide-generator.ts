@@ -43,10 +43,15 @@ import {
   type SectionKind,
 } from './guides'
 import {
+  communityChapters,
   communityQuery,
   communityTableOfContents,
+  gameQualifier,
+  mentionsGame,
   researchGame,
   researchPages,
+  SEARCH_PROVIDER,
+  type ChapterCategory,
   type Page,
 } from './research'
 import { pushGuide } from './guide-events'
@@ -56,6 +61,18 @@ import { searchYouTube } from './routes/browse'
 const OLLAMA_URL     = process.env['OLLAMA_URL']     ?? 'http://host.docker.internal:11434'
 const OLLAMA_MODEL   = process.env['OLLAMA_MODEL']   ?? 'gemma3'
 const OLLAMA_API_KEY = process.env['OLLAMA_API_KEY'] ?? ''
+
+/**
+ * The model that writes guides, which need not be the one that holds the
+ * conversation. The chat model is chosen for latency — someone is standing at
+ * the kiosk waiting for a sentence. Nobody is waiting on this: a guide is a
+ * dozen calls over several minutes of background work, and it is the one place
+ * in the app where a slower, stronger model costs nothing anyone can perceive.
+ * Synthesizing 26k characters of research into a route is also simply a harder
+ * job than answering "what's the weather", so the small model that is right for
+ * the voice loop is the wrong place to economize here.
+ */
+const GUIDE_MODEL = process.env['OLLAMA_GUIDE_MODEL'] ?? OLLAMA_MODEL
 
 // Generous compared to the 30 s the conversation gets: nobody is waiting on a
 // spoken reply here, and a section of forty steps is a lot of tokens for a
@@ -73,6 +90,19 @@ const NUM_CTX = Number(process.env['OLLAMA_GUIDE_NUM_CTX'] ?? 16384)
 
 const TARGET_SECTIONS = 12                       // asked for; capped by GUIDE_CAPS.MAX_SECTIONS
 const YOUTUBE_GAP_MS  = 400                      // politeness gap between video lookups
+
+/**
+ * Whether to ask the open web before the wiki.
+ *
+ * Only on the hosted provider, and the difference is not subtle: it returns the
+ * page's full text inline — tens of thousands of characters of an actual
+ * walkthrough — where the scraped path returns a URL this server then has to
+ * fetch, and the walkthrough sites worth reading answer that fetch with a
+ * Cloudflare interstitial. So with a key the open web is the best source
+ * available; without one it is a CAPTCHA generator, and the wiki-first order is
+ * correct. Same config, opposite right answer.
+ */
+const WEB_FIRST = SEARCH_PROVIDER === 'ollama'
 
 // Per-page budgets. Outline pages only have to convey how the game is divided
 // up; a section's pages have to contain the actual walkthrough, so they get
@@ -136,7 +166,7 @@ async function postChat(
       // think:false for the same reason as the chat route — a reasoning model
       // puts its answer in `thinking` and leaves `content` empty.
       body: JSON.stringify({
-        model: OLLAMA_MODEL,
+        model: GUIDE_MODEL,
         stream: false,
         think: false,
         format,
@@ -295,26 +325,52 @@ function researchBlock(pages: Page[]): string {
     .join('\n\n')
 }
 
-function outlinePrompt(title: string, order: string | undefined, pages: Page[], toc: string[]): string {
+function outlinePrompt(
+  title: string,
+  order: string | undefined,
+  pages: Page[],
+  toc: string[],
+  chapters: ChapterCategory[],
+): string {
   return (
     `Game: ${title}\n\n` +
     `Below are notes from community guides and wikis for this game.\n\n` +
     `${researchBlock(pages)}\n\n` +
+    // The strongest signal in the prompt, and the only one that is a fact rather
+    // than an inference: these lists come straight off the wiki's own per-game
+    // categories, so they name the real places, in the real game, exhaustively.
+    (chapters.length > 0
+      ? `THE GAME'S OWN CONTENTS, as this game's wiki files them. These are real and complete — ` +
+        `use them as the backbone of the guide:\n` +
+        chapters.map(c => `- ${c.label}: ${c.members.join(', ')}`).join('\n') + `\n\n`
+      : '') +
     (toc.length > 0
-      ? `The community wiki's own article about this game is divided into these sections — this is ` +
-        `literally how that community organizes the game, so lean on it:\n${toc.map(t => `- ${t}`).join('\n')}\n\n`
+      ? `The community wiki's article about this game also has these sections, which may hint at what ` +
+        `else is tracked:\n${toc.map(t => `- ${t}`).join('\n')}\n\n`
       : '') +
     `TASK: design the table of contents for a completion guide to this game, ` +
     `structured THE WAY THIS GAME'S OWN COMMUNITY STRUCTURES IT. Look at how the sources above ` +
     `divide the game up and mirror that — if they are organized by dungeon, use one section per ` +
     `dungeon; if by chapter, region, act, or boss, use that instead. Then add the collectible and ` +
     `side-content lists that community tracks for 100% completion (for example masks, heart pieces, ` +
-    `key items, side quests) as their own sections.\n` +
+    `key items, side quests) as their own sections.\n\n` +
+    // Without this the model reliably produced a plot summary. The research it is
+    // handed is largely encyclopedic, and an encyclopedia's own shape is the path
+    // of least resistance — so the wrong answer has to be named explicitly.
+    `A CHAPTER IS A PLACE OR A TASK, NEVER A PLOT BEAT. Chapters are the things a player DOES and ` +
+    `can tick off — "Woodfall Temple", "Snowhead Temple", "Pirates' Fortress". They are NOT the ` +
+    `acts of the story: "Arrival to a Doomed Land", "The Boy Without a Fairy" and "The Final Battle" ` +
+    `are chapter names taken from a plot summary, and they are WRONG — a player cannot tick off a ` +
+    `plot summary. If this game has dungeons, temples, levels or missions, THOSE are the ` +
+    `progression chapters, one each, and there are usually eight or more of them. Never collapse ` +
+    `several dungeons into one chapter called "The Four Giants" or "The Dungeons".\n` +
     (order
       ? `THE USER HAS OVERRIDDEN THE ORDER. Organize it like this instead, and follow it literally: "${order}"\n`
       : '') +
     `\nRules:\n` +
     `- Between 4 and ${TARGET_SECTIONS} sections, in the order the player meets them.\n` +
+    `- Every section title must name something from THIS game, "${title}". Never a place, item or ` +
+    `boss from another game in the same series.\n` +
     `- "kind": "progression" for story/dungeon/chapter sections, "collectible" for lists of things to ` +
     `collect, "sidequest" for optional quests, "reference" for pure reference tables (controls, enemy ` +
     `stats, item prices) that a player does not "complete".\n` +
@@ -340,7 +396,12 @@ function chapterPreamble(title: string, section: GuideSection, pages: Page[]): s
 }
 
 /** Pass one: the chapter's skeleton — step texts only, no notes. */
-function stepListPrompt(title: string, section: GuideSection, pages: Page[]): string {
+function stepListPrompt(
+  title: string,
+  section: GuideSection,
+  pages: Page[],
+  expected: number | null,
+): string {
   // What a step has to TEACH differs per kind, and that matters more than wording.
   // "Clear Woodfall Temple" and "Bunny Hood" are both useless steps — they restate
   // what the player already knew they had to do.
@@ -377,11 +438,29 @@ function stepListPrompt(title: string, section: GuideSection, pages: Page[]): st
     `- "part": a short heading naming that stretch of the section, a few words, no numbering.\n` +
     `- Each step is one short imperative line, under 160 characters. No step numbers — the app ` +
     `numbers them. No sub-bullets, no explanation, no commentary.\n` +
+    // The model's escape hatch when the notes don't actually list the things is
+    // to enumerate the count instead of the contents — thirteen rows of "Collect
+    // 4 Pieces of Heart for Heart Container N". Name that failure and give it a
+    // legitimate way out (write fewer, real ones).
+    `- NEVER write a numbered placeholder. "Obtain Heart Container 1 from boss", "Collect 4 Pieces ` +
+    `of Heart for Heart Container 2", "Defeat Boss 3" are all FORBIDDEN: a step that differs from ` +
+    `its neighbour only by a digit tells the player nothing. Every step must name the actual thing ` +
+    `and where it is. If the notes only say how MANY there are and not which, write only the ones ` +
+    `the notes actually name, however few that is.\n` +
+    (expected !== null
+      ? `- The sources say there are ${expected} of these in total. List all ${expected} if the notes ` +
+        `name them; a partial list is misleading because the player will read it as complete.\n`
+      : '') +
     count +
     `- The parts run in the order the player meets them, and the steps within a part likewise.\n` +
     `- Use the game's real names for places, items, characters and moves, spelled as the sources spell ` +
     `them. "Use the Hookshot on the target above the door", not "use your grappling tool".\n` +
     `- Only parts and steps the research notes support. Do not invent content.\n` +
+    // The notes can still contain a stray paragraph about a sibling game, and
+    // "write only from the notes" then reads as permission to use it.
+    `- EVERYTHING you write must be about ${title} specifically. If any of the notes above turn out ` +
+    `to describe a different game in the same series, ignore those notes completely — do not write ` +
+    `steps from them.\n` +
     `- Reply as {"parts": [{"part": "Getting there", "steps": ["first step", "second step"]}, …]} ` +
     `and nothing else.`
   )
@@ -450,7 +529,24 @@ async function buildOutline(itemId: string, title: string, order?: string, sourc
   // The game's own wiki article plus its walkthrough page: what the game is, and
   // how the community breaks it down. Their article headings come along too —
   // that's the community's literal table of contents.
-  const toc = await communityTableOfContents(title)
+  const [toc, chapters] = await Promise.all([
+    communityTableOfContents(title),
+    communityChapters(title),
+  ])
+  if (chapters.length > 0) {
+    note({
+      itemId, title, stage: 'research', level: 'good',
+      message: `The wiki files this game's contents in ${chapters.length} list(s) — ` +
+               chapters.map(c => `${c.label} (${c.members.length})`).join(', ') +
+               `. These name the real chapters, so the outline is built on them`,
+    })
+  } else {
+    note({
+      itemId, title, stage: 'research', level: 'warn',
+      message: 'The wiki has no per-game contents list for this game — the outline falls back to the ' +
+               'article headings, which are a weaker signal',
+    })
+  }
   note({
     itemId, title, stage: 'research', level: toc.length > 0 ? 'info' : 'warn',
     message: toc.length > 0
@@ -470,7 +566,17 @@ async function buildOutline(itemId: string, title: string, order?: string, sourc
   // on a copy of what it already read.
   const pages: Page[] = []
   for (const topic of ['', 'walkthrough 100% completion']) {
-    for (const page of await researchGame(title, topic, 1, OUTLINE_CHARS, sourceSite)) {
+    const got = await researchGame(title, topic, {
+      limit: 1,
+      maxChars: OUTLINE_CHARS,
+      ...(sourceSite ? { preferredSite: sourceSite } : {}),
+      // The bare-topic pass is what identifies the game, so it stays on the wiki
+      // (whose article for the game is unambiguous); the walkthrough pass is the
+      // one that benefits from a real walkthrough site.
+      webFirst: WEB_FIRST && topic !== '',
+      requireGameMention: true,
+    })
+    for (const page of got) {
       if (!pages.some(p => p.url === page.url)) pages.push(page)
     }
   }
@@ -495,7 +601,8 @@ async function buildOutline(itemId: string, title: string, order?: string, sourc
   })
 
   update(itemId, g => { g.phase = 'Planning the sections…' })
-  const outline = await callOllamaJson<OutlineReply>('outline', SYSTEM, outlinePrompt(title, order, pages, toc), OUTLINE_SCHEMA)
+  const outline = await callOllamaJson<OutlineReply>(
+    'outline', SYSTEM, outlinePrompt(title, order, pages, toc, chapters), OUTLINE_SCHEMA)
   const raw = Array.isArray(outline?.sections) ? outline!.sections : []
   const sections: GuideSection[] = raw
     .map((s, i): GuideSection | null => {
@@ -575,10 +682,14 @@ function sectionQueries(gameTitle: string, section: GuideSection, wider: boolean
     // through it. Ask for the walkthrough explicitly, and first.
     queries.push(`${t}/Walkthrough`, `${t} walkthrough`, `${t} guide`)
   }
-  queries.push(`${gameTitle} ${t}`)
+  // Scoped by the game's distinctive name rather than its full title: on a
+  // franchise wiki "The Legend of Zelda Sidequests" matches every game in the
+  // series, where "Majora's Mask Sidequests" matches one.
+  const qualifier = gameQualifier(gameTitle)
+  queries.push(`${qualifier} ${t}`)
   // The repair pass casts wider, including terms that reach past the game's own
   // wiki into Wikipedia and the open web.
-  if (wider) queries.push(`${gameTitle} ${t} guide`, `${gameTitle} ${t} how to`)
+  if (wider) queries.push(`${qualifier} ${t} guide`, `${qualifier} ${t} how to`)
   return [...new Set(queries.map(q => q.trim()).filter(Boolean))]
 }
 
@@ -605,7 +716,17 @@ async function researchSection(
 
   for (const query of sectionQueries(gameTitle, section, wider)) {
     if (totalChars(own) >= SECTION_MIN_CHARS) break
-    add(await researchGame(gameTitle, query, 1, SECTION_CHARS, preferredSite))
+    add(await researchGame(gameTitle, query, {
+      limit: 1,
+      maxChars: SECTION_CHARS,
+      ...(preferredSite ? { preferredSite } : {}),
+      // A walkthrough section wants a walkthrough site; a collectible list is
+      // usually best served by the wiki's own table, which is exhaustive.
+      webFirst: WEB_FIRST && section.kind === 'progression',
+      // The guard that matters: this is where another game's article used to be
+      // picked up and written into the guide as a chapter.
+      requireGameMention: true,
+    }))
   }
 
   // A wiki describes a dungeon; a walkthrough site routes you through one. The
@@ -620,8 +741,9 @@ async function researchSection(
     const before = own.length
     const webQuery = preferredSite
       ? `${section.title} walkthrough site:${preferredSite}`
-      : communityQuery(gameTitle, `${section.title} walkthrough`)
-    add(await researchPages(webQuery, 1))
+      : communityQuery(gameQualifier(gameTitle), `${section.title} walkthrough`)
+    add((await researchPages(webQuery, 1, SECTION_CHARS))
+      .filter(p => mentionsGame(`${p.title}\n${p.text}`, gameTitle)))
     if (own.length === before) {
       note({
         itemId, title: gameTitle, section: section.title, stage: 'research', level: 'warn',
@@ -672,6 +794,115 @@ function capped(pages: Page[]): Page[] {
   return out
 }
 
+// ── Quality gates ────────────────────────────────────────────────────────────
+// Everything below is a pure function over what the model returned, and every
+// one of them exists because of something that actually shipped into a guide.
+// They run before the content is stored, because a checklist of filler is worse
+// than a short checklist: it reads as the guide having been written, and it
+// moves the completion bar.
+
+const NOTE_STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'at', 'for', 'from', 'with', 'by',
+  'is', 'are', 'be', 'it', 'its', 'this', 'that', 'you', 'your', 'will', 'can', 'as', 'into',
+  'then', 'after', 'before', 'when', 'where', 'which', 'must', 'need', 'get', 'go',
+])
+
+const contentWords = (s: string): string[] =>
+  s.toLowerCase().replace(/['’]/g, '').split(/[^a-z0-9]+/)
+    .filter(w => w.length >= 3 && !NOTE_STOPWORDS.has(w))
+
+/**
+ * The shape of a step with its numbers blanked: "Obtain Heart Container 1 from
+ * boss" and "…2 from boss" collapse to the same skeleton.
+ */
+const numberSkeleton = (s: string): string =>
+  s.toLowerCase().replace(/\d+/g, '#').replace(/[^a-z#]+/g, ' ').trim()
+
+/**
+ * Drop enumerated filler.
+ *
+ * A model asked for "one step per collectible" from notes that never list them
+ * will happily emit the COUNT instead of the CONTENT: thirteen consecutive
+ * "Collect 4 Pieces of Heart for Heart Container N", eight "Obtain Heart
+ * Container N from boss". These parse fine, store fine and render as a tidy
+ * checklist that tells the player nothing and inflates the 100% bar with boxes
+ * that mean nothing.
+ *
+ * A real collectible entry distinguishes itself by more than a number — it names
+ * a place or a method — so a run of three or more steps that differ ONLY in a
+ * digit is the signature, and it doesn't fire on genuine lists. The whole run
+ * goes, not all-but-one: "Obtain Heart Container 1 from boss" on its own is just
+ * as useless, and an emptied section gets re-researched by the repair pass,
+ * which is the outcome that can actually fix it.
+ */
+export function dropPlaceholderRuns(steps: Array<{ text: string; group: string }>): {
+  kept: Array<{ text: string; group: string }>
+  dropped: number
+} {
+  const counts = new Map<string, number>()
+  for (const s of steps) {
+    const k = numberSkeleton(s.text)
+    if (k.includes('#')) counts.set(k, (counts.get(k) ?? 0) + 1)
+  }
+  const filler = new Set([...counts].filter(([, n]) => n >= 3).map(([k]) => k))
+
+  const seen = new Set<string>()
+  const kept: Array<{ text: string; group: string }> = []
+  for (const s of steps) {
+    if (filler.has(numberSkeleton(s.text))) continue
+    // Exact repeats are never intentional in an ordered checklist.
+    const dedupe = s.text.toLowerCase().replace(/[^a-z0-9]/g, '')
+    if (seen.has(dedupe)) continue
+    seen.add(dedupe)
+    kept.push(s)
+  }
+  return { kept, dropped: steps.length - kept.length }
+}
+
+/**
+ * Is this note just the step said again?
+ *
+ * "Travel to Woodfall" → "Travel to the cardinal direction of Woodfall."
+ * "Play the Song of Time" → "Use the Ocarina of Time."
+ * "Collect 4 Pieces of Heart for Heart Container 1" → "Collect four Pieces of Heart."
+ *
+ * All three shipped. A note is the answer to "how do I actually do this", and
+ * one that restates the step reads as the guide mocking the reader — strictly
+ * worse than no note, which renders as an honest plain checkbox. The test is
+ * whether the note contributes words the step didn't already have: three new
+ * content words, or enough length that it is plainly carrying detail.
+ */
+export function isVacuousNote(stepText: string, note: string): boolean {
+  if (note.length >= 80) return false
+  const known = new Set(contentWords(stepText))
+  const fresh = new Set(contentWords(note).filter(w => !known.has(w)))
+  return fresh.size < 3
+}
+
+/**
+ * How many of a thing the sources say there are — "there are 24 masks", "all 52
+ * Pieces of Heart". Used to tell the model the target up front and to notice
+ * afterwards when a list came back a fraction of the real size: the masks
+ * chapter shipped with 5 of 24, and a collectible list that stops short is worse
+ * than none, because the bar then reads 100% on an unfinished game.
+ *
+ * Deliberately conservative — it only counts a number that sits next to a word
+ * from the section's own title, and returns null rather than a guess.
+ */
+export function statedTotal(text: string, sectionTitle: string): number | null {
+  const nouns = contentWords(sectionTitle).filter(w => w.endsWith('s') && w.length >= 5)
+  let best: number | null = null
+  for (const noun of nouns) {
+    const re = new RegExp(`\\b(\\d{1,3})\\s+(?:\\w+\\s+){0,2}?${noun}\\b`, 'gi')
+    for (const m of text.matchAll(re)) {
+      const n = Number(m[1])
+      // 3 is noise ("the 3 masks you start with"); 200 is a parse accident.
+      if (n >= 5 && n <= 200 && (best === null || n > best)) best = n
+    }
+  }
+  return best
+}
+
 /**
  * PASS ONE — the chapter's skeleton: step texts, no notes.
  *
@@ -685,6 +916,7 @@ async function writeStepList(
   gameTitle: string,
   section: GuideSection,
   pages: Page[],
+  expected: number | null,
 ): Promise<GuideStep[]> {
   // Tolerate the step being {"text": "..."} instead of a plain string, and a
   // number the model prepended despite being told not to. Dropping a good
@@ -713,7 +945,16 @@ async function writeStepList(
       }
     }
 
-    return flat.slice(0, GUIDE_CAPS.MAX_STEPS_PER_SECTION).map((s, i) => ({
+    const { kept, dropped } = dropPlaceholderRuns(flat)
+    if (dropped > 0) {
+      note({
+        itemId, title: gameTitle, section: section.title, stage: 'steps', level: 'warn',
+        message: `Discarded ${dropped} placeholder step(s) — numbered filler like ` +
+                 `"Obtain Heart Container 1 from boss" that names nothing and would still tick off`,
+      })
+    }
+
+    return kept.slice(0, GUIDE_CAPS.MAX_STEPS_PER_SECTION).map((s, i) => ({
       id: `${section.id}-${i + 1}`,
       text: s.text,
       ...(s.group ? { group: s.group } : {}),
@@ -724,7 +965,7 @@ async function writeStepList(
   if (pages.length === 0) return []
 
   const first = parse(await callOllamaJson<StepListReply>(
-    `chapter "${section.title}"`, SYSTEM, stepListPrompt(gameTitle, section, pages), STEP_LIST_SCHEMA))
+    `chapter "${section.title}"`, SYSTEM, stepListPrompt(gameTitle, section, pages, expected), STEP_LIST_SCHEMA))
   if (first.length > 0) return first
 
   note({
@@ -734,7 +975,7 @@ async function writeStepList(
   return parse(await callOllamaJson<StepListReply>(
     `chapter "${section.title}" (retry)`,
     SYSTEM,
-    `${stepListPrompt(gameTitle, section, pages)}\n\n` +
+    `${stepListPrompt(gameTitle, section, pages, expected)}\n\n` +
     `IMPORTANT: your previous attempt returned no steps. The notes above DO describe this part of ` +
     `the game — read them again and pull out every concrete thing the player does, gets, or fights. ` +
     `If the notes are a list of things, write one step per thing. Return at least 3 steps.`,
@@ -789,12 +1030,24 @@ async function detailSteps(
     // batch — a model that renumbers from 1 must not overwrite the first steps
     // of the chapter with notes meant for the last.
     const byId = new Map<string, string>()
+    let vacuous = 0
     for (const d of Array.isArray(reply?.details) ? reply.details : []) {
       const n = typeof d?.n === 'number' ? d.n : Number(d?.n)
-      const note = str(d?.note)
-      if (!note || !Number.isInteger(n)) continue
+      const noteText = str(d?.note)
+      if (!noteText || !Number.isInteger(n)) continue
       const target = batch.find(b => b.n === n)
-      if (target) byId.set(target.id, note)
+      if (!target) continue
+      // A note that only restates its step is worse than no note: the step keeps
+      // its honest plain checkbox instead of an explanation that explains nothing.
+      if (isVacuousNote(target.text, noteText)) { vacuous++; continue }
+      byId.set(target.id, noteText)
+    }
+    if (vacuous > 0) {
+      note({
+        itemId, title: gameTitle, section: section.title, stage: 'detail', level: 'info',
+        message: `Dropped ${vacuous} note(s) that only repeated the step back ` +
+                 `(e.g. "Travel to Woodfall" explained as "Travel to the cardinal direction of Woodfall")`,
+      })
     }
 
     if (byId.size === 0) {
@@ -842,6 +1095,13 @@ function carryTicks(previous: GuideStep[], next: GuideStep[]): GuideStep[] {
   return out
 }
 
+/** What one chapter came out as, for the repair pass to judge. */
+interface FilledSection {
+  steps: number
+  /** Set when the sources say there are more of these than were listed. */
+  shortfall?: { want: number; got: number }
+}
+
 async function fillSection(
   itemId: string,
   title: string,
@@ -849,11 +1109,11 @@ async function fillSection(
   index: number,
   total: number,
   fallbackPages: Page[],
-  opts: { wider?: boolean; phase?: string } = {},
-): Promise<number> {
+  opts: { wider?: boolean; phase?: string; keepBest?: boolean } = {},
+): Promise<FilledSection> {
   const current = loadGuide(itemId)
   const section = current?.sections.find(s => s.id === sectionId)
-  if (!current || !section) return 0
+  if (!current || !section) return { steps: 0 }
 
   update(itemId, g => {
     g.phase = opts.phase ?? `${section.title} (${index + 1} of ${total})`
@@ -870,7 +1130,11 @@ async function fillSection(
   // Saving between the passes is what makes a failure in the second one cost only
   // the explanations.
   update(itemId, g => { g.phase = `${section.title} — outlining the steps` })
-  const steps = await writeStepList(itemId, title, section, pages)
+  // "There are 24 masks" — told to the model up front, and checked against below.
+  const expected = section.kind === 'collectible'
+    ? statedTotal(pages.map(p => p.text).join('\n'), section.title)
+    : null
+  const steps = await writeStepList(itemId, title, section, pages, expected)
 
   // A video is worth having even when the steps didn't come through — often it's
   // the better answer for a fiddly dungeon anyway.
@@ -883,7 +1147,13 @@ async function fillSection(
   update(itemId, g => {
     const target = g.sections.find(s => s.id === sectionId)
     if (!target) return
-    if (steps.length > 0) target.steps = carryTicks(target.steps, steps)
+    // The automatic repair pass runs against a chapter that already has content,
+    // and a wider search can just as easily come back with less — so it keeps
+    // the longer list; the retry is there to improve the chapter, not gamble it.
+    // A rewrite the USER asked for is the opposite case: they want this chapter
+    // replaced, however it comes out, so keepBest is deliberately not set there.
+    const better = steps.length > 0 && (!opts.keepBest || steps.length >= target.steps.length)
+    if (better) target.steps = carryTicks(target.steps, steps)
     target.state = (steps.length > 0 || target.steps.length > 0) ? 'ready' : 'failed'
     if (video) target.video = video
     // Credit the page this section was actually written from, preferring one of
@@ -917,7 +1187,21 @@ async function fillSection(
   update(itemId, g => {
     if (!opts.phase) g.phase = `${index + 1} of ${total} sections`
   })
-  return steps.length
+
+  // A collectible list that stops short is the one failure that actively lies:
+  // the player ticks every box and the bar reads 100% on an unfinished game.
+  const shortfall = expected !== null && steps.length > 0 && steps.length < Math.ceil(expected * 2 / 3)
+    ? { want: expected, got: steps.length }
+    : undefined
+  if (shortfall) {
+    note({
+      itemId, title, section: section.title, stage: 'steps', level: 'warn',
+      message: `The sources say there are ${expected} — only ${steps.length} were listed. ` +
+               `This chapter will be researched again with wider terms, because a list that looks ` +
+               `complete and isn't reads as 100% on an unfinished game`,
+    })
+  }
+  return { steps: steps.length, ...(shortfall ? { shortfall } : {}) }
 }
 
 async function run(itemId: string, title: string, order?: string, sourceSite?: string): Promise<void> {
@@ -927,6 +1211,7 @@ async function run(itemId: string, title: string, order?: string, sourceSite?: s
     if (!outlined) return
 
     const ids = outlined.guide.sections.map(s => s.id)
+    const shortfalls = new Set<string>()
     for (let i = 0; i < ids.length; i++) {
       // The item can be deleted from the playlist mid-generation — its guide goes
       // with it, and there's nothing left to write to.
@@ -937,26 +1222,31 @@ async function run(itemId: string, title: string, order?: string, sourceSite?: s
         })
         return
       }
-      await fillSection(itemId, title, ids[i]!, i, ids.length, outlined.pages)
+      const filled = await fillSection(itemId, title, ids[i]!, i, ids.length, outlined.pages)
+      if (filled.shortfall) shortfalls.add(ids[i]!)
     }
 
-    // Second pass over anything still empty. A chapter with no steps is the one
-    // outcome that makes the whole guide feel unfinished, and the usual cause is
-    // a single unlucky search — so each gets one more attempt with wider terms
-    // (which also reach past the game's wiki to Wikipedia and the open web).
-    const stillEmpty = (loadGuide(itemId)?.sections ?? []).filter(s => s.steps.length === 0)
-    if (stillEmpty.length > 0) {
+    // Second pass over anything empty or visibly incomplete. A chapter with no
+    // steps is the one outcome that makes the whole guide feel unfinished, and a
+    // collectible list at a third of its real length is the one that misleads —
+    // both usually come of a single unlucky search, so each gets one more attempt
+    // with wider terms (which also reach past the game's wiki to Wikipedia and
+    // the open web).
+    const needsWork = (loadGuide(itemId)?.sections ?? [])
+      .filter(s => s.steps.length === 0 || shortfalls.has(s.id))
+    if (needsWork.length > 0) {
       note({
         itemId, title, stage: 'repair', level: 'warn',
-        message: `${stillEmpty.length} chapter(s) came back empty — researching them again with wider terms: ` +
-                 stillEmpty.map(s => s.title).join(', '),
+        message: `${needsWork.length} chapter(s) came back empty or short — researching them again ` +
+                 `with wider terms: ` + needsWork.map(s => s.title).join(', '),
       })
-      for (let i = 0; i < stillEmpty.length; i++) {
+      for (let i = 0; i < needsWork.length; i++) {
         if (!loadGuide(itemId)) return
-        const section = stillEmpty[i]!
-        await fillSection(itemId, title, section.id, i, stillEmpty.length, outlined.pages, {
+        const section = needsWork[i]!
+        await fillSection(itemId, title, section.id, i, needsWork.length, outlined.pages, {
           wider: true,
-          phase: `Filling gaps — ${section.title} (${i + 1} of ${stillEmpty.length})`,
+          keepBest: true,
+          phase: `Filling gaps — ${section.title} (${i + 1} of ${needsWork.length})`,
         })
       }
     }
@@ -1014,7 +1304,13 @@ async function runSection(itemId: string, title: string, sectionId: string): Pro
 
     // The outline's research isn't kept on disk, so re-fetch the broad pages to
     // fall back on. One search, and only used if the section's own come up short.
-    const fallback = await researchGame(title, 'walkthrough 100% completion', 1, OUTLINE_CHARS, guide.sourceSite)
+    const fallback = await researchGame(title, 'walkthrough 100% completion', {
+      limit: 1,
+      maxChars: OUTLINE_CHARS,
+      ...(guide.sourceSite ? { preferredSite: guide.sourceSite } : {}),
+      webFirst: WEB_FIRST,
+      requireGameMention: true,
+    })
     await fillSection(itemId, title, sectionId, 0, 1, fallback, {
       wider: true,
       phase: `Rewriting ${section.title}…`,
@@ -1112,7 +1408,8 @@ export function startGuide(opts: { itemId: string; title: string; order?: string
     itemId, title, stage: 'queued', level: 'info',
     message: `${existing ? 'Rebuilding from scratch' : 'Queued a new guide'}` +
              `${order ? `, ordered "${order}"` : ''}${sourceSite ? `, sourced from ${sourceSite}` : ''} — ` +
-             `model ${OLLAMA_MODEL}, ${NUM_CTX} token context`,
+             `model ${GUIDE_MODEL}, ${NUM_CTX} token context, ` +
+             `${WEB_FIRST ? 'hosted search (walkthrough sites first)' : 'wiki-first (no search key)'}`,
   })
   enqueue(() => run(itemId, title, order, sourceSite))
   return 'started'

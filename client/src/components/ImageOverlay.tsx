@@ -22,11 +22,65 @@
 // the empty frame with its phase text IS the feedback that something is
 // happening — the alternative is half a minute of silence after "drawing that
 // for you now".
+//
+// Once the picture DOES exist, this is also where the two things anyone actually
+// does with one live: step to the picture either side of it, and take its prompt
+// back to the compose field. Both belong here rather than in the gallery grid,
+// because looking at a render full size is the moment you decide it's nearly
+// right and want another go at it.
 
 import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { X, AlertTriangle, RefreshCw } from 'lucide-react'
+import {
+  X, AlertTriangle, RefreshCw, ChevronLeft, ChevronRight, Copy, Check, Wand2,
+} from 'lucide-react'
 import { closeImage, openImage, useImageJob, useImageTarget } from '../hooks/useImageOverlay'
+import { reuseImagePrompt } from '../hooks/useImagePrompt'
+import { onServerEvent } from '../hooks/useServerEvents'
+
+/** Just enough of a StoredImage to step between them. */
+interface GalleryEntry {
+  id:     string
+  prompt: string
+  url:    string
+}
+
+/**
+ * The gallery, for the sole purpose of knowing what sits either side of this
+ * picture.
+ *
+ * Fetched here rather than handed in when the overlay opens, because it is
+ * opened from three places — a thumbnail, a queue row, and a spoken
+ * `generate_image` — and only one of those has the list to hand. One GET when
+ * the frame goes up, and another whenever a render finishes, since the picture
+ * being watched joins the list at the moment it lands.
+ */
+function useGallery(open: boolean): GalleryEntry[] {
+  const [gallery, setGallery] = useState<GalleryEntry[]>([])
+  const [tick, setTick] = useState(0)
+
+  useEffect(() => {
+    if (!open) return
+    return onServerEvent('image', data => {
+      const d = data as Record<string, unknown> | null
+      if (d && d['status'] === 'ready') setTick(t => t + 1)
+    })
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    fetch('/api/image')
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((j: { images?: GalleryEntry[] }) => { if (!cancelled) setGallery(j.images ?? []) })
+      // No neighbours is a perfectly good outcome: the arrows simply don't
+      // appear, and the picture itself is unaffected.
+      .catch(() => { if (!cancelled) setGallery([]) })
+    return () => { cancelled = true }
+  }, [open, tick])
+
+  return gallery
+}
 
 export function ImageOverlay() {
   const target = useImageTarget()
@@ -44,6 +98,31 @@ export function ImageOverlay() {
   // Queued behind other renders. Worth its own state: the phase text and the
   // progress bar are both about a render that has not begun.
   const waiting = job?.status === 'queued'
+
+  const gallery = useGallery(!!target)
+  // A stored picture keeps the id of the job that drew it (remember() in
+  // server/src/image.ts), so one id addresses both halves — which is what lets a
+  // render finishing under the frame slot straight into the list without the
+  // overlay having to re-point itself at a different id.
+  const index = target ? gallery.findIndex(g => g.id === target.jobId) : -1
+  const prev = index > 0 ? gallery[index - 1] : undefined
+  const next = index >= 0 && index < gallery.length - 1 ? gallery[index + 1] : undefined
+
+  const show = useCallback((entry: GalleryEntry) => {
+    openImage(entry.id, entry.prompt, entry.url)
+  }, [])
+
+  // Arrow keys, for the same reason a dialog closes on Escape: free on a desktop
+  // browser, invisible on the kiosk.
+  useEffect(() => {
+    if (!target) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft'  && prev) show(prev)
+      if (e.key === 'ArrowRight' && next) show(next)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [target, prev, next, show])
 
   const retry = useCallback(() => {
     if (!target) return
@@ -94,14 +173,36 @@ export function ImageOverlay() {
             </p>
             {/* The prompt is the caption. It's the only thing that identifies one
                 picture from another later, and the model expands what the user
-                said — so it's worth reading, not hiding behind a title. */}
-            <p className="text-sm text-white/85 leading-snug line-clamp-3">{target.prompt}</p>
+                said — so it's worth reading, not hiding behind a title.
+
+                `selectable-text` opts it out of the app-wide "a tap is never a
+                text selection" rule. This is the one string in the app worth
+                lifting a phrase out of by hand, and on a phone a long press is
+                how that is done; the class also has to put -webkit-touch-callout
+                back, or the press selects nothing and offers no Copy. The two
+                buttons below cover the whole string, which is the common case
+                and the only one the kiosk — where a long-press selection is
+                genuinely fiddly — can manage. */}
+            <p className="selectable-text text-sm text-white/85 leading-snug line-clamp-3">
+              {target.prompt}
+            </p>
           </div>
           <CloseImageButton onClick={closeImage} />
         </div>
 
+        {/* ── What you do with the prompt ──
+            Only once there is a picture. While one is drawing this row would
+            offer to reuse a prompt that has produced nothing yet, and the
+            position counter would be counting a list this picture isn't in. */}
+        {url && target.prompt !== '' && (
+          <PromptActions
+            prompt={target.prompt}
+            position={index >= 0 ? `${index + 1} of ${gallery.length}` : ''}
+          />
+        )}
+
         {/* ── Body ── */}
-        <div className="flex-1 min-h-0 flex items-center justify-center px-4 pb-4">
+        <div className="flex-1 min-h-0 flex items-center justify-center px-4 pb-4 relative">
           {url ? (
             <img
               src={url}
@@ -121,10 +222,116 @@ export function ImageOverlay() {
           ) : (
             <Drawing phase={job?.phase ?? 'starting'} etaMs={job?.etaMs ?? 0} waiting={waiting} />
           )}
+
+          {/* Stepping between pictures. Over the image rather than in a row under
+              it, because the image is sized to fill whatever is left and a row
+              beneath would take that height from every picture just to serve the
+              ones being paged through. Absent — not disabled — at either end of
+              the list: a dead arrow on a touchscreen is a tap that looks broken. */}
+          {prev && <NavButton side="left"  label="Previous picture" onClick={() => show(prev)} />}
+          {next && <NavButton side="right" label="Next picture"     onClick={() => show(next)} />}
         </div>
       </div>
     </>,
     document.body,
+  )
+}
+
+/**
+ * Copy the prompt, or take it back to the Draw panel.
+ *
+ * "Use as prompt" is the one that matters. Looking at a picture full size is
+ * exactly when you decide it's nearly right, and re-typing forty words on an
+ * on-screen keyboard is the most expensive thing this app can ask of anyone. It
+ * fills the compose field and opens the Draw corner on it — filling a field
+ * nobody can see would not be reuse — and closes this frame so the field is the
+ * thing in front of you.
+ *
+ * Copy is the phone half: `navigator.clipboard` needs a secure context, which
+ * Caddy provides, and the label reports what happened either way rather than
+ * failing silently into the console.
+ */
+function PromptActions({ prompt, position }: { prompt: string; position: string }) {
+  const [copied, setCopied] = useState<'yes' | 'no' | null>(null)
+
+  useEffect(() => {
+    if (copied === null) return
+    const t = setTimeout(() => setCopied(null), 1600)
+    return () => clearTimeout(t)
+  }, [copied])
+
+  const copy = useCallback(() => {
+    navigator.clipboard?.writeText(prompt)
+      .then(() => setCopied('yes'))
+      .catch(() => setCopied('no'))
+  }, [prompt])
+
+  return (
+    <div className="flex items-center gap-2 px-4 pb-3 shrink-0">
+      <button
+        type="button"
+        onClick={() => { reuseImagePrompt(prompt); closeImage() }}
+        className="h-11 px-4 rounded-full bg-pink-500/20 border border-pink-400/35 text-white
+                   text-[13px] font-semibold flex items-center gap-2
+                   active:scale-95 active:bg-pink-500/35 transition"
+      >
+        <Wand2 size={16} />
+        Use as prompt
+      </button>
+
+      <button
+        type="button"
+        onClick={copy}
+        aria-label="Copy the prompt"
+        className="h-11 px-4 rounded-full bg-white/10 border border-hairline text-white/70
+                   text-[13px] font-semibold flex items-center gap-2
+                   active:scale-95 active:bg-white/20 transition"
+      >
+        {copied === 'yes' ? <Check size={16} /> : <Copy size={16} />}
+        {copied === 'yes' ? 'Copied' : copied === 'no' ? "Couldn't copy" : 'Copy'}
+      </button>
+
+      {/* Where this picture sits in the gallery — the thing that makes the two
+          arrows over the image legible as "there are more of these". */}
+      {position !== '' && (
+        <span className="ml-auto text-[11px] text-white/30 tabular-nums shrink-0">{position}</span>
+      )}
+    </div>
+  )
+}
+
+/**
+ * One of the two stepping arrows.
+ *
+ * The same 56px round glass as every other control in this app, pinned to the
+ * edge of the image area and vertically centred — where a thumb already expects
+ * it from every photo viewer on the device. Sits over the frame's padding rather
+ * than the picture for anything but a very wide render, and is translucent so it
+ * never hides the middle of one that is.
+ */
+function NavButton({
+  side, label, onClick,
+}: {
+  side:    'left' | 'right'
+  label:   string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      className={`absolute top-1/2 -translate-y-1/2 w-14 h-14 rounded-full
+                  bg-black/60 backdrop-blur-md border border-hairline
+                  flex items-center justify-center text-white/75
+                  active:scale-90 active:bg-white/25 transition ${
+        side === 'left' ? 'left-1' : 'right-1'
+      }`}
+    >
+      {side === 'left'
+        ? <ChevronLeft  size={28} strokeWidth={2.25} />
+        : <ChevronRight size={28} strokeWidth={2.25} />}
+    </button>
   )
 }
 
