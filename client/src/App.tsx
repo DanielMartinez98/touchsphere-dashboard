@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
 import Widget from './components/widgets/Widget'
 import ParticleSphere from './components/ParticleSphere/ParticleSphere'
-import { CalendarCollapsed } from './components/widgets/CalendarWidget/CalendarWidget'
-import CalendarExpanded from './components/widgets/CalendarWidget/CalendarExpanded'
-import { ClockCollapsed } from './components/widgets/ClockWidget/ClockWidget'
-import WorldClock from './components/widgets/ClockWidget/WorldClock'
+import { TimeCollapsed } from './components/widgets/TimeWidget/TimeWidget'
+import TimeExpanded from './components/widgets/TimeWidget/TimeExpanded'
 import { WeatherCollapsed } from './components/widgets/WeatherWidget/WeatherWidget'
 import WeatherMap from './components/widgets/WeatherWidget/WeatherMap'
 import { MediaCollapsed } from './components/widgets/MediaListWidget/MediaListWidget'
 import MediaListExpanded from './components/widgets/MediaListWidget/MediaListExpanded'
+import { ImageCollapsed } from './components/widgets/ImageWidget/ImageWidget'
+import ImageExpanded from './components/widgets/ImageWidget/ImageExpanded'
 import { NotionCollapsed } from './components/widgets/NotionWidget/NotionWidget'
 import NotionExpanded from './components/widgets/NotionWidget/NotionExpanded'
 import { useMediaList } from './hooks/useMediaList'
@@ -31,6 +31,8 @@ import { BrowserOverlay } from './components/BrowserOverlay'
 import { GuideOverlay } from './components/GuideOverlay'
 import { ImageOverlay } from './components/ImageOverlay'
 import { openGuide } from './hooks/useGuideOverlay'
+import { openImage } from './hooks/useImageOverlay'
+import { useImages, type Orientation } from './hooks/useImages'
 import { useAutoMode } from './hooks/useAutoSchedule'
 import { useMuted } from './hooks/useMuted'
 import { useAvatarEnabled, useAvatarRuntime, useAvatarFraming, useAvatarModelOverride, setAvatarRuntime, setAvatarFps, loadAvatarFramingFromServer } from './hooks/useAvatar'
@@ -45,15 +47,16 @@ import { playStartupSound } from './utils/sound'
 const Avatar = lazy(() => import('./components/Avatar/Avatar'))
 const Live2DAvatar = lazy(() => import('./components/Avatar/Live2DAvatar'))
 
-type OpenWidget = 'calendar' | 'clock' | 'weather' | 'media' | 'notion' | null
+// 'time' is the merged calendar+clock corner; 'images' is the ComfyUI corner.
+type OpenWidget = 'time' | 'weather' | 'media' | 'notion' | 'images' | null
 
 // Distinct glowing accent colour per corner.
 const ACCENT = {
-  weather:  '#3b82f6', // blue
-  calendar: '#facc15', // yellow
-  media:    '#ef4444', // red  (collection)
-  notion:   '#22c55e', // green (work tasks)
-  clock:    '#a855f7', // purple (time)
+  weather: '#3b82f6', // blue
+  time:    '#facc15', // yellow (calendar + clock, merged into one corner)
+  media:   '#ef4444', // red  (collection)
+  notion:  '#22c55e', // green (work tasks)
+  images:  '#ec4899', // pink (drawing)
 } as const
 
 function App() {
@@ -63,6 +66,19 @@ function App() {
   const [orbBurst, setOrbBurst] = useState(0)
   const toggle = (w: OpenWidget) => setOpen(prev => prev === w ? null : w)
   const { items, nextItem, addItem, removeItem, markDone, toggleStar, setStatus, setCover, renameItem } = useMediaList()
+  const {
+    images, enabled: imagesEnabled, busy: imageBusy, phase: imagePhase,
+    generate: generateImage, remove: removeImage,
+  } = useImages()
+
+  // Drawing from the widget opens the same full-screen frame the assistant's
+  // generate_image opens, on the same job. Without this the picture would land
+  // silently in the grid behind the panel — and the twenty seconds it takes are
+  // exactly when someone needs to see that something is happening.
+  const drawImage = useCallback(async (prompt: string, orientation: Orientation) => {
+    const id = await generateImage(prompt, orientation)
+    if (id) openImage(id, prompt)
+  }, [generateImage])
   const { byItem: guides } = useGuides()
   // Announcement for a guide that finished while the user was doing something
   // else — generation takes minutes, so nobody is watching the widget for it.
@@ -143,7 +159,9 @@ function App() {
     window.setTimeout(() => setGuideReady(null), 20_000)
   }, []))
 
-  // Close bottom-left widget when mode changes so stale panels don't linger
+  // Close the mode-dependent widget when mode changes so stale panels don't
+  // linger. That pair lives in the bottom-RIGHT corner now (it moved when the
+  // merged Time corner freed the slot), but the rule is unchanged.
   useEffect(() => {
     if (mode === 'work' && open === 'media')   setOpen(null)
     if (mode !== 'work' && open === 'notion')  setOpen(null)
@@ -275,20 +293,48 @@ function App() {
         expanded={<WeatherMap />}
       />
 
-      {/* Top-Right — Calendar (yellow glow) */}
+      {/* Top-Right — Time: calendar and clock merged (yellow glow).
+          They were two corners until image generation needed one. Merging them
+          costs nothing because they answer the same question from two sides —
+          "what time is it, what's next" — and it freed bottom-right for the
+          Notion/Media pair that bottom-left used to carry. */}
       <Widget
         position="top-right"
-        accent={ACCENT.calendar}
-        isOpen={open === 'calendar'}
-        onToggle={() => toggle('calendar')}
-        collapsed={<CalendarCollapsed />}
-        expanded={<CalendarExpanded />}
+        accent={ACCENT.time}
+        isOpen={open === 'time'}
+        onToggle={() => toggle('time')}
+        collapsed={<TimeCollapsed timers={timers} stopwatch={stopwatch} />}
+        expanded={<TimeExpanded timers={timers} stopwatch={stopwatch} />}
       />
 
-      {/* Bottom-Left — Notion tasks in work mode, Media collection in rest/locked */}
+      {/* Bottom-Left — Draw a picture (pink glow). The tap half of the
+          assistant's generate_image: same job engine, same store, same
+          full-screen viewer, so a picture looks identical however it was asked
+          for. */}
+      <Widget
+        position="bottom-left"
+        accent={ACCENT.images}
+        isOpen={open === 'images'}
+        onToggle={() => toggle('images')}
+        collapsed={<ImageCollapsed images={images} enabled={imagesEnabled} busy={imageBusy} />}
+        expanded={
+          <ImageExpanded
+            images={images}
+            enabled={imagesEnabled}
+            busy={imageBusy}
+            phase={imagePhase}
+            onGenerate={drawImage}
+            onDelete={removeImage}
+          />
+        }
+      />
+
+      {/* Bottom-Right — Notion tasks in work mode, Media collection in
+          rest/locked. This pair moved here from bottom-left when the merged
+          Time corner freed the slot; the mode switch between them is unchanged. */}
       {mode === 'work' ? (
         <Widget
-          position="bottom-left"
+          position="bottom-right"
           accent={ACCENT.notion}
           isOpen={open === 'notion'}
           onToggle={() => toggle('notion')}
@@ -310,7 +356,7 @@ function App() {
         />
       ) : (
         <Widget
-          position="bottom-left"
+          position="bottom-right"
           accent={ACCENT.media}
           isOpen={open === 'media'}
           onToggle={() => toggle('media')}
@@ -318,16 +364,6 @@ function App() {
           expanded={<MediaListExpanded items={items} addItem={addItem} removeItem={removeItem} markDone={markDone} toggleStar={toggleStar} setStatus={setStatus} setCover={setCover} renameItem={renameItem} guides={guides} />}
         />
       )}
-
-      {/* Bottom-Right — Clock / Time (purple glow) */}
-      <Widget
-        position="bottom-right"
-        accent={ACCENT.clock}
-        isOpen={open === 'clock'}
-        onToggle={() => toggle('clock')}
-        collapsed={<ClockCollapsed timers={timers} stopwatch={stopwatch} />}
-        expanded={<WorldClock timers={timers} stopwatch={stopwatch} />}
-      />
 
       {/* Top-Center — Status / Mode selector */}
       <StatusBar

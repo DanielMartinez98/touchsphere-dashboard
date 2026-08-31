@@ -439,7 +439,9 @@ function NewEventSheet({ defaultDate, onClose, onSave }: NewEventSheetProps) {
 
 // ── CalendarExpanded ──────────────────────────────────────────────────────────
 
-export default function CalendarExpanded() {
+// `nested` — see the same prop on WorldClock: the combined top-right corner's
+// tab bar already clears the widget chrome this would otherwise pad around.
+export default function CalendarExpanded({ nested = false }: { nested?: boolean } = {}) {
   const now = new Date()
   const [viewYear,    setViewYear]    = useState(now.getFullYear())
   const [viewMonth,   setViewMonth]   = useState(now.getMonth())
@@ -600,7 +602,7 @@ export default function CalendarExpanded() {
     <>
       <style>{`@keyframes tsSlideUp { from { transform: translateY(100%) } to { transform: translateY(0) } }`}</style>
 
-      <div className="flex flex-col h-full pt-16 relative">
+      <div className={`flex flex-col h-full ${nested ? 'pt-2' : 'pt-16'} relative`}>
 
         {/* ══ Month strip ════════════════════════════════════════════════════ */}
         <div className="flex-shrink-0 px-3 pb-2">

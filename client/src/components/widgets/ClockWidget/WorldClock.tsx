@@ -63,7 +63,10 @@ function Stepper({ value, onChange, min = 0, max, unit }: {
   )
 }
 
-export default function WorldClock({ timers, stopwatch }: { timers?: TimersApi; stopwatch?: StopwatchApi }) {
+// `nested` = something above us already cleared the widget's grab handle and
+// close button (the combined corner's tab bar does). Without it the panel
+// reserves that space itself, which is right when it owns the whole screen.
+export default function WorldClock({ timers, stopwatch, nested = false }: { timers?: TimersApi; stopwatch?: StopwatchApi; nested?: boolean }) {
   const now = useClock()
 
   // Top-level view: the world clock, or the timers/alarms/stopwatch tools.
@@ -100,7 +103,7 @@ export default function WorldClock({ timers, stopwatch }: { timers?: TimersApi; 
   const activeCount = (timers?.timers.length ?? 0) + (stopwatch?.running ? 1 : 0)
 
   return (
-    <div className="flex flex-col h-full p-6 pt-16 gap-4 overflow-y-auto">
+    <div className={`flex flex-col h-full p-6 ${nested ? 'pt-2' : 'pt-16'} gap-4 overflow-y-auto`}>
       {/* Top-level view switch — World Clock vs the timer tools. */}
       <div className="flex gap-2 self-start bg-white/5 rounded-2xl p-1">
         <button
