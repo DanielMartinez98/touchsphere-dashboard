@@ -23,6 +23,7 @@ import {
   listModels,
   listWorkflowStyles,
   MAX_QUEUED,
+  missingFiles,
   pendingJobs,
   pickLora,
   QUALITY_STEPS,
@@ -32,6 +33,7 @@ import {
   setSelectedQuality,
   startImage,
   styleDefaults,
+  styleNeeds,
   WORKFLOW_PREFIX,
 } from '../image'
 import {
@@ -103,9 +105,24 @@ router.get('/models', async (_req: Request, res: Response) => {
     // the checkpoints if "style" covers both kinds — which is also what makes a
     // user-supplied workflow selectable instead of a hidden global override.
     const checkpoints = await listModels()
+    const workflows = listWorkflowStyles()
+    // Which workflow styles can actually run. A `wf:` style is three files on
+    // the GPU box's disk, and until this check existed the picker offered every
+    // one of them regardless — so choosing "Anima Turbo v1.1" on a box that
+    // only has the base model looked fine, queued fine, and failed twenty
+    // seconds later with ComfyUI's own "value not in list". One pass over the
+    // union of everything they need, so it stays a couple of requests however
+    // many styles there are.
+    const allNeeds = [...new Set(workflows.flatMap(w => styleNeeds(w.id)))]
+    const absent = new Set(await missingFiles(allNeeds))
     const styles = [
-      ...checkpoints.map(name => ({ id: name, label: name, kind: 'checkpoint' as const })),
-      ...listWorkflowStyles().map(w => ({ id: w.id, label: w.label, kind: 'workflow' as const })),
+      ...checkpoints.map(name => ({
+        id: name, label: name, kind: 'checkpoint' as const, missing: [] as string[],
+      })),
+      ...workflows.map(w => ({
+        id: w.id, label: w.label, kind: 'workflow' as const,
+        missing: styleNeeds(w.id).filter(n => absent.has(n)),
+      })),
     ]
     res.setHeader('Cache-Control', 'no-store')
     res.json({

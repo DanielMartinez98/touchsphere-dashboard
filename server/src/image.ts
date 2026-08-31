@@ -194,38 +194,99 @@ export function setSelectedModel(model: string): void {
 }
 
 /**
- * Which checkpoints the server actually has installed.
+ * The values one loader node will accept for one of its inputs.
  *
- * Asked of ComfyUI rather than listed off disk: ComfyUI is the one that knows
- * where its models directory is, and it's the same list the graph is validated
- * against — so a name from here can never come back as "value not in list".
+ * Every "what is installed?" question this file asks is the same question:
+ * ComfyUI is the one that knows where its models directory is, and the list it
+ * reports for a node's input IS the list that node validates against — so a
+ * name taken from here can never come back as "value not in list".
  */
-export async function listModels(): Promise<string[]> {
-  const res = await comfyFetch('/object_info/CheckpointLoaderSimple', undefined, 10_000)
-  if (!res.ok) throw new Error(`HTTP ${res.status} listing checkpoints`)
+async function loaderOptions(nodeClass: string, input: string): Promise<string[]> {
+  const res = await comfyFetch(`/object_info/${nodeClass}`, undefined, 10_000)
+  if (!res.ok) throw new Error(`HTTP ${res.status} listing ${input}`)
   const j = await res.json() as Record<string, {
-    input?: { required?: { ckpt_name?: unknown[] } }
+    input?: { required?: Record<string, unknown[]> }
   }>
-  const raw = j['CheckpointLoaderSimple']?.input?.required?.ckpt_name?.[0]
+  const raw = j[nodeClass]?.input?.required?.[input]?.[0]
   return Array.isArray(raw) ? raw.filter((n): n is string => typeof n === 'string') : []
+}
+
+/** Which checkpoints the server actually has installed. */
+export async function listModels(): Promise<string[]> {
+  return loaderOptions('CheckpointLoaderSimple', 'ckpt_name')
 }
 
 /**
  * Which LoRAs the server has installed.
  *
- * Asked of ComfyUI for exactly the reason listModels() is: the turbo LoRA's
- * filename is a thing that lives on the GPU box's disk, and hardcoding a guess
- * at it here would fail as a bare "value not in list" naming a file nobody
- * chose. The picker offers what is actually there.
+ * The turbo LoRA's filename is a thing that lives on the GPU box's disk, and
+ * hardcoding a guess at it here would fail as a bare "value not in list" naming
+ * a file nobody chose. The picker offers what is actually there — and when this
+ * comes back empty, as it does on a box where no LoRA was ever downloaded, the
+ * Turbo toggle has nothing to turn on and says so instead of pretending.
  */
 export async function listLoras(): Promise<string[]> {
-  const res = await comfyFetch('/object_info/LoraLoaderModelOnly', undefined, 10_000)
-  if (!res.ok) throw new Error(`HTTP ${res.status} listing LoRAs`)
-  const j = await res.json() as Record<string, {
-    input?: { required?: { lora_name?: unknown[] } }
-  }>
-  const raw = j['LoraLoaderModelOnly']?.input?.required?.lora_name?.[0]
-  return Array.isArray(raw) ? raw.filter((n): n is string => typeof n === 'string') : []
+  return loaderOptions('LoraLoaderModelOnly', 'lora_name')
+}
+
+// Which loader input answers for each folder named in a style's `needs`.
+// `needs` is written as `<folder>/<filename>` because that is where the user has
+// to physically put the file; this maps that back to the node that reports it.
+const NEEDS_LOADER: Record<string, [node: string, input: string]> = {
+  diffusion_models: ['UNETLoader', 'unet_name'],
+  text_encoders:    ['CLIPLoader', 'clip_name'],
+  vae:              ['VAELoader', 'vae_name'],
+  checkpoints:      ['CheckpointLoaderSimple', 'ckpt_name'],
+  loras:            ['LoraLoaderModelOnly', 'lora_name'],
+}
+
+/**
+ * Which of a style's required files are NOT on the image server.
+ *
+ * This is the half of `needs` that was missing. A workflow style names three
+ * files it cannot run without, and offering it in the picker regardless meant
+ * choosing it looked fine, queued fine, and then failed twenty seconds later
+ * with ComfyUI's own "value not in list" naming a file the user had never heard
+ * of. Checking up front turns that into a greyed row that says which file to go
+ * and download.
+ *
+ * One request per distinct folder, and the caller is expected to do this once
+ * for the whole list rather than per style.
+ */
+export async function missingFiles(needs: string[]): Promise<string[]> {
+  const wanted = new Map<string, string[]>()      // folder → filenames
+  for (const n of needs) {
+    const slash = n.indexOf('/')
+    if (slash < 0) continue
+    const folder = n.slice(0, slash)
+    if (!(folder in NEEDS_LOADER)) continue
+    wanted.set(folder, [...(wanted.get(folder) ?? []), n.slice(slash + 1)])
+  }
+
+  const missing: string[] = []
+  for (const [folder, files] of wanted) {
+    const [node, input] = NEEDS_LOADER[folder]!
+    let installed: string[]
+    try {
+      installed = await loaderOptions(node, input)
+    } catch {
+      // A box we can't reach is a different problem, already reported by
+      // /api/image/check. Don't paint every style as "missing files" over it.
+      continue
+    }
+    // ComfyUI reports names relative to the folder, which may include a
+    // subdirectory the user made — match on the tail so `anima/x.safetensors`
+    // still satisfies a need for `x.safetensors`.
+    const have = new Set(installed.map(f => f.split(/[\\/]/).pop()!))
+    for (const f of files) if (!have.has(f)) missing.push(`${folder}/${f}`)
+  }
+  return missing
+}
+
+/** What a style needs on disk. Empty for a checkpoint or an unknown workflow. */
+export function styleNeeds(style: string): string[] {
+  if (!style.startsWith(WORKFLOW_PREFIX)) return []
+  return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.needs ?? []
 }
 
 /**
@@ -744,15 +805,25 @@ async function run(job: ImageJob): Promise<void> {
     // Turbo with no LoRA named: ask ComfyUI what it has and pick the one that
     // belongs to this style. Done here rather than in startImage() because it
     // needs the network and startImage() is called from a chat tool with a
-    // person waiting to be spoken to. A miss leaves `lora` empty and the render
-    // proceeds without it — a wrong LoRA silently changes the picture, which is
-    // worse than turbo quietly not engaging.
+    // person waiting to be spoken to.
+    //
+    // A miss FAILS the render. It used to proceed without the LoRA, on the
+    // reasoning that a wrong LoRA silently changes the picture — but so does
+    // dropping the one that was asked for, and that is the failure this whole
+    // file is written against. On a box with no LoRAs installed at all, the old
+    // behaviour meant the Turbo switch did nothing, said nothing, and produced
+    // a normal picture; saying which file is missing is the only honest answer.
     if (job.turbo && !job.lora) {
-      try {
-        job.lora = pickLora(await listLoras(), turboHints(job.model))
-        if (!job.lora) console.warn(`[image] ${job.id}: turbo is on but no LoRA matched ${job.model}`)
-      } catch (err) {
-        console.warn('[image] could not list LoRAs:', err instanceof Error ? err.message : err)
+      const installed = await listLoras()      // a dead box throws, and should
+      job.lora = pickLora(installed, turboHints(job.model))
+      if (!job.lora) {
+        throw new Error(
+          installed.length === 0
+            ? 'Turbo is on but the image server has no LoRAs installed — put the turbo ' +
+              'LoRA in ComfyUI/models/loras, or switch Turbo off in Advanced'
+            : `Turbo is on but none of the installed LoRAs look like this style's ` +
+              `(${installed.join(', ')}) — pick one by hand in Advanced, or switch Turbo off`,
+        )
       }
     }
 
@@ -855,7 +926,7 @@ const BUILTIN_GRAPH: ComfyGraph = {
  *
  * Transcribed from ComfyUI's own bundled template (image_anima_base_v1.json) —
  * the sampler settings are the model author's, not guesses. The template wraps
- * this in a frontend "subgraph" and offers an optional turbo LoRA behind switch
+ * this in a frontend "subgraph"; the flattening below is only about that switch
  * nodes; both are flattened away here, because /prompt takes a flat API graph.
  *
  * The three published variants share this graph exactly and differ only in the
@@ -925,7 +996,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
   'anima-aesthetic-v1-1': {
     label: 'Anima Aesthetic v1.1',
     graph: animaGraph('anima-aesthetic-v1.1.safetensors', 30, 4),
-    turboHints: ['anima', 'turbo'],
+    // No turboHints — see the note on the base style below.
     needs: ['diffusion_models/anima-aesthetic-v1.1.safetensors', ...ANIMA_SHARED],
   },
   'anima-turbo-v1-1': {
@@ -940,11 +1011,15 @@ const BUILTIN_WORKFLOWS: Record<string, {
   'anima-base-v1': {
     label: 'Anima Base v1',
     graph: animaGraph('anima-base-v1.0.safetensors', 30, 4),
-    // The bundled template offers this LoRA behind a switch node; flattening
-    // the switch away is what the Advanced panel's Turbo toggle puts back.
-    // Matched rather than hardcoded — the filename is a thing on the GPU box's
-    // disk, and listLoras() is the only honest source for it.
-    turboHints: ['anima', 'turbo'],
+    // NO turboHints, and deliberately so: for Anima, "turbo" is a separate
+    // distilled CHECKPOINT (anima-turbo-v1.x, the style above), not a LoRA.
+    // circlestone-labs/Anima publishes no loras/ folder at all. These hints used
+    // to say ['anima', 'turbo'], which could never match an Anima file — and
+    // worse, on a box that happens to have some *other* turbo LoRA (an SDXL
+    // lightning one, say) the auto-pick would splice a foreign model family into
+    // the Anima graph and quietly wreck the picture. Turbo here means: pick the
+    // Anima Turbo style. The Advanced toggle stays for someone who installs a
+    // LoRA of their own and names it by hand.
     // Surfaced in the picker when they're missing, because the alternative is a
     // render that fails with a bare "value not in list" naming a file the user
     // has never heard of.

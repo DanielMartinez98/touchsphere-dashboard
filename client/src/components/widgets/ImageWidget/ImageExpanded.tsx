@@ -11,14 +11,14 @@
 // second viewer, so a picture looks the same however it was asked for.
 
 import { useState } from 'react'
-import { Sparkles, Trash2, AlertTriangle, Check, Layers, Gauge, X, Clock, Brush } from 'lucide-react'
+import { Sparkles, Trash2, AlertTriangle, Check, Layers, Gauge, X, Clock, Brush, Download } from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
 import { openImage } from '../../../hooks/useImageOverlay'
 import {
   clearImageSource, setImagePrompt, useImagePrompt, useImageSource,
 } from '../../../hooks/useImagePrompt'
 import AdvancedPanel from './AdvancedPanel'
-import { STRENGTHS } from '../../../hooks/useImages'
+import { STRENGTHS, styleUsable } from '../../../hooks/useImages'
 import type {
   ImageParams, ImageStyle, Orientation, QueuedJob, StoredImage, StyleDefaults,
 } from '../../../hooks/useImages'
@@ -378,25 +378,59 @@ export default function ImageExpanded({
               kiosk opens an OS popup that TouchKio renders badly, and these are
               a handful of options, not a hundred. */}
           <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
-            {styles.map(st => (
-              <button
-                key={st.id}
-                type="button"
-                onClick={() => onModel(st.id)}
-                className={`shrink-0 h-12 px-4 rounded-2xl text-[13px] font-semibold whitespace-nowrap
-                            flex items-center gap-2 transition-colors active:scale-95 ${
-                  model === st.id
-                    ? 'bg-pink-500/25 text-white border border-pink-400/40'
-                    : 'bg-white/5 text-white/50 border border-transparent'
-                }`}
-              >
-                {model === st.id && <Check size={15} />}
-                {/* A workflow style already has a human label from the server;
-                    only raw checkpoint FILENAMES need prettifying. */}
-                {st.kind === 'workflow' ? st.label : pretty(st.label)}
-              </button>
-            ))}
+            {styles.map(st => {
+              // A style whose files aren't on the GPU box can't draw. Shown but
+              // not selectable, because hiding it would leave someone who read
+              // about "Anima Turbo" wondering where it went — and the row is
+              // the only place that can say which file to go and fetch.
+              const usable = styleUsable(st)
+              return (
+                <button
+                  key={st.id}
+                  type="button"
+                  disabled={!usable}
+                  onClick={() => usable && onModel(st.id)}
+                  title={usable ? undefined : `Not installed: ${st.missing!.join(', ')}`}
+                  className={`shrink-0 h-12 px-4 rounded-2xl text-[13px] font-semibold whitespace-nowrap
+                              flex items-center gap-2 transition-colors ${
+                    !usable
+                      ? 'bg-white/[0.03] text-white/25 border border-hairline line-through'
+                      : model === st.id
+                        ? 'bg-pink-500/25 text-white border border-pink-400/40 active:scale-95'
+                        : 'bg-white/5 text-white/50 border border-transparent active:scale-95'
+                  }`}
+                >
+                  {usable && model === st.id && <Check size={15} />}
+                  {!usable && <Download size={13} />}
+                  {/* A workflow style already has a human label from the server;
+                      only raw checkpoint FILENAMES need prettifying. */}
+                  {st.kind === 'workflow' ? st.label : pretty(st.label)}
+                </button>
+              )
+            })}
           </div>
+
+          {/* The filenames, spelled out. A greyed row says "you can't have
+              this"; only the name of the file says what to do about it — and
+              on a kiosk there is no tooltip to hover for it. */}
+          {styles.some(st => !styleUsable(st)) && (
+            <div className="flex flex-col gap-1 rounded-xl bg-white/[0.03] border border-hairline p-3">
+              <span className="text-[11px] uppercase tracking-widest text-white/35 font-semibold">
+                Not installed on the image server
+              </span>
+              {styles.filter(st => !styleUsable(st)).map(st => (
+                <span key={st.id} className="text-[11px] text-white/40 leading-snug">
+                  <span className="text-white/60">{st.label}</span>
+                  {' needs '}
+                  <span className="font-mono text-white/50">{st.missing!.join(', ')}</span>
+                </span>
+              ))}
+              <span className="text-[11px] text-white/25 leading-snug mt-0.5">
+                Drop the file into ComfyUI's matching models folder on the GPU box and it
+                appears here — nothing to restart on this end.
+              </span>
+            </div>
+          )}
           {/* The first picture after a switch reloads the checkpoint into VRAM,
               which is the 20s render. Saying so here stops it reading as a hang. */}
           <span className="text-[11px] text-white/25 leading-snug">

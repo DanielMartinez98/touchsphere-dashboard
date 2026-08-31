@@ -166,6 +166,9 @@ export default function AdvancedPanel({
   const [open, setOpen] = useState(false)
 
   const res = resolutionFor(orientation, params)
+  // Turbo splices an installed LoRA in front of the sampler; with none on the
+  // box there is literally nothing for the switch to insert.
+  const noLoras = loras.length === 0
   // Which knobs are actually doing something, so the collapsed header can say
   // so — an Advanced section that hides a cfg override is how you end up
   // debugging a "broken model" that is just set to cfg 1.
@@ -329,26 +332,40 @@ export default function AdvancedPanel({
           <div className="flex flex-col gap-2">
             <button
               type="button"
-              onClick={() => onChange({ turbo: !params.turbo })}
-              className={`h-12 rounded-xl px-4 flex items-center gap-2.5 border transition-colors
-                          active:scale-[0.99] ${
-                params.turbo
-                  ? 'bg-amber-400/20 border-amber-300/40 text-white'
-                  : 'bg-white/5 border-hairline text-white/55'
+              // Nothing to turn on. The switch used to flip happily on a box
+              // with no LoRAs and the render then came out normal — turbo on,
+              // no turbo, no explanation. A control that cannot do its job has
+              // to say so before it is touched, not after the picture arrives.
+              disabled={noLoras}
+              onClick={() => !noLoras && onChange({ turbo: !params.turbo })}
+              className={`h-12 rounded-xl px-4 flex items-center gap-2.5 border transition-colors ${
+                noLoras
+                  ? 'bg-white/[0.03] border-hairline text-white/25'
+                  : params.turbo
+                    ? 'bg-amber-400/20 border-amber-300/40 text-white active:scale-[0.99]'
+                    : 'bg-white/5 border-hairline text-white/55 active:scale-[0.99]'
               }`}
             >
-              <Zap size={15} className={params.turbo ? 'text-amber-300' : 'text-white/40'} />
+              <Zap size={15} className={params.turbo && !noLoras ? 'text-amber-300' : 'text-white/40'} />
               <span className="text-[13px] font-semibold">Turbo LoRA</span>
               {/* A track-and-knob switch rather than a checkbox: it reads as
                   on/off from across the room, which a tick does not. */}
               <span className={`ml-auto w-11 h-6 rounded-full p-0.5 transition-colors ${
-                params.turbo ? 'bg-amber-300/70' : 'bg-white/15'
+                params.turbo && !noLoras ? 'bg-amber-300/70' : 'bg-white/15'
               }`}>
-                <span className={`block w-5 h-5 rounded-full bg-white transition-transform ${
-                  params.turbo ? 'translate-x-5' : ''
+                <span className={`block w-5 h-5 rounded-full bg-white/70 transition-transform ${
+                  params.turbo && !noLoras ? 'translate-x-5' : ''
                 }`} />
               </span>
             </button>
+
+            {noLoras && (
+              <span className="text-[11px] text-white/30 leading-snug">
+                No LoRAs are installed on the image server, so there is no turbo LoRA to
+                add. Put one in ComfyUI's <span className="font-mono">models/loras</span>
+                {' '}folder on the GPU box and it appears here.
+              </span>
+            )}
 
             {params.turbo && (
               <>
@@ -374,10 +391,14 @@ export default function AdvancedPanel({
                     </button>
                   ))}
                 </div>
-                {loras.length === 0 && (
-                  <span className="text-[11px] text-amber-300/60 leading-snug">
-                    No LoRAs found on the image server — turbo will be skipped rather
-                    than guessed at.
+                {noLoras && (
+                  // Reachable when turbo was switched on against a box that HAD
+                  // a LoRA and no longer does, since the setting is stored per
+                  // style and outlives the file. It now fails the render rather
+                  // than drawing a normal picture, so it has to be loud.
+                  <span className="text-[11px] text-amber-300/70 leading-snug">
+                    Turbo is on but the image server has no LoRAs installed — renders will
+                    fail until you add one or switch Turbo off.
                   </span>
                 )}
 

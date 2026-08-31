@@ -55,6 +55,16 @@ export interface ImageStyle {
   id:    string
   label: string
   kind:  'checkpoint' | 'workflow'
+  /**
+   * Files this style needs that the image server hasn't got, as
+   * `<folder>/<filename>`. Empty means it can run.
+   *
+   * A `wf:` style is three files on the GPU box's disk, and offering one whose
+   * files are absent means the choice looks fine, queues fine, and fails
+   * twenty seconds later naming a file the user has never heard of. The picker
+   * greys these and prints the filename instead.
+   */
+  missing?: string[]
 }
 
 interface StylesResponse {
@@ -169,6 +179,9 @@ function stylesOf(j: StylesResponse): ImageStyle[] {
   if (j.styles?.length) return j.styles
   return (j.models ?? []).map(m => ({ id: m, label: m, kind: 'checkpoint' as const }))
 }
+
+/** Can this style actually draw? A server that predates `missing` says yes. */
+export const styleUsable = (st: ImageStyle): boolean => (st.missing?.length ?? 0) === 0
 
 // Mirrors SIZES in server/src/routes/image-tools.ts. Duplicated rather than
 // fetched: it's three constants, and the widget has to draw the aspect-ratio
