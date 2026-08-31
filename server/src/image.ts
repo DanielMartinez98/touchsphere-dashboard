@@ -51,9 +51,11 @@ const POLL_MS = 700
 // Plain HTTP calls (queueing, downloading the result) — these are fast or broken.
 const HTTP_MS = 20_000
 
-// Checkpoint override. Leave unset to use whatever the workflow was saved with,
-// which is the right default when someone drops in their own graph.
+// Checkpoint. Env default ONLY — the live choice is whatever the user picked in
+// the Draw panel (see selectedModel() below). Unset and unchosen means the
+// workflow's own checkpoint, which is right when someone supplies their graph.
 const MODEL = (process.env['COMFYUI_MODEL'] ?? '').trim()
+
 const STEPS = Number(process.env['COMFYUI_STEPS'] ?? 0) || 0
 const DEFAULT_W = Number(process.env['COMFYUI_WIDTH'] ?? 768)
 const DEFAULT_H = Number(process.env['COMFYUI_HEIGHT'] ?? 768)
@@ -71,6 +73,69 @@ const MAX_STORED = Number(process.env['IMAGE_MAX_STORED'] ?? 60)
 const MIN_DIM = 256
 const MAX_DIM = 1536
 const MAX_PROMPT = 900
+
+// ── Checkpoint selection ─────────────────────────────────────────────────────
+
+/**
+ * The checkpoint the user selected, if any.
+ *
+ * Read from disk per request rather than cached, the same as the voice-pitch
+ * slider in routes/tts.ts and for the same reason: picking a model has to take
+ * effect on the NEXT picture, not after a container restart.
+ *
+ * This is deliberately shared with the assistant. Someone who switches to an
+ * anime checkpoint means "draw in this style" — having `generate_image` keep
+ * using the realistic one because it came in by voice would be absurd. The user
+ * picks the style; the assistant picks the subject.
+ */
+function savedModel(): string {
+  try {
+    const dir = process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache'
+    const raw = fs.readFileSync(path.join(dir, 'image-model.json'), 'utf8')
+    const v = (JSON.parse(raw) as { model?: string }).model
+    return typeof v === 'string' ? v.trim() : ''
+  } catch {
+    return ''            // never chosen, or unreadable — fall back to the env
+  }
+}
+
+/** The checkpoint currently in effect, by precedence. '' = whatever the workflow says. */
+export function selectedModel(): string {
+  return savedModel() || MODEL
+}
+
+/** Persist the user's checkpoint choice. Written atomically, like every other store. */
+export function setSelectedModel(model: string): void {
+  const dir = process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache'
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  const p = path.join(dir, 'image-model.json')
+  const tmp = `${p}.tmp-${process.pid}`
+  try {
+    fs.writeFileSync(tmp, JSON.stringify({ model }, null, 2), 'utf8')
+    fs.renameSync(tmp, p)
+    console.log(`[image] checkpoint set to ${model || '(workflow default)'}`)
+  } catch (err) {
+    try { fs.unlinkSync(tmp) } catch { /* nothing to clean up */ }
+    console.error('[image] failed to save checkpoint choice:', err)
+  }
+}
+
+/**
+ * Which checkpoints the server actually has installed.
+ *
+ * Asked of ComfyUI rather than listed off disk: ComfyUI is the one that knows
+ * where its models directory is, and it's the same list the graph is validated
+ * against — so a name from here can never come back as "value not in list".
+ */
+export async function listModels(): Promise<string[]> {
+  const res = await comfyFetch('/object_info/CheckpointLoaderSimple', undefined, 10_000)
+  if (!res.ok) throw new Error(`HTTP ${res.status} listing checkpoints`)
+  const j = await res.json() as Record<string, {
+    input?: { required?: { ckpt_name?: unknown[] } }
+  }>
+  const raw = j['CheckpointLoaderSimple']?.input?.required?.ckpt_name?.[0]
+  return Array.isArray(raw) ? raw.filter((n): n is string => typeof n === 'string') : []
+}
 
 // ── Disk ─────────────────────────────────────────────────────────────────────
 
@@ -91,6 +156,8 @@ export interface StoredImage {
   width:   number
   height:  number
   seed:    number
+  /** Checkpoint that drew it — the answer to "which model made that good one?". */
+  model?:  string
   /** ISO timestamp. */
   at:      string
 }
@@ -174,6 +241,8 @@ export interface ImageJob {
   width:    number
   height:   number
   seed:     number
+  /** Checkpoint this picture was drawn with. '' = the workflow's own. */
+  model:    string
   status:   JobStatus
   /** Human phrase for the overlay — "waiting for the GPU", "drawing"… */
   phase:    string
@@ -215,6 +284,7 @@ function wire(job: ImageJob) {
     width:    job.width,
     height:   job.height,
     seed:     job.seed,
+    model:    job.model,
     ...(job.file  ? { file: job.file, url: `/api/image/file/${job.file}` } : {}),
     ...(job.error ? { error: job.error } : {}),
     elapsedMs: (job.endedAt ?? Date.now()) - job.startedAt,
@@ -235,6 +305,8 @@ export interface ImageRequest {
   width?:    number
   height?:   number
   seed?:     number
+  /** Checkpoint override for this one picture. Omit to use the user's choice. */
+  model?:    string
 }
 
 const clampDim = (n: number, fallback: number): number => {
@@ -260,6 +332,10 @@ export function startImage(req: ImageRequest): ImageJob {
     // A fixed seed makes every image of "a cat" identical, which reads as the
     // feature being broken when someone asks twice.
     seed:      Number.isFinite(req.seed) ? Number(req.seed) : crypto.randomInt(0, 2 ** 31),
+    // Resolved at QUEUE time, not render time: the picture should be drawn with
+    // the model that was selected when it was asked for, even if the user
+    // switches checkpoints while it sits in the queue.
+    model:     (req.model ?? '').trim() || selectedModel(),
     status:    'queued',
     phase:     'waiting for the GPU',
     startedAt: Date.now(),
@@ -306,6 +382,7 @@ async function run(job: ImageJob): Promise<void> {
     remember({
       id: job.id, prompt: job.prompt, file,
       width: job.width, height: job.height, seed: job.seed,
+      ...(job.model ? { model: job.model } : {}),
       at: new Date().toISOString(),
     })
     console.log(
@@ -445,9 +522,9 @@ function buildGraph(job: ImageJob): ComfyGraph {
     graph[latentId]!.inputs['batch_size'] = 1
   }
 
-  if (MODEL) {
+  if (job.model) {
     const ckptId = findNode(graph, ['CheckpointLoaderSimple', 'CheckpointLoader'])
-    if (ckptId) graph[ckptId]!.inputs['ckpt_name'] = MODEL
+    if (ckptId) graph[ckptId]!.inputs['ckpt_name'] = job.model
   }
 
   // Without a SaveImage the render happens and produces nothing we can fetch —

@@ -18,6 +18,9 @@ import {
   imagesEnabled,
   jobWire,
   listImages,
+  listModels,
+  selectedModel,
+  setSelectedModel,
   startImage,
 } from '../image'
 
@@ -66,6 +69,56 @@ router.get('/file/:file', (req: Request, res: Response) => {
   fs.createReadStream(full).pipe(res)
 })
 
+// GET /api/image/models — which checkpoints are installed, and which is picked.
+//
+// Asked of ComfyUI live rather than configured, so the list is exactly what a
+// render can succeed with: drop a new .safetensors on the GPU box and it shows
+// up here without touching the dashboard.
+router.get('/models', async (_req: Request, res: Response) => {
+  if (!imagesEnabled()) {
+    res.status(503).json({ error: 'COMFYUI_URL is not set', models: [], selected: '' })
+    return
+  }
+  try {
+    const models = await listModels()
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ models, selected: selectedModel() })
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    console.warn('[image] listing checkpoints failed:', detail)
+    res.status(502).json({ error: detail, models: [], selected: selectedModel() })
+  }
+})
+
+// POST /api/image/model  { model }
+//
+// Persists the choice for EVERYONE — the Draw panel and the assistant's
+// generate_image both draw with it. Picking a checkpoint means "draw in this
+// style", and a style that only applied to typed requests would be a bug.
+router.post('/model', async (req: Request, res: Response) => {
+  const model = typeof (req.body as { model?: unknown })?.model === 'string'
+    ? (req.body as { model: string }).model.trim()
+    : ''
+
+  // '' is legitimate — it means "go back to whatever the workflow specifies".
+  // Anything else has to be a checkpoint ComfyUI actually has, or every later
+  // render fails with a "value not in list" that points nowhere near this route.
+  if (model) {
+    try {
+      const models = await listModels()
+      if (!models.includes(model)) {
+        res.status(400).json({ error: `no such checkpoint: ${model}`, models })
+        return
+      }
+    } catch (err) {
+      res.status(502).json({ error: err instanceof Error ? err.message : String(err) })
+      return
+    }
+  }
+  setSelectedModel(model)
+  res.json({ ok: true, selected: model })
+})
+
 // GET /api/image/job/:id — one job's state, for a client that reconnected.
 router.get('/job/:id', (req: Request, res: Response) => {
   const job = getJob(String(req.params['id'] ?? ''))
@@ -104,6 +157,7 @@ router.post('/generate', (req: Request, res: Response) => {
   }
   const job = startImage({
     prompt,
+    ...(typeof body?.['model'] === 'string' && body['model'] ? { model: body['model'] } : {}),
     ...(typeof body?.['negative'] === 'string' ? { negative: body['negative'] } : {}),
     ...(num('width')  !== undefined ? { width:  num('width')!  } : {}),
     ...(num('height') !== undefined ? { height: num('height')! } : {}),

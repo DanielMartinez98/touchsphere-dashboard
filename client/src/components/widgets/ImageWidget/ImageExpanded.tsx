@@ -11,7 +11,7 @@
 // second viewer, so a picture looks the same however it was asked for.
 
 import { useState } from 'react'
-import { Sparkles, Trash2, AlertTriangle } from 'lucide-react'
+import { Sparkles, Trash2, AlertTriangle, Check, Layers } from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
 import { openImage } from '../../../hooks/useImageOverlay'
 import type { Orientation, StoredImage } from '../../../hooks/useImages'
@@ -40,11 +40,36 @@ interface Props {
   busy:     boolean
   /** Phase text of the render in flight, if any — straight from the server. */
   phase:    string
+  /** Checkpoints installed on the GPU box. */
+  models:   string[]
+  /** The one in effect. '' = whatever the workflow specifies. */
+  model:    string
+  onModel:    (model: string) => void
   onGenerate: (prompt: string, orientation: Orientation) => void
   onDelete:   (id: string) => void
 }
 
-export default function ImageExpanded({ images, enabled, busy, phase, onGenerate, onDelete }: Props) {
+/**
+ * "animagine-xl-4.0.safetensors" → "Animagine Xl 4.0".
+ *
+ * Checkpoint filenames are the least readable thing in this panel and the user
+ * picked them by downloading, not by typing — so the list shows the name a
+ * person would recognise, with the raw filename kept only as the value.
+ */
+function pretty(file: string): string {
+  return file
+    .replace(/\.(safetensors|ckpt|sft)$/i, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ')
+}
+
+export default function ImageExpanded({
+  images, enabled, busy, phase, models, model, onModel, onGenerate, onDelete,
+}: Props) {
   const [prompt, setPrompt] = useState('')
   const [orientation, setOrientation] = useState<Orientation>('portrait')
   // Two-step delete. These take real time and GPU to make, so a stray fingertip
@@ -107,6 +132,47 @@ export default function ImageExpanded({ images, enabled, busy, phase, onGenerate
               {s}
             </button>
           ))}
+        </div>
+      )}
+
+      {/* ── Style / checkpoint ──
+          Above orientation because it matters more: the model decides whether
+          you get anime or photoreal, and swapping it is the difference between
+          "this isn't what I wanted" and one more tap. Only shown when there is
+          a choice to make — one installed checkpoint is not a decision. */}
+      {models.length > 1 && (
+        <div className="flex flex-col gap-2 shrink-0">
+          <span className="text-xs uppercase tracking-widest text-white/35 font-semibold flex items-center gap-1.5">
+            <Layers size={13} />
+            Style
+          </span>
+          {/* A horizontal scroller rather than a dropdown: a native <select> on a
+              kiosk opens an OS popup that TouchKio renders badly, and these are
+              a handful of options, not a hundred. */}
+          <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+            {models.map(m => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => onModel(m)}
+                className={`shrink-0 h-12 px-4 rounded-2xl text-[13px] font-semibold whitespace-nowrap
+                            flex items-center gap-2 transition-colors active:scale-95 ${
+                  model === m
+                    ? 'bg-pink-500/25 text-white border border-pink-400/40'
+                    : 'bg-white/5 text-white/50 border border-transparent'
+                }`}
+              >
+                {model === m && <Check size={15} />}
+                {pretty(m)}
+              </button>
+            ))}
+          </div>
+          {/* The first picture after a switch reloads the checkpoint into VRAM,
+              which is the 20s render. Saying so here stops it reading as a hang. */}
+          <span className="text-[11px] text-white/25 leading-snug">
+            Switching styles makes the next picture slower — the model has to load.
+            Applies to pictures you ask for out loud too.
+          </span>
         </div>
       )}
 

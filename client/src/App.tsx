@@ -68,6 +68,7 @@ function App() {
   const { items, nextItem, addItem, removeItem, markDone, toggleStar, setStatus, setCover, renameItem } = useMediaList()
   const {
     images, enabled: imagesEnabled, busy: imageBusy, phase: imagePhase,
+    models: imageModels, model: imageModel, setModel: setImageModel,
     generate: generateImage, remove: removeImage,
   } = useImages()
 
@@ -323,6 +324,9 @@ function App() {
             enabled={imagesEnabled}
             busy={imageBusy}
             phase={imagePhase}
+            models={imageModels}
+            model={imageModel}
+            onModel={setImageModel}
             onGenerate={drawImage}
             onDelete={removeImage}
           />

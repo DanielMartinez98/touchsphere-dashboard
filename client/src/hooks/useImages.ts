@@ -42,6 +42,11 @@ export function useImages() {
   // Draw button both read this, so a picture the assistant was asked for shows
   // as "Drawing…" in the corner too — one GPU, one queue, one busy flag.
   const [job, setJob] = useState<{ status: string; phase: string } | null>(null)
+  // Installed checkpoints and the one in effect. Asked of the server rather
+  // than configured here, because ComfyUI is the only thing that knows what is
+  // actually on the GPU box's disk.
+  const [models, setModels]       = useState<string[]>([])
+  const [model,  setModelState]   = useState('')
 
   const refresh = useCallback(async () => {
     try {
@@ -79,6 +84,55 @@ export function useImages() {
     return () => { cancelled = true }
   }, [])
 
+  const loadModels = useCallback(async () => {
+    try {
+      const res = await fetch('/api/image/models')
+      const j = await res.json() as { models?: string[]; selected?: string }
+      setModels(j.models ?? [])
+      setModelState(j.selected ?? '')
+    } catch (err) {
+      console.warn('[images] model list failed:', err)
+    }
+  }, [])
+
+  // Initial model list — inlined with a cancelled guard for the same reason as
+  // the gallery load above, rather than routed through loadModels().
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/image/models')
+      .then(r => r.json())
+      .then((j: { models?: string[]; selected?: string }) => {
+        if (cancelled) return
+        setModels(j.models ?? [])
+        setModelState(j.selected ?? '')
+      })
+      .catch(err => { if (!cancelled) console.warn('[images] model list failed:', err) })
+    return () => { cancelled = true }
+  }, [])
+
+  /**
+   * Switch checkpoints.
+   *
+   * Optimistic, then reconciled: the picker has to feel instant on a touchscreen,
+   * but the server validates the name against what ComfyUI actually has, so its
+   * answer wins. Nothing is drawn here — the choice applies to the next picture,
+   * from this panel or from the assistant.
+   */
+  const setModel = useCallback(async (next: string) => {
+    setModelState(next)
+    try {
+      const res = await fetch('/api/image/model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: next }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    } catch (err) {
+      console.warn('[images] setting model failed:', err)
+      void loadModels()          // put the real value back
+    }
+  }, [loadModels])
+
   // Retry while the image server is down.
   //
   // `enabled` was fetched exactly once at mount, which is wrong for a kiosk in
@@ -89,9 +143,9 @@ export function useImages() {
   // nobody. One small request every 30s, only while it is actually broken.
   useEffect(() => {
     if (enabled !== false) return
-    const t = setInterval(() => { void refresh() }, 30_000)
+    const t = setInterval(() => { void refresh(); void loadModels() }, 30_000)
     return () => clearInterval(t)
-  }, [enabled, refresh])
+  }, [enabled, refresh, loadModels])
 
   // Follow every render, from whichever source started it: phase frames drive
   // the busy state, and 'ready' additionally refetches the list.
@@ -153,5 +207,9 @@ export function useImages() {
 
   const busy = job?.status === 'queued' || job?.status === 'running'
 
-  return { images, enabled, loading, busy, phase: busy ? (job?.phase ?? '') : '', generate, remove, refresh }
+  return {
+    images, enabled, loading, busy, phase: busy ? (job?.phase ?? '') : '',
+    models, model, setModel,
+    generate, remove, refresh,
+  }
 }
