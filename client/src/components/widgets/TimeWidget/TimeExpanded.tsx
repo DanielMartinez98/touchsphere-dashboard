@@ -27,10 +27,20 @@ export default function TimeExpanded({ timers, stopwatch }: { timers?: TimersApi
   ]
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    // Natural height so Widget's wrapper is the only scroll container — see the
+    // note below. The tab bar stays reachable by being sticky rather than by
+    // pinning the panel to h-full, which clipped a long month instead of
+    // scrolling it.
+    <div className="flex flex-col">
       {/* pt-16 clears the grab handle and the close button, matching what each
           panel used to reserve for itself when it owned the whole screen. */}
-      <div className="flex gap-2 px-6 pt-16 pb-3 shrink-0">
+      <div
+        className="sticky top-0 z-10 flex gap-2 pt-16 pb-3 bg-black/95 backdrop-blur-xl"
+        style={{
+          paddingLeft:  'max(1.5rem, env(safe-area-inset-left))',
+          paddingRight: 'max(1.5rem, env(safe-area-inset-right))',
+        }}
+      >
         {TABS.map(t => (
           <button
             key={t.id}
@@ -51,10 +61,12 @@ export default function TimeExpanded({ timers, stopwatch }: { timers?: TimersApi
         ))}
       </div>
 
-      {/* min-h-0 so the panel below scrolls inside this column rather than
-          pushing the tab bar off the top. `nested` tells each panel not to
+      {/* No overflow of its own: Widget's wrapper is the single scroll container
+          for this whole panel. A nested scroller here meant a drag that started
+          on the calendar grid scrolled nothing, because the inner region was
+          already at its own scroll extent. `nested` tells each panel not to
           reserve room for the widget chrome — the tab bar above already did. */}
-      <div className="flex-1 min-h-0 overflow-auto">
+      <div style={{ paddingBottom: 'max(0px, env(safe-area-inset-bottom))' }}>
         {tab === 'clock'
           ? <WorldClock timers={timers} stopwatch={stopwatch} nested />
           : <CalendarExpanded nested />}

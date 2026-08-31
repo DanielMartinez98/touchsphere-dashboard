@@ -103,7 +103,7 @@ export default function WorldClock({ timers, stopwatch, nested = false }: { time
   const activeCount = (timers?.timers.length ?? 0) + (stopwatch?.running ? 1 : 0)
 
   return (
-    <div className={`flex flex-col h-full p-6 ${nested ? 'pt-2' : 'pt-16'} gap-4 overflow-y-auto`}>
+    <div className={`flex flex-col p-6 ${nested ? 'pt-2' : 'h-full pt-16 overflow-y-auto'} gap-4`}>
       {/* Top-level view switch — World Clock vs the timer tools. */}
       <div className="flex gap-2 self-start bg-white/5 rounded-2xl p-1">
         <button

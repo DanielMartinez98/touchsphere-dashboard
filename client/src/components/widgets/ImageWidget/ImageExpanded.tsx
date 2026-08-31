@@ -98,7 +98,19 @@ export default function ImageExpanded({
   }
 
   return (
-    <div className="flex flex-col h-full p-6 pt-16 gap-4">
+    // NATURAL HEIGHT, no h-full and no inner scroller. Widget already wraps this
+    // in `flex-1 min-h-0 overflow-auto`, so a second scroll container here left
+    // the outer one with nothing to scroll and made a drag anywhere except the
+    // gallery do nothing at all — the classic nested-scroll dead zone on touch.
+    // Padding is safe-area aware for a notched phone; env() is 0 on the kiosk.
+    <div
+      className="flex flex-col gap-4 pt-16"
+      style={{
+        paddingLeft:   'max(1rem, env(safe-area-inset-left))',
+        paddingRight:  'max(1rem, env(safe-area-inset-right))',
+        paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom))',
+      }}
+    >
       <div className="flex items-center gap-2 shrink-0">
         <Sparkles size={20} className="text-pink-300" />
         <h2 className="text-lg font-semibold text-white">Draw a picture</h2>
@@ -267,14 +279,18 @@ export default function ImageExpanded({
         )}
       </button>
 
-      {/* ── Gallery ── */}
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      {/* ── Gallery ──
+          Flows in the page rather than scrolling on its own; see the note on the
+          container above. Two columns on a phone, three from ~380px up, so a
+          thumbnail stays a comfortable tap target instead of shrinking with the
+          viewport. */}
+      <div>
         {images.length === 0 ? (
           <p className="text-[13px] text-white/30 text-center py-8">
             Nothing drawn yet. Pictures you make — here or by asking out loud — collect here.
           </p>
         ) : (
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 min-[380px]:grid-cols-3 gap-2">
             {images.map(img => (
               <div key={img.id} className="relative aspect-square">
                 <button
