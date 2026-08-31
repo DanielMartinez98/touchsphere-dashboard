@@ -404,7 +404,7 @@ export function SettingsPanel() {
       <button
         onClick={() => setOpen(true)}
         onPointerDown={gearPointerDown}
-        className="absolute bottom-5 left-[calc(50%-38px)] -translate-x-1/2 z-20 w-16 h-16 rounded-full bg-white/10 border-2 border-white/40 flex items-center justify-center text-white/70 hover:bg-white/20 hover:text-white active:scale-90 transition-all backdrop-blur-md shadow-lg overflow-hidden"
+        className="absolute bottom-3 sm:bottom-5 left-[calc(50%-30px)] sm:left-[calc(50%-38px)] -translate-x-1/2 z-20 w-12 h-12 sm:w-16 sm:h-16 rounded-full bg-white/10 border-2 border-white/40 flex items-center justify-center text-white/70 hover:bg-white/20 hover:text-white active:scale-90 transition-all backdrop-blur-md shadow-lg overflow-hidden"
         aria-label="Settings"
       >
         {gearRipple}

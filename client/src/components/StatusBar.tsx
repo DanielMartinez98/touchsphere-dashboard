@@ -125,11 +125,15 @@ export function StatusBar({ mode, hasCred, setMode, createPassword }: Props) {
       <button
         onClick={() => setStep(s => s === 'idle' ? 'picker' : 'idle')}
         onPointerDown={pillPointerDown}
-        className={`absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 px-7 py-3.5 rounded-full border-2 text-lg font-semibold backdrop-blur-md transition-colors active:scale-95 shadow-lg overflow-hidden ${MODE_COLORS[mode]}`}
+        className={`absolute top-2 sm:top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 sm:gap-3 px-3.5 py-2 sm:px-7 sm:py-3.5 rounded-full border-2 text-sm sm:text-lg font-semibold backdrop-blur-md transition-colors active:scale-95 shadow-lg overflow-hidden ${MODE_COLORS[mode]}`}
       >
         {pillRipple}
         {MODE_ICON[mode]}
-        <span className="tracking-wide">{MODE_LABEL[mode]}</span>
+        {/* Icon-only on a phone. The badge sits in the channel between the two
+            top corners, and at 390px wide there is only room there for the icon
+            plus the chevron — the colour and the glyph already say which mode
+            this is, and tapping opens a picker that spells all three out. */}
+        <span className="tracking-wide hidden sm:inline">{MODE_LABEL[mode]}</span>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
           <path d="M6 9l6 6 6-6" />
         </svg>

@@ -19,7 +19,7 @@ export function MicMuteButton() {
       onPointerDown={onPointerDown}
       aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
       aria-pressed={muted}
-      className={`absolute bottom-5 left-[calc(50%+38px)] -translate-x-1/2 z-20 w-16 h-16 rounded-full border-2 flex items-center justify-center active:scale-90 transition-all backdrop-blur-md shadow-lg overflow-hidden ${
+      className={`absolute bottom-3 sm:bottom-5 left-[calc(50%+30px)] sm:left-[calc(50%+38px)] -translate-x-1/2 z-20 w-12 h-12 sm:w-16 sm:h-16 rounded-full border-2 flex items-center justify-center active:scale-90 transition-all backdrop-blur-md shadow-lg overflow-hidden ${
         muted
           ? 'bg-red-500/25 border-red-400/60 text-red-200'
           : 'bg-white/10 border-white/40 text-white/70'

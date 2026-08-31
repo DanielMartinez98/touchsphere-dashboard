@@ -53,12 +53,27 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
 
   return (
     <div className={`absolute ${positionClasses[position]} z-10`}>
-      {/* Collapsed pill — always visible */}
+      {/*
+        Collapsed pill — always visible.
+
+        The width rule is the whole phone story. Two pills sit side by side with
+        the mode pill (top) or the gear + mic pair (bottom) between them, and on
+        a 390px iPhone the old 44vw/46vw left ~38px of centre channel for a
+        control that needs 150 — so the corners ran underneath it and the clock
+        read "1:58 PM" with its leading digit behind the Work badge.
+
+        `sm:` is the switch rather than a hand-rolled media query because the
+        720px kiosk and any iPad sit ABOVE the 640px breakpoint and keep the
+        exact 230/290px they have today, while only genuinely narrow screens get
+        the vw sizing. 34vw caps a phone pill at ~133px, which leaves a real
+        gutter down the middle for the centre controls to live in.
+      */}
       <motion.button
         onClick={onToggle}
         onPointerDown={onPointerDown}
         className={`
-          relative flex flex-col gap-1.5 p-5
+          relative flex flex-col gap-1.5 p-3.5 sm:p-5
+          min-w-[30vw] max-w-[34vw] sm:min-w-[230px] sm:max-w-[290px]
           bg-black/60 backdrop-blur-md border border-hairline
           rounded-3xl cursor-pointer active:scale-95
           transition-colors hover:bg-white/10
@@ -67,12 +82,6 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
           ${position.endsWith('right') ? 'rounded-r-none' : 'rounded-l-none'}
         `}
         style={{
-          // Two pills sit side by side, so each may take at most ~46% of the
-          // viewport or they collide. On the 720px kiosk min() picks the fixed
-          // px and nothing changes; on a 390px iPhone it picks the percentage
-          // and the corners stop overlapping across the middle of the screen.
-          minWidth: 'min(230px, 44vw)',
-          maxWidth: 'min(290px, 46vw)',
           // Hairline accent edge + one soft halo — calmer than a full neon bloom
           // but keeps each corner's colour identity.
           borderColor: accent ? `${accent}59` : undefined,

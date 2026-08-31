@@ -34,9 +34,14 @@ export function WeatherCollapsed() {
       <span className="text-sm text-ink-mid capitalize leading-tight">{weather.description}</span>
       <span className="text-[13px] text-ink-dim">{weather.city}, {weather.country}</span>
 
-      {/* Cloud altitude mini-bars — only shown when Open-Meteo data is available */}
+      {/* Cloud altitude mini-bars — only when Open-Meteo data is available, and
+          only on the kiosk. They are a glanceable detail for a screen read at
+          arm's length; on a phone they are three more rows of height on the
+          tallest pill of the four, which is what pushed this corner down over
+          the middle of the screen. `hidden sm:flex`, so the 720px kiosk and any
+          tablet keep them exactly as they are. */}
       {cSlot && (
-        <div className="flex flex-col gap-0.5 mt-1 w-full max-w-[120px]">
+        <div className="hidden sm:flex flex-col gap-0.5 mt-1 w-full max-w-[120px]">
           {[
             { label: 'H', value: cSlot.cloud_high, color: '#7dd3fc' },
             { label: 'M', value: cSlot.cloud_mid,  color: '#60a5fa' },
