@@ -79,6 +79,20 @@ export function useImages() {
     return () => { cancelled = true }
   }, [])
 
+  // Retry while the image server is down.
+  //
+  // `enabled` was fetched exactly once at mount, which is wrong for a kiosk in
+  // two ways that both really happen: the Pi boots at the same moment as the
+  // server and can win the race, and the GPU box gets switched on hours after
+  // the dashboard did. Either way the panel latched on "isn't reachable" and
+  // stayed there until someone reloaded — which on a kiosk with no keyboard is
+  // nobody. One small request every 30s, only while it is actually broken.
+  useEffect(() => {
+    if (enabled !== false) return
+    const t = setInterval(() => { void refresh() }, 30_000)
+    return () => clearInterval(t)
+  }, [enabled, refresh])
+
   // Follow every render, from whichever source started it: phase frames drive
   // the busy state, and 'ready' additionally refetches the list.
   useEffect(() => onServerEvent('image', data => {
