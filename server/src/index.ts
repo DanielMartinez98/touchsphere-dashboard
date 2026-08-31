@@ -23,6 +23,7 @@ import timersRouter from './routes/timers'
 import memoryRouter from './routes/memory'
 import artworkRouter from './routes/artwork'
 import guidesRouter from './routes/guides'
+import imageRouter from './routes/image'
 import { elevenLabsKeyState } from './config/keys'
 import { sweepInterrupted } from './guides'
 import { SEARCH_PROVIDER } from './research'
@@ -176,6 +177,9 @@ app.use('/api/notion', dataLimiter, notionRouter)
 app.use('/api/timers', dataLimiter, timersRouter)
 app.use('/api/memory', dataLimiter, memoryRouter)
 app.use('/api/guides', dataLimiter, guidesRouter)
+// Generated images: the gallery pulls a file per thumbnail, so this sits behind
+// the generous tile limiter rather than the 60/min data one, same as artwork.
+app.use('/api/image', tileLimiter, imageRouter)
 // Artwork is split across both limiters. Cached covers are served off local
 // disk and a full list fetches one per item, so they need the tile budget —
 // but /search calls TMDB/IGDB upstream, so it stays on the strict data budget

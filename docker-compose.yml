@@ -33,6 +33,14 @@ services:
       # docker-compose.voice.yml THERE instead. See that file for the steps.
       KOKORO_URL: ${KOKORO_URL:-http://kokoro:8880}
       RVC_URL: ${RVC_URL:-http://rvc:5050}
+      # ComfyUI image generation. NO default, unlike the two above: there is no
+      # local-voice-style sibling container to fall back to, because SDXL on this
+      # box's CPU is minutes per image. Unset = the assistant is simply never
+      # offered the generate_image tool, which is the honest outcome — there is
+      # no espeak for pictures. Point it at the GPU box (docker-compose.voice.yml
+      # runs ComfyUI there under the same `gpu` profile as Kokoro and RVC):
+      #   COMFYUI_URL=http://<gpu-box-ip>:8188
+      COMFYUI_URL: ${COMFYUI_URL:-}
     volumes:
       - touchsphere-cache:/data/cache   # persist cache across restarts
       # Avatar assets (Live2D model + Cubism runtime). Licensed files that are

@@ -32,6 +32,7 @@ import { Router, type Request, type Response } from 'express'
 import { DASHBOARD_TOOLS, MUTATING_TOOLS, TOOL_SLICE, runDashboardTool } from './dashboard-tools'
 import { BROWSE_TOOLS, runBrowseTool, type DisplayPayload } from './browse'
 import { GUIDE_VIEW_TOOLS, GUIDE_VIEW_MUTATING, runGuideViewTool } from './guide-view-tools'
+import { IMAGE_TOOLS, runImageTool } from './image-tools'
 import { addMemory, formatForPrompt as formatMemoryForPrompt } from '../memory'
 import {
   saveSession, updateSessionSummary, loadSession, scoreContinuation, sessionAgeMinutes,
@@ -191,7 +192,16 @@ const SYSTEM_PROMPT_BODY =
     : "For open_website, pass a url you are confident is real (e.g. a wikipedia.org article); pass a query only if you have none. ") +
   "Do NOT speak URLs out loud — say what you put on screen (\"Put a ten-minute knife-sharpening tutorial up for you\"), never the address. " +
   "If the user only wants a quick fact, just answer — don't open a window for it. " +
-  "One window at a time: a new open_website or play_video replaces whatever is on screen."
+  "One window at a time: a new open_website or play_video replaces whatever is on screen." +
+  // Only described when there is a renderer behind it. Describing a tool the
+  // model cannot call is how you get an assistant that offers to draw and then
+  // silently doesn't.
+  (IMAGE_TOOLS.length > 0
+    ? " DRAWING: generate_image invents a picture and puts it on screen — use it when they ask you to draw, " +
+      "paint, or imagine something, NOT to find a picture of something real (that is open_website). " +
+      "It takes a few seconds and fills in on screen by itself, so tell them it is coming and " +
+      "never describe the picture as if you had seen it. show_last_image puts an earlier one back up."
+    : "")
 
 // Compose the full system prompt for a given assistant: its personality up
 // front, then the shared behaviour/tool instructions.
@@ -291,8 +301,10 @@ const TURN_CONTROL_TOOLS = [
 
 // Dashboard + browsing tools are always exposed; web search/fetch layer on if
 // configured. (open_website / play_video do their own resolving, so they work
-// even without an Ollama web-search key.)
-const TOOLS = [...DASHBOARD_TOOLS, ...BROWSE_TOOLS, ...GUIDE_VIEW_TOOLS, ...TURN_CONTROL_TOOLS, ...WEB_TOOLS]
+// even without an Ollama web-search key.) IMAGE_TOOLS is empty unless COMFYUI_URL
+// is set — unlike TTS there is no fallback renderer, so a model that can see the
+// tool would promise a picture no configured box can draw.
+const TOOLS = [...DASHBOARD_TOOLS, ...BROWSE_TOOLS, ...GUIDE_VIEW_TOOLS, ...IMAGE_TOOLS, ...TURN_CONTROL_TOOLS, ...WEB_TOOLS]
 
 // ── Tool implementations ──────────────────────────────────────────────────
 async function runWebSearch(query: string): Promise<string> {
@@ -713,14 +725,20 @@ router.post('/', async (req: Request, res: Response) => {
         // Browsing and guide-view tools return a payload for the client alongside
         // the text the model reads, so they're dispatched here rather than in
         // runTool. Guide-view tools also mutate, so their slice is flagged too.
-        const browsed = (await runGuideViewTool(name, args)) ?? (await runBrowseTool(name, args))
+        const browsed = (await runGuideViewTool(name, args))
+          ?? (await runImageTool(name, args))
+          ?? (await runBrowseTool(name, args))
         if (browsed && GUIDE_VIEW_MUTATING.has(name) && !/^(There (is|are)|Which game|Every step|"|The guide)/.test(browsed.text)) {
           changed.add('guides')
         }
         if (browsed) {
           if (browsed.display) display = browsed.display
           const shown = browsed.display
-          console.log(`[chat:tool] ${name} → ${shown ? `${shown.kind}${'title' in shown ? ` "${shown.title.slice(0, 60)}"` : ''}` : 'no display'}`)
+          const label = !shown ? 'no display'
+            : 'title' in shown  ? `${shown.kind} "${shown.title.slice(0, 60)}"`
+            : 'prompt' in shown ? `${shown.kind} "${shown.prompt.slice(0, 60)}"`
+            : shown.kind
+          console.log(`[chat:tool] ${name} → ${label}`)
           messages.push({ role: 'tool', content: browsed.text, tool_name: name })
           continue
         }

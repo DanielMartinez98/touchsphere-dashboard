@@ -56,6 +56,11 @@ client/public/vrma/
 # the rvc container from the host, never committed. See docker/rvc/Dockerfile.
 /rvc-models/
 
+# ComfyUI's working directories on the GPU host — checkpoints (multi-GB), custom
+# nodes, and rendered output. Bind-mounted into the comfyui container by
+# docker-compose.voice.yml, same arrangement as /rvc-models above.
+/comfy/
+
 # Live2D Cubism Core — proprietary redistributable from Live2D Inc, fetched from
 # cubism.live2d.com. Not ours to commit. See:
 # https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html

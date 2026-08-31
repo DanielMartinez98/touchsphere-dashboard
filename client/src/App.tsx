@@ -29,6 +29,7 @@ import { BedtimeBanner } from './components/BedtimeBanner'
 import { TimersOverlay } from './components/TimersOverlay'
 import { BrowserOverlay } from './components/BrowserOverlay'
 import { GuideOverlay } from './components/GuideOverlay'
+import { ImageOverlay } from './components/ImageOverlay'
 import { openGuide } from './hooks/useGuideOverlay'
 import { useAutoMode } from './hooks/useAutoSchedule'
 import { useMuted } from './hooks/useMuted'
@@ -378,6 +379,10 @@ function App() {
       {/* Game guide — opened by a tap in the Watch/Play list or by the assistant
           (show_game_guide). Top-level so it can be up with every widget closed. */}
       <GuideOverlay />
+
+      {/* Above the browser window and the guide — a picture is the thing that
+          was just asked for, and it can be asked for while a video is playing. */}
+      <ImageOverlay />
 
       {/* Lock screen — covers everything when mode is 'locked' */}
       {mode === 'locked' && (

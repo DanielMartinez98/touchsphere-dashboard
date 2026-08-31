@@ -1912,6 +1912,10 @@ const CHECK_LABELS: { id: string; label: string }[] = [
   // list would notice — so it gets its own probe rather than being inferred
   // from a TTS test that quietly falls back to espeak and passes.
   { id: 'eleven',   label: 'ElevenLabs key (voice in/out)' },
+  // Image generation has no fallback renderer the way TTS has espeak, so "the
+  // GPU box is off" is the whole failure and there is nothing else in this list
+  // that would hint at it.
+  { id: 'comfy',    label: 'ComfyUI (image generation)' },
 ]
 
 const CONFIG_LABELS: Record<string, string> = {
@@ -2043,6 +2047,7 @@ function DebugTab() {
       { id: 'notion',   path: '/api/notion/tasks' },
       { id: 'device',   path: '/api/device' },
       { id: 'eleven',   path: '/api/system/check/elevenlabs' },
+      { id: 'comfy',    path: '/api/image/check' },
     ]
     await Promise.all(endpoints.map(async ep => {
       const { result, json } = await timedFetch(ep.path)
@@ -2051,6 +2056,12 @@ function DebugTab() {
       // clean pass, since the symptom is identical to a dead key.
       if (ep.id === 'eleven' && result.state === 'ok' && json?.quotaExhausted) {
         setChecks(prev => ({ ...prev, [ep.id]: { ...result, state: 'fail', detail: `quota exhausted (${json.charactersUsed}/${json.characterLimit} characters)` } }))
+        return
+      }
+      // The ComfyUI probe reports the card and its free VRAM. That's the number
+      // you want when a render fails, so keep it rather than a bare "ok".
+      if (ep.id === 'comfy' && result.state === 'ok' && typeof json?.detail === 'string') {
+        setChecks(prev => ({ ...prev, [ep.id]: { ...result, detail: json.detail } }))
         return
       }
       setChecks(prev => ({ ...prev, [ep.id]: result }))

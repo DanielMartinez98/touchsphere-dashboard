@@ -1,4 +1,4 @@
-# ── Remote voice pipeline (Kokoro TTS + RVC conversion) ──────────────────────
+# ── Remote GPU services (Kokoro TTS + RVC conversion + ComfyUI images) ───────
 # Run this on a machine that can afford the compute — typically the same box
 # that already runs Ollama. The dashboard app talks to these containers over
 # plain HTTP, so where they run is purely a .env decision:
@@ -13,6 +13,7 @@
 #   On the dashboard machine (.env):
 #     KOKORO_URL=http://<llm-box-ip>:8880
 #     RVC_URL=http://<llm-box-ip>:5050
+#     COMFYUI_URL=http://<llm-box-ip>:8188
 #     # then restart WITHOUT the local voice containers:
 #     docker compose up -d --remove-orphans
 #
@@ -21,7 +22,9 @@
 # that takes seconds per sentence on CPU is near-instant on CUDA.
 #
 # NOTE: these ports carry no authentication — anyone on the LAN can synthesise
-# audio through them. Fine for a home network; don't forward them past it.
+# audio or queue a render through them, and ComfyUI can additionally read and
+# write files inside its own container. Fine for a home network or a tailnet;
+# don't forward them past it.
 
 services:
   # ── Kokoro — neural TTS (says the words) ──────────────────────────────────
@@ -74,6 +77,46 @@ services:
       - "5050:5050"
     volumes:
       - ./rvc-models:/app/rvc_models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ── ComfyUI — image generation ────────────────────────────────────────────
+  # GPU ONLY, and deliberately so. There is no cpu-profile twin the way kokoro
+  # and rvc have one: SDXL on a CPU is minutes per image, which isn't a slower
+  # fallback, it's a hang. With no COMFYUI_URL set the dashboard simply doesn't
+  # offer the generate_image tool — see server/src/routes/image-tools.ts.
+  #
+  # Checkpoints live on THIS host under ./comfy/models (same arrangement as
+  # ./rvc-models): they're multi-gigabyte files that have no business in git or
+  # in an image, and they survive a rebuild here.
+  #
+  #   mkdir -p comfy/models/checkpoints
+  #   # drop a .safetensors in, e.g. SD 1.5 or an SDXL checkpoint
+  #
+  # Without a checkpoint ComfyUI starts fine and every render fails with
+  # "value not in list: ckpt_name" — which the dashboard surfaces verbatim in
+  # the frame rather than swallowing.
+  comfyui:
+    image: yanwk/comfyui-boot:cu126-slim
+    container_name: touchsphere-comfyui
+    profiles: ["gpu"]
+    restart: unless-stopped
+    ports:
+      - "8188:8188"
+    volumes:
+      - ./comfy/models:/root/ComfyUI/models
+      - ./comfy/output:/root/ComfyUI/output
+      - ./comfy/input:/root/ComfyUI/input
+      # NOTE: custom_nodes is deliberately NOT mounted. Bind-mounting an empty
+      # host directory over it would hide whatever the image ships there — the
+      # manager included — and the failure looks like ComfyUI simply forgetting
+      # its own nodes. Install custom nodes inside the container, or add the
+      # mount only once you have a directory whose contents you actually want.
     deploy:
       resources:
         reservations:
