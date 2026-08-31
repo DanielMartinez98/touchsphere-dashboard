@@ -57,7 +57,7 @@ export function useImageTarget() {
 // ── Following one render ─────────────────────────────────────────────────────
 
 export interface ImageJobState {
-  status:    'queued' | 'running' | 'ready' | 'failed'
+  status:    'queued' | 'running' | 'ready' | 'failed' | 'cancelled'
   /** Human phrase from the server — "loading the model", "drawing"… */
   phase:     string
   url?:      string

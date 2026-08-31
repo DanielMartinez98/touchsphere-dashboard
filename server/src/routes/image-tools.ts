@@ -12,7 +12,7 @@
 // all — and a model that can see a `generate_image` tool will cheerfully
 // promise a picture before discovering there's no GPU behind it.
 
-import { imagesEnabled, listImages, startImage, type ImageJob } from '../image'
+import { imagesEnabled, listImages, pendingJobs, startImage, type ImageJob } from '../image'
 import type { BrowseToolResult, DisplayPayload } from './browse'
 
 // ── Framing ──────────────────────────────────────────────────────────────────
@@ -99,14 +99,30 @@ function generate(prompt: string, orientation: string): BrowseToolResult {
   }
 
   const size = SIZES[orientation] ?? SIZES['portrait']!
+  // Pictures already waiting or drawing when this one was asked for. Counted
+  // BEFORE the call, so it is the number in front of the new job.
+  const ahead = pendingJobs().length
   const job: ImageJob = startImage({ prompt: prompt.trim(), width: size.width, height: size.height })
+
+  // startImage refuses rather than throws when the queue is full, and hands
+  // back an already-failed job. Nothing is coming, so there is no frame worth
+  // putting on screen — say why instead.
+  if (job.status === 'failed') {
+    return noDisplay(
+      `Could not start that picture: ${job.error ?? 'the render queue is full'}. ` +
+      `Tell the user in one sentence and offer to draw it once the ones already going have finished.`,
+    )
+  }
 
   const display: DisplayPayload = {
     kind:   'image',
     jobId:  job.id,
     prompt: job.prompt,
   }
-  console.log(`[chat:tool] generate_image → ${job.id} (${orientation || 'portrait'})`)
+  console.log(
+    `[chat:tool] generate_image → ${job.id} (${orientation || 'portrait'})` +
+    `${ahead > 0 ? ` behind ${ahead}` : ''}`,
+  )
 
   return {
     // The frame is already on screen with a progress state in it, so the one
@@ -114,6 +130,13 @@ function generate(prompt: string, orientation: string): BrowseToolResult {
     text:
       `Started drawing "${job.prompt}". A frame is already on the user's screen and the picture ` +
       `will appear in it by itself when it is done, usually in a few seconds. ` +
+      (ahead > 0
+        // Renders are drawn one at a time, so a picture asked for while another
+        // is going is genuinely later than usual — saying "a few seconds" then
+        // would be a promise the GPU can't keep.
+        ? `It is QUEUED behind ${ahead} other picture${ahead === 1 ? '' : 's'}, so mention that it is ` +
+          `in the queue and will take a little longer. `
+        : '') +
       `Say ONE short sentence telling them it's coming — do not describe the picture, ` +
       `you have not seen it, and do not say it is ready.`,
     display,

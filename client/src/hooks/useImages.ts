@@ -25,6 +25,31 @@ export interface StoredImage {
 
 export type Orientation = 'portrait' | 'landscape' | 'square'
 
+export type JobStatus = 'queued' | 'running' | 'ready' | 'failed' | 'cancelled'
+
+/**
+ * One render waiting or in flight.
+ *
+ * The client keeps its own copy of the queue rather than asking for it: the
+ * server pushes a frame whenever ONE job changes, and re-fetching the whole
+ * list on every phase tick would be a request every couple of seconds on a Pi.
+ * `queuedAt` is what the order is rebuilt from — see the note on the server's
+ * wire() for why a position can't just be sent.
+ */
+export interface QueuedJob {
+  id:       string
+  prompt:   string
+  status:   JobStatus
+  /** The server's own words — "loading the model", "drawing", "saving". */
+  phase:    string
+  width:    number
+  height:   number
+  queuedAt: number
+}
+
+/** Mirrors MAX_QUEUED in server/src/image.ts; the server's own answer wins. */
+export const DEFAULT_QUEUE_MAX = 8
+
 export interface ImageStyle {
   /** Checkpoint filename, or `wf:<id>` for a whole-workflow style. */
   id:    string
@@ -139,10 +164,16 @@ export function useImages() {
   const [images,  setImages]  = useState<StoredImage[]>([])
   const [enabled, setEnabled] = useState<boolean | null>(null)   // null = not asked yet
   const [loading, setLoading] = useState(true)
-  // Whatever is rendering right now, from ANY source. The collapsed pill and the
-  // Draw button both read this, so a picture the assistant was asked for shows
-  // as "Drawing…" in the corner too — one GPU, one queue, one busy flag.
-  const [job, setJob] = useState<{ status: string; phase: string } | null>(null)
+  // Everything waiting or drawing, from ANY source — asked for here or out
+  // loud. One GPU, one queue: the collapsed pill, the Draw button and the queue
+  // strip all read this, so a picture the assistant was asked for takes its
+  // place in the same line as one that was typed.
+  const [queue,    setQueue]    = useState<QueuedJob[]>([])
+  const [queueMax, setQueueMax] = useState(DEFAULT_QUEUE_MAX)
+  // Why the last attempt to queue something didn't take. Shown under the Draw
+  // button rather than logged: a full queue is a thing the person tapping needs
+  // to read, and it was previously visible only in the console.
+  const [drawError, setDrawError] = useState('')
   // Installed checkpoints and the one in effect. Asked of the server rather
   // than configured here, because ComfyUI is the only thing that knows what is
   // actually on the GPU box's disk.
@@ -362,33 +393,46 @@ export function useImages() {
     return () => clearInterval(t)
   }, [enabled, refresh, loadModels])
 
-  // Follow every render, from whichever source started it: phase frames drive
-  // the busy state, and 'ready' additionally refetches the list.
+  // Follow every render, from whichever source started it. A frame either puts
+  // a job into the queue (queued/running) or takes it out (ready/failed/
+  // cancelled); 'ready' additionally refetches the gallery.
   useEffect(() => onServerEvent('image', data => {
-    const d = data as Record<string, unknown> | null
-    const status = typeof d?.['status'] === 'string' ? d['status'] : ''
-    if (!status) return
-    setJob({ status, phase: typeof d?.['phase'] === 'string' ? d['phase'] : '' })
-    if (status === 'ready') void refresh()
+    const job = frameToJob(data)
+    if (!job) return
+    setQueue(prev => mergeJob(prev, job))
+    if (job.status === 'ready') void refresh()
   }), [refresh])
 
-  // Catch up on a render already in flight when the dashboard loads or the
+  // Catch up on renders already in flight when the dashboard loads or the
   // widget mounts — SSE only carries what happens from now on, and a Pi that
   // reloaded mid-render would otherwise show an idle corner over a busy GPU.
   useEffect(() => {
     let cancelled = false
-    fetch('/api/image/active')
+    fetch('/api/image/queue')
       .then(r => (r.ok ? r.json() : null))
-      .then((j: { status?: string; phase?: string } | null) => {
-        if (!cancelled && j?.status) setJob({ status: j.status, phase: j.phase ?? '' })
+      .then((j: { max?: number; jobs?: unknown[] } | null) => {
+        if (cancelled || !j) return
+        if (typeof j.max === 'number' && j.max > 0) setQueueMax(j.max)
+        const seeded = (j.jobs ?? []).map(frameToJob).filter((x): x is QueuedJob => x !== null)
+        // Merged rather than assigned: a frame can land between the request and
+        // its answer, and this list is the older of the two.
+        setQueue(prev => seeded.reduce(mergeJob, prev))
       })
       .catch(() => { /* offline server; the pill already says so via `enabled` */ })
     return () => { cancelled = true }
   }, [])
 
-  /** Queue a render. Returns the new job id, or null if the server refused. */
+  /**
+   * Queue a render. Returns the new job id, or null if the server refused.
+   *
+   * Several may be in flight; the server draws them one at a time. The answer is
+   * merged into the queue here rather than waiting for its SSE frame — the two
+   * race, and on a touchscreen a tap that appears to do nothing for half a
+   * second reads as a tap that missed.
+   */
   const generate = useCallback(async (prompt: string, orientation: Orientation): Promise<string | null> => {
     const size = SIZES[orientation]
+    setDrawError('')
     try {
       const res = await fetch('/api/image/generate', {
         method: 'POST',
@@ -400,10 +444,36 @@ export function useImages() {
         throw new Error(j.error ?? `HTTP ${res.status}`)
       }
       const j = await res.json() as { id: string }
+      const job = frameToJob(j)
+      if (job) setQueue(prev => mergeJob(prev, job))
       return j.id
     } catch (err) {
       console.error('[images] generate failed:', err)
+      setDrawError(err instanceof Error ? err.message : 'could not start that picture')
       return null
+    }
+  }, [])
+
+  /**
+   * Drop a queued render.
+   *
+   * Optimistic, like the gallery's delete: the row is the user's own tap. Only a
+   * job that hasn't started can go — the server answers 409 for the one already
+   * on the GPU — so a refused cancel re-reads the queue and puts the row back
+   * rather than leaving the list lying about what is coming.
+   */
+  const cancel = useCallback(async (id: string) => {
+    setQueue(prev => prev.filter(j => j.id !== id))
+    try {
+      const res = await fetch(`/api/image/job/${id}/cancel`, { method: 'POST' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    } catch (err) {
+      console.warn('[images] cancel failed:', err)
+      try {
+        const r = await fetch('/api/image/queue')
+        const j = await r.json() as { jobs?: unknown[] }
+        setQueue((j.jobs ?? []).map(frameToJob).filter((x): x is QueuedJob => x !== null))
+      } catch { /* offline — the next SSE frame will straighten the list out */ }
     }
   }, [])
 
@@ -420,15 +490,53 @@ export function useImages() {
     }
   }, [refresh])
 
-  const busy = job?.status === 'queued' || job?.status === 'running'
+  const busy = queue.length > 0
+  // The head of the queue is the one on the GPU — pendingJobs() on the server is
+  // in draw order and mergeJob preserves it. Falling back to [0] covers the
+  // moment between a job being queued and run() marking it 'running'.
+  const drawing = queue.find(j => j.status === 'running') ?? queue[0]
 
   return {
-    images, enabled, loading, busy, phase: busy ? (job?.phase ?? '') : '',
+    images, enabled, loading, busy, phase: drawing?.phase ?? '',
+    queue, queueMax, queueFull: queue.length >= queueMax, drawError, cancel,
     styles, model, setModel,
     quality, setQuality,
     params, defaults, loras, autoLora, setParams, resetParams,
     generate, remove, refresh,
   }
+}
+
+// -- Queue bookkeeping ------------------------------------------------------
+
+/** One `image` frame (or a /queue entry, or a POST answer) as a queue row. */
+function frameToJob(data: unknown): QueuedJob | null {
+  const d = data as Record<string, unknown> | null
+  if (!d || typeof d['id'] !== 'string' || typeof d['status'] !== 'string') return null
+  return {
+    id:       d['id'],
+    prompt:   typeof d['prompt'] === 'string' ? d['prompt'] : '',
+    status:   d['status'] as JobStatus,
+    phase:    typeof d['phase'] === 'string' ? d['phase'] : '',
+    width:    typeof d['width']  === 'number' ? d['width']  : 0,
+    height:   typeof d['height'] === 'number' ? d['height'] : 0,
+    // A server that predates the queue sends no queuedAt. Falling back to now
+    // puts such a job at the end of the list rather than dropping it.
+    queuedAt: typeof d['queuedAt'] === 'number' ? d['queuedAt'] : Date.now(),
+  }
+}
+
+/**
+ * Fold one job into the queue.
+ *
+ * Anything finished (ready, failed, cancelled) leaves the list — the gallery is
+ * where a finished picture lives, and a failure has already been reported to
+ * whoever asked for it. Everything else is upserted and the list re-ordered by
+ * `queuedAt`, which is the order the server will draw them in.
+ */
+function mergeJob(list: QueuedJob[], job: QueuedJob): QueuedJob[] {
+  const without = list.filter(j => j.id !== job.id)
+  if (job.status !== 'queued' && job.status !== 'running') return without
+  return [...without, job].sort((a, b) => a.queuedAt - b.queuedAt)
 }
 
 /**

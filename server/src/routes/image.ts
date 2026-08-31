@@ -10,6 +10,7 @@ import { Router, Request, Response } from 'express'
 import fs from 'fs'
 import {
   activeJob,
+  cancelJob,
   comfyStats,
   comfyUrl,
   forgetImage,
@@ -21,6 +22,8 @@ import {
   listLoras,
   listModels,
   listWorkflowStyles,
+  MAX_QUEUED,
+  pendingJobs,
   pickLora,
   QUALITY_STEPS,
   selectedModel,
@@ -244,6 +247,36 @@ router.get('/active', (_req: Request, res: Response) => {
   res.json(job ? jobWire(job) : null)
 })
 
+// GET /api/image/queue — everything waiting or drawing, in order.
+//
+// The catch-up half of the queue, for the same reason /active was: SSE only
+// carries what happens from now on, so a panel opened while four renders are
+// stacked up would show an empty list and a busy GPU. The client keeps its own
+// copy from `image` frames after this.
+router.get('/queue', (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store')
+  res.json({ max: MAX_QUEUED, jobs: pendingJobs().map(jobWire) })
+})
+
+// POST /api/image/job/:id/cancel — drop one render that hasn't started.
+//
+// 409 rather than 404 when the job exists but is already drawing or done: those
+// are different problems for the caller, and "no such job" would send someone
+// looking for a bug that isn't there.
+router.post('/job/:id/cancel', (req: Request, res: Response) => {
+  const id = String(req.params['id'] ?? '')
+  const job = cancelJob(id)
+  if (job) {
+    res.json({ ok: true, job: jobWire(job) })
+    return
+  }
+  if (getJob(id)) {
+    res.status(409).json({ error: 'that picture is already being drawn — it can only be deleted after' })
+    return
+  }
+  res.status(404).json({ error: 'no such job' })
+})
+
 // POST /api/image/generate  { prompt, negative?, width?, height?, seed? }
 // Returns the queued job — NOT the finished image. Renders take seconds to
 // minutes and holding the request open for that would tie up the Pi's socket
@@ -251,6 +284,15 @@ router.get('/active', (_req: Request, res: Response) => {
 router.post('/generate', (req: Request, res: Response) => {
   if (!imagesEnabled()) {
     res.status(503).json({ error: 'COMFYUI_URL is not set — no image server is configured' })
+    return
+  }
+  // Checked here as well as in startImage() so the panel gets a status it can
+  // act on — the tap half shows this text under the button, where the person
+  // who just tapped is looking, rather than opening a frame that says it failed.
+  if (pendingJobs().length >= MAX_QUEUED) {
+    res.status(429).json({
+      error: `The queue is full — ${MAX_QUEUED} pictures are already waiting. Let one finish first.`,
+    })
     return
   }
   const body = req.body as Record<string, unknown> | undefined

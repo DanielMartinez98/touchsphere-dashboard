@@ -9,13 +9,15 @@ import { ImageIcon, Sparkles } from 'lucide-react'
 import type { StoredImage } from '../../../hooks/useImages'
 
 export function ImageCollapsed({
-  images, enabled, busy,
+  images, enabled, busy, queued,
 }: {
   images:  StoredImage[]
   /** null while we haven't asked the server yet — don't claim it's off. */
   enabled: boolean | null
   /** A render is in flight, started from here or from the assistant. */
   busy:    boolean
+  /** How many are waiting BEHIND the one being drawn. 0 = just the one. */
+  queued:  number
 }) {
   const last = images[0]
 
@@ -37,6 +39,12 @@ export function ImageCollapsed({
         <span className="flex items-center gap-1.5 text-pink-300 text-[13px]">
           <Sparkles size={14} className="animate-pulse" />
           Drawing…
+          {/* The count is the whole reason the corner is worth reading while
+              busy: "still going" and "still going, four to come" are different
+              answers to the only question someone walking past has. */}
+          {queued > 0 && (
+            <span className="text-white/45 tabular-nums">+{queued} queued</span>
+          )}
         </span>
       ) : last ? (
         <div className="flex items-center gap-2 w-full">

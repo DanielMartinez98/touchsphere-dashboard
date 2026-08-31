@@ -328,7 +328,7 @@ export function imagePath(file: string): string | null {
 
 // ── Jobs ─────────────────────────────────────────────────────────────────────
 
-export type JobStatus = 'queued' | 'running' | 'ready' | 'failed'
+export type JobStatus = 'queued' | 'running' | 'ready' | 'failed' | 'cancelled'
 
 export interface ImageJob {
   id:       string
@@ -352,6 +352,8 @@ export interface ImageJob {
   status:   JobStatus
   /** Human phrase for the overlay — "waiting for the GPU", "drawing"… */
   phase:    string
+  /** When it was asked for. Distinct from startedAt, which run() resets. */
+  queuedAt: number
   /** Set once status is 'ready'. Serve via /api/image/file/<file>. */
   file?:    string
   error?:   string
@@ -363,6 +365,20 @@ const jobs = new Map<string, ImageJob>()
 // Serialized, not parallel — see the header. Same shape as guide-generator's.
 let queue: Promise<void> = Promise.resolve()
 
+// How many renders may be waiting at once.
+//
+// The queue exists because asking for four pictures is one thought, and making
+// someone stand at the kiosk for ninety seconds between them isn't a design,
+// it's a missing feature. The cap exists because the other failure is a queue
+// nobody can see the end of: eight high-quality renders is already ten minutes
+// of GPU, which is longer than anyone stands in a hallway.
+const MAX_QUEUED = 8
+
+// Finished jobs are kept so a reopened overlay can still find out how one ended,
+// but not forever — this is a Map in a process that runs for months, and the
+// queue makes entries arrive in bursts. Well past what any UI asks for.
+const MAX_TRACKED_JOBS = 40
+
 // A rolling memory of how long renders actually take on THIS box, so the
 // overlay can show a real estimate instead of a spinner with no end in sight.
 // Seeded at zero: with no history the UI just shows elapsed time.
@@ -372,12 +388,62 @@ export function getJob(id: string): ImageJob | undefined {
   return jobs.get(id)
 }
 
+/**
+ * Everything waiting or drawing, in the order it will be drawn.
+ *
+ * The Map's insertion order IS the queue order — the same order the promise
+ * chain in startImage() was built in — so nothing here needs to sort.
+ */
+export function pendingJobs(): ImageJob[] {
+  return [...jobs.values()].filter(j => j.status === 'queued' || j.status === 'running')
+}
+
+/** How many more renders may be queued right now. */
+export function queueSpace(): number {
+  return Math.max(0, MAX_QUEUED - pendingJobs().length)
+}
+
+export { MAX_QUEUED }
+
 /** The job currently queued or drawing, if any. Drives the overlay on reconnect. */
 export function activeJob(): ImageJob | undefined {
-  for (const j of jobs.values()) {
-    if (j.status === 'queued' || j.status === 'running') return j
+  return pendingJobs()[0]
+}
+
+/**
+ * Drop a job that hasn't started yet.
+ *
+ * Only a QUEUED one. A running render is already on the GPU, and ComfyUI's
+ * /interrupt would abandon a picture that is usually seconds from existing —
+ * the thing worth being able to undo is the four you queued behind it, which is
+ * exactly what a mis-tap on "Draw it" produces.
+ *
+ * The promise chain was built when the job was queued and can't be unlinked, so
+ * this only marks it; run() checks the mark and returns without drawing.
+ */
+export function cancelJob(id: string): ImageJob | undefined {
+  const job = jobs.get(id)
+  if (!job || job.status !== 'queued') return undefined
+  job.status = 'cancelled'
+  job.endedAt = Date.now()
+  console.log(`[image] cancelled ${job.id} "${job.prompt.slice(0, 60)}"`)
+  push(job, 'cancelled')
+  return job
+}
+
+/**
+ * Forget old finished jobs.
+ *
+ * Never touches anything queued or running, and walks oldest-first because the
+ * Map is in insertion order — so what goes is what nobody is still looking at.
+ */
+function pruneJobs(): void {
+  if (jobs.size <= MAX_TRACKED_JOBS) return
+  for (const [id, j] of jobs) {
+    if (jobs.size <= MAX_TRACKED_JOBS) break
+    if (j.status === 'queued' || j.status === 'running') continue
+    jobs.delete(id)
   }
-  return undefined
 }
 
 /** What a job looks like on the wire — jobs and stored images share a shape. */
@@ -396,6 +462,10 @@ function wire(job: ImageJob) {
     ...(job.lora ? { lora: job.lora, loraStrength: job.loraStrength } : {}),
     ...(job.file  ? { file: job.file, url: `/api/image/file/${job.file}` } : {}),
     ...(job.error ? { error: job.error } : {}),
+    // The client orders its own copy of the queue by this. Position can't be
+    // sent instead: a frame is pushed when ONE job changes, and every other
+    // job's position moves when the one in front of it finishes.
+    queuedAt: job.queuedAt,
     elapsedMs: (job.endedAt ?? Date.now()) - job.startedAt,
     // Zero until this server has finished one render. The client shows elapsed
     // only in that case rather than inventing a percentage.
@@ -479,6 +549,13 @@ function nextSeed(style: string, p: ImageParams): number {
  * Never throws and never waits: the caller is usually a chat tool with a person
  * waiting to be spoken to. Everything after this point is reported over SSE and
  * readable from GET /api/image/job/:id.
+ *
+ * Several may be in flight at once from here — they are drawn one at a time
+ * (two SDXL renders on one card thrash VRAM rather than going twice as fast),
+ * but asking for four in a row is one thought and shouldn't need four visits to
+ * the kiosk. A full queue comes back as a job that is already `failed` rather
+ * than as a throw, so both callers — the REST route and the chat tool — get one
+ * shape back and neither has to grow an error path of its own.
  */
 export function startImage(req: ImageRequest): ImageJob {
   // Resolved at QUEUE time, not render time: the picture should be drawn with
@@ -526,15 +603,30 @@ export function startImage(req: ImageRequest): ImageJob {
     loraStrength: p.loraStrength,
     status:    'queued',
     phase:     'waiting for the GPU',
+    queuedAt:  Date.now(),
     startedAt: Date.now(),
   }
   jobs.set(job.id, job)
+
+  // Refused, not enqueued — but still a real job with a real id, so whoever
+  // asked gets the reason on the same channel every other outcome arrives on.
+  const waiting = pendingJobs().length - 1
+  if (waiting >= MAX_QUEUED) {
+    job.status = 'failed'
+    job.error = `the render queue is full (${MAX_QUEUED} waiting) — let one finish first`
+    job.endedAt = Date.now()
+    console.warn(`[image] refused ${job.id}: queue full`)
+    push(job, 'failed')
+    return job
+  }
+
+  pruneJobs()
   console.log(
     `[image] queued ${job.id} "${job.prompt.slice(0, 60)}" ${job.width}×${job.height} ` +
     `seed=${job.seed} steps=${job.steps || 'graph'} cfg=${job.cfg || 'graph'}` +
-    `${job.turbo ? ' turbo' : ''}`,
+    `${job.turbo ? ' turbo' : ''}${waiting > 0 ? ` (${waiting} ahead of it)` : ''}`,
   )
-  push(job)
+  push(job, waiting > 0 ? `waiting behind ${waiting} more` : 'waiting for the GPU')
 
   queue = queue.then(() => run(job)).catch(err => {
     // run() handles its own failures; this only catches a bug in run() itself,
@@ -545,6 +637,10 @@ export function startImage(req: ImageRequest): ImageJob {
 }
 
 async function run(job: ImageJob): Promise<void> {
+  // Dropped while it waited. cancelJob() can only mark the job — its link in
+  // the promise chain was forged when it was queued — so the chain still calls
+  // us and this is where the mark is honoured.
+  if (job.status === 'cancelled') return
   if (!COMFY_URL) {
     return fail(job, 'COMFYUI_URL is not set — no image server is configured')
   }

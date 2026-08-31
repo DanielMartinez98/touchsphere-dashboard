@@ -36,7 +36,14 @@ export function ImageOverlay() {
   const job = useImageJob(target?.jobId ?? null, done)
 
   const url = target?.url ?? job?.url
-  const failed = job?.status === 'failed'
+  // Taken out of the queue before it started. Not an error — nothing went wrong
+  // — but the frame must stop pretending a picture is coming, and "try again"
+  // is exactly the right offer, since re-queueing is what undoes it.
+  const cancelled = job?.status === 'cancelled'
+  const failed = job?.status === 'failed' || cancelled
+  // Queued behind other renders. Worth its own state: the phase text and the
+  // progress bar are both about a render that has not begun.
+  const waiting = job?.status === 'queued'
 
   const retry = useCallback(() => {
     if (!target) return
@@ -79,7 +86,11 @@ export function ImageOverlay() {
         <div className="flex items-start gap-3 px-4 pt-4 pb-3 shrink-0">
           <div className="min-w-0 flex-1">
             <p className="text-[11px] uppercase tracking-widest text-white/35 font-semibold mb-1">
-              {failed ? 'Could not draw this' : url ? 'Generated image' : 'Drawing'}
+              {cancelled ? 'Taken out of the queue'
+                : failed  ? 'Could not draw this'
+                : url     ? 'Generated image'
+                : waiting ? 'In the queue'
+                : 'Drawing'}
             </p>
             {/* The prompt is the caption. It's the only thing that identifies one
                 picture from another later, and the model expands what the user
@@ -101,9 +112,14 @@ export function ImageOverlay() {
               className="max-w-full max-h-full object-contain rounded-2xl"
             />
           ) : failed ? (
-            <Failed message={job?.error ?? 'the render failed'} onRetry={retry} />
+            <Failed
+              message={cancelled
+                ? 'You took this one out of the queue before it started.'
+                : job?.error ?? 'the render failed'}
+              onRetry={retry}
+            />
           ) : (
-            <Drawing phase={job?.phase ?? 'starting'} etaMs={job?.etaMs ?? 0} />
+            <Drawing phase={job?.phase ?? 'starting'} etaMs={job?.etaMs ?? 0} waiting={waiting} />
           )}
         </div>
       </div>
@@ -136,19 +152,30 @@ function CloseImageButton({ onClick }: { onClick: () => void }) {
  * full because a bar that sits at 100% while nothing happens is worse than no
  * bar. With no history (the first render after a restart, which is also the
  * slowest, because the checkpoint has to load) we show the seconds and say so.
+ *
+ * `waiting` — queued behind other renders — takes the bar away entirely. There
+ * is nothing to measure against: how long this picture waits depends on the
+ * ones in front of it, and an elapsed-vs-eta bar would fill to 95% while the
+ * GPU had not yet touched it.
  */
-function Drawing({ phase, etaMs }: { phase: string; etaMs: number }) {
+function Drawing({ phase, etaMs, waiting }: { phase: string; etaMs: number; waiting: boolean }) {
   const [elapsed, setElapsed] = useState(0)
 
   // SSE frames only arrive on phase changes, which can be twenty seconds apart.
   // The seconds have to tick locally or the screen looks frozen.
+  //
+  // Restarted when the render actually begins, which is what keeps the estimate
+  // truthful for a queued picture: the minute it spent in the line is not part
+  // of how long it takes to draw.
   useEffect(() => {
     const started = Date.now()
+    // No setElapsed(0) here: the next tick is 250ms away and re-zeroing from
+    // inside an effect is a cascading render for a quarter-second of staleness.
     const t = setInterval(() => setElapsed(Date.now() - started), 250)
     return () => clearInterval(t)
-  }, [])
+  }, [waiting])
 
-  const pct = etaMs > 0 ? Math.min(95, (elapsed / etaMs) * 100) : null
+  const pct = !waiting && etaMs > 0 ? Math.min(95, (elapsed / etaMs) * 100) : null
 
   return (
     <div className="w-full max-w-[420px] flex flex-col items-center gap-4">
@@ -159,12 +186,16 @@ function Drawing({ phase, etaMs }: { phase: string; etaMs: number }) {
                  style={{ width: `${pct}%` }} />}
       </div>
       <div className="text-center">
-        <p className="text-sm text-white/70 capitalize">{phase}</p>
+        <p className="text-sm text-white/70 capitalize">
+          {waiting ? (phase || 'waiting for the GPU') : phase}
+        </p>
         <p className="text-xs text-white/35 mt-1 tabular-nums">
           {(elapsed / 1000).toFixed(0)}s
-          {etaMs > 0
-            ? ` · usually about ${(etaMs / 1000).toFixed(0)}s`
-            : ' · first picture since a restart takes longer'}
+          {waiting
+            ? ' · pictures are drawn one at a time'
+            : etaMs > 0
+              ? ` · usually about ${(etaMs / 1000).toFixed(0)}s`
+              : ' · first picture since a restart takes longer'}
         </p>
       </div>
     </div>

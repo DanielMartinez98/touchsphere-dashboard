@@ -67,12 +67,14 @@ function App() {
   const toggle = (w: OpenWidget) => setOpen(prev => prev === w ? null : w)
   const { items, nextItem, addItem, removeItem, markDone, toggleStar, setStatus, setCover, renameItem } = useMediaList()
   const {
-    images, enabled: imagesEnabled, busy: imageBusy, phase: imagePhase,
+    images, enabled: imagesEnabled, busy: imageBusy,
     styles: imageStyles, model: imageModel, setModel: setImageModel,
     quality: imageQuality, setQuality: setImageQuality,
     params: imageParams, defaults: imageDefaults, loras: imageLoras,
     autoLora: imageAutoLora, setParams: setImageParams, resetParams: resetImageParams,
     generate: generateImage, remove: removeImage,
+    queue: imageQueue, queueMax: imageQueueMax, drawError: imageDrawError,
+    cancel: cancelImage,
   } = useImages()
 
   // Drawing from the widget opens the same full-screen frame the assistant's
@@ -324,13 +326,22 @@ function App() {
         accent={ACCENT.images}
         isOpen={open === 'images'}
         onToggle={() => toggle('images')}
-        collapsed={<ImageCollapsed images={images} enabled={imagesEnabled} busy={imageBusy} />}
+        collapsed={
+          <ImageCollapsed
+            images={images}
+            enabled={imagesEnabled}
+            busy={imageBusy}
+            queued={Math.max(0, imageQueue.length - 1)}
+          />
+        }
         expanded={
           <ImageExpanded
             images={images}
             enabled={imagesEnabled}
             busy={imageBusy}
-            phase={imagePhase}
+            queue={imageQueue}
+            queueMax={imageQueueMax}
+            drawError={imageDrawError}
             styles={imageStyles}
             model={imageModel}
             quality={imageQuality}
@@ -344,6 +355,7 @@ function App() {
             onResetParams={resetImageParams}
             onGenerate={drawImage}
             onDelete={removeImage}
+            onCancel={cancelImage}
           />
         }
       />

@@ -11,12 +11,12 @@
 // second viewer, so a picture looks the same however it was asked for.
 
 import { useState } from 'react'
-import { Sparkles, Trash2, AlertTriangle, Check, Layers, Gauge } from 'lucide-react'
+import { Sparkles, Trash2, AlertTriangle, Check, Layers, Gauge, X, Clock } from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
 import { openImage } from '../../../hooks/useImageOverlay'
 import AdvancedPanel from './AdvancedPanel'
 import type {
-  ImageParams, ImageStyle, Orientation, StoredImage, StyleDefaults,
+  ImageParams, ImageStyle, Orientation, QueuedJob, StoredImage, StyleDefaults,
 } from '../../../hooks/useImages'
 
 // Starters, not a menu. A blank box is the hardest thing to hand someone on a
@@ -41,8 +41,15 @@ interface Props {
   images:   StoredImage[]
   enabled:  boolean | null
   busy:     boolean
-  /** Phase text of the render in flight, if any — straight from the server. */
-  phase:    string
+  /** Everything waiting or drawing, in draw order. Empty when the GPU is idle.
+      Each row carries its own phase text, which is why the panel no longer
+      takes a single `phase`: with a queue there isn't one. */
+  queue:    QueuedJob[]
+  /** How many may wait at once, from the server. */
+  queueMax: number
+  /** Why the last attempt to queue something was refused. '' = it wasn't. */
+  drawError: string
+  onCancel: (id: string) => void
   /** Styles available — checkpoints and whole-workflow styles alike. */
   styles:   ImageStyle[]
   /** The one in effect. '' = whatever the workflow specifies. */
@@ -61,6 +68,85 @@ interface Props {
   onResetParams: () => void
   onGenerate: (prompt: string, orientation: Orientation) => void
   onDelete:   (id: string) => void
+}
+
+/**
+ * One row of the queue.
+ *
+ * The body opens the same full-screen frame the assistant's `generate_image`
+ * opens, so a picture can be watched while it draws from either half of the
+ * app. The trailing X is a second tap target rather than part of it, the same
+ * split the guide's chapter rows use — leaving the queue and dropping an item
+ * from it must never be the same guess.
+ *
+ * Cancelling is offered only for a job that hasn't started. The one on the GPU
+ * is usually seconds from existing, and abandoning it would waste the render
+ * that is already paid for; what a mis-tap on "Draw it" actually produces is
+ * the four behind it, and those are exactly the ones this can drop.
+ */
+function QueueRow({
+  job, position, onOpen, onCancel,
+}: {
+  job:      QueuedJob
+  /** 0 for the one being drawn; 1, 2… for what is waiting behind it. */
+  position: number
+  onOpen:   () => void
+  onCancel: () => void
+}) {
+  const drawing = position === 0
+
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={onOpen}
+        className={`flex-1 min-w-0 flex items-center gap-3 rounded-xl px-3 py-2.5 text-left
+                    border transition active:scale-[0.99] ${
+          drawing
+            ? 'bg-pink-500/15 border-pink-400/30'
+            : 'bg-white/5 border-hairline'
+        }`}
+      >
+        <span className={`w-9 h-9 shrink-0 rounded-lg flex items-center justify-center ${
+          drawing ? 'bg-pink-500/25 text-pink-200' : 'bg-white/10 text-white/45'
+        }`}>
+          {drawing
+            ? <Sparkles size={16} className="animate-pulse" />
+            : <span className="text-[13px] font-bold tabular-nums">{position}</span>}
+        </span>
+        <span className="min-w-0 flex flex-col">
+          <span className="text-[13px] text-white/80 leading-snug line-clamp-1">
+            {job.prompt || 'a picture'}
+          </span>
+          <span className="text-[11px] text-white/35 tabular-nums">
+            {/* The server's own phase for the live one — "loading the model" is
+                the honest explanation for a 20s first render. For the rest,
+                where they are in the line, which the phase string can't say:
+                a frame is pushed when ONE job changes, so a waiting job's text
+                is from when it was queued. */}
+            {drawing
+              ? (job.phase || 'drawing')
+              : `waiting · ${job.width}×${job.height}`}
+          </span>
+        </span>
+      </button>
+
+      {drawing ? (
+        // No cancel, and no dead button pretending otherwise.
+        <span className="w-11 shrink-0" aria-hidden />
+      ) : (
+        <button
+          type="button"
+          onClick={onCancel}
+          aria-label={`Remove "${job.prompt}" from the queue`}
+          className="w-11 h-11 shrink-0 rounded-xl bg-white/5 border border-hairline
+                     flex items-center justify-center text-white/45 active:scale-90 active:bg-red-500/40"
+        >
+          <X size={16} />
+        </button>
+      )}
+    </div>
+  )
 }
 
 // Mirrors QUALITY_STEPS in server/src/image.ts — only so the Steps control's
@@ -94,9 +180,10 @@ const QUALITIES: { id: string; label: string; hint: string }[] = [
 ]
 
 export default function ImageExpanded({
-  images, enabled, busy, phase, styles, model, quality,
+  images, enabled, busy, queue, queueMax, drawError,
+  styles, model, quality,
   params, defaults, loras, autoLora,
-  onModel, onQuality, onParams, onResetParams, onGenerate, onDelete,
+  onModel, onQuality, onParams, onResetParams, onGenerate, onDelete, onCancel,
 }: Props) {
   const [prompt, setPrompt] = useState('')
   const [orientation, setOrientation] = useState<Orientation>('portrait')
@@ -104,7 +191,12 @@ export default function ImageExpanded({
   // on a 7" screen must not be able to destroy one in a single tap.
   const [confirming, setConfirming] = useState<string | null>(null)
 
-  const canDraw = enabled !== false && prompt.trim().length > 0 && !busy
+  // Deliberately NOT gated on `busy` any more. Renders are still drawn one at a
+  // time, but asking for four pictures is one thought, and making someone stand
+  // at the kiosk for ninety seconds between them was the feature that was
+  // missing. The only thing that closes the button is a full queue.
+  const full = queue.length >= queueMax
+  const canDraw = enabled !== false && prompt.trim().length > 0 && !full
 
   function draw() {
     if (!canDraw) return
@@ -306,13 +398,19 @@ export default function ImageExpanded({
             : 'bg-white/5 border border-hairline text-white/30'
         }`}
       >
-        {busy ? (
+        {/* The label says which of the two things this tap does. While the GPU
+            is busy it is genuinely a different action — the picture is not
+            starting now — and a button that still said "Draw it" would be
+            promising something the queue can't deliver for a minute. */}
+        {full ? (
           <>
-            <Sparkles size={20} className="animate-pulse" />
-            {/* The server's own phase text — "loading the model" is the honest
-                explanation for the 20s first render, and guessing at it here
-                would drift from what the overlay says. */}
-            {phase || 'Drawing…'}
+            <Clock size={20} />
+            Queue is full
+          </>
+        ) : busy ? (
+          <>
+            <Sparkles size={20} />
+            Add to the queue
           </>
         ) : (
           <>
@@ -321,6 +419,45 @@ export default function ImageExpanded({
           </>
         )}
       </button>
+
+      {/* A refusal belongs where the finger already is. This used to reach the
+          console only, so a tap that did nothing looked like a broken button. */}
+      {drawError !== '' && (
+        <div className="flex items-start gap-2 rounded-xl bg-amber-500/10 border border-amber-400/30 px-3 py-2.5 shrink-0">
+          <AlertTriangle size={15} className="text-amber-400 shrink-0 mt-0.5" />
+          <span className="text-[12px] text-white/70 leading-snug">{drawError}</span>
+        </div>
+      )}
+
+      {/* ── Queue ──
+          Between the button and the gallery on purpose: it is the answer to
+          "did that tap work?", and it is what the next tap on Draw adds to.
+          Absent entirely when the GPU is idle — an empty list headed "Queue" is
+          a permanent reminder of a feature nobody is using. */}
+      {queue.length > 0 && (
+        <div className="flex flex-col gap-2 shrink-0">
+          <span className="text-xs uppercase tracking-widest text-white/35 font-semibold flex items-center gap-1.5">
+            <Clock size={13} />
+            Drawing
+            <span className="ml-auto normal-case tracking-normal text-white/30 tabular-nums">
+              {queue.length} of {queueMax}
+            </span>
+          </span>
+          {queue.map((j, i) => (
+            <QueueRow
+              key={j.id}
+              job={j}
+              position={i}
+              onOpen={() => openImage(j.id, j.prompt)}
+              onCancel={() => onCancel(j.id)}
+            />
+          ))}
+          <span className="text-[11px] text-white/25 leading-snug">
+            Pictures are drawn one at a time — two at once on one card is slower, not
+            faster. Tap one to watch it; tap the × to drop one that hasn't started.
+          </span>
+        </div>
+      )}
 
       {/* ── Gallery ──
           Flows in the page rather than scrolling on its own; see the note on the

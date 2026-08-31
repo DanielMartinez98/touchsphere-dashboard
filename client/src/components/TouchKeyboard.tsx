@@ -28,22 +28,12 @@ import {
   ClipboardPaste, Copy, TextSelect, Undo2,
 } from 'lucide-react'
 import { caretTarget, deleteBack, insertAt, ordered, type Selection } from './touchTextEdit'
-
-type Mode = 'alpha' | 'num'
+import {
+  bottomRow, LAYOUTS, useKeyboardShape,
+  type KeyDef, type KeyPage,
+} from './keyboardLayouts'
 
 export type KeyboardTarget = HTMLInputElement | HTMLTextAreaElement
-
-const ALPHA_ROWS = [
-  ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
-  ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'],
-  ['z', 'x', 'c', 'v', 'b', 'n', 'm'],
-]
-
-const NUM_ROWS = [
-  ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
-  ['-', '/', '.', ',', ':', ';', '@', '!', '?', '&'],
-  ['(', ')', '"', "'", '_', '+', '=', '#'],
-]
 
 // The number pad. A field that can only hold a number gets phone-dialler keys
 // rather than the full board: three fat columns instead of ten thin ones, and
@@ -94,7 +84,11 @@ interface Props {
 export function TouchKeyboard({
   value, onChange, onDone, multiline = false, numeric = false, targetRef,
 }: Props) {
-  const [mode,  setMode]  = useState<Mode>('alpha')
+  // Which page of keys — letters / 123 / #+=, the same three iOS has.
+  const [page, setPage] = useState<KeyPage>('letters')
+  // iPhone board or iPad board, by viewport width. Live, so an iPad rotating
+  // into landscape gets the wider one without anything being reopened.
+  const shape = useKeyboardShape()
   // 'off' → 'once' (one-shot, the common case) → 'lock' (double-tap ⇧).
   const [shift, setShift] = useState<'off' | 'once' | 'lock'>('off')
   const [sel, setSel] = useState<[number, number]>([value.length, value.length])
@@ -239,7 +233,9 @@ export function TouchKeyboard({
   }
 
   function pressKey(key: string) {
-    insert(mode === 'alpha' && shift !== 'off' ? key.toUpperCase() : key)
+    // Only letters shift. iOS's ⇧ does nothing on the number page either — it
+    // is the page toggle that gets you to the other symbols, not the shift.
+    insert(page === 'letters' && shift !== 'off' ? key.toUpperCase() : key)
     if (shift === 'once') setShift('off')
   }
 
@@ -261,16 +257,127 @@ export function TouchKeyboard({
     repeat.current = {}
   }
 
-  const rows = mode === 'alpha' ? ALPHA_ROWS : NUM_ROWS
+  const rows = LAYOUTS[shape][page]
   const hasSelection = sel[0] !== sel[1]
 
+  // No `flex-1` and no `min-w-*`: width is per-key data now (see renderKey),
+  // and a minimum width would stop ten keys being ten EVEN columns the moment
+  // one of them is labelled `#+=`.
+  //
+  // Taller keys on the tablet board. iPad keys are physically bigger than
+  // iPhone ones, and at 768px+ the extra height is free — on the phone board
+  // it would push the top of a bottom-anchored sheet off screen.
   const keyBase =
-    'h-12 min-w-[2.5rem] flex-1 rounded-lg text-white text-sm font-medium flex items-center justify-center transition-colors active:brightness-150 select-none'
+    `${shape === 'tablet' ? 'h-14 text-base' : 'h-12 text-sm'} ` +
+    'rounded-lg text-white font-medium flex items-center justify-center ' +
+    'transition-colors active:brightness-150 select-none'
   // Shorter than a letter key: this row is reached deliberately, not touch-typed,
   // and the letters are what needs to stay thumb-sized.
   const toolBase =
     'h-10 flex-1 rounded-lg flex items-center justify-center gap-1 select-none transition-colors ' +
     'active:brightness-150 disabled:opacity-25 text-white/70 bg-white/[0.09]'
+
+  /**
+   * One key, from its definition.
+   *
+   * Width comes through as `flexGrow` rather than a Tailwind class because the
+   * weights are data (1 letter column, 1.5 for ⇧, 5 for the space bar) and a
+   * class per weight would mean a class per layout change. `flexBasis: 0`
+   * matters: without it a wide label like `#+=` would set the key's floor and
+   * the row would stop being ten even columns.
+   */
+  function renderKey(key: KeyDef, id: string) {
+    const grow = { flexGrow: key.w ?? 1, flexBasis: 0, minWidth: 0 }
+
+    switch (key.k) {
+      // Half-key inset at the ends of the iPhone's `asdfghjkl` row. Not a
+      // button — it must not be tappable, or the row grows two dead targets.
+      case 'gap':
+        return <span key={id} style={grow} aria-hidden />
+
+      case 'char': {
+        const label = page === 'letters' && shift !== 'off' ? key.v.toUpperCase() : key.v
+        return (
+          <button type="button" key={id} style={grow}
+            onPointerDown={e => tap(e, () => pressKey(key.v))}
+            className={`${keyBase} bg-white/12`}>
+            {label}
+          </button>
+        )
+      }
+
+      case 'shift':
+        return (
+          <button type="button" key={id} style={grow} aria-label="Shift"
+            // Tapping ⇧ while it is already armed locks it — the only way to
+            // type an acronym without re-arming between every letter.
+            onPointerDown={e => tap(e, () => setShift(v =>
+              v === 'off' ? 'once' : v === 'once' ? 'lock' : 'off'))}
+            className={`${keyBase} ${
+              shift === 'lock' ? 'bg-[var(--accent,#06b6d4)] text-black ring-2 ring-white/40'
+              : shift === 'once' ? 'bg-[var(--accent,#06b6d4)] text-black'
+              : 'bg-white/20'}`}>
+            {shift === 'lock' ? '⇪' : '⇧'}
+          </button>
+        )
+
+      case 'back':
+        return (
+          <button type="button" key={id} style={grow} aria-label="Backspace"
+            // Hold to repeat. Clearing a long prompt one tap at a time is the
+            // single most tedious thing on this keyboard.
+            onPointerDown={e => tap(e, () => { backspace(); startRepeat() })}
+            onPointerUp={stopRepeat}
+            onPointerLeave={stopRepeat}
+            onPointerCancel={stopRepeat}
+            className={`${keyBase} bg-white/20`}>
+            ⌫
+          </button>
+        )
+
+      case 'page':
+        return (
+          <button type="button" key={id} style={grow}
+            onPointerDown={e => tap(e, () => {
+              setPage(key.to)
+              // Leaving the letters drops a one-shot ⇧ — it would otherwise be
+              // spent on a digit, which shift does nothing to, and be gone.
+              if (key.to !== 'letters' && shift === 'once') setShift('off')
+            })}
+            className={`${keyBase} bg-white/20 text-xs font-bold`}>
+            {key.label}
+          </button>
+        )
+
+      case 'space':
+        return (
+          <button type="button" key={id} style={grow} aria-label="Space"
+            onPointerDown={e => tap(e, () => insert(' '))}
+            className={`${keyBase} bg-white/12 text-white/60 text-xs`}>
+            space
+          </button>
+        )
+
+      case 'enter':
+        return (
+          <button type="button" key={id} style={grow} aria-label="Return"
+            onPointerDown={e => tap(e, pressEnter)}
+            className={`${keyBase} bg-white/20 text-xs font-bold`}>
+            ↵
+          </button>
+        )
+
+      case 'done':
+        return (
+          <button type="button" key={id} style={grow}
+            onPointerDown={e => tap(e, onDone)}
+            className={`${keyBase} bg-[var(--accent,#06b6d4)] text-black font-bold
+                        active:opacity-80 active:brightness-100`}>
+            Done
+          </button>
+        )
+    }
+  }
 
   // ── Number pad ──
   //
@@ -423,68 +530,12 @@ export function TouchKeyboard({
         </div>
       )}
 
-      {rows.map((row, ri) => (
-        <div key={ri} className="flex justify-center gap-1 mb-1.5">
-          {ri === 2 && mode === 'alpha' && (
-            <button type="button"
-              // Tapping ⇧ while it is already armed locks it — the only way to
-              // type an acronym without re-arming between every letter.
-              onPointerDown={e => tap(e, () => setShift(s =>
-                s === 'off' ? 'once' : s === 'once' ? 'lock' : 'off'))}
-              className={`${keyBase} flex-none w-12 ${
-                shift === 'lock' ? 'bg-[var(--accent,#06b6d4)] text-black ring-2 ring-white/40'
-                : shift === 'once' ? 'bg-[var(--accent,#06b6d4)] text-black'
-                : 'bg-white/20'}`}>
-              {shift === 'lock' ? '⇪' : '⇧'}
-            </button>
-          )}
-          {row.map(key => (
-            <button type="button" key={key}
-              onPointerDown={e => tap(e, () => pressKey(key))}
-              className={`${keyBase} bg-white/12`}>
-              {mode === 'alpha' && shift !== 'off' ? key.toUpperCase() : key}
-            </button>
-          ))}
-          {ri === rows.length - 1 && (
-            <button type="button"
-              // Hold to repeat. Clearing a long prompt one tap at a time is the
-              // single most tedious thing on this keyboard.
-              onPointerDown={e => tap(e, () => { backspace(); startRepeat() })}
-              onPointerUp={stopRepeat}
-              onPointerLeave={stopRepeat}
-              onPointerCancel={stopRepeat}
-              className={`${keyBase} flex-none w-14 bg-white/20`}>
-              ⌫
-            </button>
-          )}
+      {[...rows, bottomRow(page, multiline)].map((row, ri) => (
+        <div key={ri} className="flex gap-1 mb-1.5 last:mb-0">
+          {row.map((key, ki) => renderKey(key, `${ri}-${ki}`))}
         </div>
       ))}
 
-      {/* Bottom action row */}
-      <div className="flex gap-1 mt-0.5">
-        <button type="button"
-          onPointerDown={e => tap(e, () => setMode(m => (m === 'alpha' ? 'num' : 'alpha')))}
-          className={`${keyBase} flex-none w-16 bg-white/20 text-xs font-bold`}>
-          {mode === 'alpha' ? '123' : 'ABC'}
-        </button>
-        <button type="button"
-          onPointerDown={e => tap(e, () => insert(' '))}
-          className={`${keyBase} flex-1 bg-white/12 text-white/60 text-xs`}>
-          space
-        </button>
-        {multiline && (
-          <button type="button"
-            onPointerDown={e => tap(e, pressEnter)}
-            className={`${keyBase} flex-none w-14 bg-white/20 text-xs font-bold`}>
-            ↵
-          </button>
-        )}
-        <button type="button"
-          onPointerDown={e => tap(e, onDone)}
-          className="h-12 w-20 flex-none rounded-lg bg-[var(--accent,#06b6d4)] text-black text-sm font-bold flex items-center justify-center active:opacity-80 select-none">
-          Done
-        </button>
-      </div>
     </div>
   )
 }
