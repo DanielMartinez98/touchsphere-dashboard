@@ -601,8 +601,14 @@ async function buildOutline(itemId: string, title: string, order?: string, sourc
   })
 
   update(itemId, g => { g.phase = 'Planning the sections…' })
+  // The article headings are a fallback, not a supplement. When the categories
+  // came through they name the game's real contents, and the headings alongside
+  // them are mostly noise — on a page the search picked slightly wrong they are
+  // a character's dialogue subheadings, which is worse than nothing in a prompt
+  // whose whole job is deciding what the chapters are.
+  const tocHint = chapters.length > 0 ? [] : toc
   const outline = await callOllamaJson<OutlineReply>(
-    'outline', SYSTEM, outlinePrompt(title, order, pages, toc, chapters), OUTLINE_SCHEMA)
+    'outline', SYSTEM, outlinePrompt(title, order, pages, tocHint, chapters), OUTLINE_SCHEMA)
   const raw = Array.isArray(outline?.sections) ? outline!.sections : []
   const sections: GuideSection[] = raw
     .map((s, i): GuideSection | null => {

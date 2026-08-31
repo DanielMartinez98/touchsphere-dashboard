@@ -377,8 +377,13 @@ export interface GameWiki {
   shared: boolean
 }
 
-/** Resolved wiki per game title, for the life of the process. */
-const wikiHostCache = new Map<string, GameWiki | null>()
+/**
+ * Resolved wiki per game title, for the life of the process. The PROMISE is
+ * cached, not the result: the outline resolves the table of contents and the
+ * chapter list concurrently, and caching only on completion has both of them
+ * probing the whole slug-candidate list before either finishes.
+ */
+const wikiHostCache = new Map<string, Promise<GameWiki | null>>()
 
 /**
  * Where a host keeps api.php. Fandom and wiki.gg serve it at the root; Wikimedia
@@ -598,11 +603,16 @@ function hostCoversTitle(host: string, gameTitle: string): boolean {
  * answers a search for the game's own title. Cached — the probe is a handful of
  * requests and the answer never changes within a run.
  */
-export async function findGameWiki(gameTitle: string): Promise<GameWiki | null> {
+export function findGameWiki(gameTitle: string): Promise<GameWiki | null> {
   const key = gameTitle.toLowerCase().trim()
   const cached = wikiHostCache.get(key)
-  if (cached !== undefined) return cached
+  if (cached) return cached
+  const pending = probeGameWiki(gameTitle)
+  wikiHostCache.set(key, pending)
+  return pending
+}
 
+async function probeGameWiki(gameTitle: string): Promise<GameWiki | null> {
   for (const slug of wikiSlugCandidates(gameTitle)) {
     for (const farm of WIKI_FARMS) {
       const probe = `${slug}.${farm}`
@@ -613,19 +623,26 @@ export async function findGameWiki(gameTitle: string): Promise<GameWiki | null> 
       // redirected somewhere else, or it landed on a wiki whose name is only
       // part of this game's title.
       const host = (await canonicalWikiHost(probe)) ?? probe
-      const shared = host !== probe || !hostCoversTitle(host, gameTitle)
+      // Three independent ways to be a franchise wiki, and all three happen:
+      // the probe redirected somewhere else; the wiki's name is only part of
+      // this game's title; or — the case neither of those catches — the game IS
+      // its franchise's namesake, so "zelda" legitimately covers "The Legend of
+      // Zelda" and nothing about the name gives it away. That last one is why
+      // the NES game's guide could never be built: every query it ran matched
+      // twenty games and nothing could tell it so.
+      const shared = host !== probe
+        || !hostCoversTitle(host, gameTitle)
+        || (await countCategoryMembers(host, 'Category:Games')) >= 4
       const wiki: GameWiki = { host, shared }
       console.log(
         `[research] wiki for "${gameTitle}" → ${host}` +
         (host !== probe ? ` (probed ${probe}, redirected)` : '') +
         (shared ? ' — SHARED across a franchise: queries will be scoped and pages checked' : ''),
       )
-      wikiHostCache.set(key, wiki)
       return wiki
     }
   }
   console.warn(`[research] no wiki found for "${gameTitle}" — falling back to Wikipedia and web search`)
-  wikiHostCache.set(key, null)
   return null
 }
 
@@ -658,6 +675,19 @@ const MAX_CATEGORY_MEMBERS = 40
 const MAX_CHAPTER_CATEGORIES = 6
 
 interface CategoryMembersReply { query?: { categorymembers?: Array<{ title?: string }> } }
+
+/**
+ * How many pages a category holds. Separate from categoryMembers because that
+ * one reports nothing for an over-large category (its job is chapter lists, and
+ * a 45-entry category is not one) — while "how many games does this wiki
+ * document" wants exactly that number.
+ */
+async function countCategoryMembers(host: string, category: string): Promise<number> {
+  const json = await wikiApi<CategoryMembersReply>(host, {
+    action: 'query', list: 'categorymembers', cmtitle: category, cmlimit: '50', cmtype: 'page',
+  })
+  return (json?.query?.categorymembers ?? []).length
+}
 
 /** The pages filed under one category, or [] when it's missing or far too broad. */
 async function categoryMembers(host: string, category: string): Promise<string[]> {
@@ -696,26 +726,65 @@ export async function communityChapters(gameTitle: string): Promise<ChapterCateg
   if (!wiki) return []
   const qualifier = gameQualifier(gameTitle)
 
-  const found = await wikiSearch(wiki.host, qualifier, 25, 14)
-  const scored = found
+  // Discovery finds the lists nobody would think to ask for ("Masks in Majora's
+  // Mask"); the targeted pass guarantees the backbone, because the broad search
+  // does not reliably rank "Dungeons in …" into its first page of results and
+  // the dungeons are the one list a walkthrough cannot do without.
+  const found = new Set(await wikiSearch(wiki.host, qualifier, 25, 14))
+  for (const kind of ['Dungeons', 'Temples', 'Levels', 'Chapters', 'Areas', 'Missions']) {
+    for (const t of await wikiSearch(wiki.host, `${kind} ${qualifier}`, 3, 14)) found.add(t)
+  }
+
+  /**
+   * Judge what KIND of list a category is with the game's own name taken out of
+   * the name first. Without this the qualifier poisons the match: every category
+   * on this wiki ends in "…in Majora's Mask", so every one of them matched the
+   * collectible pattern on the word "Mask" — which is how a list of game
+   * mechanics scored as a collectible chapter.
+   */
+  const kindOf = (name: string): string => {
+    let s = name.replace(/['’]/g, '')
+    for (const w of titleKeywords(gameTitle)) {
+      s = s.replace(new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi'), ' ')
+    }
+    return s
+  }
+
+  const scored = [...found]
     .filter(t => /^category:/i.test(t))
     .map(t => ({ title: t, name: t.replace(/^category:/i, '').trim() }))
-    .filter(c => !NON_CHAPTER_WORDS.test(c.name))
-    // On a franchise wiki the name has to say which game — and say THIS one, so
-    // "Dungeons in Majora's Mask 3D" doesn't answer for the N64 original.
+    .map(c => ({ ...c, kind: kindOf(c.name) }))
+    .filter(c => !NON_CHAPTER_WORDS.test(c.kind))
+    // On a franchise wiki the name has to say which game at all.
     .filter(c => !wiki.shared || mentionsGame(c.name, gameTitle))
+    // And wherever a category names a game explicitly — "Areas (Silksong)",
+    // "Dungeons in Majora's Mask" — that game has to be this one. This applies
+    // even on a wiki that looked game-specific, because a wiki named for one
+    // game grows to cover its sequel: hollowknight.fandom.com hosts Silksong,
+    // and its area list is not Hollow Knight's.
+    .filter(c => {
+      const marker = c.name.match(/\(([^)]+)\)\s*$/)?.[1] ?? c.name.match(/\bin\s+(.+)$/i)?.[1]
+      return marker === undefined || mentionsGame(marker, gameTitle)
+    })
     .map(c => ({
       ...c,
-      score: PROGRESSION_WORDS.test(c.name) ? 2 : COLLECTIBLE_WORDS.test(c.name) ? 1 : 0,
+      score: PROGRESSION_WORDS.test(c.kind) ? 2 : COLLECTIBLE_WORDS.test(c.kind) ? 1 : 0,
     }))
     .filter(c => c.score > 0)
     .sort((a, b) => b.score - a.score)
 
   const out: ChapterCategory[] = []
+  const takenLists = new Set<string>()
   for (const c of scored) {
     if (out.length >= MAX_CHAPTER_CATEGORIES) break
     const members = await categoryMembers(wiki.host, c.title)
     if (members.length < 3) continue
+    // A remake keeps its own categories with the same contents ("Dungeons in
+    // Majora's Mask 3D"). Listing both spends a slot, and the prompt's budget,
+    // saying the same thing twice.
+    const fingerprint = members.join('|').toLowerCase()
+    if (takenLists.has(fingerprint)) continue
+    takenLists.add(fingerprint)
     out.push({ label: c.name, members })
     console.log(`[research] ${wiki.host}: "${c.name}" lists ${members.length} — ${members.slice(0, 6).join(', ')}`)
   }
