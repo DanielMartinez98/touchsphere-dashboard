@@ -176,7 +176,7 @@ function ChapterPage({
 
   return (
     <div className="absolute inset-0 z-[55] flex flex-col bg-[#07090f]">
-      <div className="shrink-0 px-4 pt-4 pb-3 border-b border-hairline">
+      <div className="shrink-0 px-3 sm:px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-3 border-b border-hairline">
         {/* Nav row: one tap back to the chapter list, one tap out of the guide.
             Both are spelled out — the back arrow carries a word rather than
             leaving the user to guess which level it goes up to. */}
@@ -213,9 +213,9 @@ function ChapterPage({
         )}
       </div>
 
-      <div className="flex-1 min-h-0 overflow-auto scroll-fade-y px-4 py-3 flex flex-col gap-3">
+      <div className="flex-1 min-h-0 overflow-auto scroll-fade-y px-3 sm:px-4 py-3 flex flex-col gap-3">
         {section.summary && (
-          <p className="text-sm text-white/55 leading-snug">{section.summary}</p>
+          <p className="text-[15px] sm:text-sm text-white/55 leading-relaxed sm:leading-snug">{section.summary}</p>
         )}
 
         {section.video && <WatchRow video={section.video} label="Watch this chapter" />}
@@ -263,8 +263,16 @@ function ChapterPage({
             rather than thirty struck-through steps you have to scroll past. */}
         {parts.map(part => {
           const open = isOpen(part)
+          // shrink-0 below is load-bearing, not spacing. These cards are children
+          // of a `flex flex-col` scroll container, so they are flex items with
+          // flex-shrink:1 — and `overflow-hidden` (which is what keeps the steps
+          // inside the rounded corners) makes their automatic minimum height
+          // compute to 0 instead of their content height. A chapter whose steps
+          // are taller than the viewport therefore gets SQUASHED rather than
+          // scrolled: cards overlap and steps are sliced through the middle. It
+          // bites hardest on a phone, where the viewport is shortest.
           return (
-            <div key={part.key} className="rounded-2xl border border-hairline bg-white/[0.02] overflow-hidden">
+            <div key={part.key} className="shrink-0 rounded-2xl border border-hairline bg-white/[0.02] overflow-hidden">
               {part.title && (
                 <button type="button" onClick={() => toggleOpen(part)}
                   aria-expanded={open}
@@ -276,7 +284,7 @@ function ChapterPage({
                       className={`transition-transform ${open ? 'rotate-90' : ''}`} />}
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className={`block text-sm font-semibold leading-tight ${
+                    <span className={`block text-[15px] sm:text-sm font-semibold leading-tight break-words ${
                       part.complete ? 'text-white/45' : 'text-white/85'
                     }`}>
                       {part.title}
@@ -292,7 +300,7 @@ function ChapterPage({
                 <div className="flex flex-col px-1 pb-1">
                   {part.steps.map(({ step, n }) => (
                     <button key={step.id} type="button" onClick={() => onToggleStep(step.id)}
-                      className="flex items-start gap-3 py-3 px-2.5 min-h-13 text-left active:bg-white/[0.05] rounded-lg border-b border-white/[0.04] last:border-0">
+                      className="flex items-start gap-2.5 sm:gap-3 py-3 px-2 sm:px-2.5 min-h-13 text-left active:bg-white/[0.05] rounded-lg border-b border-white/[0.04] last:border-0">
                       <span className={`mt-0.5 w-7 h-7 shrink-0 rounded-md border-2 flex items-center justify-center transition-colors ${
                         step.done
                           ? 'bg-emerald-500/30 border-emerald-500/60 text-emerald-300'
@@ -300,15 +308,24 @@ function ChapterPage({
                       }`}>
                         {step.done && <Check size={16} strokeWidth={3} />}
                       </span>
+                      {/* Type scale is phone-first, with sm: restoring the kiosk's
+                          own sizes. A step is read at arm's length on a 720px
+                          panel and at reading distance on a 390px phone, and the
+                          note — which carries the actual "how do I do this" — was
+                          12px in both. break-words because a step is full of
+                          proper nouns and a 390px column has nowhere to put
+                          "Gerudo Training Ground" if it can't break it. */}
                       <span className="min-w-0 flex-1">
-                        <span className={`block text-[15px] leading-snug ${
+                        <span className={`block text-[16px] sm:text-[15px] leading-snug break-words ${
                           step.done ? 'line-through text-white/35' : 'text-white/90'
                         }`}>
                           <span className="text-white/30 tabular-nums mr-2">{n}</span>
                           {step.text}
                         </span>
                         {step.note && (
-                          <span className={`block text-xs mt-1 leading-snug ${step.done ? 'text-white/20' : 'text-white/45'}`}>
+                          <span className={`block text-[14px] sm:text-xs mt-1 leading-relaxed sm:leading-snug break-words ${
+                            step.done ? 'text-white/20' : 'text-white/55 sm:text-white/45'
+                          }`}>
                             {step.note}
                           </span>
                         )}
@@ -330,8 +347,10 @@ function ChapterPage({
         )}
 
         {/* Straight into the next chapter, so a play session doesn't bounce back
-            through the list every time. */}
-        <div className="grid grid-cols-2 gap-2 pt-2 pb-4">
+            through the list every time. The bottom inset keeps the last step and
+            these buttons clear of the iPhone's home indicator, which otherwise
+            sits on top of them — env() is 0 on the kiosk. */}
+        <div className="grid grid-cols-2 gap-2 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))]">
           <button type="button" disabled={index === 0} onClick={() => onJump(-1)}
             className="h-13 rounded-xl text-sm font-semibold bg-white/[0.06] text-white/70 active:bg-white/10 disabled:opacity-30">
             ← Previous
@@ -466,8 +485,12 @@ export function GuideView({
 
   return (
     <div className="absolute inset-0 z-50 flex flex-col bg-[#07090f]">
-      {/* Header — fixed, so the 100% bar is always in view while the list scrolls */}
-      <div className="shrink-0 px-4 pt-4 pb-3 border-b border-hairline">
+      {/* Header — fixed, so the 100% bar is always in view while the list scrolls.
+          pt is safe-area aware: on a notched iPhone the overlay is full-bleed
+          (viewport-fit=cover), so a flat 1rem puts the title and the close button
+          under the Dynamic Island. env() is 0 on the kiosk, which keeps its
+          existing 1rem exactly. */}
+      <div className="shrink-0 px-3 sm:px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-3 border-b border-hairline">
         <div className="flex items-start gap-3">
           <MediaCover item={item} className="w-[44px] h-[66px] rounded-lg" />
           <div className="min-w-0 flex-1 self-center">
@@ -507,7 +530,7 @@ export function GuideView({
       </div>
 
       {/* Chapter list — the scrolling part */}
-      <div className="flex-1 min-h-0 overflow-auto scroll-fade-y px-4 py-3 flex flex-col gap-2.5">
+      <div className="flex-1 min-h-0 overflow-auto scroll-fade-y px-3 sm:px-4 py-3 flex flex-col gap-2.5">
         {loading && !guide && (
           <p className="text-white/45 text-sm text-center py-12">Loading guide…</p>
         )}
@@ -565,7 +588,7 @@ export function GuideView({
                 complete ? 'bg-emerald-500/[0.07] border-emerald-500/25' : 'bg-glass border-hairline'
               }`}>
               <button type="button" onClick={() => setOpenId(section.id)}
-                className="min-w-0 flex-1 text-left p-3.5 flex items-center gap-3 active:bg-white/[0.05] rounded-l-2xl">
+                className="min-w-0 flex-1 text-left p-3 sm:p-3.5 flex items-center gap-2.5 sm:gap-3 active:bg-white/[0.05] rounded-l-2xl">
                 <span className={`w-9 h-9 shrink-0 rounded-xl flex items-center justify-center text-sm font-bold tabular-nums ${
                   complete ? 'bg-emerald-500/25 text-emerald-300' : 'bg-white/[0.07] text-white/50'
                 }`}>
@@ -574,7 +597,7 @@ export function GuideView({
 
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center gap-2 flex-wrap">
-                    <span className="text-[15px] font-semibold text-white leading-tight">{section.title}</span>
+                    <span className="text-[15px] font-semibold text-white leading-tight break-words">{section.title}</span>
                     <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${KIND_CLASS[section.kind]}`}>
                       {KIND_LABEL[section.kind]}
                     </span>
@@ -605,7 +628,7 @@ export function GuideView({
               <button type="button" disabled={total === 0}
                 onClick={() => onToggleSection(section.id, !complete)}
                 aria-label={complete ? `Clear ${section.title}` : `Mark ${section.title} complete`}
-                className="w-16 shrink-0 flex items-center justify-center rounded-r-2xl border-l border-white/[0.06] active:bg-white/[0.07] disabled:opacity-20">
+                className="w-13 sm:w-16 shrink-0 flex items-center justify-center rounded-r-2xl border-l border-white/[0.06] active:bg-white/[0.07] disabled:opacity-20">
                 <span className={`w-9 h-9 rounded-full border-2 flex items-center justify-center transition-colors ${
                   complete
                     ? 'bg-emerald-500/30 border-emerald-500/60 text-emerald-300'
@@ -622,13 +645,13 @@ export function GuideView({
           <div className="flex flex-col gap-2.5">
             {/* Skeletons, so the wait for the chapter list has a shape to it. */}
             {[0, 1, 2, 3].map(i => (
-              <div key={i} className="h-[76px] rounded-2xl bg-white/[0.04] border border-hairline animate-pulse" />
+              <div key={i} className="h-[76px] shrink-0 rounded-2xl bg-white/[0.04] border border-hairline animate-pulse" />
             ))}
           </div>
         )}
 
         {guide && (
-          <div className="mt-4 pt-4 border-t border-hairline flex flex-col gap-3 pb-4">
+          <div className="mt-4 pt-4 border-t border-hairline flex flex-col gap-3 pb-[max(1rem,env(safe-area-inset-bottom))]">
             {guide.sources.length > 0 && (
               <div>
                 <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-white/35 mb-1.5">
