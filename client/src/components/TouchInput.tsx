@@ -2,16 +2,14 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { TouchKeyboard, type KeyboardTarget } from './TouchKeyboard'
 
 // Drop-in replacement for <input> / <textarea> that opens the on-screen
-// TouchKeyboard when tapped (kiosk has no physical keyboard). The DOM input is
-// readonly + inputMode='none' so iOS/Android/Electron's native IME never
-// appears. Edits go through TouchKeyboard's onChange and commit to the parent
-// either live (commitOn='change') or only when Done is tapped (commitOn='done').
+// TouchKeyboard when tapped (kiosk has no physical keyboard). `inputMode='none'`
+// is what keeps the native IME away. Edits go through TouchKeyboard's onChange
+// and commit to the parent either live (commitOn='change') or only when Done is
+// tapped (commitOn='done').
 //
 // The element is handed to TouchKeyboard by ref, which is what makes the caret
-// real: readOnly does not stop a browser from placing a caret or letting you
-// drag a selection — it only stops the native IME — so tap-to-position,
-// drag-to-select and double-tap-a-word all work, and the keyboard edits at that
-// selection instead of appending at the end.
+// real — tap to put it anywhere, drag or double-tap to select, and the keyboard
+// edits at that selection instead of appending at the end.
 
 interface Props {
   value:        string
@@ -59,23 +57,35 @@ export function TouchInput({
   }
 
   function handleOpen() {
-    if (open) return          // already typing — let the tap place the caret
-    setOpen(true)
-    // A tap that opens the keyboard should also put the caret where the finger
-    // landed, which needs focus. The browser gives a readOnly field focus on
-    // its own here; this only makes sure of it when the tap was on the padding.
-    ref.current?.focus()
+    // Never preventDefault and never force focus: the browser is already
+    // placing the caret where the finger landed, and stealing focus mid-tap is
+    // exactly what would move it back to the end.
+    if (!open) setOpen(true)
   }
 
   const shared = {
     value:       open ? draft : value,
     placeholder,
-    readOnly:    true,
+    // NOT readOnly.
+    //
+    // It used to be, to keep the native IME away — but Chromium paints no caret
+    // at all in a readonly field, so tapping into the middle of a prompt put an
+    // invisible caret somewhere and looked like the tap had done nothing. That
+    // is the whole interaction this component exists for, so `inputMode='none'`
+    // carries the job on its own: it is the attribute that means "this app
+    // supplies its own keyboard", the field stays a real editable field, and the
+    // caret and selection are the browser's, visible and draggable.
+    //
+    // The trade: a physical keyboard can now type straight into the field. On
+    // the kiosk there isn't one; on a desktop browser it is the behaviour you'd
+    // want anyway, which is why onChange below keeps the draft in step instead
+    // of blocking it.
     inputMode:   'none' as const,
+    onChange:    (e: React.ChangeEvent<KeyboardTarget>) => handleKeyboardChange(e.target.value),
     onClick:        handleOpen,
     onPointerDown:  handleOpen,
     'aria-label':   ariaLabel,
-    className: `${className} cursor-pointer`,
+    className:   `${className} cursor-text`,
   }
 
   return (

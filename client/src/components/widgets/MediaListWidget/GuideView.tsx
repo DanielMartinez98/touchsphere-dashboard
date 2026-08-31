@@ -380,7 +380,11 @@ function ReorderSheet({
             the community organizes it. This replaces the guide and every ticked step.
           </p>
           <div className="flex gap-2">
-            <input type="text" inputMode="none" readOnly value={value} ref={inputRef}
+            {/* Not readOnly: Chromium paints no caret in one, and tapping into the
+                middle of the text is how you move the caret. inputMode="none"
+                is what keeps the native keyboard away. */}
+            <input type="text" inputMode="none" value={value} ref={inputRef}
+              onChange={e => setValue(e.target.value)}
               autoFocus
               placeholder="how should it be organized?"
               className="flex-1 bg-glass-2 text-white rounded-xl px-4 py-3 text-base outline-none placeholder:text-white/25" />

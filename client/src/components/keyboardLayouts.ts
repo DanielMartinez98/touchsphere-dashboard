@@ -26,6 +26,9 @@ import { useEffect, useState } from 'react'
 /** Which page of keys is showing. Named after the keys that switch to them. */
 export type KeyPage = 'letters' | 'numbers' | 'symbols'
 
+/** Which board — the iPhone one or the iPad one. */
+export type Shape = 'phone' | 'tablet'
+
 export type KeyDef =
   /** A literal character. `w` is a flex-grow weight; 1 is one letter column. */
   | { k: 'char'; v: string; w?: number }
@@ -95,6 +98,7 @@ export const PHONE: Layout = {
 // ALL THREE rows and the modifiers absorb the difference — which is what an
 // iPad actually looks like. Left to their natural totals the rows come out
 // 11.6 / 10.8 / 12.6 and `z` ends up visibly narrower than the `a` above it.
+const ROW_UNITS_PHONE = 10
 const ROW_UNITS = 12
 
 export const TABLET: Layout = {
@@ -126,21 +130,42 @@ export const TABLET: Layout = {
 }
 
 /**
- * The bottom row, which is the same shape on both boards but not the same as
- * iOS's — iOS has one `return` key that both inserts a newline and dismisses,
- * and we need those to be two keys: `↵` types into a multiline field, `Done`
- * commits and closes. A single-line field has no newline to type, so it gets
- * `Done` alone, which is exactly what iOS's return does there.
+ * The bottom row.
+ *
+ * Two deliberate departures from iOS, both of them fixes for this app rather
+ * than decoration:
+ *
+ * `,` and `.` FLANK THE SPACE BAR. On an iPhone the comma lives on the `123`
+ * page, which costs two taps and a hunt every time — fine when you are writing
+ * a text message and know the board by heart, bad here, where the longest thing
+ * anyone types is a comma-separated image prompt. Android has put them here for
+ * years and it is the right call at this width. (The tablet board doesn't need
+ * this: `,` and `.` are already on its letter row, as they are on a real iPad.)
+ *
+ * NOTHING THAT COMMITS SITS NEXT TO SPACE. iOS's single `return` has to be two
+ * keys here — one types a newline, one closes the field — and the first version
+ * of this row put `↵` immediately right of the space bar, where it got hit by
+ * accident constantly. Both now sit at the far end, past `.`, so the keys either
+ * side of space are punctuation and a mis-tap costs a character, not the field.
  */
-export function bottomRow(page: KeyPage, multiline: boolean): KeyDef[] {
+export function bottomRow(page: KeyPage, multiline: boolean, shape: Shape): KeyDef[] {
   const toggle: KeyDef = page === 'letters'
     ? { k: 'page', to: 'numbers', label: '123', w: 2 }
     : { k: 'page', to: 'letters', label: 'ABC', w: 2 }
-  // Also sums to ROW_UNITS, so the space bar lines up under the letters above
-  // it instead of the row quietly having a scale of its own.
+
+  // The tablet already has punctuation and `return` on its letter rows, so its
+  // bottom row stays the plain iPad one.
+  if (shape === 'tablet') {
+    return [toggle, { k: 'space', w: 8 }, { k: 'done', w: 2 }]
+  }
+
+  const comma: KeyDef = { k: 'char', v: ',', w: 1.15 }
+  const stop:  KeyDef = { k: 'char', v: '.', w: 1.15 }
+  // Both sum to ROW_UNITS_PHONE so the space bar lines up under the letters
+  // above it instead of the row quietly having a scale of its own.
   return multiline
-    ? [toggle, { k: 'space', w: 6 }, { k: 'enter', w: 2 }, { k: 'done', w: 2 }]
-    : [toggle, { k: 'space', w: 8 }, { k: 'done', w: 2 }]
+    ? [toggle, comma, { k: 'space', w: 3.7 }, stop, { k: 'enter', w: 1 }, { k: 'done', w: 1 }]
+    : [toggle, comma, { k: 'space', w: 3.7 }, stop, { k: 'done', w: 2 }]
 }
 
 /**
@@ -159,8 +184,8 @@ export const TABLET_MIN_WIDTH = 768
  * `visualViewport` when it exists, because that is the width AFTER the browser
  * chrome and any zoom, which is what the keys actually have to fit inside.
  */
-export function useKeyboardShape(): 'phone' | 'tablet' {
-  const [shape, setShape] = useState<'phone' | 'tablet'>(() => measure())
+export function useKeyboardShape(): Shape {
+  const [shape, setShape] = useState<Shape>(() => measure())
   useEffect(() => {
     const sync = () => setShape(measure())
     window.addEventListener('resize', sync)
@@ -173,7 +198,7 @@ export function useKeyboardShape(): 'phone' | 'tablet' {
   return shape
 }
 
-function measure(): 'phone' | 'tablet' {
+function measure(): Shape {
   const w = window.visualViewport?.width ?? window.innerWidth
   return w >= TABLET_MIN_WIDTH ? 'tablet' : 'phone'
 }
@@ -206,5 +231,5 @@ export function unevenRows(layout: Layout, units: number): string[] {
 }
 
 /** Column counts each board is built to. Phone is ten keys across; iPad, twelve. */
-export const PHONE_UNITS = 10
+export const PHONE_UNITS = ROW_UNITS_PHONE
 export const TABLET_UNITS = ROW_UNITS

@@ -156,10 +156,10 @@ function RenameSheet({
             <input
               type="text"
               inputMode="none"
-              readOnly
               autoFocus
               ref={inputRef}
               value={value}
+              onChange={e => setValue(e.target.value)}
               className="flex-1 bg-glass-2 text-white rounded-xl px-4 py-3 text-base outline-none"
             />
             <button type="button" onClick={commit}
@@ -551,14 +551,15 @@ export default function MediaListExpanded({
           type="text"
           inputMode={hasMouse ? 'text' : 'none'}
           value={title}
-          readOnly={!hasMouse}
-          onChange={hasMouse ? e => setTitle(e.target.value) : undefined}
+          // Unconditional now that the field isn't readOnly — a controlled
+          // input without one warns, and on touch it simply never fires.
+          onChange={e => setTitle(e.target.value)}
           onKeyDown={hasMouse ? e => { if (e.key === 'Enter') handleAdd(e) } : undefined}
           onClick={hasMouse ? undefined : () => setShowKeyboard(true)}
           onPointerDown={hasMouse ? undefined : () => setShowKeyboard(true)}
           ref={addRef}
           placeholder="Add title..."
-          className={`flex-1 bg-glass-2 text-white placeholder-white/35 rounded-xl px-4 py-3 text-base outline-none ${hasMouse ? '' : 'cursor-pointer'}`}
+          className={`flex-1 bg-glass-2 text-white placeholder-white/35 rounded-xl px-4 py-3 text-base outline-none ${hasMouse ? '' : 'cursor-text'}`}
         />
         <div className="flex rounded-xl overflow-hidden border border-hairline">
           {TYPES.map(t => (

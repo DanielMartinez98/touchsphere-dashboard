@@ -17,17 +17,20 @@
 // splice, and put the caret back after React re-renders the controlled value
 // (which otherwise snaps it to the end).
 //
+// There is deliberately NO toolbar of caret buttons. There was one — undo, four
+// arrows, select-all, copy, paste — and it was the wrong answer to "let me move
+// around the text": moving a caret with arrow keys on a touchscreen is worse
+// than the thing it replaced. Putting the caret where you want it is a tap in
+// the FIELD, which the browser already does; the row above the keys was just
+// eight buttons in the way of the letters.
+//
 // `targetRef` is optional. Without it there is no element to have a selection,
 // and the keyboard degrades to the append-only behaviour it had before — which
 // is honest rather than tidy: a caret nobody can see or move is worse than no
 // caret at all.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import {
-  ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
-  ClipboardPaste, Copy, TextSelect, Undo2,
-} from 'lucide-react'
-import { caretTarget, deleteBack, insertAt, ordered, type Selection } from './touchTextEdit'
+import { deleteBack, insertAt, ordered, type Selection } from './touchTextEdit'
 import {
   bottomRow, LAYOUTS, useKeyboardShape,
   type KeyDef, type KeyPage,
@@ -55,11 +58,6 @@ const REPEAT_EVERY_MS = 55
 // Undo depth. Deep enough to walk back out of a mis-tapped "select all" that
 // ate a paragraph, shallow enough to stay a fixed cost.
 const UNDO_MAX = 40
-
-// Clipboard fallback for when navigator.clipboard is unavailable or refused —
-// a kiosk browser may have no permission prompt to grant it. Module-level so
-// copy in one field and paste in another still works within the app.
-let localClipboard = ''
 
 interface Props {
   value:    string
@@ -102,13 +100,6 @@ export function TouchKeyboard({
   // the live one. Same for the selection.
   const latest = useRef({ value, sel })
   useLayoutEffect(() => { latest.current = { value, sel } }, [value, sel])
-
-  // The toolbar is only truthful once the target element exists, and on the
-  // first render it doesn't yet — refs are attached during commit. Rendering
-  // the row anyway would give the user five buttons that silently do nothing
-  // for one frame, on the one screen where a dead button is most confusing.
-  const [caretAware, setCaretAware] = useState(false)
-  useLayoutEffect(() => { setCaretAware(!!targetRef?.current) }, [targetRef])
 
   /** The current selection as an ordered pair, defaulting to the end. */
   const range = useCallback((): Selection => {
@@ -179,51 +170,6 @@ export function TouchKeyboard({
     if (next) commit(next.value, next.caret)
   }, [range, commit])
 
-  const moveCaret = useCallback((to: 'start' | 'left' | 'right' | 'end') => {
-    const el = targetRef?.current
-    if (!el) return
-    const at = caretTarget(latest.current.value.length, range(), to)
-    el.focus()
-    el.setSelectionRange(at, at)
-    setSel([at, at])
-  }, [range, targetRef])
-
-  const selectAll = useCallback(() => {
-    const el = targetRef?.current
-    if (!el) return
-    const len = latest.current.value.length
-    el.focus()
-    el.setSelectionRange(0, len)
-    setSel([0, len])
-  }, [targetRef])
-
-  const copy = useCallback(() => {
-    const [s, e] = range()
-    if (s === e) return
-    const text = latest.current.value.slice(s, e)
-    localClipboard = text
-    // Best effort: the system clipboard is nicer when it works (it reaches the
-    // browser's own fields), but a kiosk has nobody to answer a permission
-    // prompt, so the in-app copy above is what's actually relied on.
-    void navigator.clipboard?.writeText(text).catch(() => { /* local copy stands */ })
-  }, [range])
-
-  const paste = useCallback(async () => {
-    let text = localClipboard
-    try {
-      const sys = await navigator.clipboard?.readText()
-      if (sys) text = sys
-    } catch { /* denied or unavailable — the in-app clipboard is the fallback */ }
-    if (text) insert(text)
-  }, [insert])
-
-  const undo = useCallback(() => {
-    const prev = undoStack.current.pop()
-    if (!prev) return
-    pendingCaret.current = prev.caret
-    onChange(prev.value)
-  }, [onChange])
-
   // onPointerDown + preventDefault keeps focus (and therefore the selection) on
   // whatever input is active — a key that stole focus would clear the very
   // selection it is about to act on.
@@ -258,7 +204,6 @@ export function TouchKeyboard({
   }
 
   const rows = LAYOUTS[shape][page]
-  const hasSelection = sel[0] !== sel[1]
 
   // No `flex-1` and no `min-w-*`: width is per-key data now (see renderKey),
   // and a minimum width would stop ten keys being ten EVEN columns the moment
@@ -271,12 +216,6 @@ export function TouchKeyboard({
     `${shape === 'tablet' ? 'h-14 text-base' : 'h-12 text-sm'} ` +
     'rounded-lg text-white font-medium flex items-center justify-center ' +
     'transition-colors active:brightness-150 select-none'
-  // Shorter than a letter key: this row is reached deliberately, not touch-typed,
-  // and the letters are what needs to stay thumb-sized.
-  const toolBase =
-    'h-10 flex-1 rounded-lg flex items-center justify-center gap-1 select-none transition-colors ' +
-    'active:brightness-150 disabled:opacity-25 text-white/70 bg-white/[0.09]'
-
   /**
    * One key, from its definition.
    *
@@ -379,6 +318,7 @@ export function TouchKeyboard({
     }
   }
 
+
   // ── Number pad ──
   //
   // Its own return rather than another `rows` variant, because almost nothing
@@ -394,34 +334,6 @@ export function TouchKeyboard({
       <div className="fixed bottom-0 left-0 right-0 z-[10000] bg-[#1a1a1a] border-t border-white/15
                       px-2 pt-2 pb-3 select-none">
         <div className="mx-auto w-full max-w-[21rem] flex flex-col gap-1.5">
-          {/* Caret controls only — a number is short enough that copy/paste and
-              jump-to-end are noise, but placing the caret to fix one digit is
-              exactly why this keyboard learned about selections. */}
-          {caretAware && (
-            <div className="flex gap-1.5">
-              <button type="button" aria-label="Undo"
-                onPointerDown={e => tap(e, undo)}
-                className={toolBase}>
-                <Undo2 size={16} />
-              </button>
-              <button type="button" aria-label="Left"
-                onPointerDown={e => tap(e, () => moveCaret('left'))}
-                className={toolBase}>
-                <ChevronLeft size={17} />
-              </button>
-              <button type="button" aria-label="Right"
-                onPointerDown={e => tap(e, () => moveCaret('right'))}
-                className={toolBase}>
-                <ChevronRight size={17} />
-              </button>
-              <button type="button" aria-label="Select all"
-                onPointerDown={e => tap(e, selectAll)}
-                className={`${toolBase} ${hasSelection ? 'bg-[var(--accent,#06b6d4)]/25 text-white' : ''}`}>
-                <TextSelect size={16} />
-              </button>
-            </div>
-          )}
-
           <div className="flex gap-1.5">
             <div className="flex-1 flex flex-col gap-1.5">
               {NUMPAD_ROWS.map((row, ri) => (
@@ -482,55 +394,7 @@ export function TouchKeyboard({
 
   return (
     <div className="fixed bottom-0 left-0 right-0 z-[10000] bg-[#1a1a1a] border-t border-white/15 px-2 pt-2 pb-3 select-none">
-      {/* ── Caret / selection toolbar ──
-          Only drawn when there is an element whose selection we can act on;
-          without one every button here would be a lie. */}
-      {caretAware && (
-        <div className="flex gap-1 mb-2">
-          <button type="button" aria-label="Undo"
-            onPointerDown={e => tap(e, undo)}
-            className={toolBase}>
-            <Undo2 size={16} />
-          </button>
-          <button type="button" aria-label="To start"
-            onPointerDown={e => tap(e, () => moveCaret('start'))}
-            className={toolBase}>
-            <ChevronsLeft size={17} />
-          </button>
-          <button type="button" aria-label="Left"
-            onPointerDown={e => tap(e, () => moveCaret('left'))}
-            className={toolBase}>
-            <ChevronLeft size={17} />
-          </button>
-          <button type="button" aria-label="Right"
-            onPointerDown={e => tap(e, () => moveCaret('right'))}
-            className={toolBase}>
-            <ChevronRight size={17} />
-          </button>
-          <button type="button" aria-label="To end"
-            onPointerDown={e => tap(e, () => moveCaret('end'))}
-            className={toolBase}>
-            <ChevronsRight size={17} />
-          </button>
-          <button type="button" aria-label="Select all"
-            onPointerDown={e => tap(e, selectAll)}
-            className={`${toolBase} ${hasSelection ? 'bg-[var(--accent,#06b6d4)]/25 text-white' : ''}`}>
-            <TextSelect size={16} />
-          </button>
-          <button type="button" aria-label="Copy" disabled={!hasSelection}
-            onPointerDown={e => tap(e, copy)}
-            className={toolBase}>
-            <Copy size={15} />
-          </button>
-          <button type="button" aria-label="Paste"
-            onPointerDown={e => tap(e, () => { void paste() })}
-            className={toolBase}>
-            <ClipboardPaste size={16} />
-          </button>
-        </div>
-      )}
-
-      {[...rows, bottomRow(page, multiline)].map((row, ri) => (
+      {[...rows, bottomRow(page, multiline, shape)].map((row, ri) => (
         <div key={ri} className="flex gap-1 mb-1.5 last:mb-0">
           {row.map((key, ki) => renderKey(key, `${ri}-${ki}`))}
         </div>
