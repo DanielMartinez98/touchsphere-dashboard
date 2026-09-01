@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { fetchMonthEvents } from '../../../hooks/useCalendar'
 import type { CalendarEvent } from '../../../types'
 import { playStartupSound } from '../../../utils/sound'
@@ -76,7 +77,6 @@ function toDatetimeLocal(iso: string): string {
 }
 
 const HOUR_H = 52
-const HOURS  = Array.from({ length: 24 }, (_, i) => i)
 
 /** Strip the -occ-YYYY-MM-DD suffix added to recurring event occurrence IDs */
 function occBaseId(id: string): string {
@@ -207,8 +207,19 @@ function EventDetailSheet({ event, status, isLocal, onClose, onStatusChange, onD
 
   const cur = status?.status
 
-  return (
-    <div className="absolute inset-0 z-10 flex flex-col justify-end">
+  return createPortal(
+    // FIXED and portalled, not `absolute inset-0`.
+    //
+    // Absolute positioned it against this panel's own box, and in the merged
+    // Time corner that box is a page a thousand pixels taller than the screen —
+    // so tapping an event slid a sheet up at the BOTTOM OF THE PAGE, out of
+    // sight, and read as the tap doing nothing. The portal also lifts it clear
+    // of the widget overlay's stacking context, which is what lets it cover the
+    // overlay's own close button.
+    //
+    // z-9050: just above Widget's expanded overlay (9000) and below the browser
+    // window (9200) — see the stack documented in ImageOverlay.tsx.
+    <div className="fixed inset-0 z-[9050] flex flex-col justify-end">
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
 
@@ -305,7 +316,8 @@ function EventDetailSheet({ event, status, isLocal, onClose, onStatusChange, onD
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -350,8 +362,9 @@ function NewEventSheet({ defaultDate, onClose, onSave }: NewEventSheetProps) {
     onClose()
   }
 
-  return (
-    <div className="absolute inset-0 z-10 flex flex-col justify-end">
+  return createPortal(
+    // Fixed and portalled for the same reason as the event sheet above.
+    <div className="fixed inset-0 z-[9050] flex flex-col justify-end">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
 
       <div className="relative bg-[#111827] rounded-t-3xl z-20 overflow-y-auto"
@@ -433,7 +446,8 @@ function NewEventSheet({ defaultDate, onClose, onSave }: NewEventSheetProps) {
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -554,13 +568,48 @@ export default function CalendarExpanded({ nested = false }: { nested?: boolean 
 
   const localIds = useMemo(() => new Set(localEvents.map(e => e.id)), [localEvents])
 
+  // ── The hours worth drawing ───────────────────────────────────────────────
+  //
+  // Not all 24. A full day is 1248px of timeline, and in the merged Time corner
+  // this panel has NO scroller of its own — it flows inside the widget's single
+  // scroll container (see the note in TimeExpanded), so the auto-scroll below
+  // has nothing to scroll and every visit to the Calendar tab landed at 00:00
+  // with eight empty hours to drag through before the day started.
+  //
+  // So the timeline is clipped to a window instead of scrolled to one: a
+  // waking-hours default, widened by whatever the day actually holds and by
+  // "now" when today is selected. Nothing is hidden — an 05:00 event pulls the
+  // window down to meet it — and the block shrinks to something a single flick
+  // covers. Clipping is safe here because the grid is not tappable: hours are
+  // rules, events are the buttons, and new events come from the + button.
+  const [hourFrom, hourTo] = (() => {
+    let from = 7, to = 22
+    for (const ev of timedEvs) {
+      from = Math.min(from, Math.floor(minuteOfDay(ev.start) / 60))
+      to   = Math.max(to,   Math.ceil(endMinuteOfDay(ev) / 60))
+    }
+    if (selectedIsToday) {
+      from = Math.min(from, now.getHours())
+      to   = Math.max(to,   now.getHours() + 1)
+    }
+    from = Math.max(0, from)
+    return [from, Math.min(24, Math.max(to, from + 1))]
+  })()
+  const visibleHours = Array.from({ length: hourTo - hourFrom }, (_, i) => hourFrom + i)
+  /** Minutes past midnight → pixels down the clipped timeline. */
+  const topOfMinute = (m: number) => (m / 60 - hourFrom) * HOUR_H
+
   // ── Auto-scroll ───────────────────────────────────────────────────────────
+  //
+  // Only does anything on the full-screen path, where the timeline still owns a
+  // scroller. Offset by the window start so it can't scroll past the end of a
+  // clipped day.
   useEffect(() => {
     if (!timelineRef.current) return
     let targetHour = 8
     if (selectedIsToday) targetHour = Math.max(0, now.getHours() - 1)
     else if (timedEvs.length > 0) targetHour = Math.max(0, Math.floor(minuteOfDay(timedEvs[0].start) / 60) - 1)
-    timelineRef.current.scrollTop = targetHour * HOUR_H
+    timelineRef.current.scrollTop = Math.max(0, (targetHour - hourFrom) * HOUR_H)
   }, [selectedKey])
 
   // ── Navigation ────────────────────────────────────────────────────────────
@@ -673,8 +722,11 @@ export default function CalendarExpanded({ nested = false }: { nested?: boolean 
         {/* ══ Divider ════════════════════════════════════════════════════════ */}
         <div className="flex-shrink-0 border-t border-white/10 mx-3" />
 
-        {/* ══ Day detail ═════════════════════════════════════════════════════ */}
-        <div className="flex-1 min-h-0 flex flex-col">
+        {/* ══ Day detail ═════════════════════════════════════════════════════
+            `flex-1 min-h-0` only on the full-screen path, where there is a fixed
+            height to divide up. Nested, the panel is as tall as its content and
+            those two classes describe a share of nothing. */}
+        <div className={`flex flex-col ${nested ? '' : 'flex-1 min-h-0'}`}>
 
           {/* Heading */}
           <div className="flex-shrink-0 px-4 pt-2 pb-1 flex items-baseline gap-2">
@@ -720,14 +772,23 @@ export default function CalendarExpanded({ nested = false }: { nested?: boolean 
             </div>
           )}
 
-          {/* Hour-by-hour timeline */}
-          <div ref={timelineRef} className="flex-1 min-h-0 overflow-y-auto px-4 pb-6">
-            <div className="relative" style={{ height: 24 * HOUR_H }}>
+          {/* Hour-by-hour timeline.
+              No scroller of its own when nested: the widget's wrapper is the
+              single scroll container for the whole panel, and an inner one here
+              is a dead zone — `overscroll-behavior: contain` (index.css) stops a
+              drag that reaches its end from chaining out, so the finger moves
+              and nothing happens. The clipped hour window above is what makes
+              that affordable. */}
+          <div ref={timelineRef}
+            // pb-24 leaves room for the floating buttons below, which sit over
+            // the end of the timeline rather than after it.
+            className={`px-4 pb-24 ${nested ? '' : 'flex-1 min-h-0 overflow-y-auto'}`}>
+            <div className="relative" style={{ height: (hourTo - hourFrom) * HOUR_H }}>
 
               {/* Hour rows */}
-              {HOURS.map(h => (
+              {visibleHours.map(h => (
                 <div key={h} className="absolute left-0 right-0 border-t border-white/[0.06]"
-                  style={{ top: h * HOUR_H, height: HOUR_H }}>
+                  style={{ top: topOfMinute(h * 60), height: HOUR_H }}>
                   <span className="absolute left-0 top-0.5 text-[10px] text-white/20 select-none w-9 text-right pr-1.5 leading-none">
                     {String(h).padStart(2, '0')}
                   </span>
@@ -737,7 +798,7 @@ export default function CalendarExpanded({ nested = false }: { nested?: boolean 
               {/* Current-time needle */}
               {selectedIsToday && (
                 <div className="absolute left-0 right-0 z-20 flex items-center pointer-events-none"
-                  style={{ top: (nowMinute / 60) * HOUR_H - 1 }}>
+                  style={{ top: topOfMinute(nowMinute) - 1 }}>
                   <span className="w-9 text-right pr-1 text-[9px] text-red-400 leading-none select-none flex-shrink-0">
                     {String(now.getHours()).padStart(2,'0')}:{String(now.getMinutes()).padStart(2,'0')}
                   </span>
@@ -751,7 +812,7 @@ export default function CalendarExpanded({ nested = false }: { nested?: boolean 
                 const s        = statuses[ev.id]
                 const startM   = minuteOfDay(ev.start)
                 const endM     = endMinuteOfDay(ev)
-                const top      = (startM / 60) * HOUR_H
+                const top      = topOfMinute(startM)
                 const height   = Math.max(((Math.max(endM - startM, 30)) / 60) * HOUR_H, 28)
                 const declined = s?.status === 'declined'
                 const accepted = s?.status === 'accepted'
@@ -780,7 +841,7 @@ export default function CalendarExpanded({ nested = false }: { nested?: boolean 
               })}
 
               {timedEvs.length === 0 && allDayEvs.length === 0 && (
-                <p className="absolute left-10 text-white/20 text-xs" style={{ top: 8 * HOUR_H + 4 }}>
+                <p className="absolute left-10 text-white/20 text-xs" style={{ top: topOfMinute(9 * 60) + 4 }}>
                   No events
                 </p>
               )}
@@ -788,21 +849,39 @@ export default function CalendarExpanded({ nested = false }: { nested?: boolean 
           </div>
         </div>
 
-        {/* ══ Speaker test button ════════════════════════════════════════════ */}
-        <button onClick={playTestSound} aria-label="Test speakers"
-          className="absolute bottom-5 left-5 w-14 h-14 rounded-full bg-white/10 text-white
-                     flex items-center justify-center text-2xl shadow-lg
-                     active:scale-90 transition-transform z-[5]">
-          🔊
-        </button>
+        {/* ══ Action buttons ═════════════════════════════════════════════════
+            STICKY, not absolute.
 
-        {/* ══ Add event button ═══════════════════════════════════════════════ */}
-        <button onClick={() => setShowNewEvent(true)} aria-label="Add event"
-          className="absolute bottom-5 right-5 w-14 h-14 rounded-full bg-cyan-500 text-black
-                     flex items-center justify-center text-3xl font-light shadow-lg shadow-cyan-500/30
-                     active:scale-90 transition-transform z-[5]">
-          +
-        </button>
+            `absolute bottom-5` is positioned against this panel's own box, and
+            in the merged Time corner that box is the whole scrolling page — so
+            "Add event" sat below the end of the timeline and could only be
+            reached by scrolling to the bottom of the day first, which is the
+            opposite of what a floating action button is for.
+
+            Sticky rather than fixed because the widget's expanded overlay is a
+            framer-motion element that animates `scale`: a transformed ancestor
+            re-roots `position: fixed` onto itself, so fixed would be a silent
+            coin-flip. A zero-height sticky strip has neither problem, and on the
+            full-screen path (no scroller) it degrades to sitting at the end of
+            the column — exactly where it was before. */}
+        <div className="sticky bottom-0 z-[5] h-0 pointer-events-none">
+          <div className="absolute left-5 right-5 flex items-center justify-between"
+            style={{ bottom: 'max(1.25rem, env(safe-area-inset-bottom))' }}>
+            <button onClick={playTestSound} aria-label="Test speakers"
+              className="pointer-events-auto w-14 h-14 rounded-full bg-white/10 backdrop-blur-md text-white
+                         flex items-center justify-center text-2xl shadow-lg
+                         active:scale-90 transition-transform">
+              🔊
+            </button>
+
+            <button onClick={() => setShowNewEvent(true)} aria-label="Add event"
+              className="pointer-events-auto w-14 h-14 rounded-full bg-cyan-500 text-black
+                         flex items-center justify-center text-3xl font-light shadow-lg shadow-cyan-500/30
+                         active:scale-90 transition-transform">
+              +
+            </button>
+          </div>
+        </div>
 
         {/* ══ Sheets ════════════════════════════════════════════════════════ */}
         {selectedEvent && (() => {

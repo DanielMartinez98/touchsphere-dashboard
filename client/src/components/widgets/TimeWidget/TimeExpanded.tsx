@@ -35,7 +35,10 @@ export default function TimeExpanded({ timers, stopwatch }: { timers?: TimersApi
       {/* pt-16 clears the grab handle and the close button, matching what each
           panel used to reserve for itself when it owned the whole screen. */}
       <div
-        className="sticky top-0 z-10 flex gap-2 pt-16 pb-3 bg-black/95 backdrop-blur-xl"
+        // Opaque rather than blurred: this bar is sticky over a long scrolling
+        // page, and a backdrop filter on a sticky element is re-composited on
+        // every scroll frame for a 5% effect the overlay behind it already hides.
+        className="sticky top-0 z-10 flex gap-2 pt-16 pb-3 bg-black/95"
         style={{
           paddingLeft:  'max(1.5rem, env(safe-area-inset-left))',
           paddingRight: 'max(1.5rem, env(safe-area-inset-right))',

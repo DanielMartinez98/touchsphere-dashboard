@@ -203,6 +203,29 @@ export function TouchKeyboard({
     repeat.current = {}
   }
 
+  // How much of the screen the board is covering, published to the page.
+  //
+  // The keyboard is `fixed` to the bottom, so it costs the layout nothing and
+  // the scroll containers behind it end exactly where they always did — which
+  // means the last ~300px of any panel sits UNDER the board with no way to
+  // scroll it into view. TouchInput scrolls the field itself into the middle of
+  // what's left, but everything below the field is unreachable while typing,
+  // and the taller iPad board makes it a third of the panel.
+  //
+  // A CSS variable rather than a React context: the thing that has to grow is
+  // Widget's scroll container, which is three portals away and has no business
+  // knowing this component exists. Zeroed on unmount, so the padding is only
+  // there while the board is.
+  const boardRef = useRef<HTMLDivElement | null>(null)
+  useLayoutEffect(() => {
+    const el = boardRef.current
+    const root = document.documentElement
+    if (el) root.style.setProperty('--ts-keyboard-h', `${el.offsetHeight}px`)
+    return () => { root.style.setProperty('--ts-keyboard-h', '0px') }
+    // `page` and `shape` are deps because swapping to `#+=` or rotating an iPad
+    // changes the board's height, and a stale figure is a gap or a dead strip.
+  }, [page, shape, numeric])
+
   const rows = LAYOUTS[shape][page]
 
   // No `flex-1` and no `min-w-*`: width is per-key data now (see renderKey),
@@ -331,8 +354,9 @@ export function TouchKeyboard({
     const sideKey = 'h-14 rounded-xl bg-white/20 text-white text-sm font-semibold ' +
       'flex items-center justify-center transition-colors active:brightness-150 select-none'
     return (
-      <div className="fixed bottom-0 left-0 right-0 z-[10000] bg-[#1a1a1a] border-t border-white/15
-                      px-2 pt-2 pb-3 select-none">
+      <div ref={boardRef}
+        className="fixed bottom-0 left-0 right-0 z-[10000] bg-[#1a1a1a] border-t border-white/15
+                   px-2 pt-2 pb-3 select-none">
         <div className="mx-auto w-full max-w-[21rem] flex flex-col gap-1.5">
           <div className="flex gap-1.5">
             <div className="flex-1 flex flex-col gap-1.5">
@@ -393,7 +417,8 @@ export function TouchKeyboard({
   }
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-[10000] bg-[#1a1a1a] border-t border-white/15 px-2 pt-2 pb-3 select-none">
+    <div ref={boardRef}
+      className="fixed bottom-0 left-0 right-0 z-[10000] bg-[#1a1a1a] border-t border-white/15 px-2 pt-2 pb-3 select-none">
       {[...rows, bottomRow(page, multiline, shape)].map((row, ri) => (
         <div key={ri} className="flex gap-1 mb-1.5 last:mb-0">
           {row.map((key, ki) => renderKey(key, `${ri}-${ki}`))}

@@ -102,7 +102,14 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
             <motion.div
               role="dialog"
               aria-modal="true"
-              className={`fixed inset-0 z-[9000] bg-black/95 backdrop-blur-xl flex flex-col ${expandOrigin[position]}`}
+              // No backdrop-blur. It sat behind `bg-black/95`, which is 95%
+              // opaque — so it bought a barely-visible 5% of blurred sphere and
+              // charged a full-viewport backdrop filter that Chromium repaints
+              // on every scroll frame. On the 720px kiosk that was tolerable;
+              // on a tablet it is four times the pixels behind the two longest
+              // panels in the app (Draw and Calendar), and it reads as the
+              // scroll being heavy rather than as a graphics setting.
+              className={`fixed inset-0 z-[9000] bg-black/95 flex flex-col ${expandOrigin[position]}`}
               initial={{ opacity: 0, scale: 0.85 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.85 }}
@@ -140,8 +147,20 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
                 <X size={26} strokeWidth={2.25} />
               </button>
               {/* min-h-0 so a tall panel actually scrolls here instead of
-                  overflowing the dialog and getting clipped. */}
-              <div className="flex-1 min-h-0 overflow-auto scroll-fade-y">
+                  overflowing the dialog and getting clipped.
+
+                  The bottom padding is the on-screen keyboard's height, which
+                  TouchKeyboard publishes as `--ts-keyboard-h` while it is up
+                  (0px otherwise). Without it the board — `fixed`, and up to a
+                  third of an iPad screen — covers the tail of the panel with no
+                  scroll left to bring it back: you can see the field you are
+                  typing into and nothing under it. This is the single scroll
+                  container for every expanded widget, so one line covers all of
+                  them. */}
+              <div
+                className="flex-1 min-h-0 overflow-auto scroll-fade-y"
+                style={{ paddingBottom: 'var(--ts-keyboard-h, 0px)' }}
+              >
                 {expanded}
               </div>
             </motion.div>

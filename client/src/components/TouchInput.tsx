@@ -47,6 +47,26 @@ export function TouchInput({
     ref.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [open])
 
+  // Grow a multiline field to fit what's in it.
+  //
+  // `rows` is a FLOOR now, not a window. A three-row box holding a forty-word
+  // image prompt scrolls internally, and an internal scroller is a dead strip
+  // for the page behind it: a finger dragging to scroll the Draw panel that
+  // happens to start on the prompt — which is wide, near the top, and the
+  // biggest single target up there — moves the prompt's own two lines of
+  // overflow and then stops, because `overscroll-behavior: contain` (index.css)
+  // won't chain it out. Growing the box removes the scroller instead of fighting
+  // it, and has the side benefit that you can see the whole thing you typed.
+  const shown = open ? draft : value
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el || !multiline) return
+    // Collapse first: without it the box can only ever get taller, because
+    // scrollHeight of an already-tall element is its own height.
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [multiline, shown])
+
   function handleKeyboardChange(next: string) {
     setDraft(next)
     if (commitOn === 'change') onChange(next)
@@ -64,7 +84,7 @@ export function TouchInput({
   }
 
   const shared = {
-    value:       open ? draft : value,
+    value:       shown,
     placeholder,
     // NOT readOnly.
     //
@@ -91,7 +111,11 @@ export function TouchInput({
   return (
     <>
       {multiline
-        ? <textarea {...shared} ref={ref as React.RefObject<HTMLTextAreaElement>} rows={rows ?? 1} />
+        ? <textarea {...shared} ref={ref as React.RefObject<HTMLTextAreaElement>} rows={rows ?? 1}
+            // Hidden rather than auto: the effect above keeps the box the size
+            // of its content, so a scrollbar here would only ever be a one-frame
+            // flicker between a keystroke and the resize.
+            style={{ overflow: 'hidden', resize: 'none' }} />
         : <input    {...shared} ref={ref as React.RefObject<HTMLInputElement>} type="text" />}
       {open && (
         <TouchKeyboard
