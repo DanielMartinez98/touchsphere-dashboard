@@ -34,6 +34,7 @@ import {
   startImage,
   styleDefaults,
   styleNeeds,
+  styleLabel,
   supersededCheckpoints,
   WORKFLOW_PREFIX,
 } from '../image'
@@ -361,7 +362,14 @@ router.get('/', (_req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-store')
   res.json({
     enabled: imagesEnabled(),
-    images: listImages().map(e => ({ ...e, url: `/api/image/file/${e.file}` })),
+    // `modelLabel` is resolved here rather than stored, so an image drawn before
+    // settings were recorded still gets a readable style name — and so the
+    // client never has to carry the `wf:` id table to caption a picture.
+    images: listImages().map(e => ({
+      ...e,
+      url: `/api/image/file/${e.file}`,
+      modelLabel: styleLabel(e.settings?.style ?? e.model ?? ''),
+    })),
   })
 })
 

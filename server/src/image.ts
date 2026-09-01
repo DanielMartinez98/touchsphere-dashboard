@@ -26,6 +26,7 @@ import fs from 'fs'
 import path from 'path'
 import { broadcast } from './routes/system'
 import { advanceSeed, paramsFor, type ImageParams } from './image-params'
+import { estimateRender, humanMs, recordRender } from './image-timing'
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -318,6 +319,44 @@ function imagesDir(): string {
   return dir
 }
 
+/**
+ * How a picture was actually drawn.
+ *
+ * Recorded rather than recomputed, and recorded from the graph that was SENT
+ * rather than from the job's own fields, because most of the job's numbers are
+ * zeros meaning "leave it alone": steps 0 falls through to the quality preset,
+ * cfg 0 to whatever the style's graph specifies, and the sampler and scheduler
+ * are never in the job at all. A gallery caption built from those would say
+ * "cfg 0, sampler unknown" for every picture Anima ever drew.
+ *
+ * It is also a snapshot on purpose. The style's saved knobs are edited between
+ * renders and a `wf:` style's graph can be replaced on the volume, so asking
+ * the live config what drew a three-week-old picture answers for today's
+ * settings — which is precisely the question this is meant to settle.
+ */
+export interface ImageSettings {
+  /** Style id as it was chosen: a checkpoint filename, or `wf:<id>`. */
+  style:      string
+  /** Its label at the time — a `wf:` id is not a name anyone recognises. */
+  styleLabel: string
+  /** Sampling steps the sampler node actually received. */
+  steps:      number
+  /** Guidance. 0 for a sampler that has no cfg input at all (SamplerCustom). */
+  cfg:        number
+  sampler:    string
+  scheduler:  string
+  /** What it was told to avoid — a style's own, or the house default. */
+  negative:   string
+  /** Turbo LoRA spliced in ahead of the sampler, if any. */
+  lora?:         string
+  loraStrength?: number
+  /** Redraw: the gallery id it started from, and how much of it was thrown away. */
+  source?:  string
+  denoise?: number
+  /** Wall-clock render time, so "which settings" can be weighed against "how long". */
+  tookMs:   number
+}
+
 export interface StoredImage {
   /** 32 hex chars. Also the filename stem, so `${id}.png` is the file. */
   id:      string
@@ -328,6 +367,8 @@ export interface StoredImage {
   seed:    number
   /** Checkpoint that drew it — the answer to "which model made that good one?". */
   model?:  string
+  /** Everything else about how it was drawn. Absent on anything drawn before this existed. */
+  settings?: ImageSettings
   /** ISO timestamp. */
   at:      string
 }
@@ -435,8 +476,43 @@ export interface ImageJob {
   /** How much of the source to throw away, 0.05-1. Meaningless without a source. */
   denoise:  number
   status:   JobStatus
-  /** Human phrase for the overlay — "waiting for the GPU", "drawing"… */
+  /** Short label for a chip or a narrow row — "drawing", "loading the model". */
   phase:    string
+  /**
+   * The same status in full sentences: what is happening, to what, with which
+   * style and settings, and how long it should take.
+   *
+   * A second field rather than a longer `phase` because the two are read in
+   * different places. `phase` goes in the queue strip's rows and the collapsed
+   * corner, which are a hundred pixels wide; this goes in the full-screen frame,
+   * which is otherwise an empty rectangle for half a minute and has room for the
+   * whole story. Neither one can do both jobs.
+   */
+  detail:   string
+  /**
+   * How long this render should take, from the history of ones like it.
+   *
+   * Per JOB, resolved when the job is queued and again when it starts, rather
+   * than one number for the whole box — see image-timing.ts for why the old
+   * single `lastDurationMs` was wrong for every render that wasn't a repeat of
+   * the previous one.
+   */
+  etaMs:     number
+  /** Where that number came from, in words. '' when there is no history to use. */
+  etaBasis:  string
+  /**
+   * Whether this style was already on the GPU when the render began.
+   *
+   * Best-effort: ComfyUI is a separate process and can evict a checkpoint under
+   * VRAM pressure without telling us. Assumed false after a restart of this
+   * server, which errs towards over-estimating — the safe direction.
+   */
+  warm:      boolean
+  /**
+   * Steps the sampler will actually run, including the graph's own number when
+   * the job doesn't override it. `steps` above is the OVERRIDE and is usually 0.
+   */
+  plannedSteps: number
   /** When it was asked for. Distinct from startedAt, which run() resets. */
   queuedAt: number
   /** Set once status is 'ready'. Serve via /api/image/file/<file>. */
@@ -464,10 +540,12 @@ const MAX_QUEUED = 8
 // queue makes entries arrive in bursts. Well past what any UI asks for.
 const MAX_TRACKED_JOBS = 40
 
-// A rolling memory of how long renders actually take on THIS box, so the
-// overlay can show a real estimate instead of a spinner with no end in sight.
-// Seeded at zero: with no history the UI just shows elapsed time.
-let lastDurationMs = 0
+// The style the GPU last drew with, which is the only signal this process has
+// for whether the next render pays the checkpoint load. In memory rather than on
+// disk on purpose: ComfyUI is a separate process on another machine, so what it
+// had loaded before this server restarted is genuinely unknown, and guessing
+// 'cold' over-estimates rather than under-estimates. See image-timing.ts.
+let lastStyleDrawn = ''
 
 export function getJob(id: string): ImageJob | undefined {
   return jobs.get(id)
@@ -512,7 +590,10 @@ export function cancelJob(id: string): ImageJob | undefined {
   job.status = 'cancelled'
   job.endedAt = Date.now()
   console.log(`[image] cancelled ${job.id} "${job.prompt.slice(0, 60)}"`)
-  push(job, 'cancelled')
+  push(job, 'cancelled',
+    'Taken out of the queue before the GPU started it, so no time was spent on it. ' +
+    'Asking again puts it back at the end of the line.')
+  refreshQueue()
   return job
 }
 
@@ -531,6 +612,104 @@ function pruneJobs(): void {
   }
 }
 
+// ── Saying what is going on ──────────────────────────────────────────────────
+//
+// The frame goes up ten to thirty seconds before the picture exists, and for
+// most of that time it is an empty rectangle with one word in it. "Drawing" is
+// true and tells nobody anything: it can't say which of four styles is being
+// used, whether the 40s wait is the checkpoint loading or the render itself,
+// whether this job is even at the front of the queue, or when it will be done.
+// Every one of those is knowable here, and every one of them was being thrown
+// away. So each transition below writes a short `phase` for the narrow places
+// and a full `detail` for the frame.
+
+/** 1 → "1st", 2 → "2nd", 11 → "11th". */
+function ordinal(n: number): string {
+  const rem100 = n % 100
+  if (rem100 >= 11 && rem100 <= 13) return `${n}th`
+  return `${n}${(['th', 'st', 'nd', 'rd'][n % 10] ?? 'th')}`
+}
+
+const count = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+
+/**
+ * Steps the sampler really runs.
+ *
+ * A redraw starts partway through the schedule, so 30 steps at 0.65 denoise is
+ * about 20 — which is both what the estimate has to be built on and what the
+ * status line should say, since "30 steps" over a render that takes two thirds
+ * of 30 steps' time is the same kind of quiet lie as the old global ETA.
+ */
+function effectiveSteps(job: ImageJob): number {
+  const base = job.plannedSteps > 0 ? job.plannedSteps : 20
+  return job.source ? Math.max(1, Math.round(base * job.denoise)) : base
+}
+
+/** "Anima Aesthetic v1.1, 30 steps at 1024×1536" — the job in one clause. */
+function jobShape(job: ImageJob): string {
+  const bits = [
+    styleLabel(job.model) || 'the default style',
+    `${effectiveSteps(job)} steps`,
+    `${job.width}×${job.height}`,
+  ]
+  if (job.cfg > 0) bits.push(`cfg ${job.cfg}`)
+  if (job.lora) bits.push(`the ${job.lora} LoRA at ${job.loraStrength}`)
+  return bits.join(', ')
+}
+
+/** The estimate as a sentence, or an honest admission that there isn't one. */
+function etaSentence(job: ImageJob): string {
+  if (job.etaMs <= 0) {
+    return 'Nothing like this has been drawn on this box yet, so there is no estimate — ' +
+      'this render is the one that sets the baseline.'
+  }
+  return `Renders like this take about ${humanMs(job.etaMs)} — ${job.etaBasis}.`
+}
+
+/** Re-read the estimate for a job whose warmth or step count has just settled. */
+function refreshEstimate(job: ImageJob): void {
+  const est = estimateRender(
+    job.model, effectiveSteps(job), job.width * job.height, job.warm,
+  )
+  job.etaMs = est.ms
+  job.etaBasis = est.basis
+}
+
+/** How long before the GPU even reaches this job. 0 for the one already on it. */
+function waitAheadMs(job: ImageJob): number {
+  const pending = pendingJobs()
+  const idx = pending.findIndex(j => j.id === job.id)
+  if (idx <= 0) return 0
+  return pending.slice(0, idx).reduce((total, ahead) => {
+    // A job already drawing has burned some of its own estimate; count what is
+    // left of it rather than the whole thing, or the number a queued picture
+    // shows would stall instead of counting down.
+    const spent = ahead.status === 'running' ? Date.now() - ahead.startedAt : 0
+    return total + Math.max(0, ahead.etaMs - spent)
+  }, 0)
+}
+
+/** The full status line for a job that is waiting its turn. */
+function queuedDetail(job: ImageJob): { phase: string; detail: string } {
+  const pending = pendingJobs()
+  const idx = pending.findIndex(j => j.id === job.id)
+  const ahead = Math.max(0, idx)
+  if (ahead === 0) {
+    return {
+      phase: 'waiting for the GPU',
+      detail: `Next in line. Drawing with ${jobShape(job)}. ${etaSentence(job)}`,
+    }
+  }
+  const wait = waitAheadMs(job)
+  return {
+    phase: `${ordinal(idx + 1)} in the queue`,
+    detail:
+      `${count(ahead, 'picture')} to finish first${wait > 0 ? `, about ${humanMs(wait)} before this one starts` : ''}. ` +
+      `Then ${jobShape(job)}. ${etaSentence(job)} ` +
+      'Pictures are drawn one at a time — two at once on one card is slower, not faster.',
+  }
+}
+
 /** What a job looks like on the wire — jobs and stored images share a shape. */
 function wire(job: ImageJob) {
   return {
@@ -538,6 +717,7 @@ function wire(job: ImageJob) {
     prompt:   job.prompt,
     status:   job.status,
     phase:    job.phase,
+    detail:   job.detail,
     width:    job.width,
     height:   job.height,
     seed:     job.seed,
@@ -559,15 +739,54 @@ function wire(job: ImageJob) {
     // job's position moves when the one in front of it finishes.
     queuedAt: job.queuedAt,
     elapsedMs: (job.endedAt ?? Date.now()) - job.startedAt,
-    // Zero until this server has finished one render. The client shows elapsed
-    // only in that case rather than inventing a percentage.
-    etaMs:     lastDurationMs,
+    // THIS job's estimate, from the history of renders that resemble it —
+    // not the duration of whatever the box happened to draw last. Still 0 when
+    // there is no usable history, and the client draws no bar for a 0.
+    etaMs:     job.etaMs,
+    etaBasis:  job.etaBasis,
+    // How long before the GPU reaches this one. Recomputed per frame rather than
+    // stored, because it changes when any job AHEAD of this one moves.
+    waitMs:    waitAheadMs(job),
+    /** Steps the sampler runs, redraw discount included. */
+    plannedSteps: effectiveSteps(job),
+    warm:      job.warm,
   }
 }
 
-function push(job: ImageJob, phase?: string): void {
+/**
+ * Broadcast a change, optionally moving the job to a new phase.
+ *
+ * Both strings move together on purpose: the short label and the sentence are
+ * two renderings of one fact, and letting a caller update one without the other
+ * is how a frame ends up saying "saving" over an explanation of the queue.
+ */
+function push(job: ImageJob, phase?: string, detail?: string): void {
   if (phase) job.phase = phase
+  if (detail !== undefined) job.detail = detail
   broadcast('image', wire(job))
+}
+
+/** Move a queued job to whatever its position in the line now says. */
+function pushQueued(job: ImageJob): void {
+  const { phase, detail } = queuedDetail(job)
+  push(job, phase, detail)
+}
+
+/**
+ * Re-tell every waiting job where it now stands.
+ *
+ * A frame is normally pushed when ONE job changes — which was fine while the
+ * status was the word "drawing", and isn't now that it says "3rd in the queue,
+ * about 2m before this one starts". Both halves of that go stale the moment
+ * anything AHEAD of it leaves the line, and the job it happened to is the one
+ * job that gets no frame. So the jobs behind are re-announced whenever one
+ * finishes, fails or is cancelled. At most MAX_QUEUED of them, and only at the
+ * handful of moments the line actually moves.
+ */
+function refreshQueue(): void {
+  for (const job of pendingJobs()) {
+    if (job.status === 'queued') pushQueued(job)
+  }
 }
 
 export interface ImageRequest {
@@ -741,9 +960,20 @@ export function startImage(req: ImageRequest): ImageJob {
     loraStrength: p.loraStrength,
     status:    'queued',
     phase:     'waiting for the GPU',
+    detail:    '',
+    // Filled in immediately below, once the job exists to be measured. The
+    // planned step count needs the STYLE'S OWN graph when the job doesn't
+    // override steps, which is the usual case — `steps: 0` means "whatever the
+    // graph says", and an estimate built on 0 steps is no estimate at all.
+    etaMs:     0,
+    etaBasis:  '',
+    warm:      lastStyleDrawn === style,
+    plannedSteps: 0,
     queuedAt:  Date.now(),
     startedAt: Date.now(),
   }
+  job.plannedSteps = job.steps > 0 ? job.steps : styleDefaults(style).steps
+  refreshEstimate(job)
   jobs.set(job.id, job)
 
   // Asked to redraw something that isn't there any more — pruned past the cap,
@@ -756,7 +986,10 @@ export function startImage(req: ImageRequest): ImageJob {
     job.error = 'the picture to redraw is no longer in the gallery'
     job.endedAt = Date.now()
     console.warn(`[image] refused ${job.id}: no stored image ${sourceId}`)
-    push(job, 'failed')
+    push(job, 'failed',
+      'The picture this was meant to redraw is no longer in the gallery — it was ' +
+      'deleted, or pushed out by newer ones. Drawing it from scratch instead would ' +
+      'produce a different kind of picture, so nothing was drawn.')
     return job
   }
 
@@ -768,7 +1001,11 @@ export function startImage(req: ImageRequest): ImageJob {
     job.error = `the render queue is full (${MAX_QUEUED} waiting) — let one finish first`
     job.endedAt = Date.now()
     console.warn(`[image] refused ${job.id}: queue full`)
-    push(job, 'failed')
+    const booked = pendingJobs().reduce((t, j) => t + Math.max(0, j.etaMs), 0)
+    push(job, 'failed',
+      `The render queue already holds ${MAX_QUEUED} pictures` +
+      (booked > 0 ? `, which is about ${humanMs(booked)} of GPU time` : '') +
+      '. Let one finish, or drop one with its × in the queue strip, and ask again.')
     return job
   }
 
@@ -779,7 +1016,7 @@ export function startImage(req: ImageRequest): ImageJob {
     `${job.turbo ? ' turbo' : ''}${job.source ? ` redraw of ${job.source} denoise=${job.denoise}` : ''}` +
     `${waiting > 0 ? ` (${waiting} ahead of it)` : ''}`,
   )
-  push(job, waiting > 0 ? `waiting behind ${waiting} more` : 'waiting for the GPU')
+  pushQueued(job)
 
   queue = queue.then(() => run(job)).catch(err => {
     // run() handles its own failures; this only catches a bug in run() itself,
@@ -799,7 +1036,20 @@ async function run(job: ImageJob): Promise<void> {
   }
   job.status = 'running'
   job.startedAt = Date.now()   // reset: queue wait isn't render time
-  push(job, 'drawing')
+  // Warmth is only knowable HERE. It was guessed at queue time from whatever the
+  // box had drawn last, and by the time a job reaches the front of the queue the
+  // three renders ahead of it may have swapped the checkpoint twice — so the
+  // estimate is taken again against the truth before the bar is drawn against it.
+  job.warm = lastStyleDrawn === job.model
+  refreshEstimate(job)
+  push(job, 'drawing',
+    `Drawing ${jobShape(job)}. ${etaSentence(job)}` +
+    (job.warm ? '' : ' This style is not on the GPU yet, so loading it comes first.'))
+
+  // Claimed the moment the render starts rather than when it finishes: every
+  // job queued behind this one is asking "will the checkpoint already be there",
+  // and the answer is yes as soon as this one has asked for it.
+  lastStyleDrawn = job.model
 
   try {
     // Turbo with no LoRA named: ask ComfyUI what it has and pick the one that
@@ -833,16 +1083,31 @@ async function run(job: ImageJob): Promise<void> {
     // go up over /upload/image and come back as a filename to put in the node.
     let sourceName = ''
     if (job.source) {
-      push(job, 'sending the picture over')
+      push(job, 'sending the picture over',
+        'Uploading the picture this one is redrawing to the GPU box. There is no ' +
+        'shared disk between the two machines, so the bytes have to travel before ' +
+        'ComfyUI can load them.')
       sourceName = await uploadSource(job)
     }
 
     const graph = buildGraph(job, sourceName)
+    // The graph is where the real step count finally lives — until now it was
+    // the style's default, read out of the same graph but before the job's own
+    // overrides were patched into it. Re-estimating against it costs nothing and
+    // keeps the bar honest for a job that overrode steps or cfg.
+    const sampled = findNode(graph, ['KSampler', 'KSamplerAdvanced', 'SamplerCustom'])
+    const realSteps = sampled ? graph[sampled]!.inputs['steps'] : undefined
+    if (typeof realSteps === 'number' && realSteps > 0 && realSteps !== job.plannedSteps) {
+      job.plannedSteps = realSteps
+      refreshEstimate(job)
+    }
     const promptId = await queuePrompt(graph)
     console.log(`[image] ${job.id} → comfy prompt ${promptId}`)
 
     const output = await awaitOutput(promptId, job)
-    push(job, 'saving')
+    push(job, 'saving',
+      'The GPU is done. Fetching the finished picture back and writing it to the ' +
+      'dashboard, which is where the gallery reads it from.')
 
     const bytes = await downloadOutput(output)
     const file = `${job.id}.png`
@@ -854,18 +1119,45 @@ async function run(job: ImageJob): Promise<void> {
     job.file = file
     job.status = 'ready'
     job.endedAt = Date.now()
-    lastDurationMs = job.endedAt - job.startedAt
+    const took = job.endedAt - job.startedAt
+    // Filed against the style, the workload and the warmth, so the NEXT render
+    // like this one can be estimated from it — see image-timing.ts. The step
+    // count carries the redraw discount, or a style would look faster than it is
+    // every time someone redrew a picture with it.
+    recordRender({
+      style:  job.model,
+      steps:  effectiveSteps(job),
+      pixels: job.width * job.height,
+      warm:   job.warm,
+      ms:     took,
+      at:     job.endedAt,
+    })
     remember({
       id: job.id, prompt: job.prompt, file,
       width: job.width, height: job.height, seed: job.seed,
       ...(job.model ? { model: job.model } : {}),
+      // Recorded from the graph that was sent, not from the job's overrides —
+      // see renderedWith(). Written AFTER endedAt so the render time is real.
+      settings: renderedWith(job, graph),
       at: new Date().toISOString(),
     })
     console.log(
-      `[image] ${job.id} ready in ${(lastDurationMs / 1000).toFixed(1)}s ` +
-      `(${(bytes.length / 1024).toFixed(0)} KB)`,
+      `[image] ${job.id} ready in ${(took / 1000).toFixed(1)}s ` +
+      `(${(bytes.length / 1024).toFixed(0)} KB, ` +
+      `${job.warm ? 'warm' : 'cold'}, estimated ${job.etaMs ? humanMs(job.etaMs) : 'n/a'})`,
     )
-    push(job, 'ready')
+    // How the estimate did, said out loud. It is the only feedback anyone gets
+    // on whether the number above the bar is worth reading, and the answer
+    // improves on its own as the history fills in.
+    const miss = job.etaMs > 0 ? took - job.etaMs : 0
+    push(job, 'ready',
+      `Done in ${humanMs(took)} — ${jobShape(job)}.` +
+      (job.etaMs > 0 && Math.abs(miss) >= 2000
+        ? ` That is ${humanMs(Math.abs(miss))} ${miss > 0 ? 'longer' : 'quicker'} than the ${humanMs(job.etaMs)} estimated.`
+        : job.etaMs > 0 ? ' About as long as estimated.' : ''))
+    // This render has just become history — every job behind it moves up a place
+    // AND gets a better estimate out of the sample just filed.
+    refreshQueue()
   } catch (err) {
     fail(job, err instanceof Error ? err.message : String(err))
   }
@@ -876,7 +1168,8 @@ function fail(job: ImageJob, message: string): void {
   job.error = message
   job.endedAt = Date.now()
   console.error(`[image] ${job.id} failed — ${message}`)
-  push(job, 'failed')
+  push(job, 'failed', `${message} Nothing was drawn, and the queue has moved on to the next one.`)
+  refreshQueue()
 }
 
 // ── The ComfyUI graph ────────────────────────────────────────────────────────
@@ -1242,6 +1535,20 @@ export function listWorkflowStyles(): { id: string; label: string }[] {
   return out
 }
 
+/**
+ * A style's human name — "Anima Turbo v1.1" rather than `wf:anima-turbo-v1.1`.
+ *
+ * Falls back to the id, which for a plain checkpoint IS the name anyone would
+ * recognise (the .safetensors filename they installed), and for an unknown
+ * `wf:` id is at least the truth rather than a blank.
+ */
+export function styleLabel(style: string): string {
+  if (!style) return ''
+  if (!style.startsWith(WORKFLOW_PREFIX)) return style
+  const id = style.slice(WORKFLOW_PREFIX.length)
+  return BUILTIN_WORKFLOWS[id]?.label ?? id.replace(/[_-]+/g, ' ')
+}
+
 /** The graph for a `wf:` style, or null if there isn't one by that name. */
 function workflowGraph(id: string): ComfyGraph | null {
   const builtin = BUILTIN_WORKFLOWS[id]
@@ -1446,6 +1753,35 @@ function buildGraph(job: ImageJob, sourceName = ''): ComfyGraph {
   return graph
 }
 
+/**
+ * What a finished render was actually made of, read back off the graph that was
+ * sent to the GPU.
+ *
+ * The graph is the only place the whole answer exists at once. The job carries
+ * the OVERRIDES — and most of them are zeros meaning "don't override" — while
+ * the sampler node carries the resolved numbers, including the two (sampler and
+ * scheduler) that the job never had an opinion about in the first place.
+ */
+function renderedWith(job: ImageJob, graph: ComfyGraph): ImageSettings {
+  const samplerId = findNode(graph, ['KSampler', 'KSamplerAdvanced', 'SamplerCustom'])
+  const inputs = samplerId ? graph[samplerId]!.inputs : {}
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+  const t = (v: unknown) => (typeof v === 'string' ? v : '')
+
+  return {
+    style:      job.model,
+    styleLabel: styleLabel(job.model),
+    steps:      n(inputs['steps']),
+    cfg:        n(inputs['cfg']),
+    sampler:    t(inputs['sampler_name']),
+    scheduler:  t(inputs['scheduler']),
+    negative:   job.negative,
+    ...(job.lora ? { lora: job.lora, loraStrength: job.loraStrength } : {}),
+    ...(job.source ? { source: job.source, denoise: job.denoise } : {}),
+    tookMs:     Math.max(0, (job.endedAt ?? Date.now()) - job.startedAt),
+  }
+}
+
 export interface StyleDefaults {
   /** What the graph's own sampler says, so the UI's "Auto" can name a number. */
   steps:     number
@@ -1613,7 +1949,27 @@ async function awaitOutput(promptId: string, job: ImageJob): Promise<OutputRef> 
       // load is 20-40s of this, which is why the phase text matters.
       if (!announcedRunning && Date.now() - job.startedAt > 5000) {
         announcedRunning = true
-        push(job, 'loading the model')
+        // Carefully NOT a claim about which part of the work is running.
+        //
+        // ComfyUI's /history gains an entry when a prompt FINISHES, so `!entry`
+        // covers the checkpoint load and the sampling alike — real per-step
+        // progress only comes over a WebSocket this server doesn't hold open.
+        // The old text said "loading the model" for the whole render, which is
+        // right for the first twenty seconds of a cold one and a plain untruth
+        // for the two minutes after it. Warmth is the one thing we do know, so
+        // that is the only thing asserted.
+        const style = styleLabel(job.model) || 'this style'
+        push(job, job.warm ? 'drawing' : 'loading the model',
+          job.warm
+            ? `${style} is already in the graphics card's memory, so this is the render ` +
+              `itself — ${effectiveSteps(job)} steps at ${job.width}×${job.height}. ComfyUI ` +
+              `reports nothing between accepting a job and finishing it, which is why the ` +
+              `bar is measured against history rather than against real progress. ` +
+              etaSentence(job)
+            : `ComfyUI has taken the job. ${style} is not in the graphics card's memory ` +
+              `yet, so 20-40s of this is loading it before a single step is drawn — once ` +
+              `per style, and the next picture with it skips that entirely. ` +
+              etaSentence(job))
       }
       continue
     }

@@ -76,6 +76,7 @@ function App() {
     generate: generateImage, remove: removeImage,
     queue: imageQueue, queueMax: imageQueueMax, drawError: imageDrawError,
     cancel: cancelImage,
+    drawingEtaMs: imageEtaMs, drawingElapsedMs: imageElapsedMs,
   } = useImages()
 
   // Drawing from the widget opens the same full-screen frame the assistant's
@@ -342,6 +343,8 @@ function App() {
             enabled={imagesEnabled}
             busy={imageBusy}
             queued={Math.max(0, imageQueue.length - 1)}
+            etaMs={imageEtaMs}
+            elapsedMs={imageElapsedMs}
           />
         }
         expanded={

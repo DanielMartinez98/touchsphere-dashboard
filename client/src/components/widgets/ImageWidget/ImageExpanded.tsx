@@ -119,20 +119,31 @@ function QueueRow({
             ? <Sparkles size={16} className="animate-pulse" />
             : <span className="text-[13px] font-bold tabular-nums">{position}</span>}
         </span>
-        <span className="min-w-0 flex flex-col">
+        <span className="min-w-0 flex flex-col gap-0.5">
           <span className="text-[13px] text-white/80 leading-snug line-clamp-1">
             {job.prompt || 'a picture'}
           </span>
-          <span className="text-[11px] text-white/35 tabular-nums">
-            {/* The server's own phase for the live one — "loading the model" is
-                the honest explanation for a 20s first render. For the rest,
-                where they are in the line, which the phase string can't say:
-                a frame is pushed when ONE job changes, so a waiting job's text
-                is from when it was queued. */}
+          <span className="text-[11px] text-white/45 tabular-nums">
+            {/* The server's short label for the live one — "loading the model"
+                is the honest explanation for a 20s first render — and for the
+                rest, where they are in the line plus what that costs in
+                minutes. `waitMs` is recomputed server-side on every frame,
+                because a job's wait changes when the one AHEAD of it moves. */}
             {drawing
               ? (job.phase || 'drawing')
               : `waiting · ${job.width}×${job.height}`}
+            {job.etaMs > 0 && drawing && ` · about ${shortMs(job.etaMs)}`}
+            {job.waitMs > 0 && !drawing && ` · starts in about ${shortMs(job.waitMs)}`}
           </span>
+          {/* The verbose line, for the one on the GPU only. Every row carrying a
+              paragraph would turn a queue of eight into a page of prose, and the
+              waiting ones have nothing to report beyond their position — which
+              the line above already gives them. */}
+          {drawing && job.detail !== '' && (
+            <span className="text-[11px] text-white/30 leading-snug line-clamp-3">
+              {job.detail}
+            </span>
+          )}
         </span>
       </button>
 
@@ -152,6 +163,15 @@ function QueueRow({
       )}
     </div>
   )
+}
+
+/** "45s", "1m 20s" — mirrors humanMs() in server/src/image-timing.ts. */
+function shortMs(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000))
+  if (total < 60) return `${total}s`
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return s === 0 ? `${m}m` : `${m}m ${s}s`
 }
 
 // Mirrors QUALITY_STEPS in server/src/image.ts — only so the Steps control's

@@ -32,18 +32,23 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  X, AlertTriangle, RefreshCw, ChevronLeft, ChevronRight, Copy, Check, Wand2, Brush,
+  X, AlertTriangle, RefreshCw, ChevronLeft, ChevronRight, Copy, Check, Wand2, Brush, Info,
 } from 'lucide-react'
 import { closeImage, openImage, useImageJob, useImageTarget } from '../hooks/useImageOverlay'
 import { redrawImage, reuseImagePrompt } from '../hooks/useImagePrompt'
 import { onServerEvent } from '../hooks/useServerEvents'
+import type { StoredImage } from '../hooks/useImages'
 
-/** Just enough of a StoredImage to step between them. */
-interface GalleryEntry {
-  id:     string
-  prompt: string
-  url:    string
-}
+/**
+ * The gallery entry, whole.
+ *
+ * It used to be trimmed to the three fields the arrows needed. It carries the
+ * render settings now, and those belong to the same fetch: the picture and the
+ * account of how it was made are one record, and splitting them would mean a
+ * second request to answer a question asked by tapping ⓘ on a picture that is
+ * already on screen.
+ */
+type GalleryEntry = StoredImage
 
 /**
  * The gallery, for the sole purpose of knowing what sits either side of this
@@ -100,6 +105,19 @@ export function ImageOverlay() {
   const waiting = job?.status === 'queued'
 
   const gallery = useGallery(!!target)
+  // Closed by default and reset on every open. The details are an answer to a
+  // question ("what drew this one?"), not part of looking at a picture — and a
+  // panel that stayed open would take a third of the frame off the NEXT
+  // picture, which is the one thing a full-screen viewer must not do.
+  //
+  // Derived from the target's `seq` in the render body rather than reset from an
+  // effect — the same "derive state from props" pattern Drawing() below uses,
+  // and for the same reason: an effect would paint the previous picture's open
+  // panel for one frame before closing it.
+  const seq = target?.seq ?? 0
+  const [details, setDetails] = useState({ open: false, seq })
+  if (details.seq !== seq) setDetails({ open: false, seq })
+  const detailsOpen = details.open && details.seq === seq
   // A stored picture keeps the id of the job that drew it (remember() in
   // server/src/image.ts), so one id addresses both halves — which is what lets a
   // render finishing under the frame slot straight into the list without the
@@ -107,6 +125,7 @@ export function ImageOverlay() {
   const index = target ? gallery.findIndex(g => g.id === target.jobId) : -1
   const prev = index > 0 ? gallery[index - 1] : undefined
   const next = index >= 0 && index < gallery.length - 1 ? gallery[index + 1] : undefined
+  const entry = index >= 0 ? gallery[index] : undefined
 
   const show = useCallback((entry: GalleryEntry) => {
     openImage(entry.id, entry.prompt, entry.url)
@@ -206,6 +225,30 @@ export function ImageOverlay() {
             // — which is the same condition that gives it a position.
             source={index >= 0 ? { id: target.jobId, url, prompt: target.prompt } : null}
             position={index >= 0 ? `${index + 1} of ${gallery.length}` : ''}
+            // Offered on the same condition, and for the same reason: the
+            // account of how a picture was drawn lives on its gallery record,
+            // so a render the list hasn't caught up with has nothing to show yet.
+            details={index >= 0 ? detailsOpen : null}
+            onDetails={() => setDetails(d => ({ ...d, open: !d.open }))}
+          />
+        )}
+
+        {/* ── How it was drawn ──
+            Between the actions and the picture rather than over it: this is
+            read alongside the image ("cfg 4, 30 steps — that's why this one
+            came out soft"), and an overlay panel would cover the evidence. */}
+        {url && detailsOpen && index >= 0 && entry && (
+          <ImageDetails
+            image={entry}
+            // The picture a redraw started from, when it is still in the
+            // gallery. Tapping it walks back up the chain, which is the whole
+            // reason the source id is worth showing rather than just the word
+            // "redraw".
+            onOpenSource={() => {
+              const src = gallery.find(g => g.id === entry.settings?.source)
+              if (src) show(src)
+            }}
+            hasSource={gallery.some(g => g.id === entry.settings?.source)}
           />
         )}
 
@@ -225,12 +268,18 @@ export function ImageOverlay() {
               message={cancelled
                 ? 'You took this one out of the queue before it started.'
                 : job?.error ?? 'the render failed'}
+              // The server's account of the failure, which usually says what to
+              // do about it — the error alone says what went wrong.
+              detail={job?.detail ?? ''}
               onRetry={retry}
             />
           ) : (
             <Drawing
               phase={job?.phase ?? 'starting'}
+              detail={job?.detail ?? ''}
               etaMs={job?.etaMs ?? 0}
+              etaBasis={job?.etaBasis ?? ''}
+              waitMs={job?.waitMs ?? 0}
               waiting={waiting}
               elapsedMs={job?.elapsedMs ?? 0}
             />
@@ -274,12 +323,15 @@ export function ImageOverlay() {
  * then close this frame: filling a field nobody can see would not be reuse.
  */
 function PromptActions({
-  prompt, source, position,
+  prompt, source, position, details, onDetails,
 }: {
   prompt:   string
   /** The picture itself, when it is one the server can redraw. */
   source:   { id: string; url: string; prompt: string } | null
   position: string
+  /** Whether the render details are showing, or null when there are none to show. */
+  details:   boolean | null
+  onDetails: () => void
 }) {
   const [copied, setCopied] = useState<'yes' | 'no' | null>(null)
 
@@ -339,11 +391,139 @@ function PromptActions({
           : <Copy size={16} />}
       </button>
 
+      {/* How it was drawn. Icon-only like Copy, and beside it, because both are
+          about the picture rather than about making another one — the two
+          labelled pills stay the row's headline. */}
+      {details !== null && (
+        <button
+          type="button"
+          onClick={onDetails}
+          aria-label={details ? 'Hide how this was drawn' : 'How this was drawn'}
+          aria-expanded={details}
+          className={`w-11 h-11 rounded-full border border-hairline flex items-center justify-center
+                      active:scale-95 transition ${
+            details ? 'bg-white/25 text-white' : 'bg-white/10 text-white/70 active:bg-white/20'
+          }`}
+        >
+          <Info size={16} />
+        </button>
+      )}
+
       {/* Where this picture sits in the gallery — the thing that makes the two
           arrows over the image legible as "there are more of these". */}
       {position !== '' && (
         <span className="ml-auto text-[11px] text-white/30 tabular-nums shrink-0">{position}</span>
       )}
+    </div>
+  )
+}
+
+/**
+ * How this picture was drawn.
+ *
+ * The point is the question nobody could answer before: "that one came out
+ * well — what made it?". A gallery of thirty renders across four styles, three
+ * quality presets and a per-style knob panel that changes under you is
+ * unreproducible without this, and reproducing a good render is most of what
+ * anyone does with a picture they like.
+ *
+ * Everything here is READ BACK from what the server recorded at the moment the
+ * picture landed, never recomputed from today's settings — see ImageSettings in
+ * server/src/image.ts for why that distinction is the whole feature.
+ *
+ * Rows are omitted rather than shown empty. A picture from before this was
+ * recorded has only its size, seed and date, and says so in one line instead of
+ * printing a column of zeros that look like real settings.
+ */
+function ImageDetails({
+  image, onOpenSource, hasSource,
+}: {
+  image:        GalleryEntry
+  onOpenSource: () => void
+  hasSource:    boolean
+}) {
+  const st = image.settings
+  const rows: { label: string; value: string }[] = []
+
+  const style = st?.styleLabel || image.modelLabel || st?.style || image.model || ''
+  if (style) rows.push({ label: 'Style', value: style })
+  rows.push({ label: 'Size', value: `${image.width} × ${image.height}` })
+  // Steps and cfg are the two numbers anyone actually turns, so they lead.
+  if (st?.steps) rows.push({ label: 'Steps', value: String(st.steps) })
+  // 0 means the sampler has no cfg input at all (SamplerCustom), which is not
+  // the same as cfg 0 — omitting it is the honest rendering of that.
+  if (st?.cfg) rows.push({ label: 'Guidance', value: String(st.cfg) })
+  if (st?.sampler) {
+    rows.push({ label: 'Sampler', value: st.scheduler ? `${st.sampler} · ${st.scheduler}` : st.sampler })
+  }
+  // Last of the numbers, because it is the one you copy rather than read — it
+  // is also what makes every other row above it reproducible.
+  rows.push({ label: 'Seed', value: String(image.seed) })
+  if (st?.lora) {
+    rows.push({ label: 'Turbo LoRA', value: `${st.lora} @ ${st.loraStrength ?? 1}` })
+  }
+  if (st?.source) {
+    // As a percentage, because that is what "how much of the original survived"
+    // means to anyone who didn't pick the number: 0.65 denoise is 65% redrawn.
+    rows.push({ label: 'Redrawn from', value: `an earlier picture · ${Math.round((st.denoise ?? 0) * 100)}% changed` })
+  }
+  const when = new Date(image.at)
+  rows.push({
+    label: 'Drawn',
+    value: `${when.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}${
+      st?.tookMs ? ` · took ${(st.tookMs / 1000).toFixed(0)}s` : ''}`,
+  })
+
+  return (
+    // Capped and scrollable: a long negative prompt is a paragraph, and the
+    // picture below must not be squeezed out of the frame to print it.
+    <div className="shrink-0 max-h-[38%] overflow-y-auto px-4 pb-3">
+      <div className="rounded-2xl bg-white/[0.06] border border-hairline px-3.5 py-3">
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[12px]">
+          {rows.map(r => (
+            <div key={r.label} className="contents">
+              <dt className="text-white/35 whitespace-nowrap">{r.label}</dt>
+              {/* selectable-text for the same reason the prompt caption has it:
+                  a seed is a number someone copies by hand on a phone. */}
+              <dd className="selectable-text text-white/80 tabular-nums break-words min-w-0">{r.value}</dd>
+            </div>
+          ))}
+        </dl>
+
+        {st?.negative && (
+          <div className="mt-3 pt-3 border-t border-hairline">
+            <p className="text-[10px] uppercase tracking-widest text-white/30 font-semibold mb-1">
+              Avoided
+            </p>
+            <p className="selectable-text text-[11px] text-white/45 leading-snug break-words">
+              {st.negative}
+            </p>
+          </div>
+        )}
+
+        {/* Walking back up a redraw chain. A button only when the source is
+            still there — pruned past the cap or deleted, it is a dead tap, and
+            the row above already said the picture was a redraw. */}
+        {st?.source && hasSource && (
+          <button
+            type="button"
+            onClick={onOpenSource}
+            className="mt-3 h-10 px-4 rounded-full bg-white/10 border border-hairline text-white/70
+                       text-[12px] font-semibold flex items-center gap-2
+                       active:scale-95 active:bg-white/20 transition"
+          >
+            <Brush size={14} />
+            Show what it started from
+          </button>
+        )}
+
+        {!st && (
+          <p className="mt-3 pt-3 border-t border-hairline text-[11px] text-white/30 leading-snug">
+            This picture predates the render details being recorded, so only its
+            size, seed and date survive.
+          </p>
+        )}
+      </div>
     </div>
   )
 }
@@ -414,8 +594,16 @@ function CloseImageButton({ onClick }: { onClick: () => void }) {
  * GPU had not yet touched it.
  */
 function Drawing({
-  phase, etaMs, waiting, elapsedMs,
-}: { phase: string; etaMs: number; waiting: boolean; elapsedMs: number }) {
+  phase, detail, etaMs, etaBasis, waitMs, waiting, elapsedMs,
+}: {
+  phase:     string
+  detail:    string
+  etaMs:     number
+  etaBasis:  string
+  waitMs:    number
+  waiting:   boolean
+  elapsedMs: number
+}) {
   // SSE frames only arrive on phase changes, which can be twenty seconds apart.
   // The seconds have to tick locally or the screen looks frozen.
   const [now, setNow] = useState(() => Date.now())
@@ -454,33 +642,84 @@ function Drawing({
   const elapsed = Math.max(0, frame.elapsedMs + (now - frame.at))
 
   const pct = !waiting && etaMs > 0 ? Math.min(95, (elapsed / etaMs) * 100) : null
+  // What is left of the estimate, counted down rather than up. "about 20s to
+  // go" is the thing someone standing at the kiosk actually wants; elapsed
+  // seconds are what they can already see happening. Clamped at zero rather
+  // than going negative, since the estimate is an estimate.
+  const remaining = etaMs > 0 ? Math.max(0, etaMs - elapsed) : 0
 
   return (
-    <div className="w-full max-w-[420px] flex flex-col items-center gap-4">
+    <div className="w-full max-w-[460px] flex flex-col items-center gap-4">
       <div className="w-full h-1.5 rounded-full bg-white/10 overflow-hidden">
         {pct === null
           ? <div className="h-full w-1/3 rounded-full bg-white/40 animate-pulse" />
           : <div className="h-full rounded-full bg-white/60 transition-[width] duration-300"
                  style={{ width: `${pct}%` }} />}
       </div>
+
       <div className="text-center">
         <p className="text-sm text-white/70 capitalize">
           {waiting ? (phase || 'waiting for the GPU') : phase}
         </p>
-        <p className="text-xs text-white/35 mt-1 tabular-nums">
-          {(elapsed / 1000).toFixed(0)}s
-          {waiting
-            ? ' · pictures are drawn one at a time'
-            : etaMs > 0
-              ? ` · usually about ${(etaMs / 1000).toFixed(0)}s`
-              : ' · first picture since a restart takes longer'}
+
+        {/* The clock line. Elapsed on the left because it is the one number that
+            is certainly true; the estimate beside it, and only when there is a
+            real one behind it. */}
+        <p className="text-xs text-white/45 mt-1.5 tabular-nums">
+          {humanMs(elapsed)} elapsed
+          {waiting && waitMs > 0 && ` · about ${humanMs(waitMs)} before this one starts`}
+          {!waiting && etaMs > 0 && (
+            remaining > 0
+              ? ` · about ${humanMs(remaining)} to go, of roughly ${humanMs(etaMs)}`
+              : ` · past the ${humanMs(etaMs)} estimated, finishing up`
+          )}
         </p>
+
+        {/* The verbose status: which style, how many steps, at what size, and
+            what the wait is actually being spent on. This frame is an empty
+            rectangle for half a minute otherwise, and "Drawing" answers none of
+            the questions someone watching it has. */}
+        {detail !== '' && (
+          <p className="text-[12px] text-white/40 leading-relaxed mt-3 max-w-[400px] mx-auto">
+            {detail}
+          </p>
+        )}
+
+        {/* Where the estimate came from. Small, and last, because it only
+            matters when the number looks wrong — at which point "a rough guess,
+            nothing drawn with this style yet" is the difference between a bug
+            and a cold start. */}
+        {etaBasis !== '' && (
+          <p className="text-[11px] text-white/25 leading-snug mt-2 max-w-[400px] mx-auto">
+            Estimate {etaBasis}.
+          </p>
+        )}
       </div>
     </div>
   )
 }
 
-function Failed({ message, onRetry }: { message: string; onRetry: () => void }) {
+/**
+ * "45s", "1m 20s", "12m" — mirrors humanMs() in server/src/image-timing.ts.
+ *
+ * Duplicated rather than sent as a formatted string, because this one counts
+ * down between SSE frames: the server's sentences are written once when a phase
+ * changes, and the seconds have to keep moving in between or the screen looks
+ * frozen.
+ */
+function humanMs(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000))
+  if (total < 60) return `${total}s`
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return s === 0 ? `${m}m` : `${m}m ${s}s`
+}
+
+function Failed({ message, detail, onRetry }: {
+  message: string
+  detail:  string
+  onRetry: () => void
+}) {
   return (
     <div className="flex flex-col items-center gap-4 text-center px-6">
       <AlertTriangle size={40} className="text-amber-400/80" />
@@ -489,6 +728,12 @@ function Failed({ message, onRetry }: { message: string; onRetry: () => void }) 
           references a checkpoint that isn't installed — and both are fixable in
           a minute IF the message says which. */}
       <p className="text-sm text-white/70 leading-relaxed max-w-[380px] break-words">{message}</p>
+      {/* What to do about it, when the server has something to add. Kept
+          separate from the error itself: one says what went wrong, the other
+          says what it means and what fixes it. */}
+      {detail !== '' && detail !== message && (
+        <p className="text-[12px] text-white/40 leading-relaxed max-w-[400px]">{detail}</p>
+      )}
       <button type="button" onClick={onRetry}
         className="px-6 h-12 rounded-full bg-white/15 border border-white/25 text-white text-sm
                    font-semibold flex items-center gap-2 active:scale-95 active:bg-white/30 transition">

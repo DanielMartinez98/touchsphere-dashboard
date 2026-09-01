@@ -58,13 +58,35 @@ export function useImageTarget() {
 
 export interface ImageJobState {
   status:    'queued' | 'running' | 'ready' | 'failed' | 'cancelled'
-  /** Human phrase from the server — "loading the model", "drawing"… */
+  /** Short label from the server — "loading the model", "drawing"… */
   phase:     string
+  /**
+   * The same status in full sentences: which style, how many steps, at what
+   * size, how long it should take and why. The frame is an empty rectangle for
+   * half a minute and this is what fills it — see the note on ImageJob.detail
+   * in server/src/image.ts for why it is a second field rather than a longer
+   * `phase`.
+   */
+  detail:    string
   url?:      string
   error?:    string
   elapsedMs: number
-  /** How long the last successful render on this box took. 0 = no history yet. */
+  /**
+   * How long a render LIKE THIS ONE takes on this box. 0 = no usable history.
+   *
+   * Per job, from the server's timing history keyed on style, steps, size and
+   * whether the checkpoint was already loaded — not, as it used to be, however
+   * long the previous render happened to take whatever it was of.
+   */
   etaMs:     number
+  /** Where that number came from, in words. '' when there isn't one. */
+  etaBasis:  string
+  /** Time before the GPU even reaches this job, from the jobs ahead of it. */
+  waitMs:    number
+  /** Steps the sampler runs, redraw discount included. */
+  plannedSteps: number
+  /** Whether the style was already loaded — the difference between 8s and 40s. */
+  warm:      boolean
   /** Set only on a REDRAW: the gallery id this one started from, and how far it went. */
   source?:   string
   denoise?:  number
@@ -94,10 +116,17 @@ export function useImageJob(jobId: string | null, alreadyDone: boolean): ImageJo
       jobId,
       status:    d['status'] as ImageJobState['status'],
       phase:     typeof d['phase'] === 'string' ? d['phase'] : '',
+      // Falls back to '' rather than to the phase: a server that predates the
+      // verbose line should show nothing extra, not the short label twice.
+      detail:    typeof d['detail'] === 'string' ? d['detail'] : '',
       ...(typeof d['url']   === 'string' ? { url:   d['url']   as string } : {}),
       ...(typeof d['error'] === 'string' ? { error: d['error'] as string } : {}),
       elapsedMs: typeof d['elapsedMs'] === 'number' ? d['elapsedMs'] : 0,
       etaMs:     typeof d['etaMs']     === 'number' ? d['etaMs']     : 0,
+      etaBasis:  typeof d['etaBasis']  === 'string' ? d['etaBasis']  : '',
+      waitMs:    typeof d['waitMs']    === 'number' ? d['waitMs']    : 0,
+      plannedSteps: typeof d['plannedSteps'] === 'number' ? d['plannedSteps'] : 0,
+      warm:      d['warm'] === true,
       // Carried so "Try again" can retry the same THING. A redraw retried as a
       // fresh render would quietly produce a different kind of picture from the
       // one that failed, which is the one substitution this feature must not make.
@@ -124,6 +153,11 @@ export function useImageJob(jobId: string | null, alreadyDone: boolean): ImageJo
         if (!cancelled) {
           setState({
             jobId, status: 'failed', phase: 'failed', elapsedMs: 0, etaMs: 0,
+            etaBasis: '', waitMs: 0, plannedSteps: 0, warm: false,
+            detail:
+              'Renders are tracked in memory on the dashboard server, so a restart ' +
+              'loses the thread of one that was in flight. The picture may even have ' +
+              'finished on the GPU — check the gallery before asking again.',
             error: 'the server restarted while this was being drawn',
           })
         }

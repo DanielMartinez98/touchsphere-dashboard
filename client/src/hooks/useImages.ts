@@ -12,6 +12,29 @@
 import { useCallback, useEffect, useState } from 'react'
 import { onServerEvent } from './useServerEvents'
 
+/**
+ * How a picture was drawn, as the server recorded it at the moment it landed.
+ *
+ * Every field is optional in practice — anything in the gallery from before the
+ * server started recording this has no `settings` at all — so the UI prints
+ * what is there and says nothing about what isn't, rather than captioning a
+ * picture with a row of zeros. Mirrors ImageSettings in server/src/image.ts.
+ */
+export interface ImageSettings {
+  style:      string
+  styleLabel: string
+  steps:      number
+  cfg:        number
+  sampler:    string
+  scheduler:  string
+  negative:   string
+  lora?:         string
+  loraStrength?: number
+  source?:  string
+  denoise?: number
+  tookMs:   number
+}
+
 export interface StoredImage {
   id:     string
   prompt: string
@@ -20,6 +43,11 @@ export interface StoredImage {
   width:  number
   height: number
   seed:   number
+  /** Style id that drew it. Absent on the very oldest entries. */
+  model?:      string
+  /** That id made readable, resolved by the server on the way out. */
+  modelLabel?: string
+  settings?:   ImageSettings
   at:     string
 }
 
@@ -40,10 +68,22 @@ export interface QueuedJob {
   id:       string
   prompt:   string
   status:   JobStatus
-  /** The server's own words — "loading the model", "drawing", "saving". */
+  /** The server's short label — "loading the model", "drawing", "saving". */
   phase:    string
+  /** The same status in full sentences. See ImageJob.detail on the server. */
+  detail:   string
   width:    number
   height:   number
+  /**
+   * How long a render LIKE THIS ONE takes on this box, from the server's timing
+   * history — style, steps, size and whether the checkpoint was already loaded.
+   * 0 = no usable history yet, and nothing should be shown for a 0.
+   */
+  etaMs:    number
+  /** Time before the GPU reaches this job, summed over the ones ahead of it. */
+  waitMs:   number
+  /** The server's own elapsed figure, so a countdown anchors to it, not to mount. */
+  elapsedMs: number
   queuedAt: number
 }
 
@@ -542,7 +582,16 @@ export function useImages() {
   const drawing = queue.find(j => j.status === 'running') ?? queue[0]
 
   return {
-    images, enabled, loading, busy, phase: drawing?.phase ?? '',
+    images, enabled, loading, busy,
+    phase: drawing?.phase ?? '',
+    // What the collapsed corner counts down: the estimate for the picture
+    // actually on the GPU, not for the whole queue, which the pill has no room
+    // to explain. Gated on 'running' because a job that is still QUEUED reports
+    // its queue wait as `elapsedMs` — counting an estimate of render time down
+    // against time spent waiting would run the pill to zero before the GPU had
+    // touched it.
+    drawingEtaMs: drawing?.status === 'running' ? drawing.etaMs : 0,
+    drawingElapsedMs: drawing?.elapsedMs ?? 0,
     queue, queueMax, queueFull: queue.length >= queueMax, drawError, cancel,
     styles, model, setModel,
     quality, setQuality,
@@ -562,8 +611,12 @@ function frameToJob(data: unknown): QueuedJob | null {
     prompt:   typeof d['prompt'] === 'string' ? d['prompt'] : '',
     status:   d['status'] as JobStatus,
     phase:    typeof d['phase'] === 'string' ? d['phase'] : '',
+    detail:   typeof d['detail'] === 'string' ? d['detail'] : '',
     width:    typeof d['width']  === 'number' ? d['width']  : 0,
     height:   typeof d['height'] === 'number' ? d['height'] : 0,
+    etaMs:    typeof d['etaMs']  === 'number' ? d['etaMs']  : 0,
+    waitMs:   typeof d['waitMs'] === 'number' ? d['waitMs'] : 0,
+    elapsedMs: typeof d['elapsedMs'] === 'number' ? d['elapsedMs'] : 0,
     // A server that predates the queue sends no queuedAt. Falling back to now
     // puts such a job at the end of the list rather than dropping it.
     queuedAt: typeof d['queuedAt'] === 'number' ? d['queuedAt'] : Date.now(),
