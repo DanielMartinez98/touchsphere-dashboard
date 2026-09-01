@@ -702,7 +702,7 @@ export function startImage(req: ImageRequest): ImageJob {
   const job: ImageJob = {
     id:        crypto.randomBytes(16).toString('hex'),
     prompt:    req.prompt.slice(0, MAX_PROMPT),
-    negative:  (req.negative ?? DEFAULT_NEGATIVE).slice(0, MAX_PROMPT),
+    negative:  (req.negative ?? (styleNegative(style) || DEFAULT_NEGATIVE)).slice(0, MAX_PROMPT),
     width:     size.width,
     height:    size.height,
     // Random by default: a fixed seed makes every image of "a cat" identical,
@@ -1018,6 +1018,36 @@ const NETAYUME_PREFIXES = {
   negative: 'You are an assistant designed to generate low-quality images based on textual prompts <Prompt Start> ',
 }
 
+/**
+ * NoobAI-XL — an SDXL fine-tune, so the same node shape as BUILTIN_GRAPH.
+ *
+ * It gets its own graph rather than riding the default one for a single
+ * reason: the default is tuned for stock SDXL at cfg 8 / euler, and NoobAI's
+ * model card asks for cfg 5-6 and euler_ancestral. Rendered at cfg 8 it comes
+ * out scorched and over-contrasted, which reads as "this model is bad" rather
+ * than "this model is being driven wrong" — see the prefixes below for the
+ * other half of that story.
+ */
+function noobaiGraph(ckpt: string): ComfyGraph {
+  return {
+    '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: ckpt } },
+    '2': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['1', 1] } },
+    '3': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['1', 1] } },
+    // 832x1216 is one of the buckets NoobAI lists as trained resolutions; the
+    // job overwrites this anyway, it is only the shape of the default.
+    '4': { class_type: 'EmptyLatentImage', inputs: { width: 832, height: 1216, batch_size: 1 } },
+    '5': {
+      class_type: 'KSampler',
+      inputs: {
+        seed: 0, steps: 28, cfg: 5.5, sampler_name: 'euler_ancestral', scheduler: 'normal', denoise: 1,
+        model: ['1', 0], positive: ['2', 0], negative: ['3', 0], latent_image: ['4', 0],
+      },
+    },
+    '6': { class_type: 'VAEDecode', inputs: { samples: ['5', 0], vae: ['1', 2] } },
+    '7': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['6', 0] } },
+  }
+}
+
 /** The text encoder and VAE every Anima variant shares. */
 const ANIMA_SHARED = [
   'text_encoders/qwen_3_06b_base.safetensors',
@@ -1040,9 +1070,32 @@ const BUILTIN_WORKFLOWS: Record<string, {
   /**
    * Text glued in front of the job's prompt and negative before they reach the
    * text encoders. For an instruction-tuned model (Lumina) this is not
-   * decoration — it is the format the model was trained to be addressed in.
+   * decoration — it is the format the model was trained to be addressed in;
+   * for a booru model it carries the quality tags that model expects.
    */
   prefixes?: { positive: string; negative: string }
+  /**
+   * The negative this style wants when the caller didn't supply one, replacing
+   * DEFAULT_NEGATIVE. A booru model wants booru terms ("worst quality, lowres")
+   * — feeding it the house English prose wastes the slot.
+   */
+  negative?: string
+  /**
+   * A checkpoint filename this style REPLACES in the picker.
+   *
+   * An all-in-one checkpoint shows up twice otherwise: once as the raw file
+   * ComfyUI reports, and once as this style. The raw entry renders through the
+   * default SDXL graph with none of the settings below, so it is the same model
+   * quietly set up to disappoint — hiding it is the point.
+   */
+  supersedes?: string
+  /**
+   * How the ASSISTANT should write prompts for this style. 'tags' means booru
+   * tags with the character tag itself (`hatsune_miku, vocaloid`); 'prose'
+   * means an English description. Getting this wrong is what makes a
+   * tag-trained model refuse to draw a character it demonstrably knows.
+   */
+  promptStyle?: 'tags' | 'prose'
   /**
    * True for a style whose step count is a property of the MODEL rather than a
    * quality dial — a distilled one, trained to land in ~10 steps and gaining
@@ -1054,21 +1107,46 @@ const BUILTIN_WORKFLOWS: Record<string, {
    */
   ignoresQuality?: boolean
 }> = {
+  'noobai-xl-v11': {
+    label: 'NoobAI XL v1.1',
+    graph: noobaiGraph('NoobAI-XL-v1.1.safetensors'),
+    // Straight off the model card: quality ladder in front, booru terms behind.
+    // `safe` is doing real work on a kiosk the assistant draws on unprompted.
+    prefixes: {
+      positive: 'masterpiece, best quality, newest, absurdres, highres, safe, ',
+      negative: '',
+    },
+    negative: 'nsfw, worst quality, old, early, low quality, lowres, signature, ' +
+      'username, logo, bad hands, mutated hands',
+    promptStyle: 'tags',
+    supersedes: 'NoobAI-XL-v1.1.safetensors',
+    needs: ['checkpoints/NoobAI-XL-v1.1.safetensors'],
+  },
   'netayume-lumina-v35': {
     label: 'NetaYume Lumina v3.5',
     graph: netaYumeGraph('NetaYumev35_pretrained_all_in_one.safetensors'),
     prefixes: NETAYUME_PREFIXES,
+    // The template's own negative list, which sits after the instruction line.
+    negative: 'blurry, worst quality, low quality, jpeg artifacts, signature, ' +
+      'watermark, username, bad anatomy, extra limbs, poorly drawn hands, ' +
+      'fused fingers, bad proportions, cropped',
+    // Fine-tuned on Danbooru, so it answers to the same character tags NoobAI
+    // does — it drew the Byakugō seal on Sakura from the tag alone.
+    promptStyle: 'tags',
+    supersedes: 'NetaYumev35_pretrained_all_in_one.safetensors',
     // One file, unlike Anima's three — it is an all-in-one checkpoint.
     needs: ['checkpoints/NetaYumev35_pretrained_all_in_one.safetensors'],
   },
   'anima-aesthetic-v1-1': {
     label: 'Anima Aesthetic v1.1',
+    promptStyle: 'prose',
     graph: animaGraph('anima-aesthetic-v1.1.safetensors', 30, 4),
     turboHints: ['anima', 'turbo'],
     needs: ['diffusion_models/anima-aesthetic-v1.1.safetensors', ...ANIMA_SHARED],
   },
   'anima-turbo-v1-1': {
     label: 'Anima Turbo v1.1',
+    promptStyle: 'prose',
     // No turboHints: this IS the distilled model, and stacking a turbo LoRA on
     // top of a turbo checkpoint is how a picture comes out flat and over-baked.
     // Leaving them off is also what makes the Advanced panel hide the toggle.
@@ -1078,6 +1156,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
   },
   'anima-base-v1': {
     label: 'Anima Base v1',
+    promptStyle: 'prose',
     graph: animaGraph('anima-base-v1.0.safetensors', 30, 4),
     // Anima ships turbo TWO ways, and both are real:
     //
@@ -1105,6 +1184,33 @@ function stylePrefixes(style: string): { positive: string; negative: string } {
   const none = { positive: '', negative: '' }
   if (!style.startsWith(WORKFLOW_PREFIX)) return none
   return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.prefixes ?? none
+}
+
+/** The negative a style wants by default, or '' to fall back to DEFAULT_NEGATIVE. */
+function styleNegative(style: string): string {
+  if (!style.startsWith(WORKFLOW_PREFIX)) return ''
+  return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.negative ?? ''
+}
+
+/**
+ * How the assistant should write prompts for a style.
+ *
+ * Defaults to 'prose', which is what every plain SDXL checkpoint and the whole
+ * pre-existing app assumed — so a style that says nothing behaves exactly as
+ * before.
+ */
+export function stylePromptStyle(style: string): 'tags' | 'prose' {
+  if (!style.startsWith(WORKFLOW_PREFIX)) return 'prose'
+  return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.promptStyle ?? 'prose'
+}
+
+/** Checkpoint filenames that a `wf:` style replaces and the picker should hide. */
+export function supersededCheckpoints(): Set<string> {
+  return new Set(
+    Object.values(BUILTIN_WORKFLOWS)
+      .map(w => w.supersedes)
+      .filter((n): n is string => !!n),
+  )
 }
 
 /** Hints for auto-picking a style's turbo LoRA. Empty for anything unknown. */

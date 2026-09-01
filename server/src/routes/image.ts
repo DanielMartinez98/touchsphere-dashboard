@@ -34,6 +34,7 @@ import {
   startImage,
   styleDefaults,
   styleNeeds,
+  supersededCheckpoints,
   WORKFLOW_PREFIX,
 } from '../image'
 import {
@@ -115,8 +116,13 @@ router.get('/models', async (_req: Request, res: Response) => {
     // many styles there are.
     const allNeeds = [...new Set(workflows.flatMap(w => styleNeeds(w.id)))]
     const absent = new Set(await missingFiles(allNeeds))
+    // A checkpoint that a `wf:` style wraps is hidden here. It would otherwise
+    // appear twice — once as the raw file ComfyUI reports, once as the style —
+    // and the raw entry renders through the default SDXL graph with none of the
+    // model's own settings, so it is the same model quietly set up to fail.
+    const wrapped = supersededCheckpoints()
     const styles = [
-      ...checkpoints.map(name => ({
+      ...checkpoints.filter(n => !wrapped.has(n)).map(name => ({
         id: name, label: name, kind: 'checkpoint' as const, missing: [] as string[],
       })),
       ...workflows.map(w => ({

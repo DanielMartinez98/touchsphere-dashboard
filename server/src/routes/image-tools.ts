@@ -13,10 +13,41 @@
 // promise a picture before discovering there's no GPU behind it.
 
 import {
-  imagesEnabled, listImages, pendingJobs, startImage,
+  imagesEnabled, listImages, pendingJobs, selectedModel, startImage, stylePromptStyle,
   type ImageJob, type StoredImage,
 } from '../image'
 import type { BrowseToolResult, DisplayPayload } from './browse'
+
+/**
+ * How to write a prompt for the style selected RIGHT NOW.
+ *
+ * This is the half of the model story the tool schema cannot carry. The
+ * `prompt` argument's description is fixed at module load, but the selected
+ * style is a runtime choice, and the two families want opposite things:
+ *
+ *   • a Danbooru-trained model (NoobAI, NetaYume) summons a character by its
+ *     TAG — `hatsune_miku, vocaloid`. Describing the character instead
+ *     ("a girl with teal twintails") asks it to invent someone who merely looks
+ *     similar, and the character knowledge it demonstrably has is never reached;
+ *   • Anima reads its prompt through a Qwen-3 text encoder, so it wants an
+ *     English sentence and gains nothing from underscored tags.
+ *
+ * Appended to the system prompt per request, because the user can change style
+ * between one drawing and the next.
+ */
+export function imagePromptGuidance(): string {
+  if (!imagesEnabled()) return ''
+  if (stylePromptStyle(selectedModel()) !== 'tags') {
+    return ' DRAWING STYLE: the current picture model reads plain English, so write ' +
+      "generate_image's prompt as a descriptive phrase — subject, setting, lighting, style."
+  }
+  return ' DRAWING STYLE: the current picture model is trained on Danbooru tags, so write ' +
+    "generate_image's prompt as lowercase comma-separated tags, not a sentence. " +
+    'For a named character use its booru tag AND its series, both underscored ' +
+    '(hatsune_miku, vocaloid — haruno_sakura, naruto_(series) — nami_(one_piece), one_piece), ' +
+    'then scene tags (1girl, solo, cafe, sitting, looking at viewer). ' +
+    'Describing a character in a sentence does NOT summon it — the tag does.'
+}
 
 // ── Framing ──────────────────────────────────────────────────────────────────
 // The kiosk is a 720×1280 portrait screen, so these are sized to fill it rather

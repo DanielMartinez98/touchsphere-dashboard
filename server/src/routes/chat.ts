@@ -32,7 +32,7 @@ import { Router, type Request, type Response } from 'express'
 import { DASHBOARD_TOOLS, MUTATING_TOOLS, TOOL_SLICE, runDashboardTool } from './dashboard-tools'
 import { BROWSE_TOOLS, runBrowseTool, type DisplayPayload } from './browse'
 import { GUIDE_VIEW_TOOLS, GUIDE_VIEW_MUTATING, runGuideViewTool } from './guide-view-tools'
-import { IMAGE_TOOLS, runImageTool } from './image-tools'
+import { IMAGE_TOOLS, imagePromptGuidance, runImageTool } from './image-tools'
 import { addMemory, formatForPrompt as formatMemoryForPrompt } from '../memory'
 import {
   saveSession, updateSessionSummary, loadSession, scoreContinuation, sessionAgeMinutes,
@@ -209,7 +209,12 @@ const SYSTEM_PROMPT_BODY =
 // Compose the full system prompt for a given assistant: its personality up
 // front, then the shared behaviour/tool instructions.
 function buildSystemPrompt(profile: AssistantProfile): string {
-  return `${profile.persona} ${SYSTEM_PROMPT_BODY}`
+  // The drawing-style line is appended per request rather than baked into
+  // SYSTEM_PROMPT_BODY, because it depends on which picture model is selected
+  // and the user can change that between one drawing and the next. Empty
+  // string when there is no image server, so nothing changes for a box
+  // without one.
+  return `${profile.persona} ${SYSTEM_PROMPT_BODY}${imagePromptGuidance()}`
 }
 
 const MAX_PROMPT_LEN     = 1000
