@@ -963,6 +963,61 @@ function animaGraph(unet: string, steps: number, cfg: number): ComfyGraph {
   }
 }
 
+/**
+ * NetaYume Lumina v3.5 — an anime fine-tune of Lumina-Image-2.0 (Next-DiT).
+ *
+ * Transcribed from ComfyUI's own bundled `image_netayume_lumina_t2i` template,
+ * with its frontend subgraphs flattened away exactly as Anima's were.
+ *
+ * Unlike Anima this ships as ONE all-in-one checkpoint, so it loads through
+ * CheckpointLoaderSimple like an SDXL model — but it is not drop-in as a plain
+ * checkpoint style, for three reasons the template makes plain:
+ *
+ *   • a `ModelSamplingAuraFlow` patch (shift 4) sits between the loader and the
+ *     sampler. Without it the sampler runs on the wrong sigma schedule;
+ *   • the sampler is `res_multistep`/`simple` at 30 steps, cfg 4 — not the
+ *     euler/normal the default SDXL graph uses;
+ *   • Lumina is instruction-tuned, so both prompts are prefixed with a system
+ *     line ending in `<Prompt Start>`. See NETAYUME_PREFIXES — quality collapses
+ *     without it, which is the kind of failure that looks like a bad model
+ *     rather than a missing string.
+ *
+ * EmptySD3LatentImage rather than EmptyLatentImage, which findNode() already
+ * knows about, so the megapixel sizing in image-params applies unchanged.
+ */
+function netaYumeGraph(ckpt: string): ComfyGraph {
+  return {
+    '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: ckpt } },
+    '2': { class_type: 'ModelSamplingAuraFlow', inputs: { shift: 4, model: ['1', 0] } },
+    '3': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['1', 1] } },
+    '4': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['1', 1] } },
+    '5': { class_type: 'EmptySD3LatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
+    '6': {
+      class_type: 'KSampler',
+      inputs: {
+        seed: 0, steps: 30, cfg: 4, sampler_name: 'res_multistep', scheduler: 'simple', denoise: 1,
+        model: ['2', 0], positive: ['3', 0], negative: ['4', 0], latent_image: ['5', 0],
+      },
+    },
+    '7': { class_type: 'VAEDecode', inputs: { samples: ['6', 0], vae: ['1', 2] } },
+    '8': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['7', 0] } },
+  }
+}
+
+/**
+ * Lumina's instruction prefixes, verbatim from the ComfyUI template.
+ *
+ * The model was trained to be told what job it is doing before it is told what
+ * to draw, and `<Prompt Start>` is the separator it learned. buildGraph()
+ * prepends these rather than baking them into the graph above, because it
+ * overwrites the text of both CLIPTextEncode nodes with the job's own prompt —
+ * so anything written into the graph would be thrown away on every render.
+ */
+const NETAYUME_PREFIXES = {
+  positive: 'You are an assistant designed to generate high quality anime images based on textual prompts. <Prompt Start> ',
+  negative: 'You are an assistant designed to generate low-quality images based on textual prompts <Prompt Start> ',
+}
+
 /** The text encoder and VAE every Anima variant shares. */
 const ANIMA_SHARED = [
   'text_encoders/qwen_3_06b_base.safetensors',
@@ -983,6 +1038,12 @@ const BUILTIN_WORKFLOWS: Record<string, {
   /** Substrings that identify this style's turbo LoRA among the installed ones. */
   turboHints?: string[]
   /**
+   * Text glued in front of the job's prompt and negative before they reach the
+   * text encoders. For an instruction-tuned model (Lumina) this is not
+   * decoration — it is the format the model was trained to be addressed in.
+   */
+  prefixes?: { positive: string; negative: string }
+  /**
    * True for a style whose step count is a property of the MODEL rather than a
    * quality dial — a distilled one, trained to land in ~10 steps and gaining
    * nothing from 44. The draft/standard/high preset is skipped for these and
@@ -993,6 +1054,13 @@ const BUILTIN_WORKFLOWS: Record<string, {
    */
   ignoresQuality?: boolean
 }> = {
+  'netayume-lumina-v35': {
+    label: 'NetaYume Lumina v3.5',
+    graph: netaYumeGraph('NetaYumev35_pretrained_all_in_one.safetensors'),
+    prefixes: NETAYUME_PREFIXES,
+    // One file, unlike Anima's three — it is an all-in-one checkpoint.
+    needs: ['checkpoints/NetaYumev35_pretrained_all_in_one.safetensors'],
+  },
   'anima-aesthetic-v1-1': {
     label: 'Anima Aesthetic v1.1',
     graph: animaGraph('anima-aesthetic-v1.1.safetensors', 30, 4),
@@ -1031,6 +1099,13 @@ const BUILTIN_WORKFLOWS: Record<string, {
 }
 
 export const WORKFLOW_PREFIX = 'wf:'
+
+/** A style's prompt prefixes, or empty strings for one that needs none. */
+function stylePrefixes(style: string): { positive: string; negative: string } {
+  const none = { positive: '', negative: '' }
+  if (!style.startsWith(WORKFLOW_PREFIX)) return none
+  return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.prefixes ?? none
+}
 
 /** Hints for auto-picking a style's turbo LoRA. Empty for anything unknown. */
 function turboHints(style: string): string[] {
@@ -1156,13 +1231,18 @@ function buildGraph(job: ImageJob, sourceName = ''): ComfyGraph {
   }
   const posId = link('positive')
   const negId = link('negative')
+  // An instruction-tuned style (Lumina) has to be addressed in the format it
+  // was trained on, so its system line goes in front of what the user asked
+  // for. Empty for every other style, which is why this is a plain concat
+  // rather than a branch.
+  const pre = stylePrefixes(job.model)
   if (posId && graph[posId] && 'text' in graph[posId]!.inputs) {
-    graph[posId]!.inputs['text'] = job.prompt
+    graph[posId]!.inputs['text'] = pre.positive + job.prompt
   } else {
     throw new Error("workflow's positive prompt does not reach a text node")
   }
   if (negId && graph[negId] && 'text' in graph[negId]!.inputs) {
-    graph[negId]!.inputs['text'] = job.negative
+    graph[negId]!.inputs['text'] = pre.negative + job.negative
   }
 
   const latentId = findNode(graph, ['EmptyLatentImage', 'EmptySD3LatentImage', 'EmptyLatentImageAdvanced'])
