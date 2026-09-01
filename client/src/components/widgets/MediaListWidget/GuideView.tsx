@@ -17,9 +17,11 @@
 import { useRef, useState } from 'react'
 import {
   ArrowLeft, Check, CheckCheck, ChevronRight, Play, RefreshCw, ListOrdered, Square, Trash2,
-  Loader2, AlertTriangle, X,
+  Loader2, AlertTriangle, X, Map as MapIcon, MapPin, Sparkles,
 } from 'lucide-react'
-import type { Guide, GuideSection, GuideStep, GuideVideo, MediaItem, SectionKind } from '../../../types'
+import type {
+  Guide, GuideImage, GuideMap, GuideSection, GuideStep, GuideVideo, MediaItem, SectionKind,
+} from '../../../types'
 import { guideProgress } from '../../../types'
 import { openBrowse } from '../../../hooks/useBrowse'
 import { MediaCover } from './MediaCover'
@@ -80,6 +82,15 @@ const sectionCounts = (s: GuideSection) => {
 interface Part {
   key:      string
   title:    string
+  /**
+   * Index of this run's first step in `section.steps`.
+   *
+   * This is what "tick the whole part" is addressed by, on both sides. A heading
+   * can legitimately recur later in a chapter, so a name cannot identify a run —
+   * and the server walks forward from this same index while the group matches,
+   * which reproduces the grouping below exactly.
+   */
+  from:     number
   /** Steps with the number they carry in the chapter — the numbering stays 1..n across parts. */
   steps:    Array<{ step: GuideStep; n: number }>
   done:     number
@@ -101,7 +112,7 @@ function toParts(steps: GuideStep[]): Part[] {
     // that legitimately recurs later in the chapter opens a new part rather than
     // reaching back and scattering steps into an earlier one.
     if (!last || last.title !== title) {
-      parts.push({ key: `${title}#${i}`, title, steps: [], done: 0, complete: false })
+      parts.push({ key: `${title}#${i}`, title, from: i, steps: [], done: 0, complete: false })
     }
     const part = parts[parts.length - 1]!
     part.steps.push({ step, n: i + 1 })
@@ -142,10 +153,260 @@ function WatchRow({ video, label }: { video: GuideVideo; label: string }) {
   )
 }
 
+/** A cached wiki picture. The filename is a hash, so the URL is stable forever. */
+const imageUrl = (img: GuideImage) => `/api/guides/image/${img.file}`
+
+/**
+ * The picture beside one step.
+ *
+ * Deliberately small and inline rather than a lightbox. A step's picture answers
+ * "which door / what does this look like", which is a glance, not a study — and
+ * a full-screen viewer here would fight the map, the video and the browser
+ * overlay for the same gesture. Capped in height so a tall piece of item art
+ * cannot push the next three steps off the screen.
+ */
+function StepImage({ image, dimmed }: { image: GuideImage; dimmed: boolean }) {
+  return (
+    <div className={`pl-10 sm:pl-11 pr-2 pb-2 -mt-1 transition-opacity ${dimmed ? 'opacity-30' : ''}`}>
+      <img
+        src={imageUrl(image)}
+        alt={image.title ?? ''}
+        loading="lazy"
+        className="max-h-40 w-auto max-w-full rounded-lg border border-hairline object-contain"
+      />
+    </div>
+  )
+}
+
+/** The establishing shot at the top of a chapter. */
+function ChapterImage({ image }: { image: GuideImage }) {
+  return (
+    <figure className="shrink-0 rounded-2xl overflow-hidden border border-hairline">
+      <img src={imageUrl(image)} alt={image.title ?? ''} loading="lazy"
+           className="w-full max-h-52 object-cover" />
+      {image.title && (
+        <figcaption className="px-3 py-1.5 text-[11px] text-white/30 bg-white/[0.03] truncate">
+          {image.title}
+        </figcaption>
+      )}
+    </figure>
+  )
+}
+
+// ── The map ──────────────────────────────────────────────────────────────────
+//
+// Two populations of pin on one picture, and the difference is visible because
+// it matters. A NUMBERED pin belongs to a step and was placed by the generator
+// from a compass phrase in the research notes — it has never been checked
+// against the picture, so it is drawn hollow and dashed and says "roughly" when
+// opened. A ROUND pin is one the user dropped: exact, labelled, theirs.
+//
+// Both drag. For a step pin that is the repair — the generator got it into the
+// right ninth of the map and a finger puts it on the door — and dragging clears
+// the approximate flag on the server, because it has now been placed by someone
+// who can see what it is pointing at.
+
+interface MapPinView {
+  key:    string
+  x:      number
+  y:      number
+  label:  string
+  /** Step pins carry their number; user pins have none. */
+  n?:     number
+  approx: boolean
+  stepId?: string
+  pinId?:  string
+}
+
+function ChapterMapView({
+  map, section, onClose, onAddPin, onMovePin, onRemovePin, onMoveStepPin, onJumpToStep, shared,
+}: {
+  map:      GuideMap
+  section:  GuideSection | null
+  onClose:  () => void
+  onAddPin: (x: number, y: number, label: string) => void
+  onMovePin: (pinId: string, x: number, y: number) => void
+  onRemovePin: (pinId: string) => void
+  onMoveStepPin: (stepId: string, x: number, y: number) => void
+  onJumpToStep: (stepId: string) => void
+  /** True when this is the whole-game map standing in for a chapter's own. */
+  shared:   boolean
+}) {
+  const frameRef = useRef<HTMLDivElement | null>(null)
+  const [dragging, setDragging] = useState<string | null>(null)
+  const [selected, setSelected] = useState<MapPinView | null>(null)
+  const [adding, setAdding] = useState<{ x: number; y: number } | null>(null)
+  const [draft, setDraft] = useState('')
+
+  const pins: MapPinView[] = [
+    ...(section?.steps ?? []).flatMap((step, i) => step.pin
+      ? [{
+          key: `s:${step.id}`, x: step.pin.x, y: step.pin.y, label: step.text,
+          n: i + 1, approx: step.pin.approx === true, stepId: step.id,
+        }]
+      : []),
+    ...map.pins.map(pin => ({
+      key: `p:${pin.id}`, x: pin.x, y: pin.y, label: pin.label, approx: false, pinId: pin.id,
+    })),
+  ]
+
+  /** A pointer position as a fraction of the image box, clamped to it. */
+  const fractionOf = (e: { clientX: number; clientY: number }) => {
+    const box = frameRef.current?.getBoundingClientRect()
+    if (!box || box.width === 0 || box.height === 0) return null
+    return {
+      x: Math.min(1, Math.max(0, (e.clientX - box.left) / box.width)),
+      y: Math.min(1, Math.max(0, (e.clientY - box.top) / box.height)),
+    }
+  }
+
+  return (
+    <div className="absolute inset-0 z-30 bg-black/95 flex flex-col">
+      <div className="flex items-start gap-3 px-4 pt-4 pb-3 shrink-0">
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] uppercase tracking-widest text-white/35 font-semibold mb-1">
+            {shared ? 'World map' : 'Chapter map'}
+          </p>
+          <h2 className="text-base font-semibold text-white/90 leading-tight truncate">
+            {section?.title ?? 'Map'}
+          </h2>
+        </div>
+        <CloseGuideButton onClick={onClose} />
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-auto px-4 pb-4">
+        {/* The image sizes itself and the pins are positioned as a percentage of
+            it, so nothing has to know the rendered size and a rotation or a
+            different screen moves every pin correctly with no recalculation. */}
+        <div ref={frameRef} className="relative inline-block max-w-full select-none"
+          onPointerDown={e => {
+            // A tap on bare map starts a new pin. On a pin, the pin's own
+            // handler stops this from firing.
+            const at = fractionOf(e)
+            if (at && !dragging) { setAdding(at); setDraft('') }
+          }}
+        >
+          <img src={imageUrl(map.image)} alt={map.image.title ?? 'Map'}
+               className="max-w-full h-auto rounded-xl border border-hairline pointer-events-none" />
+
+          {pins.map(pin => (
+            <button key={pin.key} type="button"
+              onPointerDown={e => { e.stopPropagation(); setDragging(pin.key) }}
+              onPointerMove={e => {
+                if (dragging !== pin.key) return
+                e.stopPropagation()
+                // Only committed on release: a PATCH per pointermove would be
+                // dozens of writes across one drag.
+              }}
+              onPointerUp={e => {
+                e.stopPropagation()
+                if (dragging !== pin.key) return
+                setDragging(null)
+                const at = fractionOf(e)
+                // A tap and a drag arrive the same way; treat anything that
+                // barely moved as a tap so a pin can still be opened.
+                if (!at || (Math.abs(at.x - pin.x) < 0.01 && Math.abs(at.y - pin.y) < 0.01)) {
+                  setSelected(pin)
+                  return
+                }
+                if (pin.stepId) onMoveStepPin(pin.stepId, at.x, at.y)
+                else if (pin.pinId) onMovePin(pin.pinId, at.x, at.y)
+              }}
+              aria-label={pin.label}
+              className="absolute -translate-x-1/2 -translate-y-1/2 touch-none"
+              style={{ left: `${pin.x * 100}%`, top: `${pin.y * 100}%` }}
+            >
+              <span className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-bold
+                                shadow-lg active:scale-90 transition ${
+                pin.n === undefined
+                  ? 'bg-cyan-400 text-black border-2 border-white/70'
+                  : pin.approx
+                    ? 'bg-black/70 text-amber-200 border-2 border-dashed border-amber-300/80'
+                    : 'bg-amber-400 text-black border-2 border-white/70'
+              }`}>
+                {pin.n ?? <MapPin size={14} />}
+              </span>
+            </button>
+          ))}
+        </div>
+
+        <p className="text-[11px] text-white/30 leading-snug mt-3 max-w-[520px]">
+          Tap the map to drop your own pin. Drag any pin to move it.
+          {pins.some(p => p.approx) && ' Dashed pins were placed from the written directions ' +
+            'rather than from the picture, so they are only roughly right until you move them.'}
+        </p>
+      </div>
+
+      {/* Naming a new pin. A sheet rather than an inline field because the
+          on-screen keyboard covers the bottom third of the screen, which is
+          where the map is. */}
+      {adding && (
+        <div className="absolute inset-0 z-40 flex flex-col justify-end bg-black/60">
+          <div className="bg-[#111827] rounded-t-3xl px-5 pt-4 pb-6">
+            <p className="text-sm font-semibold text-white mb-3">What is here?</p>
+            <input
+              value={draft}
+              readOnly
+              inputMode="none"
+              placeholder="bomb wall, heart piece, the shop…"
+              className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-sm border border-hairline mb-3"
+            />
+            <TouchKeyboard
+              value={draft}
+              onChange={setDraft}
+              onDone={() => {
+                onAddPin(adding.x, adding.y, draft.trim())
+                setAdding(null)
+              }}
+            />
+            <button type="button" onClick={() => setAdding(null)}
+              className="w-full h-12 rounded-xl bg-white/10 text-white/70 text-sm font-semibold">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Tapping a pin. A step pin offers to jump to its step, which is the
+          reason a pin is worth attaching to one at all. */}
+      {selected && (
+        <div className="absolute inset-0 z-40 flex flex-col justify-end bg-black/60"
+             onClick={() => setSelected(null)}>
+          <div className="bg-[#111827] rounded-t-3xl px-5 pt-4 pb-8" onClick={e => e.stopPropagation()}>
+            {selected.n !== undefined && (
+              <p className="text-[11px] uppercase tracking-widest text-white/35 font-semibold mb-1">
+                Step {selected.n}{selected.approx ? ' · roughly placed' : ''}
+              </p>
+            )}
+            <p className="text-sm text-white/85 leading-snug mb-4">{selected.label || 'Unlabelled pin'}</p>
+            <div className="flex gap-2">
+              {selected.stepId && (
+                <button type="button"
+                  onClick={() => { onJumpToStep(selected.stepId!); setSelected(null) }}
+                  className="flex-1 h-12 rounded-xl bg-white/15 text-white text-sm font-semibold active:scale-95">
+                  Go to the step
+                </button>
+              )}
+              {selected.pinId && (
+                <button type="button"
+                  onClick={() => { onRemovePin(selected.pinId!); setSelected(null) }}
+                  className="flex-1 h-12 rounded-xl bg-red-500/20 border border-red-400/30 text-red-200 text-sm font-semibold active:scale-95">
+                  Remove pin
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Layer 2: one chapter ─────────────────────────────────────────────────────
 
 function ChapterPage({
-  section, index, total, busy, onBack, onClose, onToggleStep, onToggleAll, onRebuild, onJump,
+  section, index, total, busy, onBack, onClose, onToggleStep, onToggleSub, onTogglePart,
+  onToggleAll, onRebuild, onEnrich, onJump, onOpenMap, hasMap,
 }: {
   section:      GuideSection
   index:        number
@@ -157,10 +418,18 @@ function ChapterPage({
   /** Out of the guide altogether, from inside a chapter. */
   onClose:      () => void
   onToggleStep: (stepId: string) => void
+  onToggleSub:  (stepId: string, subId: string) => void
+  /** Tick a whole sub-chapter, addressed by the index its run starts at. */
+  onTogglePart: (fromIndex: number, done: boolean) => void
   onToggleAll:  (done: boolean) => void
   onRebuild:    () => void
+  /** Additive pass: detail, sub-steps and pictures, with every tick left alone. */
+  onEnrich:     () => void
   /** Move to the previous/next chapter without going back to the list. */
   onJump:       (delta: number) => void
+  /** Open the map for this chapter (its own, or the whole-game one). */
+  onOpenMap:    () => void
+  hasMap:       boolean
 }) {
   const { done, total: steps, pct, complete } = sectionCounts(section)
   const rebuilding = busy && section.state === 'pending'
@@ -218,7 +487,27 @@ function ChapterPage({
           <p className="text-[15px] sm:text-sm text-white/55 leading-relaxed sm:leading-snug">{section.summary}</p>
         )}
 
+        {/* The establishing shot, above the video row: it is the fastest way to
+            know you are in the right place, and it costs nothing to scroll past. */}
+        {section.image && <ChapterImage image={section.image} />}
+
         {section.video && <WatchRow video={section.video} label="Watch this chapter" />}
+
+        {hasMap && (
+          <button type="button" onClick={onOpenMap}
+            className="w-full flex items-center gap-3 px-3 h-14 rounded-xl bg-cyan-500/12 border border-cyan-500/25 active:bg-cyan-500/20 text-left">
+            <span className="w-8 h-8 shrink-0 rounded-full bg-cyan-500/80 text-black flex items-center justify-center">
+              <MapIcon size={16} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-semibold text-white/90">Open the map</span>
+              <span className="block text-[11px] text-white/40">
+                See where these steps happen, and mark your own spots
+              </span>
+            </span>
+            <ChevronRight size={18} className="text-white/30 shrink-0" />
+          </button>
+        )}
 
         {/* Both live at the top rather than under the steps: the whole point of
             "I already did this one" is not having to scroll past sixty boxes to
@@ -239,6 +528,22 @@ function ChapterPage({
               : <><RefreshCw size={16} /> Redo this chapter</>}
           </button>
         </div>
+
+        {/* The safe half of "this chapter is thin".
+            "Redo" re-researches and replaces the steps, which only keeps the
+            ticks whose wording survives the rewrite; this adds explanations,
+            sub-steps, pictures and map pins to the steps already here and cannot
+            move a single box. For a game someone is part-way through that is a
+            different offer entirely, so it gets its own button and says so. */}
+        {steps > 0 && (
+          <button type="button" disabled={busy} onClick={onEnrich}
+            className="h-13 w-full rounded-xl text-sm font-semibold bg-cyan-500/12 border border-cyan-500/25
+                       text-cyan-100 active:bg-cyan-500/20 disabled:opacity-40 flex items-center justify-center gap-2">
+            <Sparkles size={16} />
+            Add detail &amp; pictures
+            <span className="text-[11px] font-normal text-white/40">keeps your ticks</span>
+          </button>
+        )}
 
         {steps === 0 && (
           <div className="rounded-2xl bg-amber-500/10 border border-amber-500/30 p-4">
@@ -273,34 +578,54 @@ function ChapterPage({
           // bites hardest on a phone, where the viewport is shortest.
           return (
             <div key={part.key} className="shrink-0 rounded-2xl border border-hairline bg-white/[0.02] overflow-hidden">
+              {/* TWO tap targets, the same split the chapter rows in the list
+                  use: the body opens the part, the trailing circle ticks the
+                  whole run off where it stands. Picking a guide up part-way
+                  through a game means marking several parts done before reading
+                  anything, and doing that by opening each one and tapping eight
+                  boxes is the work this exists to remove. */}
               {part.title && (
-                <button type="button" onClick={() => toggleOpen(part)}
-                  aria-expanded={open}
-                  className="w-full flex items-center gap-3 px-3.5 py-3 text-left active:bg-white/[0.06]">
-                  <span className={`w-7 h-7 shrink-0 rounded-full flex items-center justify-center ${
-                    part.complete ? 'bg-emerald-500/25 text-emerald-300' : 'bg-white/[0.07] text-white/40'
-                  }`}>
-                    {part.complete ? <Check size={15} strokeWidth={3} /> : <ChevronRight size={16}
-                      className={`transition-transform ${open ? 'rotate-90' : ''}`} />}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className={`block text-[15px] sm:text-sm font-semibold leading-tight break-words ${
-                      part.complete ? 'text-white/45' : 'text-white/85'
-                    }`}>
-                      {part.title}
+                <div className="w-full flex items-stretch">
+                  <button type="button" onClick={() => toggleOpen(part)}
+                    aria-expanded={open}
+                    className="min-w-0 flex-1 flex items-center gap-3 pl-3.5 pr-2 py-3 text-left active:bg-white/[0.06]">
+                    <span className="w-7 h-7 shrink-0 rounded-full flex items-center justify-center bg-white/[0.07] text-white/40">
+                      <ChevronRight size={16} className={`transition-transform ${open ? 'rotate-90' : ''}`} />
                     </span>
-                  </span>
-                  <span className="text-xs tabular-nums text-white/40 shrink-0">
-                    {part.done}/{part.steps.length}
-                  </span>
-                </button>
+                    <span className="min-w-0 flex-1">
+                      <span className={`block text-[15px] sm:text-sm font-semibold leading-tight break-words ${
+                        part.complete ? 'text-white/45' : 'text-white/85'
+                      }`}>
+                        {part.title}
+                      </span>
+                    </span>
+                    <span className="text-xs tabular-nums text-white/40 shrink-0">
+                      {part.done}/{part.steps.length}
+                    </span>
+                  </button>
+                  <button type="button"
+                    onClick={() => onTogglePart(part.from, !part.complete)}
+                    aria-label={part.complete
+                      ? `Clear every step in ${part.title}`
+                      : `Mark every step in ${part.title} done`}
+                    className="w-12 shrink-0 flex items-center justify-center active:bg-white/[0.06]">
+                    <span className={`w-7 h-7 rounded-full border-2 flex items-center justify-center transition-colors ${
+                      part.complete
+                        ? 'bg-emerald-500/30 border-emerald-500/60 text-emerald-300'
+                        : 'border-white/25 text-transparent'
+                    }`}>
+                      <Check size={15} strokeWidth={3} />
+                    </span>
+                  </button>
+                </div>
               )}
 
               {open && (
                 <div className="flex flex-col px-1 pb-1">
                   {part.steps.map(({ step, n }) => (
-                    <button key={step.id} type="button" onClick={() => onToggleStep(step.id)}
-                      className="flex items-start gap-2.5 sm:gap-3 py-3 px-2 sm:px-2.5 min-h-13 text-left active:bg-white/[0.05] rounded-lg border-b border-white/[0.04] last:border-0">
+                    <div key={step.id} className="border-b border-white/[0.04] last:border-0">
+                    <button type="button" onClick={() => onToggleStep(step.id)}
+                      className="w-full flex items-start gap-2.5 sm:gap-3 py-3 px-2 sm:px-2.5 min-h-13 text-left active:bg-white/[0.05] rounded-lg">
                       <span className={`mt-0.5 w-7 h-7 shrink-0 rounded-md border-2 flex items-center justify-center transition-colors ${
                         step.done
                           ? 'bg-emerald-500/30 border-emerald-500/60 text-emerald-300'
@@ -331,6 +656,37 @@ function ChapterPage({
                         )}
                       </span>
                     </button>
+                  {/* Sub-steps and the picture sit OUTSIDE the step's own button.
+                      They have to: a checkbox nested inside another button is
+                      invalid HTML and, more to the point, every tap on a sub
+                      would also toggle the step it lives in. */}
+                  {step.image && <StepImage image={step.image} dimmed={step.done} />}
+                  {step.subs && step.subs.length > 0 && (
+                    <div className="flex flex-col pl-10 sm:pl-11 pr-2 pb-2 -mt-1">
+                      {step.subs.map(sub => (
+                        <button key={sub.id} type="button"
+                          onClick={() => onToggleSub(step.id, sub.id)}
+                          className="flex items-start gap-2.5 py-2 px-1.5 min-h-11 text-left active:bg-white/[0.05] rounded-lg">
+                          {/* Round, where a step's box is square. The shape is the
+                              only thing distinguishing the two at a glance once
+                              the list is scrolled and the indent is off screen. */}
+                          <span className={`mt-px w-6 h-6 shrink-0 rounded-full border-2 flex items-center justify-center transition-colors ${
+                            sub.done
+                              ? 'bg-emerald-500/25 border-emerald-500/50 text-emerald-300'
+                              : 'border-white/25'
+                          }`}>
+                            {sub.done && <Check size={13} strokeWidth={3} />}
+                          </span>
+                          <span className={`min-w-0 flex-1 text-[14px] sm:text-[13px] leading-snug break-words ${
+                            sub.done ? 'line-through text-white/30' : 'text-white/70'
+                          }`}>
+                            {sub.text}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  </div>
                   ))}
                 </div>
               )}
@@ -450,10 +806,21 @@ interface Props {
   loading:      boolean
   onClose:      () => void
   onToggleStep: (sectionId: string, stepId: string) => void
+  /** Tick one sub-step; the step above it follows on the server. */
+  onToggleSub: (sectionId: string, stepId: string, subId: string) => void
+  /** Tick a whole sub-chapter, addressed by the index its run starts at. */
+  onTogglePart: (sectionId: string, fromIndex: number, done: boolean) => void
   /** Tick or clear every step in one chapter at once. */
   onToggleSection: (sectionId: string, done: boolean) => void
+  /** Map editing. `sectionId` null means the whole-game map. */
+  onAddPin: (sectionId: string | null, x: number, y: number, label: string) => void
+  onMovePin: (sectionId: string | null, pinId: string, x: number, y: number) => void
+  onRemovePin: (sectionId: string | null, pinId: string) => void
+  onMoveStepPin: (sectionId: string, stepId: string, x: number, y: number) => void
   /** Re-research one chapter, leaving the rest of the guide alone. */
   onRebuildSection: (sectionId: string) => void
+  /** Add detail and pictures to one chapter without touching its steps. */
+  onEnrichSection: (sectionId: string) => void
   /** Start or rebuild. `order` overrides the community ordering. */
   onGenerate:   (order?: string) => void
   onDelete:     () => void
@@ -464,9 +831,15 @@ interface Props {
 }
 
 export function GuideView({
-  item, guide, loading, onClose, onToggleStep, onToggleSection, onRebuildSection,
+  item, guide, loading, onClose, onToggleStep, onToggleSub, onTogglePart, onToggleSection,
+  onRebuildSection, onEnrichSection, onAddPin, onMovePin, onRemovePin, onMoveStepPin,
   onGenerate, onDelete, chapterHint, hintSeq = 0,
 }: Props) {
+  // Which chapter's map is on screen, if any. Held here rather than inside
+  // ChapterPage because the map is a full-screen layer over the whole guide, and
+  // because a chapter with no map of its own shows the GUIDE's — which
+  // ChapterPage has no handle on.
+  const [mapOpen, setMapOpen] = useState(false)
   // Taps win over the assistant's hint, but only until the next command: a new
   // hintSeq makes the tap stale and the hint takes over again. Derived rather
   // than an effect, so no render is spent syncing one to the other.
@@ -706,12 +1079,38 @@ export function GuideView({
           onBack={() => setOpenId(null)}
           onClose={onClose}
           onToggleStep={stepId => onToggleStep(openSection.id, stepId)}
+          onToggleSub={(stepId, subId) => onToggleSub(openSection.id, stepId, subId)}
+          onTogglePart={(from, done) => onTogglePart(openSection.id, from, done)}
           onToggleAll={done => onToggleSection(openSection.id, done)}
+          onOpenMap={() => setMapOpen(true)}
+          hasMap={!!(openSection.map ?? guide.map)}
           onRebuild={() => onRebuildSection(openSection.id)}
+          onEnrich={() => onEnrichSection(openSection.id)}
           onJump={delta => {
             const next = guide.sections[openIndex + delta]
             if (next) setOpenId(next.id)
           }}
+        />
+      )}
+
+      {/* The map, over everything in the guide. A chapter falls back to the
+          whole-game map, and `shared` is what lets the header say which one you
+          are looking at — "World map" over Termina is correct, "Chapter map"
+          over it would be a small lie repeated on every chapter. */}
+      {mapOpen && guide && openSection && (openSection.map ?? guide.map) && (
+        <ChapterMapView
+          map={(openSection.map ?? guide.map)!}
+          section={openSection}
+          shared={!openSection.map}
+          onClose={() => setMapOpen(false)}
+          onAddPin={(x, y, label) => onAddPin(openSection.id, x, y, label)}
+          onMovePin={(pinId, x, y) => onMovePin(openSection.id, pinId, x, y)}
+          onRemovePin={pinId => onRemovePin(openSection.id, pinId)}
+          onMoveStepPin={(stepId, x, y) => onMoveStepPin(openSection.id, stepId, x, y)}
+          // Closing the map IS going to the step: the chapter page is already
+          // behind it, scrolled where it was. A second navigation would be a
+          // second thing to undo.
+          onJumpToStep={() => setMapOpen(false)}
         />
       )}
 

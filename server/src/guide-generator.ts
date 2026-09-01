@@ -41,6 +41,7 @@ import {
   type GuideSection,
   type GuideStep,
   type SectionKind,
+  type GuideImage,
 } from './guides'
 import {
   communityChapters,
@@ -53,9 +54,14 @@ import {
   SEARCH_PROVIDER,
   type ChapterCategory,
   type Page,
+  findGameWiki,
+  wikiGameMap,
+  wikiImageFor,
+  wikiMapFor,
 } from './research'
 import { pushGuide } from './guide-events'
 import { note } from './guide-activity'
+import { cacheGuideImage } from './guide-media'
 import { searchYouTube } from './routes/browse'
 
 const OLLAMA_URL     = process.env['OLLAMA_URL']     ?? 'http://host.docker.internal:11434'
@@ -292,6 +298,14 @@ const DETAILS_SCHEMA: JsonSchema = {
         properties: {
           n:    { type: 'integer' },
           note: { type: 'string' },
+          // The actions a step breaks into, each of which becomes its own
+          // checkbox. Optional: a step that is genuinely one action must be
+          // allowed to stay one action rather than be padded into three.
+          subs: { type: 'array', items: { type: 'string' } },
+          // Where on the map this happens, in words — see mapPosition(). The
+          // model cannot see the map, so a compass phrase is the most it can
+          // honestly offer and the UI presents the resulting pin as approximate.
+          where: { type: 'string' },
         },
         required: ['n', 'note'],
       },
@@ -310,7 +324,7 @@ interface StepListReply {
   steps?: unknown[]
 }
 interface DetailsReply {
-  details?: Array<{ n?: unknown; note?: unknown }>
+  details?: Array<{ n?: unknown; note?: unknown; subs?: unknown; where?: unknown }>
 }
 
 // ── Prompts ──────────────────────────────────────────────────────────────────
@@ -502,13 +516,26 @@ function detailsPrompt(
       })
       .join('\n') + `\n\n` +
     `TASK: for EACH numbered step above, write one short note giving ${want}\n\n` +
+    // The single biggest complaint about the guides this replaced was that the
+    // steps were not detailed enough to act on. A note is prose you read; subs
+    // are the thing you actually do, in order, with a box beside each — which is
+    // what turns "solve the water puzzle" into something a player can follow.
+    `ALSO, for any step that is really several actions in sequence, break it into ` +
+    `"subs": 2 to 5 short imperative lines, in order, each one thing the player does. ` +
+    `Only when the notes actually describe those actions — never invent the middle of a ` +
+    `sequence to reach a count. A step that is genuinely one action gets no "subs" at all.\n` +
+    `AND, when the notes say where in the game world the step happens, give "where": a short ` +
+    `position on the map in plain words — "north-west", "centre", "south-east corner", or a ` +
+    `named region if the notes give one. Omit it when the notes do not say.\n\n` +
     `Rules:\n` +
     `- One or two sentences per note. No preamble, no repeating the step text back.\n` +
+    `- Each sub is under 120 characters, imperative, and never repeats the step text.\n` +
     `- Only what the research notes support. If the notes genuinely say nothing about a step, give it ` +
     `an empty note rather than inventing a location or a tactic.\n` +
     `- Use the game's real names, spelled as the sources spell them.\n` +
     `- Cover every number listed above, and use those same numbers in "n".\n` +
-    `- Reply as {"details": [{"n": ${batch[0]!.n}, "note": "…"}, …]} and nothing else.`
+    `- Reply as {"details": [{"n": ${batch[0]!.n}, "note": "…", "subs": ["…", "…"], "where": "north-west"}, …]} ` +
+    `and nothing else. "subs" and "where" may be omitted.`
   )
 }
 
@@ -1035,18 +1062,30 @@ async function detailSteps(
     // Key the reply by the step id it belongs to, ignoring numbers outside this
     // batch — a model that renumbers from 1 must not overwrite the first steps
     // of the chapter with notes meant for the last.
-    const byId = new Map<string, string>()
+    const byId = new Map<string, StepDetail>()
     let vacuous = 0
+    let subbed = 0
     for (const d of Array.isArray(reply?.details) ? reply.details : []) {
       const n = typeof d?.n === 'number' ? d.n : Number(d?.n)
       const noteText = str(d?.note)
-      if (!noteText || !Number.isInteger(n)) continue
+      if (!Number.isInteger(n)) continue
       const target = batch.find(b => b.n === n)
       if (!target) continue
       // A note that only restates its step is worse than no note: the step keeps
       // its honest plain checkbox instead of an explanation that explains nothing.
-      if (isVacuousNote(target.text, noteText)) { vacuous++; continue }
-      byId.set(target.id, noteText)
+      const keptNote = noteText && !isVacuousNote(target.text, noteText) ? noteText : ''
+      if (noteText && !keptNote) vacuous++
+      const subs = cleanSubs(target.text, d?.subs)
+      const pin = mapPosition(str(d?.where))
+      // Nothing usable came back for this step at all — leave it exactly as it
+      // was rather than writing an empty note over a plain checkbox.
+      if (!keptNote && subs.length === 0 && !pin) continue
+      if (subs.length > 0) subbed++
+      byId.set(target.id, {
+        ...(keptNote ? { note: keptNote } : {}),
+        ...(subs.length > 0 ? { subs } : {}),
+        ...(pin ? { pin } : {}),
+      })
     }
     if (vacuous > 0) {
       note({
@@ -1069,14 +1108,93 @@ async function detailSteps(
       const target = g.sections.find(s => s.id === sectionId)
       if (!target) return
       for (const step of target.steps) {
-        const note = byId.get(step.id)
-        if (note) step.note = note
+        const detail = byId.get(step.id)
+        if (!detail) continue
+        if (detail.note) step.note = detail.note
+        if (detail.subs) {
+          // Written fresh rather than merged: this is the first and only pass
+          // that produces them, and a re-run is a rewrite of the explanation.
+          // Ticks are not at risk — a sub-step has never been on screen at this
+          // point, and the STEP's own tick lives on the step, untouched here.
+          step.subs = detail.subs.map((text, i) => ({ id: `${step.id}u${i}`, text, done: step.done }))
+        }
+        if (detail.pin) step.pin = { ...detail.pin, approx: true }
       }
     })
+    if (subbed > 0) {
+      note({
+        itemId, title: gameTitle, section: section.title, stage: 'detail', level: 'good',
+        message: `Broke ${subbed} step(s) in this batch into tickable sub-steps`,
+      })
+    }
     written += byId.size
   }
 
   return written
+}
+
+/** What one step gained from the detail pass. */
+interface StepDetail {
+  note?: string
+  subs?: string[]
+  pin?:  { x: number; y: number }
+}
+
+/**
+ * Clean the model's sub-steps, or return none.
+ *
+ * Fewer than two is dropped on purpose: one sub-step is the step said twice,
+ * which gives the player two boxes for one action and makes the step look
+ * broken down when it isn't. The store enforces the same rule (normalizeStep),
+ * so this is about not sending it rather than about safety.
+ */
+function cleanSubs(stepText: string, raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  const same = (a: string, b: string) =>
+    a.toLowerCase().replace(/[^a-z0-9]/g, '') === b.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const out: string[] = []
+  for (const item of raw) {
+    const text = str(item).slice(0, 200)
+    // A sub that restates the step is the same failure isVacuousNote() catches
+    // in prose, and a duplicate of a sibling is the placeholder failure
+    // dropPlaceholderRuns() catches in step lists. Both show up here too.
+    if (!text || same(text, stepText) || out.some(o => same(o, text))) continue
+    out.push(text)
+    if (out.length >= 5) break
+  }
+  return out.length >= 2 ? out : []
+}
+
+/**
+ * A compass phrase turned into a point on the map, 0..1.
+ *
+ * This is the honest limit of automatic pinning: the model never sees the map
+ * image, so it cannot place a pin — the most it can do is repeat where the
+ * research notes say a thing is, in words. Those words land the pin in roughly
+ * the right ninth of the picture, which is enough to be worth showing next to a
+ * draggable handle and a label, and not enough to present as fact. Everything
+ * placed this way is stored with `approx: true` and says so on screen.
+ *
+ * Anything that isn't a recognised direction returns null rather than a guess —
+ * a pin in the middle of the map "because it had to go somewhere" is exactly the
+ * kind of confident wrongness this whole file is written against.
+ */
+export function mapPosition(where: string): { x: number; y: number } | null {
+  const w = where.toLowerCase()
+  const has = (...words: string[]) => words.some(x => w.includes(x))
+  // Thirds, so a bare "north" lands mid-top rather than in a corner.
+  let x: number | null = null
+  let y: number | null = null
+  if (has('west', 'left'))  x = 0.2
+  if (has('east', 'right')) x = 0.8
+  if (has('north', 'top', 'upper'))    y = 0.2
+  if (has('south', 'bottom', 'lower')) y = 0.8
+  if (has('centre', 'center', 'middle')) {
+    if (x === null) x = 0.5
+    if (y === null) y = 0.5
+  }
+  if (x === null && y === null) return null
+  return { x: x ?? 0.5, y: y ?? 0.5 }
 }
 
 /**
@@ -1106,6 +1224,139 @@ interface FilledSection {
   steps: number
   /** Set when the sources say there are more of these than were listed. */
   shortfall?: { want: number; got: number }
+}
+
+// ── Pictures ─────────────────────────────────────────────────────────────────
+//
+// Runs after the two writing passes, never before, and never blocks them: a
+// chapter is a working checklist the moment its steps are saved, and a wiki that
+// is slow or down must cost the guide its pictures rather than its content.
+// Every failure here is swallowed for that reason.
+//
+// What gets a picture is deliberately uneven, because the useful picture differs
+// by chapter kind. A dungeon wants ONE establishing shot at the top and a map;
+// its thirty route steps do not each want a screenshot, and fetching thirty
+// would be thirty wiki round trips for a chapter nobody has scrolled yet. A
+// collectible list is the opposite: every row names a real thing, "what does it
+// look like and where is it" is the entire question, and the picture is the
+// answer — so those get one per step, capped.
+
+/** Steps that get their own picture, in a chapter kind where that is the point. */
+const MAX_STEP_IMAGES = 20
+/** Politeness gap between wiki image lookups, matching YOUTUBE_GAP_MS in spirit. */
+const IMAGE_GAP_MS = 250
+
+/** Fetch one wiki image and cache it, or null. Never throws. */
+async function grab(
+  found: { url: string; title: string; width: number; height: number } | null,
+): Promise<GuideImage | null> {
+  if (!found) return null
+  const file = await cacheGuideImage(found.url)
+  if (!file) return null
+  return {
+    file,
+    source: found.url,
+    // "File:MM3D Woodfall Temple Entrance Screenshot.png" -> a usable caption.
+    title: found.title.replace(/^File:/, '').replace(/\.[a-z0-9]+$/i, '').replace(/_/g, ' '),
+    ...(found.width  > 0 ? { width:  found.width }  : {}),
+    ...(found.height > 0 ? { height: found.height } : {}),
+  }
+}
+
+/**
+ * Find the whole-game map once, for every chapter that has no map of its own.
+ *
+ * Most chapters are places ON the world map rather than places WITH a map — a
+ * collectible list spans the entire game — so without this the map tool would
+ * only ever appear for dungeons, which is most of the feature missing.
+ */
+async function illustrateGuide(itemId: string, title: string): Promise<void> {
+  try {
+    const wiki = await findGameWiki(title)
+    if (!wiki) return
+    const map = await grab(await wikiGameMap(wiki.host, title))
+    if (!map) {
+      note({
+        itemId, title, stage: 'chapter', level: 'info',
+        message: `No world map found on ${wiki.host} — chapters will show their own map if they have one`,
+      })
+      return
+    }
+    update(itemId, g => { g.map = { image: map, pins: [] } })
+    note({
+      itemId, title, stage: 'chapter', level: 'good',
+      message: `Found a world map (${map.title}) — chapters without their own will use it`,
+    })
+  } catch (err) {
+    console.warn(`[guides] world map lookup failed for "${title}":`, err)
+  }
+}
+
+/** Attach a header picture, a map, and — for a list chapter — a picture per row. */
+async function illustrateSection(itemId: string, title: string, sectionId: string): Promise<void> {
+  try {
+    const guide = loadGuide(itemId)
+    const section = guide?.sections.find(s => s.id === sectionId)
+    if (!guide || !section || section.steps.length === 0) return
+    const wiki = await findGameWiki(title)
+    if (!wiki) return
+
+    update(itemId, g => { g.phase = `${section.title} — finding pictures` })
+
+    const header = await grab(await wikiImageFor(wiki.host, section.title, title))
+    await sleep(IMAGE_GAP_MS)
+    const map = await grab(await wikiMapFor(wiki.host, section.title, title))
+
+    if (header || map) {
+      update(itemId, g => {
+        const target = g.sections.find(s => s.id === sectionId)
+        if (!target) return
+        if (header) target.image = header
+        // Pins are the user's, so a re-run replaces the picture and keeps them.
+        if (map) target.map = { image: map, pins: target.map?.pins ?? [] }
+      })
+    }
+
+    // One picture per row, for the chapters where a row IS a thing.
+    let stepImages = 0
+    if (section.kind === 'collectible' || section.kind === 'sidequest') {
+      for (const step of section.steps.slice(0, MAX_STEP_IMAGES)) {
+        if (!loadGuide(itemId)) return                 // deleted under us
+        await sleep(IMAGE_GAP_MS)
+        // The step's own text is the subject — "Bunny Hood", "Piece of Heart in
+        // the Deku Playground". wikiImageFor strips the game's words out of it
+        // and refuses anything that doesn't match what's left, so a step whose
+        // text names nothing specific correctly comes back with nothing.
+        const img = await grab(await wikiImageFor(wiki.host, step.text, title))
+        if (!img) continue
+        stepImages++
+        update(itemId, g => {
+          const t = g.sections.find(x => x.id === sectionId)?.steps.find(x => x.id === step.id)
+          if (t) t.image = img
+        })
+      }
+    }
+
+    if (header || map || stepImages > 0) {
+      note({
+        itemId, title, section: section.title, stage: 'detail', level: 'good',
+        message: [
+          header ? 'a header picture' : '',
+          map ? `a map (${map.title})` : '',
+          stepImages > 0 ? `${stepImages} step picture(s)` : '',
+        ].filter(Boolean).join(', ') + ` from ${wiki.host}`,
+      })
+    } else {
+      note({
+        itemId, title, section: section.title, stage: 'detail', level: 'info',
+        message: `No pictures on ${wiki.host} matched this chapter closely enough to use — ` +
+                 `a wrong-game screenshot looks more authoritative than a wrong sentence, so ` +
+                 `nothing is better than nearly right`,
+      })
+    }
+  } catch (err) {
+    console.warn(`[guides] illustration failed for section ${sectionId}:`, err)
+  }
 }
 
 async function fillSection(
@@ -1190,6 +1441,12 @@ async function fillSection(
     })
   }
 
+  // Pictures last: everything above is what makes the chapter usable, and this
+  // is what makes it easier to follow. A chapter that reaches here has already
+  // been saved and broadcast, so a slow wiki delays nothing the player is
+  // waiting on.
+  if (steps.length > 0) await illustrateSection(itemId, title, sectionId)
+
   update(itemId, g => {
     if (!opts.phase) g.phase = `${index + 1} of ${total} sections`
   })
@@ -1215,6 +1472,10 @@ async function run(itemId: string, title: string, order?: string, sourceSite?: s
   try {
     const outlined = await buildOutline(itemId, title, order, sourceSite)
     if (!outlined) return
+
+    // The world map, once, before the chapters — so the first chapter to finish
+    // already has something to fall back on when it has no map of its own.
+    await illustrateGuide(itemId, title)
 
     const ids = outlined.guide.sections.map(s => s.id)
     const shortfalls = new Set<string>()
@@ -1351,6 +1612,87 @@ async function runSection(itemId: string, title: string, sectionId: string): Pro
   }
 }
 
+/**
+ * Add detail, pictures and map pins to a chapter that already exists —
+ * WITHOUT rewriting a single step.
+ *
+ * The difference from runSection() is the whole point. A rewrite re-researches
+ * the chapter and replaces its step list, and although carryTicks() rescues the
+ * boxes whose text survives, a chapter that comes back worded differently loses
+ * them. That is an acceptable trade when the chapter is empty or wrong, and a
+ * bad one when it is fine and merely thin — which is the case here.
+ *
+ * So this runs only the two ADDITIVE passes:
+ *   • detailSteps(), which patches notes, sub-steps and pins onto existing steps
+ *     BY STEP ID and never touches the array;
+ *   • illustrateSection(), which only ever sets an image or a map.
+ *
+ * Nothing here can move a tick. A step keeps its id, its text and its `done`;
+ * the sub-steps it gains inherit that `done` so a step already ticked doesn't
+ * reopen itself by growing children (see the write in detailSteps).
+ */
+async function runEnrich(itemId: string, title: string, sectionId: string): Promise<void> {
+  const started = Date.now()
+  try {
+    const guide = loadGuide(itemId)
+    const section = guide?.sections.find(s => s.id === sectionId)
+    if (!guide || !section || section.steps.length === 0) return
+
+    note({
+      itemId, title, section: section.title, stage: 'detail', level: 'info',
+      message: `Adding detail and pictures to "${section.title}" — its ${section.steps.length} steps ` +
+               `and everything ticked on them stay exactly as they are`,
+    })
+
+    update(itemId, g => {
+      g.status = 'generating'
+      g.phase = `${section.title} — adding detail`
+    })
+
+    const fallback = await researchGame(title, 'walkthrough 100% completion', {
+      limit: 1,
+      maxChars: OUTLINE_CHARS,
+      ...(guide.sourceSite ? { preferredSite: guide.sourceSite } : {}),
+      webFirst: WEB_FIRST,
+      requireGameMention: true,
+    })
+    const { pages } = await researchSection(itemId, title, section, fallback, true, guide.sourceSite)
+
+    const written = pages.length > 0 ? await detailSteps(itemId, title, sectionId, pages) : 0
+    await illustrateSection(itemId, title, sectionId)
+
+    const after = loadGuide(itemId)?.sections.find(s => s.id === sectionId)
+    const withSubs = after?.steps.filter(x => (x.subs?.length ?? 0) > 0).length ?? 0
+    const withPins = after?.steps.filter(x => x.pin).length ?? 0
+
+    update(itemId, g => {
+      g.status = 'ready'
+      delete g.phase
+    })
+    note({
+      itemId, title, section: section.title, stage: 'detail',
+      level: written > 0 || withSubs > 0 ? 'good' : 'warn',
+      message: written === 0 && withSubs === 0
+        ? `Nothing new could be found for this chapter in ${Math.round((Date.now() - started) / 1000)}s — ` +
+          `it is unchanged, including every box you had ticked`
+        : `Enriched in ${Math.round((Date.now() - started) / 1000)}s — ${written} step(s) explained, ` +
+          `${withSubs} broken into sub-steps, ${withPins} placed on the map`,
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`[guides] "${title}" enrich crashed:`, err)
+    note({ itemId, title, stage: 'crashed', level: 'error', message: `Adding detail crashed: ${msg.slice(0, 200)}` })
+    update(itemId, g => {
+      // The chapter is untouched by definition, so the guide is still ready.
+      g.status = 'ready'
+      g.error = `Adding detail to that chapter failed: ${msg.slice(0, 200)}`
+      delete g.phase
+    })
+  } finally {
+    inFlight.delete(itemId)
+  }
+}
+
 export type StartResult = 'started' | 'busy'
 export type SectionResult = StartResult | 'missing'
 
@@ -1385,6 +1727,20 @@ export function regenerateSection(itemId: string, sectionId: string): SectionRes
  * The assistant calls this and speaks its confirmation while the job runs, the
  * same fire-and-forget shape as the end-of-conversation summarizer in chat.ts.
  */
+/**
+ * Ask for one chapter to be enriched. Same guard as regenerateSection: one job
+ * per guide at a time, because both write the same document.
+ */
+export function enrichSection(itemId: string, sectionId: string): SectionResult {
+  const guide = loadGuide(itemId)
+  const section = guide?.sections.find(s => s.id === sectionId)
+  if (!guide || !section || section.steps.length === 0) return 'missing'
+  if (inFlight.has(itemId)) return 'busy'
+  inFlight.add(itemId)
+  enqueue(() => runEnrich(itemId, guide.title, sectionId))
+  return 'started'
+}
+
 export function startGuide(opts: { itemId: string; title: string; order?: string; sourceSite?: string }): StartResult {
   const { itemId, title, order, sourceSite } = opts
   if (inFlight.has(itemId)) return 'busy'

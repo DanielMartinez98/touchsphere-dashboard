@@ -866,6 +866,321 @@ export async function communityTableOfContents(gameTitle: string): Promise<strin
   return lines.slice(0, 40)
 }
 
+// ── Pictures ─────────────────────────────────────────────────────────────────
+//
+// A guide's visual aids come from the same wikis its text does, and they are
+// subject to the SAME failure this file exists to prevent, in a form that is
+// harder to spot: a wrong picture looks authoritative in a way a wrong sentence
+// does not. `Woodfall Temple` on zelda.fandom.com carries fifty images, and a
+// plain "biggest one wins" picks a Minish Cap artwork; `Bunny Hood` picks a
+// Smash Bros screenshot; the page's own lead image — which ought to be safe,
+// being what the infobox shows — returns a Cadence of Hyrule render for
+// `Deku Mask`. All three were observed, not imagined.
+//
+// So the filter is the same one that works on text, applied to filenames:
+// SUBJECT WORDS, meaning the words of the thing being illustrated with the
+// GAME'S OWN title words removed. For "Deku Mask" in Majora's Mask that leaves
+// ["deku"], which is exactly the discriminator — every wrong candidate above
+// fails it, and it needs no per-game table of abbreviations (MM/MM3D/TWW/HW…),
+// which is the other way to do this and the way that stops working on the next
+// franchise.
+
+/** One picture on a wiki, resolved far enough to fetch. */
+export interface WikiImage {
+  url:    string
+  /** The File: page title, which is also the closest thing to a caption. */
+  title:  string
+  width:  number
+  height: number
+}
+
+interface ImageInfoReply {
+  query?: {
+    pages?: Record<string, {
+      title?: string
+      imageinfo?: Array<{ url?: string; width?: number; height?: number; mime?: string }>
+    }>
+  }
+}
+
+/** Anything that is chrome, merchandise or a UI element rather than the game. */
+const IMAGE_JUNK = /\b(logo|icon|sprite|symbol|flag|trophy|amiibo|button|banner|stub|disambig|nintendo|printable|papercraft|calendar|box ?art|cover)\b/i
+
+/**
+ * Formats worth showing.
+ *
+ * NOT anchored at the end of the string, which is the obvious way to write it
+ * and is wrong for the CDN this actually talks to: Fandom serves
+ * `…/MM_Dragonfly_Model.png/revision/latest?cb=…`, so an end-anchored test
+ * rejects every image on every Fandom wiki — silently, as "this page has no
+ * pictures".
+ */
+const IMAGE_OK = /\.(png|jpe?g|webp|gif)(?:$|[/?])/i
+
+/** Below this on the shortest side it is a thumbnail or an inline glyph. */
+const MIN_IMAGE_SIDE = 250
+
+/**
+ * A filename flattened for word matching.
+ *
+ * Load-bearing because of one character. `titleKeywords()` runs titles through
+ * looseWords(), which drops apostrophes — so the keyword for Majora's Mask is
+ * `majoras`, while the file is called `Majora's Mask Adventure Map.jpg`, and a
+ * plain `includes('majoras')` on the raw filename is false. Every game-map
+ * lookup for that game silently returned nothing until both sides were
+ * normalized the same way.
+ */
+const flattenTitle = (s: string): string =>
+  s.toLowerCase().replace(/['’]/g, '').replace(/[^a-z0-9]+/g, ' ')
+
+/**
+ * Nouns that name a KIND of place or thing rather than a particular one.
+ *
+ * These recur across the chapters of a single game — Majora's Mask alone has
+ * four "Temple" chapters — so they carry no discriminating power inside it, and
+ * matching on them is how a search for Woodfall Temple's map returned Stone
+ * Tower Temple's. Observed, not hypothetical.
+ */
+const GENERIC_SUBJECT_NOUNS = new Set([
+  'temple', 'dungeon', 'cave', 'grotto', 'field', 'town', 'city', 'village',
+  'palace', 'castle', 'tower', 'forest', 'woods', 'mountain', 'valley', 'lake',
+  'river', 'sea', 'bay', 'island', 'desert', 'swamp', 'canyon', 'ruins',
+  'shrine', 'area', 'areas', 'region', 'regions', 'quest', 'quests', 'sidequest',
+  'sidequests', 'boss', 'bosses', 'item', 'items', 'weapon', 'weapons',
+  'collectible', 'collectibles', 'walkthrough', 'guide', 'map', 'maps',
+])
+
+/**
+ * The words that identify this subject, with the game's own name taken out.
+ *
+ * Removing the game's words is the whole trick. "Deku Mask" in a game called
+ * "Majora's Mask" reduces to ["deku"]: keeping "mask" would match every mask
+ * image on the wiki including the wrong game's, which is how a filter that
+ * looks sound lets the exact failure through.
+ */
+export function subjectWords(subject: string, gameTitle: string): string[] {
+  const game = new Set(looseWords(gameTitle))
+  return [...new Set(looseWords(subject))]
+    .filter(w => w.length >= 3 && !STOPWORDS.has(w) && !game.has(w))
+}
+
+/**
+ * The subject words that actually pick this thing out from its siblings.
+ *
+ * "Woodfall Temple" → ["woodfall"], because "temple" is shared with three other
+ * chapters of the same game. Every one of these must appear in a filename for it
+ * to be accepted, which is what makes the match specific; the generic words are
+ * still allowed to appear, they just cannot carry the decision on their own.
+ *
+ * Falls back to the full subject-word list when everything was generic ("Side
+ * quests"), where requiring all of them is the correct, strict behaviour — and
+ * usually yields nothing, which is the honest outcome for a chapter that names
+ * no particular place.
+ */
+function distinctiveWords(subject: string, gameTitle: string): string[] {
+  const words = subjectWords(subject, gameTitle)
+  const specific = words.filter(w => !GENERIC_SUBJECT_NOUNS.has(w))
+  return specific.length > 0 ? specific : words
+}
+
+/** Resolve File: titles to URLs and sizes in one call. */
+async function imageInfo(host: string, fileTitles: string[]): Promise<WikiImage[]> {
+  if (fileTitles.length === 0) return []
+  const json = await wikiApi<ImageInfoReply>(host, {
+    action: 'query', prop: 'imageinfo', iiprop: 'url|size|mime',
+    titles: fileTitles.slice(0, 40).join('|'),
+  })
+  const out: WikiImage[] = []
+  for (const page of Object.values(json?.query?.pages ?? {})) {
+    const info = page.imageinfo?.[0]
+    const url = typeof info?.url === 'string' ? info.url : ''
+    const title = typeof page.title === 'string' ? page.title : ''
+    if (!url || !IMAGE_OK.test(url)) continue
+    out.push({
+      url, title,
+      width:  typeof info?.width === 'number' ? info.width : 0,
+      height: typeof info?.height === 'number' ? info.height : 0,
+    })
+  }
+  return out
+}
+
+/**
+ * Rank candidates for illustrating `subject`, best first.
+ *
+ * Landscape before portrait because a step's aid is a screenshot of a place,
+ * and a tall character render tells the player nothing about where to stand.
+ * Area breaks ties — on a wiki the bigger file is nearly always the real
+ * screenshot and the smaller one a cropped duplicate.
+ */
+function rankImages(images: WikiImage[], words: string[]): WikiImage[] {
+  if (words.length === 0) return []
+  return images
+    .filter(img => {
+      if (Math.min(img.width, img.height) < MIN_IMAGE_SIDE) return false
+      if (IMAGE_JUNK.test(img.title)) return false
+      const low = flattenTitle(img.title)
+      // EVERY distinctive word, not any. `some` is the natural way to write this
+      // and it is what returned Stone Tower Temple's map for Woodfall Temple:
+      // one shared generic noun was enough to match.
+      return words.every(w => low.includes(w))
+    })
+    .sort((a, b) => {
+      const land = Number(b.width >= b.height) - Number(a.width >= a.height)
+      if (land !== 0) return land
+      return b.width * b.height - a.width * a.height
+    })
+}
+
+interface PageImagesReply {
+  query?: {
+    pages?: Record<string, {
+      title?: string
+      pageimage?: string
+      original?: { source?: string; width?: number; height?: number }
+    }>
+  }
+}
+
+/** The image the wiki itself shows for a page — its infobox picture. */
+async function wikiLeadImage(host: string, pageTitle: string): Promise<WikiImage | null> {
+  const json = await wikiApi<PageImagesReply>(host, {
+    action: 'query', prop: 'pageimages', piprop: 'original|name', titles: pageTitle,
+  })
+  for (const page of Object.values(json?.query?.pages ?? {})) {
+    const src = page.original?.source
+    if (typeof src !== 'string' || !IMAGE_OK.test(src)) continue
+    return {
+      url: src,
+      // The filename, which is what the subject-word filter reads. `pageimage`
+      // is the bare name without the "File:" prefix; either form matches.
+      title: typeof page.pageimage === 'string' ? page.pageimage : (page.title ?? ''),
+      width:  typeof page.original?.width === 'number' ? page.original.width : 0,
+      height: typeof page.original?.height === 'number' ? page.original.height : 0,
+    }
+  }
+  return null
+}
+
+/**
+ * The best picture of `subject` on this wiki, or null.
+ *
+ * Null is a perfectly good answer and the common one for an abstract chapter
+ * ("Side quests"). A guide with a picture on two thirds of its steps is the
+ * shape to aim for; inventing one for the rest is how the wrong-game images get
+ * in, since the only way to always return something is to relax the filter that
+ * keeps them out.
+ */
+export async function wikiImageFor(
+  host: string, pageTitle: string, gameTitle: string,
+): Promise<WikiImage | null> {
+  const words = distinctiveWords(pageTitle, gameTitle)
+  if (words.length === 0) return null
+
+  // The page's own lead image FIRST, but only if it passes the same filter.
+  //
+  // Two failures cancel each other out here. The lead image alone is wrong when
+  // the infobox art is borrowed from elsewhere in the franchise (`Deku Mask`
+  // returns a Cadence of Hyrule render). The ranked list alone is wrong when a
+  // crossover title has a bigger, wider screenshot of the same subject (`Bunny
+  // Hood` returns a Smash Bros shot). The lead image is the wiki's own answer to
+  // "what is this page about", so when it survives the subject-word check it is
+  // better than anything size can tell us — and when it doesn't, the ranked list
+  // is still there.
+  const lead = await wikiLeadImage(host, pageTitle)
+  if (lead && rankImages([lead], words).length > 0) return lead
+  const json = await wikiApi<ImageInfoReply>(host, {
+    action: 'query', generator: 'images', titles: pageTitle, gimlimit: '60',
+    prop: 'imageinfo', iiprop: 'url|size|mime',
+  })
+  const candidates: WikiImage[] = []
+  for (const page of Object.values(json?.query?.pages ?? {})) {
+    const info = page.imageinfo?.[0]
+    const url = typeof info?.url === 'string' ? info.url : ''
+    const title = typeof page.title === 'string' ? page.title : ''
+    if (!url || !IMAGE_OK.test(url)) continue
+    candidates.push({
+      url, title,
+      width:  typeof info?.width === 'number' ? info.width : 0,
+      height: typeof info?.height === 'number' ? info.height : 0,
+    })
+  }
+  return rankImages(candidates, words)[0] ?? null
+}
+
+/**
+ * The whole-game map — Termina, Hyrule, Hallownest — used by any chapter that
+ * has no map of its own.
+ *
+ * A separate function rather than `wikiMapFor(gameTitle)` because the subject
+ * rule inverts here. For a chapter, the game's words are removed: they cannot
+ * tell one temple from another. For the game itself they are ALL there is, and
+ * subtracting them leaves nothing to match on, so wikiMapFor(gameTitle) returns
+ * null every time.
+ *
+ * The disambiguation being done is also different in kind. A chapter map has to
+ * be told apart from its three sibling chapters, which demands every
+ * distinctive word; a game map only has to be told apart from OTHER GAMES, and
+ * any one distinctive word of the title does that — "Majora's Mask Adventure
+ * Map" is unmistakable on the strength of "majora" alone.
+ */
+export async function wikiGameMap(host: string, gameTitle: string): Promise<WikiImage | null> {
+  const keys = titleKeywords(gameTitle)
+  if (keys.length === 0) return null
+  const qualifier = gameQualifier(gameTitle)
+  const titles = new Set<string>()
+  for (const q of [`${qualifier} map`, `${qualifier} world map`, `${qualifier} overworld map`]) {
+    for (const t of await wikiSearch(host, q, 8, 6)) titles.add(t)
+    if (titles.size >= 16) break
+  }
+  const resolved = await imageInfo(host, [...titles])
+  const maps = resolved
+    .filter(img => {
+      if (Math.min(img.width, img.height) < MIN_IMAGE_SIDE) return false
+      if (IMAGE_JUNK.test(img.title)) return false
+      const low = flattenTitle(img.title)
+      // Any title keyword — see the note above on why `every` is wrong here.
+      return /\bmaps?\b/i.test(img.title) && keys.some(k => low.includes(k))
+    })
+    // Widest first: a world map is a landscape image, and the tall results at
+    // this point are nearly always a menu screenshot with the map on one side.
+    .sort((a, b) => b.width * b.height - a.width * a.height)
+  return maps[0] ?? null
+}
+
+/**
+ * A map of `subject`, searched for in the File namespace rather than gathered
+ * off an article.
+ *
+ * Different search from wikiImageFor on purpose: a dungeon's map is very often
+ * NOT on the dungeon's page — it lives in the File namespace under a name like
+ * `WT Map.jpg` that no article embeds. Searching for it by name finds those;
+ * walking the page's images does not.
+ *
+ * The subject-word filter still applies, so a search for "Snowhead Temple map"
+ * cannot come back with Hyrule Field's.
+ */
+export async function wikiMapFor(
+  host: string, subject: string, gameTitle: string,
+): Promise<WikiImage | null> {
+  const words = distinctiveWords(subject, gameTitle)
+  if (words.length === 0) return null
+  // Both spellings are in the wild — "WT Map.jpg" and "Snowhead Temple Map.png"
+  // — and the query is cheap, so ask for the subject with and without the game.
+  const queries = [`${subject} map`, `${gameQualifier(gameTitle)} ${subject} map`]
+  const titles = new Set<string>()
+  for (const q of queries) {
+    for (const t of await wikiSearch(host, q, 8, 6)) titles.add(t)
+    if (titles.size >= 12) break
+  }
+  const resolved = await imageInfo(host, [...titles])
+  // A map has to look like one: the ranked list is filtered again for the word
+  // itself, because "Snowhead Temple Freezards.png" matches the subject words
+  // perfectly and is a screenshot of two enemies.
+  const maps = rankImages(resolved, words).filter(img => /\bmaps?\b/i.test(img.title))
+  return maps[0] ?? null
+}
+
 export interface ResearchOptions {
   /** How many usable pages are wanted. */
   limit?:         number

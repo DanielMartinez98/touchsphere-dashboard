@@ -17,6 +17,7 @@
 import fs from 'fs'
 import path from 'path'
 import { note } from './guide-activity'
+import { pruneGuideImages } from './guide-media'
 
 const FILE = 'guides.json'
 
@@ -38,6 +39,15 @@ const MAX_NOTE_CHARS        = 700
 const MAX_GROUP_CHARS       = 80
 const MAX_SUMMARY_CHARS     = 400
 const MAX_SOURCES           = 12
+/**
+ * Sub-steps per step. Small on purpose: a step that breaks into nine things is
+ * not a step, it is a sub-chapter that the step-list pass should have split.
+ */
+const MAX_SUBS_PER_STEP     = 8
+const MAX_SUB_CHARS         = 200
+/** Pins the user drops on a chapter's map. Their own, so generous but bounded. */
+const MAX_PINS_PER_SECTION  = 60
+const MAX_PIN_LABEL_CHARS   = 100
 
 export type GuideStatus  = 'generating' | 'ready' | 'failed'
 /** What a section is for. `reference` sections (item tables, controls) never move the 100% bar. */
@@ -46,10 +56,80 @@ export type SectionState = 'pending' | 'ready' | 'failed'
 
 export const SECTION_KINDS: readonly SectionKind[] = ['progression', 'collectible', 'sidequest', 'reference']
 
+/**
+ * A cached picture: a wiki screenshot, a piece of item art, or a map.
+ *
+ * The bytes live on the volume rather than being hotlinked, exactly as
+ * routes/artwork.ts caches cover art and for the same two reasons: the kiosk has
+ * to render offline, and a wiki CDN is not something to hammer on every scroll.
+ * `file` is the cached name; `source` is kept for attribution and so a broken
+ * cache can be refetched.
+ */
+export interface GuideImage {
+  /** Cached filename on the volume. Serve via GET /api/guides/image/:file. */
+  file:    string
+  /** Absolute URL it was fetched from. */
+  source:  string
+  /** The wiki's own caption/filename, for the alt text and attribution line. */
+  title?:  string
+  width?:  number
+  height?: number
+}
+
+/**
+ * One concrete action inside a step.
+ *
+ * THIS IS A DEPARTURE from the flat-list rule below, and a deliberately narrow
+ * one. The reasoning that forbade nesting was that `section.steps` is the spine
+ * every other part of the system walks — the 1..n numbering the detail pass keys
+ * notes to, both progress bars, tick-a-chapter, and carryTicks across a rewrite.
+ * All of that is still true, and all of it still walks `section.steps` unchanged:
+ * a sub-step lives strictly INSIDE one step, never renumbers it, and never
+ * appears in the spine. So the property that mattered is preserved.
+ *
+ * Sub-steps are also NOT counted in progress — see guideProgress(). The step
+ * stays the unit of completion, which is what keeps a guide written before this
+ * existed at exactly the same percentage it was at yesterday.
+ */
+export interface GuideSubStep {
+  id:      string
+  text:    string
+  done:    boolean
+  doneAt?: string
+}
+
 export interface GuideStep {
   id:      string
   text:    string
   note?:   string
+  /**
+   * The concrete actions this step breaks into, each with its own checkbox.
+   *
+   * Ticking every sub ticks the step; ticking the step ticks every sub. That
+   * cascade lives in setStepDone/setSubStepDone rather than being derived on
+   * read, so the stored document is always self-consistent — a half-ticked step
+   * with all its subs done would otherwise appear differently depending on which
+   * code path rendered it.
+   */
+  subs?:   GuideSubStep[]
+  /** A picture of the place or thing this step is about. */
+  image?:  GuideImage
+  /**
+   * Seconds into the chapter's walkthrough video where this step happens, so a
+   * step that is easier watched than read is one tap from the moment it shows.
+   * Undefined when nothing located it — never guessed.
+   */
+  at?:     number
+  /**
+   * Where this step happens on the chapter's map, as a fraction of the image's
+   * width and height (0..1), so it survives the image being served at any size.
+   *
+   * `approx` marks a pin the GENERATOR placed. The model never sees the map, so
+   * the best it can do is name a compass position from the research notes, which
+   * lands the pin in roughly the right ninth. The UI says so and lets the pin be
+   * dragged; a pin the user has moved or dropped is exact and loses the flag.
+   */
+  pin?:    { x: number; y: number; approx?: boolean }
   /**
    * The sub-chapter this step belongs to ("Getting there", "Boss: Odolwa").
    * Consecutive steps sharing a group ARE that sub-chapter — there is no
@@ -75,6 +155,30 @@ export interface GuideVideo {
   channel?: string
 }
 
+/** A pin the user dropped themselves. Exact, labelled, and theirs to delete. */
+export interface GuideMapPin {
+  id:        string
+  x:         number
+  y:         number
+  label:     string
+  createdAt: string
+}
+
+/**
+ * A chapter's map, and what is marked on it.
+ *
+ * Two populations of pin, kept apart on purpose. The generator's pins live on
+ * the STEPS (`GuideStep.pin`), so a pin is always attached to the thing it
+ * marks and tapping it can jump to that step — and so re-researching a chapter
+ * replaces them along with the steps they belong to. The user's own pins live
+ * here, because they are notes about the map itself ("bomb wall", "the shop
+ * that buys these") and must survive a chapter being rewritten underneath them.
+ */
+export interface GuideMap {
+  image: GuideImage
+  pins:  GuideMapPin[]
+}
+
 export interface GuideSection {
   id:       string
   title:    string
@@ -84,6 +188,10 @@ export interface GuideSection {
   summary?: string
   video?:   GuideVideo
   source?:  { url: string; site: string }
+  /** A picture of this place or subject, shown at the top of the chapter. */
+  image?:   GuideImage
+  /** The map for this chapter, when the wiki had one worth showing. */
+  map?:     GuideMap
   state:    SectionState
   steps:    GuideStep[]
 }
@@ -105,6 +213,14 @@ export interface Guide {
   phase?:         string
   /** Overall 100% walkthrough for the whole game. */
   video?:         GuideVideo
+  /**
+   * The whole-game map, used by any chapter that has no map of its own.
+   *
+   * Most chapters are places ON the world map rather than places WITH a map —
+   * a collectible list spans the entire game — so without this fallback the map
+   * tool would only ever appear for dungeons.
+   */
+  map?:           GuideMap
   sections:       GuideSection[]
   sources:        Array<{ url: string; site: string; title: string }>
 }
@@ -199,6 +315,57 @@ function normalizeVideo(v: unknown): GuideVideo | undefined {
   }
 }
 
+const num = (v: unknown): number | null =>
+  typeof v === 'number' && Number.isFinite(v) ? v : null
+
+/** A cached image, or undefined. A record missing its file is not an image. */
+function normalizeImage(v: unknown): GuideImage | undefined {
+  if (!v || typeof v !== 'object') return undefined
+  const o = v as Record<string, unknown>
+  // The filename is generated by guide-media.ts as a hash + extension. Anything
+  // else in this field is either corruption or an attempt to walk out of the
+  // cache directory, and the serving route would reject it anyway — refuse it
+  // here too so a bad name can never even reach the client.
+  const file = str(o['file'], 80)
+  if (!/^[a-f0-9]{40}\.(png|jpe?g|webp|gif)$/i.test(file)) return undefined
+  const title = str(o['title'], MAX_TITLE_CHARS)
+  const w = num(o['width']), h = num(o['height'])
+  return {
+    file,
+    source: str(o['source'], 500),
+    ...(title ? { title } : {}),
+    ...(w && w > 0 ? { width: Math.round(w) } : {}),
+    ...(h && h > 0 ? { height: Math.round(h) } : {}),
+  }
+}
+
+/** A 0..1 position, or null for anything outside the image. */
+function normalizePoint(v: unknown): { x: number; y: number } | null {
+  if (!v || typeof v !== 'object') return null
+  const o = v as Record<string, unknown>
+  const x = num(o['x']), y = num(o['y'])
+  if (x === null || y === null) return null
+  if (x < 0 || x > 1 || y < 0 || y > 1) return null
+  // Three decimals is sub-pixel on any map this will ever show, and keeps the
+  // stored document from filling with float noise on every drag.
+  return { x: Math.round(x * 1000) / 1000, y: Math.round(y * 1000) / 1000 }
+}
+
+function normalizeSub(v: unknown, idx: number): GuideSubStep | null {
+  if (!v || typeof v !== 'object') return null
+  const o = v as Record<string, unknown>
+  const text = str(o['text'], MAX_SUB_CHARS)
+  if (!text) return null
+  const done = o['done'] === true
+  const doneAt = str(o['doneAt'], 40)
+  return {
+    id: str(o['id'], 40) || `u${idx}`,
+    text,
+    done,
+    ...(done && doneAt ? { doneAt } : {}),
+  }
+}
+
 function normalizeStep(v: unknown, idx: number): GuideStep | null {
   if (!v || typeof v !== 'object') return null
   const o = v as Record<string, unknown>
@@ -207,15 +374,58 @@ function normalizeStep(v: unknown, idx: number): GuideStep | null {
   const note   = str(o['note'], MAX_NOTE_CHARS)
   const group  = str(o['group'], MAX_GROUP_CHARS)
   const doneAt = str(o['doneAt'], 40)
-  const done   = o['done'] === true
+  const subs = (Array.isArray(o['subs']) ? o['subs'] : [])
+    .slice(0, MAX_SUBS_PER_STEP)
+    .map((x, i) => normalizeSub(x, i))
+    .filter((x): x is GuideSubStep => x !== null)
+  // A step with exactly one sub-step is noise: it says the same thing twice and
+  // gives the player two boxes for one action. Dropped rather than rendered.
+  const keptSubs = subs.length >= 2 ? subs : []
+  // The cascade, enforced on the way in as well as in the setters — a
+  // hand-edited or half-written document should not be able to show a step
+  // ticked with unticked children under it.
+  const done = keptSubs.length > 0
+    ? keptSubs.every(x => x.done)
+    : o['done'] === true
+  const image = normalizeImage(o['image'])
+  const at = num(o['at'])
+  const pinPt = normalizePoint(o['pin'])
+  const pinApprox = (o['pin'] as Record<string, unknown> | null)?.['approx'] === true
   return {
     id: str(o['id'], 40) || `s${idx}`,
     text,
     ...(note ? { note } : {}),
     ...(group ? { group } : {}),
+    ...(keptSubs.length > 0 ? { subs: keptSubs } : {}),
+    ...(image ? { image } : {}),
+    // A negative or absurd timestamp is a model slip, not a moment in a video.
+    ...(at !== null && at >= 0 && at < 24 * 3600 ? { at: Math.round(at) } : {}),
+    ...(pinPt ? { pin: { ...pinPt, ...(pinApprox ? { approx: true } : {}) } } : {}),
     done,
     ...(done && doneAt ? { doneAt } : {}),
   }
+}
+
+function normalizeMap(v: unknown): GuideMap | undefined {
+  if (!v || typeof v !== 'object') return undefined
+  const o = v as Record<string, unknown>
+  const image = normalizeImage(o['image'])
+  if (!image) return undefined      // a map is its picture; without one there is nothing to pin to
+  const pins = (Array.isArray(o['pins']) ? o['pins'] : [])
+    .slice(0, MAX_PINS_PER_SECTION)
+    .map((raw, i) => {
+      const po = (raw ?? {}) as Record<string, unknown>
+      const pt = normalizePoint(po)
+      if (!pt) return null
+      return {
+        id: str(po['id'], 40) || `p${i}`,
+        ...pt,
+        label: str(po['label'], MAX_PIN_LABEL_CHARS),
+        createdAt: str(po['createdAt'], 40) || new Date().toISOString(),
+      }
+    })
+    .filter((p): p is GuideMapPin => p !== null)
+  return { image, pins }
 }
 
 function normalizeSection(v: unknown, idx: number): GuideSection | null {
@@ -232,6 +442,8 @@ function normalizeSection(v: unknown, idx: number): GuideSection | null {
   const video   = normalizeVideo(o['video'])
   const srcRaw  = o['source'] as Record<string, unknown> | undefined
   const srcUrl  = str(srcRaw?.['url'], 500)
+  const map     = normalizeMap(o['map'])
+  const secImage = normalizeImage(o['image'])
   const steps = (Array.isArray(o['steps']) ? o['steps'] : [])
     .slice(0, MAX_STEPS_PER_SECTION)
     .map((s, i) => normalizeStep(s, i))
@@ -246,6 +458,8 @@ function normalizeSection(v: unknown, idx: number): GuideSection | null {
     ...(summary ? { summary } : {}),
     ...(video ? { video } : {}),
     ...(srcUrl ? { source: { url: srcUrl, site: str(srcRaw?.['site'], 120) } } : {}),
+    ...(secImage ? { image: secImage } : {}),
+    ...(map ? { map } : {}),
     state,
     steps,
   }
@@ -286,6 +500,7 @@ function normalize(itemId: string, v: unknown): Guide | null {
     updatedAt: str(o['updatedAt'], 40) || now,
     ...(phase ? { phase } : {}),
     ...(video ? { video } : {}),
+    ...(normalizeMap(o['map']) ? { map: normalizeMap(o['map'])! } : {}),
     sections,
     sources,
   }
@@ -411,14 +626,224 @@ export function setStepDone(
   const step = section.steps.find(s => s.id === stepId)
   if (!step) return null
 
+  const now = new Date().toISOString()
   step.done = done
-  if (done) step.doneAt = new Date().toISOString()
+  if (done) step.doneAt = now
   else delete step.doneAt
 
-  guide.updatedAt = new Date().toISOString()
+  // Cascade down. Ticking a step means "I did this", and leaving its sub-steps
+  // unticked underneath would reopen it the moment the document is re-normalized
+  // (normalizeStep derives a step's done from its subs). Unticking clears them
+  // for the same reason — otherwise a step you un-ticked to redo would snap
+  // straight back to done.
+  for (const sub of step.subs ?? []) {
+    sub.done = done
+    if (done) sub.doneAt = now
+    else delete sub.doneAt
+  }
+
+  guide.updatedAt = now
   write(store)
   const p = guideProgress(guide)
   console.log(`[guides] ${guide.title}: "${step.text.slice(0, 40)}" → ${done ? 'done' : 'not done'} (${p.percent}%)`)
+  return guide
+}
+
+/**
+ * Tick or untick one sub-step, and reconcile the step above it.
+ *
+ * A step is not stored independently of its children: a step with sub-steps is
+ * done exactly when all of them are. Deriving that on read instead would let one
+ * document render two ways depending on which path drew it, so the parent is
+ * settled here, at the one place a sub-step can change.
+ */
+export function setSubStepDone(
+  itemId: string,
+  sectionId: string,
+  stepId: string,
+  subId: string,
+  done: boolean,
+): Guide | null {
+  const store = read()
+  const guide = store[itemId]
+  if (!guide) return null
+  const section = guide.sections.find(s => s.id === sectionId)
+  if (!section) return null
+  const step = section.steps.find(s => s.id === stepId)
+  if (!step?.subs?.length) return null
+  const sub = step.subs.find(x => x.id === subId)
+  if (!sub) return null
+
+  const now = new Date().toISOString()
+  sub.done = done
+  if (done) sub.doneAt = now
+  else delete sub.doneAt
+
+  // Up, not down: the last sub ticked completes the step, and unticking any one
+  // of them reopens it. This is the whole reason sub-steps are worth having —
+  // the step's own checkbox becomes something you earn rather than something you
+  // have to remember to tick.
+  const all = step.subs.every(x => x.done)
+  step.done = all
+  if (all) step.doneAt = now
+  else delete step.doneAt
+
+  guide.updatedAt = now
+  write(store)
+  const p = guideProgress(guide)
+  console.log(
+    `[guides] ${guide.title}: "${sub.text.slice(0, 30)}" -> ${done ? 'done' : 'not done'} ` +
+    `(step "${step.text.slice(0, 30)}" ${step.done ? 'complete' : 'open'}, ${p.percent}%)`,
+  )
+  return guide
+}
+
+/**
+ * Tick or untick one SUB-CHAPTER — the run of consecutive steps sharing a group
+ * that starts at `fromIndex`.
+ *
+ * Addressed by starting index rather than by group name because a heading can
+ * legitimately recur later in a chapter, and the client derives its parts from
+ * runs for exactly that reason. Walking forward from the index while the group
+ * matches reproduces the client's own grouping precisely, so what gets ticked is
+ * always the part whose button was pressed.
+ */
+export function setPartDone(
+  itemId: string,
+  sectionId: string,
+  fromIndex: number,
+  done: boolean,
+): Guide | null {
+  const store = read()
+  const guide = store[itemId]
+  if (!guide) return null
+  const section = guide.sections.find(s => s.id === sectionId)
+  if (!section) return null
+  const first = section.steps[fromIndex]
+  if (!first) return null
+
+  const group = first.group ?? ''
+  const now = new Date().toISOString()
+  let changed = 0
+  for (let i = fromIndex; i < section.steps.length; i++) {
+    const step = section.steps[i]!
+    if ((step.group ?? '') !== group) break
+    if (step.done !== done) changed++
+    step.done = done
+    if (done) step.doneAt = now
+    else delete step.doneAt
+    for (const sub of step.subs ?? []) {
+      sub.done = done
+      if (done) sub.doneAt = now
+      else delete sub.doneAt
+    }
+  }
+
+  guide.updatedAt = now
+  write(store)
+  const p = guideProgress(guide)
+  console.log(
+    `[guides] ${guide.title}: part "${group || '(untitled)'}" of "${section.title}" -> ` +
+    `all ${done ? 'done' : 'not done'} (${changed} changed, ${p.percent}%)`,
+  )
+  return guide
+}
+
+// ── The map ──────────────────────────────────────────────────────────────────
+//
+// A chapter uses its own map when it has one and the guide's whole-game map
+// otherwise, so `sectionId` addresses a chapter and null addresses the game.
+// Both resolve through here rather than in the route, so the two callers cannot
+// come to different conclusions about which map a pin belongs to.
+
+function mapFor(guide: Guide, sectionId: string | null): GuideMap | undefined {
+  if (sectionId === null) return guide.map
+  const section = guide.sections.find(s => s.id === sectionId)
+  return section?.map ?? guide.map
+}
+
+/** Where a pin actually gets stored, which is not always where it was asked for. */
+function mapOwner(guide: Guide, sectionId: string | null): GuideMap | null {
+  if (sectionId === null) return guide.map ?? null
+  const section = guide.sections.find(s => s.id === sectionId)
+  if (!section) return null
+  // A chapter with no map of its own is looking at the game map, so that is
+  // where its pins belong — pinning to a chapter-shaped hole would drop them.
+  return section.map ?? guide.map ?? null
+}
+
+export function addMapPin(
+  itemId: string, sectionId: string | null, x: number, y: number, label: string,
+): Guide | null {
+  const store = read()
+  const guide = store[itemId]
+  if (!guide) return null
+  const map = mapOwner(guide, sectionId)
+  if (!map) return null
+  if (map.pins.length >= MAX_PINS_PER_SECTION) return null
+  map.pins.push({
+    id: `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+    x, y,
+    label: label.slice(0, MAX_PIN_LABEL_CHARS),
+    createdAt: new Date().toISOString(),
+  })
+  guide.updatedAt = new Date().toISOString()
+  write(store)
+  console.log(`[guides] ${guide.title}: pinned "${label.slice(0, 40)}" at ${x.toFixed(2)},${y.toFixed(2)}`)
+  return guide
+}
+
+export function updateMapPin(
+  itemId: string, sectionId: string | null, pinId: string,
+  patch: { x?: number; y?: number; label?: string },
+): Guide | null {
+  const store = read()
+  const guide = store[itemId]
+  if (!guide) return null
+  const pin = mapFor(guide, sectionId)?.pins.find(p => p.id === pinId)
+  if (!pin) return null
+  if (typeof patch.x === 'number') pin.x = patch.x
+  if (typeof patch.y === 'number') pin.y = patch.y
+  if (typeof patch.label === 'string') pin.label = patch.label.slice(0, MAX_PIN_LABEL_CHARS)
+  guide.updatedAt = new Date().toISOString()
+  write(store)
+  return guide
+}
+
+export function removeMapPin(itemId: string, sectionId: string | null, pinId: string): Guide | null {
+  const store = read()
+  const guide = store[itemId]
+  if (!guide) return null
+  const map = mapFor(guide, sectionId)
+  if (!map) return null
+  const before = map.pins.length
+  map.pins = map.pins.filter(p => p.id !== pinId)
+  if (map.pins.length === before) return null
+  guide.updatedAt = new Date().toISOString()
+  write(store)
+  return guide
+}
+
+/**
+ * Move (or clear) a step's own pin.
+ *
+ * The generator placed it from a compass direction in the research notes, so the
+ * first thing anyone does with a wrong one is drag it. Dragging clears `approx`:
+ * the pin has now been placed by someone who can actually see the map, which is
+ * the one thing the generator could not do.
+ */
+export function setStepPin(
+  itemId: string, sectionId: string, stepId: string, at: { x: number; y: number } | null,
+): Guide | null {
+  const store = read()
+  const guide = store[itemId]
+  if (!guide) return null
+  const step = guide.sections.find(s => s.id === sectionId)?.steps.find(s => s.id === stepId)
+  if (!step) return null
+  if (at === null) delete step.pin
+  else step.pin = { x: at.x, y: at.y }
+  guide.updatedAt = new Date().toISOString()
+  write(store)
   return guide
 }
 
@@ -473,7 +898,27 @@ export function pruneOrphans(validItemIds: Iterable<string>): number {
     console.log(`[guides] pruned ${dropped} orphaned guide(s)`)
     write(store)
   }
+  // Cached pictures follow their guides out. Nothing else knows which files are
+  // still referenced, and without this the media directory only ever grows — on
+  // the same Pi volume the generated images live on, and for the same reason
+  // (guides are evicted at MAX_GUIDES and chapters are rewritten in place).
+  pruneGuideImages(referencedImages(store))
   return dropped
+}
+
+/** Every cached image filename any guide still points at. */
+function referencedImages(store: Store): Set<string> {
+  const files = new Set<string>()
+  const add = (img?: GuideImage) => { if (img) files.add(img.file) }
+  for (const g of Object.values(store)) {
+    add(g.map?.image)
+    for (const sec of g.sections) {
+      add(sec.image)
+      add(sec.map?.image)
+      for (const step of sec.steps) add(step.image)
+    }
+  }
+  return files
 }
 
 /**
@@ -515,6 +960,10 @@ export function sweepInterrupted(): void {
     console.log(`[guides] ${touched} guide(s) were mid-generation at shutdown — marked failed`)
     write(store)
   }
+  // Boot is the one moment this is guaranteed to run — pruneOrphans() is only
+  // reached when the playlist is edited, and a cache that is only swept then can
+  // sit for months holding pictures of guides that are long gone.
+  pruneGuideImages(referencedImages(store))
 }
 
 export const GUIDE_CAPS = {

@@ -84,6 +84,30 @@ export type GuideStatus  = 'generating' | 'ready' | 'failed'
 export type SectionKind  = 'progression' | 'collectible' | 'sidequest' | 'reference'
 export type SectionState = 'pending' | 'ready' | 'failed'
 
+/** A wiki picture cached on the volume. Serve via /api/guides/image/:file. */
+export interface GuideImage {
+  file: string
+  source: string
+  title?: string
+  width?: number
+  height?: number
+}
+
+/**
+ * One concrete action inside a step, with its own checkbox.
+ *
+ * The step is still the unit of progress — see guideProgress() below, which does
+ * not count these. Ticking every sub ticks the step and vice versa, and that
+ * cascade is settled on the SERVER (setSubStepDone) rather than here, so the
+ * document renders the same whichever screen drew it.
+ */
+export interface GuideSubStep {
+  id: string
+  text: string
+  done: boolean
+  doneAt?: string
+}
+
 export interface GuideStep {
   id: string
   text: string
@@ -94,8 +118,34 @@ export interface GuideStep {
    * See GuideStep in server/src/guides.ts for why it's a label, not a tree.
    */
   group?: string
+  /** The actions this step breaks into. Absent for a step that is one action. */
+  subs?: GuideSubStep[]
+  /** A picture of the place or thing this step is about. */
+  image?: GuideImage
+  /** Seconds into the chapter's walkthrough video. Absent when nothing located it. */
+  at?: number
+  /**
+   * Where this happens on the map, as a fraction of its width and height.
+   * `approx` means the generator placed it from a compass phrase and has never
+   * seen the picture — the UI says so, and dragging it clears the flag.
+   */
+  pin?: { x: number; y: number; approx?: boolean }
   done: boolean
   doneAt?: string
+}
+
+/** A pin the user dropped. Exact, unlike a step's generated one. */
+export interface GuideMapPin {
+  id: string
+  x: number
+  y: number
+  label: string
+  createdAt: string
+}
+
+export interface GuideMap {
+  image: GuideImage
+  pins: GuideMapPin[]
 }
 
 export interface GuideVideo {
@@ -113,6 +163,10 @@ export interface GuideSection {
   summary?: string
   video?: GuideVideo
   source?: { url: string; site: string }
+  /** A picture of this place, shown at the top of the chapter. */
+  image?: GuideImage
+  /** This chapter's own map. Falls back to the guide's when absent. */
+  map?: GuideMap
   state: SectionState
   steps: GuideStep[]
 }
@@ -130,6 +184,8 @@ export interface Guide {
   /** Generation phase, e.g. "Woodfall Temple (3 of 7)". Absent when finished. */
   phase?: string
   video?: GuideVideo
+  /** The whole-game map, used by any chapter without one of its own. */
+  map?: GuideMap
   sections: GuideSection[]
   sources: Array<{ url: string; site: string; title: string }>
 }
