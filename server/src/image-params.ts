@@ -44,21 +44,34 @@ export interface ImageParams {
   /** The seed itself, for 'fixed' and as the running value for 'increment'. */
   seed:         number
   /**
-   * What this style should avoid. '' = use the style's own published negative,
-   * then the house default.
+   * The four pieces of text this app adds to a render on the user's behalf, all
+   * of them overridable per style.
    *
-   * Per style for the same reason cfg is: a negative is model-specific text.
-   * The booru terms NoobAI's card asks for are wasted on FLUX, which has no
-   * negative at all, and the house English prose is wasted on a tag model.
-   * One global negative would silently be wrong for whichever model was not the
-   * one it was written for.
+   * NULL IS NOT THE EMPTY STRING here, and the distinction is the whole reason
+   * these are `string | null` rather than plain strings:
+   *
+   *   null → no override; use whatever the model's own card publishes.
+   *   ''   → an override that is deliberately EMPTY; add nothing at all.
+   *
+   * With `'' = fall back`, which is what this was at first, there is no way to
+   * say "stop putting `masterpiece, best quality, score_7, safe,` in front of
+   * my prompt" — clearing the box would just restore it. Being able to turn a
+   * built-in off is most of what "editable" means for text somebody else wrote.
+   *
+   * Per style for the same reason cfg is: this is model-specific text. The
+   * booru terms NoobAI's card asks for are wasted on FLUX, which has no
+   * negative at all, and the house English prose is wasted on a tag model — one
+   * global set would be quietly wrong for whichever model it was not written
+   * for.
    */
-  negative:     string
-  /**
-   * Booster text appended to every prompt for this style. '' = the style's own
-   * published default, which for most is nothing (see styleOptimizations).
-   */
-  optimizations: string
+  /** Glued in FRONT of the prompt. NoobAI's quality ladder, Lumina's instruction line. */
+  prefix:        string | null
+  /** Appended AFTER the prompt. Animagine's quality tags. */
+  optimizations: string | null
+  /** The negative itself. */
+  negative:      string | null
+  /** Glued in front of the NEGATIVE — only instruction-tuned models ship one. */
+  negativePrefix: string | null
 }
 
 export const DEFAULT_PARAMS: ImageParams = {
@@ -71,8 +84,11 @@ export const DEFAULT_PARAMS: ImageParams = {
   loraStrength: 1,
   seedMode:     'random',
   seed:         0,
-  negative:     '',
-  optimizations: '',
+  // null, not '': nothing is overridden until somebody overrides it.
+  prefix:         null,
+  optimizations:  null,
+  negative:       null,
+  negativePrefix: null,
 }
 
 // Bounds. These are operator settings, not model-supplied ones, so they're
@@ -156,17 +172,29 @@ export function normalizeParams(raw: unknown, base: ImageParams = DEFAULT_PARAMS
       ? mode
       : base.seedMode,
     seed:         seed === null ? base.seed : clamp(Math.round(seed), 0, MAX_SEED),
-    // Free text, so the only rules are a length cap and that whitespace-only
-    // means empty — otherwise a stray space typed into the field would read as
-    // "override with nothing" and silently drop the model's published negative,
-    // which is the one outcome nobody would ever be asking for.
-    negative:      typeof o['negative'] === 'string'
-      ? o['negative'].trim().slice(0, MAX_TEXT)
-      : base.negative,
-    optimizations: typeof o['optimizations'] === 'string'
-      ? o['optimizations'].trim().slice(0, MAX_TEXT)
-      : base.optimizations,
+    // Free text. `text()` below is where the three-state rule lives.
+    prefix:         text(o, 'prefix', base.prefix),
+    optimizations:  text(o, 'optimizations', base.optimizations),
+    negative:       text(o, 'negative', base.negative),
+    negativePrefix: text(o, 'negativePrefix', base.negativePrefix),
   }
+}
+
+/**
+ * One of the four overridable text fields, honouring the null/''/absent split.
+ *
+ * A PATCH sends only the keys it means to change, so "absent" has to keep the
+ * current value while an explicit `null` clears the override back to the
+ * model's own default — which is why this tests for the key's presence rather
+ * than just its type. Trimmed because every one of these is glued to another
+ * string and a trailing space is invisible in a text box; `joinPrefix` and
+ * `joinPrompt` put the right separator back.
+ */
+function text(o: Record<string, unknown>, key: string, fallback: string | null): string | null {
+  if (!(key in o)) return fallback
+  const v = o[key]
+  if (v === null) return null
+  return typeof v === 'string' ? v.trim().slice(0, MAX_TEXT) : fallback
 }
 
 // ── Store ────────────────────────────────────────────────────────────────────

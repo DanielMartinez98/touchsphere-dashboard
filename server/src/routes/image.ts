@@ -42,6 +42,7 @@ import {
   styleNegativeFor,
   stylePrefixFor,
   styleUsesNegative,
+  styleNegativePrefixFor,
   supersededCheckpoints,
   WORKFLOW_PREFIX,
 } from '../image'
@@ -255,7 +256,8 @@ router.get('/params', async (req: Request, res: Response) => {
       optimizations: styleOptimizations(style),
       // Read-only: this is where a card that specifies a lead-in puts it, and
       // it is shown so the appended field's placement makes sense.
-      prefix:        stylePrefixFor(style),
+      prefix:         stylePrefixFor(style),
+      negativePrefix: styleNegativePrefixFor(style),
       // False for a style with no second text encode at all (FLUX). The field
       // is then shown as not applicable rather than as an empty editable box.
       usesNegative:  styleUsesNegative(style),

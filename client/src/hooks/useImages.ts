@@ -162,10 +162,18 @@ export interface ImageParams {
   loraStrength: number
   seedMode:     SeedMode
   seed:         number
-  /** What this style avoids. '' = its own published negative, then the house one. */
-  negative:     string
-  /** Booster text appended to every prompt for this style. '' = the style's default. */
-  optimizations: string
+  /**
+   * The four pieces of text the app adds for you, all overridable per style.
+   *
+   * null means "no override — use what the model's card publishes"; '' means an
+   * override that is deliberately empty, i.e. add nothing. They are different
+   * answers and the UI has to be able to express both, or a built-in prefix
+   * could never be switched off.
+   */
+  prefix:         string | null
+  optimizations:  string | null
+  negative:       string | null
+  negativePrefix: string | null
 }
 
 /** What the selected style's own graph specifies, so "Auto" can name a number. */
@@ -183,7 +191,8 @@ export interface StyleDefaults {
 }
 
 export const DEFAULT_PARAMS: ImageParams = {
-  megapixels: 0, multipleOf: 8, steps: 0, cfg: 0, negative: '', optimizations: '',
+  megapixels: 0, multipleOf: 8, steps: 0, cfg: 0,
+  prefix: null, optimizations: null, negative: null, negativePrefix: null,
   turbo: false, lora: '', loraStrength: 1,
   seedMode: 'random', seed: 0,
 }
@@ -239,7 +248,9 @@ export interface StyleText {
   /** Booster appended by default. '' for most styles — see styleOptimizations. */
   optimizations: string
   /** The lead-in this model's card puts in FRONT of every prompt. '' for most. */
-  prefix:        string
+  prefix:         string
+  /** The lead-in in front of the NEGATIVE. Only instruction-tuned models ship one. */
+  negativePrefix: string
   /** False for a model with no negative prompt at all (FLUX). Optional: an older server omits it. */
   usesNegative?: boolean
 }

@@ -1420,7 +1420,7 @@ function StyleTextSection({ styles }: { styles: { id: string; label: string }[] 
   const { fetchParams, setParamsForStyle } = useImages()
   const [style, setStyle] = useState('')
   const [data, setData] = useState<ParamsResponse | null>(null)
-  const [draft, setDraft] = useState({ negative: '', optimizations: '' })
+  const [draft, setDraft] = useState<Overrides>(BLANK)
   const [saved, setSaved] = useState(true)
 
   // Settle on the first style once the list arrives. Derived in the render body
@@ -1438,8 +1438,10 @@ function StyleTextSection({ styles }: { styles: { id: string; label: string }[] 
       if (cancelled) return
       setData(j)
       setDraft({
-        negative:      j?.values?.negative ?? '',
-        optimizations: j?.values?.optimizations ?? '',
+        prefix:         j?.values?.prefix         ?? null,
+        optimizations:  j?.values?.optimizations  ?? null,
+        negative:       j?.values?.negative       ?? null,
+        negativePrefix: j?.values?.negativePrefix ?? null,
       })
       setSaved(true)
     })
@@ -1457,20 +1459,21 @@ function StyleTextSection({ styles }: { styles: { id: string; label: string }[] 
   // as "it has one", the behaviour every style had before this existed.
   const hasNegative = text?.usesNegative !== false
 
-  const save = async () => {
-    await setParamsForStyle(style, draft)
-    setSaved(true)
+  const set = (key: keyof Overrides, v: string | null) => {
+    setDraft(d => ({ ...d, [key]: v }))
+    setSaved(false)
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <div>
         <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
           Per-model text
         </span>
-        <p className="text-[12px] text-white/45 leading-relaxed mb-2">
-          Each model gets its own. Leave a box empty to use what that model's own
-          documentation recommends — shown greyed inside the box.
+        <p className="text-[12px] text-white/45 leading-relaxed mb-3">
+          Everything this app adds to a render for you, for one model at a time. A box left
+          alone uses what that model's own documentation recommends — shown greyed inside it.
+          Type to replace it, or empty a box you have taken over to add nothing at all.
         </p>
         {/* A horizontal scroller, not a dropdown: a native select opens an OS
             popup TouchKio renders badly, and this is the same control the Draw
@@ -1493,89 +1496,161 @@ function StyleTextSection({ styles }: { styles: { id: string; label: string }[] 
         </div>
       </div>
 
-      {/* What this model's card puts in FRONT. Read-only, and shown only when
-          there is one, because it is what makes the "appended" field below make
-          sense: the booster goes last precisely so it never displaces this. */}
-      {text?.prefix && (
-        <div className="rounded-xl bg-white/[0.04] border border-hairline px-3 py-2.5">
-          <p className="text-[10px] uppercase tracking-widest text-white/30 font-semibold mb-1">
-            Added in front automatically
-          </p>
-          <p className="selectable-text text-[11px] text-white/55 leading-snug break-words font-mono">
-            {text.prefix}
-          </p>
-          <p className="text-[11px] text-white/30 leading-snug mt-1.5">
-            This model's own documentation specifies these at the start of the prompt,
-            so they stay there. Anything you add below goes after your prompt.
-          </p>
-        </div>
+      <OverrideField
+        label="Added in front of your prompt"
+        hint={"Used exactly as written, with a comma put in for you \u2014 unless it ends in " +
+              "punctuation like \u201c>\u201d, which some models use as a separator that must not " +
+              "be followed by one."}
+        value={draft.prefix}
+        fallback={text?.prefix ?? ''}
+        rows={2}
+        onChange={v => set('prefix', v)}
+        onReset={() => set('prefix', null)}
+      />
+
+      <OverrideField
+        label="Added after your prompt"
+        hint="Where quality tags go for models whose documentation puts them at the end."
+        value={draft.optimizations}
+        fallback={text?.optimizations ?? ''}
+        rows={2}
+        onChange={v => set('optimizations', v)}
+        onReset={() => set('optimizations', null)}
+      />
+
+      {/* Not disabled — absent. A model that cannot have a negative gets a
+          sentence saying so instead of editable boxes whose contents could never
+          reach a picture, which is the same silent-override failure the
+          per-style params exist to prevent. */}
+      {hasNegative ? (
+        <>
+          <OverrideField
+            label="Negative prompt"
+            hint={cfgOne
+              ? 'This style samples at guidance 1, so it does no classifier-free guidance and ' +
+                'this has no effect on the picture yet. It is kept for the moment you raise ' +
+                "Guidance in the Draw panel's Advanced section."
+              : ''}
+            hintTone={cfgOne ? 'warn' : 'plain'}
+            value={draft.negative}
+            fallback={text?.negative ?? ''}
+            rows={3}
+            onChange={v => set('negative', v)}
+            onReset={() => set('negative', null)}
+          />
+
+          <OverrideField
+            label="Added in front of the negative"
+            hint="Only instruction-tuned models ship one of these; most leave it empty."
+            value={draft.negativePrefix}
+            fallback={text?.negativePrefix ?? ''}
+            rows={2}
+            onChange={v => set('negativePrefix', v)}
+            onReset={() => set('negativePrefix', null)}
+          />
+        </>
+      ) : (
+        <p className="text-[12px] text-white/45 leading-relaxed rounded-xl bg-white/[0.04]
+                      border border-hairline px-3 py-2.5">
+          This model has no negative prompt at all — its own guidance is to describe what
+          you want rather than what you don't, and there is nowhere in its pipeline for a
+          negative to go. Put anything you were going to avoid into the prompt as a
+          positive description instead.
+        </p>
       )}
-
-      <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
-          Optimizations — appended after your prompt
-        </span>
-        <TouchInput
-          value={draft.optimizations}
-          onChange={v => { setDraft(d => ({ ...d, optimizations: v })); setSaved(false) }}
-          multiline
-          rows={2}
-          placeholder={text?.optimizations || 'nothing by default for this model'}
-          ariaLabel="Text appended to every prompt for this model"
-          className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px] leading-relaxed
-                     placeholder:text-white/30 border border-hairline"
-        />
-      </div>
-
-      <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
-          Negative prompt
-        </span>
-        {/* Not disabled — absent. A model that cannot have a negative gets a
-            sentence saying so instead of an editable box whose contents could
-            never reach a picture, which is the same silent-override failure the
-            per-style params exist to prevent. */}
-        {hasNegative ? (
-          <>
-            <TouchInput
-              value={draft.negative}
-              onChange={v => { setDraft(d => ({ ...d, negative: v })); setSaved(false) }}
-              multiline
-              rows={3}
-              placeholder={text?.negative || 'nothing'}
-              ariaLabel="What this model should avoid"
-              className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px] leading-relaxed
-                         placeholder:text-white/30 border border-hairline"
-            />
-            {cfgOne && (
-              <p className="text-[11px] text-amber-300/70 leading-snug mt-1.5">
-                This style samples at guidance 1, so it does no classifier-free guidance and
-                the negative prompt has no effect on the picture. It is kept for the moment
-                you raise Guidance in the Draw panel's Advanced section.
-              </p>
-            )}
-          </>
-        ) : (
-          <p className="text-[12px] text-white/45 leading-relaxed rounded-xl bg-white/[0.04]
-                        border border-hairline px-3 py-2.5">
-            This model has no negative prompt at all — its own guidance is to describe what
-            you want rather than what you don't, and there is nowhere in its pipeline for a
-            negative to go. Put anything you were going to avoid into the prompt as a
-            positive description instead.
-          </p>
-        )}
-      </div>
 
       <button
         type="button"
         disabled={saved}
-        onClick={() => { void save() }}
+        onClick={() => { void setParamsForStyle(style, draft).then(() => setSaved(true)) }}
         className={`w-full h-12 rounded-xl text-sm font-semibold transition ${
           saved ? 'bg-white/5 text-white/30' : 'bg-violet-500/80 text-white active:scale-95'
         }`}
       >
         {saved ? 'Saved' : `Save for ${data?.styleLabel || 'this model'}`}
       </button>
+    </div>
+  )
+}
+
+/** The four overridable strings, as the editor holds them. */
+interface Overrides {
+  prefix:         string | null
+  optimizations:  string | null
+  negative:       string | null
+  negativePrefix: string | null
+}
+
+const BLANK: Overrides = {
+  prefix: null, optimizations: null, negative: null, negativePrefix: null,
+}
+
+/**
+ * One overridable piece of text, with its way back.
+ *
+ * The three states have to be visibly different or the field lies. `null` shows
+ * the model's own string as a greyed placeholder, because a blank box over a
+ * model that HAS a published prefix reads as "there isn't one". An override of
+ * '' must NOT show that same placeholder — it would look like the built-in was
+ * still in effect when the whole point of emptying the box was to switch it
+ * off — so the placeholder changes to say what will actually happen.
+ */
+function OverrideField({
+  label, hint, hintTone = 'plain', value, fallback, rows, onChange, onReset,
+}: {
+  label:     string
+  hint?:     string
+  hintTone?: 'plain' | 'warn'
+  /** null = no override. */
+  value:     string | null
+  /** What the model itself specifies, shown when there is no override. */
+  fallback:  string
+  rows:      number
+  onChange:  (v: string) => void
+  onReset:   () => void
+}) {
+  const overridden = value !== null
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-3 mb-2">
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">
+          {label}
+        </span>
+        {/* Absent rather than disabled while nothing is overridden: a dead
+            control on a touchscreen is a tap that looks broken. */}
+        {overridden && (
+          <button
+            type="button"
+            onClick={onReset}
+            className="shrink-0 text-[11px] font-semibold text-violet-300/80 px-2 py-1
+                       rounded-lg active:bg-white/10"
+          >
+            Use the model's own
+          </button>
+        )}
+      </div>
+      <TouchInput
+        value={value ?? ''}
+        onChange={onChange}
+        multiline
+        rows={rows}
+        placeholder={overridden ? 'nothing will be added' : (fallback || 'nothing by default')}
+        ariaLabel={label}
+        className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px] leading-relaxed
+                   placeholder:text-white/30 border border-hairline"
+      />
+      {overridden && value === '' && (
+        <p className="text-[11px] text-amber-300/70 leading-snug mt-1.5">
+          Switched off — nothing will be added here. Tap "Use the model's own" to put it back.
+        </p>
+      )}
+      {hint && (
+        <p className={`text-[11px] leading-snug mt-1.5 ${
+          hintTone === 'warn' ? 'text-amber-300/70' : 'text-white/30'
+        }`}>
+          {hint}
+        </p>
+      )}
     </div>
   )
 }

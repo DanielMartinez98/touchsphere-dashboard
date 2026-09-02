@@ -561,13 +561,18 @@ export interface ImageJob {
   /** Guidance scale. 0 = leave whatever the graph specifies. */
   cfg:      number
   /**
-   * Booster text appended to the positive prompt, already resolved from the
-   * style's own default and the user's per-style override.
+   * The four pieces of text this app adds on the user's behalf, ALL resolved
+   * here at queue time from the style's published default and the user's
+   * per-style override.
    *
-   * Resolved at QUEUE time like the style and the steps, so editing it in
-   * Settings cannot retroactively change a picture that is already waiting.
+   * Resolved at queue time like the style and the steps, so editing them in
+   * Settings cannot retroactively change a picture that is already waiting —
+   * and resolved HERE rather than in buildGraph so that precedence lives in one
+   * place with the rest of it, and buildGraph stays purely mechanical.
    */
+  prefix:        string
   optimizations: string
+  negativePrefix: string
   /** Turbo mode: splice a model-only LoRA in ahead of the sampler. */
   turbo:    boolean
   /** LoRA to splice in ahead of the sampler. '' = none (turbo off, or none found). */
@@ -1061,13 +1066,15 @@ export function startImage(req: ImageRequest): ImageJob {
     id:        crypto.randomBytes(16).toString('hex'),
     prompt:    req.prompt.slice(0, MAX_PROMPT),
     // Precedence, widest to narrowest: this request → the user's per-style
-        // negative from Settings → the style's own published one → the house
-        // default. The middle step is new and is the point of the Settings
-        // section: a model's published negative is a good starting point, not a
-        // decision someone else gets to make permanently.
-    negative:  (req.negative ?? (p.negative || styleNegative(style) || DEFAULT_NEGATIVE))
+    // override from Settings → the style's own published text → the house
+    // default. `??` and not `||` throughout, because an override of '' is a
+    // real answer meaning "add nothing" and must not fall through to the
+    // built-in it was set to switch off.
+    negative:  (req.negative ?? p.negative ?? (styleNegative(style) || DEFAULT_NEGATIVE))
       .slice(0, MAX_PROMPT),
-    optimizations: (p.optimizations || styleOptimizations(style)).slice(0, MAX_PROMPT),
+    prefix:         (p.prefix ?? stylePrefixFor(style)).slice(0, MAX_PROMPT),
+    optimizations:  (p.optimizations ?? styleOptimizations(style)).slice(0, MAX_PROMPT),
+    negativePrefix: (p.negativePrefix ?? styleNegativePrefixFor(style)).slice(0, MAX_PROMPT),
     width:     size.width,
     height:    size.height,
     // Random by default: a fixed seed makes every image of "a cat" identical,
@@ -2029,6 +2036,11 @@ export function stylePrefixFor(style: string): string {
   return stylePrefixes(style).positive
 }
 
+/** The lead-in in front of the NEGATIVE. Only instruction-tuned models ship one. */
+export function styleNegativePrefixFor(style: string): string {
+  return stylePrefixes(style).negative
+}
+
 export function styleOptimizations(style: string): string {
   if (!style.startsWith(WORKFLOW_PREFIX)) return ''
   return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.optimizations ?? ''
@@ -2043,11 +2055,41 @@ export function styleOptimizations(style: string): string {
  * is one more token the encoder spends on nothing.
  */
 export function joinPrompt(base: string, extra: string): string {
-  const a = base.trim().replace(/,+\s*$/, '')
-  const b = extra.trim().replace(/^\s*,+/, '').replace(/,+\s*$/, '')
+  // Commas AND the whitespace around them, from both ends of both halves. The
+  // first version stripped a leading comma but left the space behind it, so
+  // ", cinematic lighting" appended as "a red fox,  cinematic lighting" — a
+  // double space that a tag parser reads as an empty tag.
+  const strip = (t: string) => t.replace(/^[\s,]+/, '').replace(/[\s,]+$/, '')
+  const a = strip(base)
+  const b = strip(extra)
   if (!b) return a
   if (!a) return b
   return `${a}, ${b}`
+}
+
+/**
+ * Glue a lead-in onto the front of a prompt.
+ *
+ * Separate from joinPrompt because a prefix is not always a tag list. The two
+ * shapes shipped here end differently on purpose:
+ *
+ *   NoobAI    "masterpiece, best quality, newest, absurdres, highres, safe,"
+ *   NetaYume  "...generate high quality anime images based on textual prompts. <Prompt Start>"
+ *
+ * The first wants a comma before the prompt; the second must NOT get one, since
+ * `<Prompt Start>` is a separator the model was trained on and a comma after it
+ * is a token it never saw there. This used to work only because the built-in
+ * strings carried their own trailing separator and nothing else could reach the
+ * field — now that the user can type one, guessing has to be done here instead
+ * of hoping they remember a trailing space that a text box does not show.
+ */
+export function joinPrefix(prefix: string, body: string): string {
+  const lead = prefix.trim()
+  if (!lead) return body
+  if (!body) return lead
+  // Ends in sentence or marker punctuation → a space is the right separator.
+  // Anything else is treated as a tag list, where a comma is.
+  return /[>:.!?]$/.test(lead) ? `${lead} ${body}` : joinPrompt(lead, body)
 }
 
 /** Checkpoint filenames that a `wf:` style replaces and the picker should hide. */
@@ -2240,7 +2282,9 @@ function buildGraph(job: ImageJob, sourceName = ''): ComfyGraph {
   // was trained on, so its system line goes in front of what the user asked
   // for. Empty for every other style, which is why this is a plain concat
   // rather than a branch.
-  const pre = stylePrefixes(job.model)
+  // No style lookup here any more: startImage() resolved the four text fields
+  // against the user's overrides when the job was queued, and re-deriving them
+  // from the style at render time would quietly ignore every one of them.
   if (posId && graph[posId] && 'text' in graph[posId]!.inputs) {
     // prefix + what was asked for + booster, in that order. The booster goes
     // LAST rather than into the prefix because the prefix is where a model's
@@ -2248,7 +2292,7 @@ function buildGraph(job: ImageJob, sourceName = ''): ComfyGraph {
     // be first, and NoobAI's quality ladder is specified as a prefix — so the
     // user's "always add this" has to be a third position, not a fight with
     // either of them.
-    graph[posId]!.inputs['text'] = pre.positive + joinPrompt(job.prompt, job.optimizations)
+    graph[posId]!.inputs['text'] = joinPrefix(job.prefix, joinPrompt(job.prompt, job.optimizations))
   } else {
     throw new Error("workflow's positive prompt does not reach a text node")
   }
@@ -2258,7 +2302,7 @@ function buildGraph(job: ImageJob, sourceName = ''): ComfyGraph {
   // negative and draw a picture of everything the user didn't want. A negative
   // that is inert in the graph stays inert.
   if (negId && negId !== posId && graph[negId] && 'text' in graph[negId]!.inputs) {
-    graph[negId]!.inputs['text'] = pre.negative + job.negative
+    graph[negId]!.inputs['text'] = joinPrefix(job.negativePrefix, job.negative)
   }
 
   const latentId = findNode(graph, ['EmptyLatentImage', 'EmptySD3LatentImage', 'EmptyLatentImageAdvanced'])
