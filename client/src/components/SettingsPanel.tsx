@@ -16,6 +16,7 @@ import { useDebugLog, clearDebugLog, getDebugLog } from '../utils/debugLog'
 import { useMemory, type MemoryItem, type MemoryKind } from '../hooks/useMemory'
 import { useGuides } from '../hooks/useGuides'
 import { useImages } from '../hooks/useImages'
+import type { ParamsResponse } from '../hooks/useImages'
 import { useGuideActivity, type ActivityLevel } from '../hooks/useGuideActivity'
 import { TouchInput } from './TouchInput'
 
@@ -1399,8 +1400,168 @@ function clockTime(iso: string): string {
  * style that is actually selected is what makes the model-awareness visible
  * rather than a claim.
  */
+/**
+ * Settings → Drawing → the per-model text: what this style avoids, and what is
+ * silently added to every prompt for it.
+ *
+ * PER MODEL rather than global, for exactly the reason cfg is: this is
+ * model-specific text. The booru terms NoobAI's card asks for are wasted on
+ * FLUX, which has no negative at all; the house English prose is wasted on a
+ * tag-trained model. One global negative would be quietly wrong for whichever
+ * model it was not written for — which is the failure the whole per-style store
+ * exists to prevent.
+ *
+ * Each field's PLACEHOLDER is the string that is actually in effect when you
+ * leave it blank, not a hint. A blank box over a model that has a published
+ * negative would read as "there isn't one", and the natural response to that is
+ * to type a worse one from memory.
+ */
+function StyleTextSection({ styles }: { styles: { id: string; label: string }[] }) {
+  const { fetchParams, setParamsForStyle } = useImages()
+  const [style, setStyle] = useState('')
+  const [data, setData] = useState<ParamsResponse | null>(null)
+  const [draft, setDraft] = useState({ negative: '', optimizations: '' })
+  const [saved, setSaved] = useState(true)
+
+  // Settle on the first style once the list arrives. Derived in the render body
+  // rather than an effect, the pattern this file already uses elsewhere.
+  if (!style && styles.length > 0) setStyle(styles[0]!.id)
+
+  // Load whichever style is being edited. The cancelled guard is load-bearing
+  // for the same reason as the Draw panel's: tapping through three models fires
+  // three requests, and the slowest one winning would leave the fields
+  // describing one model while the next save wrote them against another.
+  useEffect(() => {
+    if (!style) return
+    let cancelled = false
+    void fetchParams(style).then(j => {
+      if (cancelled) return
+      setData(j)
+      setDraft({
+        negative:      j?.values?.negative ?? '',
+        optimizations: j?.values?.optimizations ?? '',
+      })
+      setSaved(true)
+    })
+    return () => { cancelled = true }
+  }, [style, fetchParams])
+
+  const text = data?.text
+  // A style sampled at cfg 1 is not doing classifier-free guidance, so its
+  // negative is encoded and then ignored. Saying so beats a field that looks
+  // live and silently isn't — the same rule the Quality row follows when a
+  // distilled style takes it out of play.
+  const cfgOne = data?.defaults?.cfg === 1
+
+  const save = async () => {
+    await setParamsForStyle(style, draft)
+    setSaved(true)
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          Per-model text
+        </span>
+        <p className="text-[12px] text-white/45 leading-relaxed mb-2">
+          Each model gets its own. Leave a box empty to use what that model's own
+          documentation recommends — shown greyed inside the box.
+        </p>
+        {/* A horizontal scroller, not a dropdown: a native select opens an OS
+            popup TouchKio renders badly, and this is the same control the Draw
+            panel's Style row already uses. */}
+        <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+          {styles.map(st => (
+            <button
+              key={st.id}
+              type="button"
+              onClick={() => setStyle(st.id)}
+              className={`shrink-0 px-3 h-10 rounded-xl text-[12px] font-semibold border transition ${
+                style === st.id
+                  ? 'bg-white/20 text-white border-white/25'
+                  : 'bg-white/5 text-white/45 border-transparent'
+              }`}
+            >
+              {st.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* What this model's card puts in FRONT. Read-only, and shown only when
+          there is one, because it is what makes the "appended" field below make
+          sense: the booster goes last precisely so it never displaces this. */}
+      {text?.prefix && (
+        <div className="rounded-xl bg-white/[0.04] border border-hairline px-3 py-2.5">
+          <p className="text-[10px] uppercase tracking-widest text-white/30 font-semibold mb-1">
+            Added in front automatically
+          </p>
+          <p className="selectable-text text-[11px] text-white/55 leading-snug break-words font-mono">
+            {text.prefix}
+          </p>
+          <p className="text-[11px] text-white/30 leading-snug mt-1.5">
+            This model's own documentation specifies these at the start of the prompt,
+            so they stay there. Anything you add below goes after your prompt.
+          </p>
+        </div>
+      )}
+
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          Optimizations — appended after your prompt
+        </span>
+        <TouchInput
+          value={draft.optimizations}
+          onChange={v => { setDraft(d => ({ ...d, optimizations: v })); setSaved(false) }}
+          multiline
+          rows={2}
+          placeholder={text?.optimizations || 'nothing by default for this model'}
+          ariaLabel="Text appended to every prompt for this model"
+          className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px] leading-relaxed
+                     placeholder:text-white/30 border border-hairline"
+        />
+      </div>
+
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          Negative prompt
+        </span>
+        <TouchInput
+          value={draft.negative}
+          onChange={v => { setDraft(d => ({ ...d, negative: v })); setSaved(false) }}
+          multiline
+          rows={3}
+          placeholder={text?.negative || 'nothing'}
+          ariaLabel="What this model should avoid"
+          className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px] leading-relaxed
+                     placeholder:text-white/30 border border-hairline"
+        />
+        {cfgOne && (
+          <p className="text-[11px] text-amber-300/70 leading-snug mt-1.5">
+            This style samples at guidance 1, so it does no classifier-free guidance and
+            the negative prompt has no effect on the picture. It is kept for the moment
+            you raise Guidance in the Draw panel's Advanced section.
+          </p>
+        )}
+      </div>
+
+      <button
+        type="button"
+        disabled={saved}
+        onClick={() => { void save() }}
+        className={`w-full h-12 rounded-xl text-sm font-semibold transition ${
+          saved ? 'bg-white/5 text-white/30' : 'bg-violet-500/80 text-white active:scale-95'
+        }`}
+      >
+        {saved ? 'Saved' : `Save for ${data?.styleLabel || 'this model'}`}
+      </button>
+    </div>
+  )
+}
+
 function DrawingTab() {
-  const { prompter, setPrompter } = useImages()
+  const { prompter, setPrompter, styles } = useImages()
   // Edited locally and saved explicitly. A template is a paragraph typed on an
   // on-screen keyboard, and saving per keystroke would write the store forty
   // times and re-fetch the preview on each one.
@@ -1452,7 +1613,7 @@ function DrawingTab() {
       {/* The template itself */}
       <div>
         <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
-          How it is asked
+          How it is asked — one prompt, every model
         </span>
         <p className="text-[12px] text-white/45 leading-relaxed mb-2">
           This is the whole system prompt. Two placeholders are filled in for you from
@@ -1526,6 +1687,15 @@ function DrawingTab() {
                         max-h-72 overflow-y-auto">
           {prompter.preview}
         </pre>
+      </div>
+
+      {/* Everything above this line is ONE prompt shared by every model — the
+          generalised optimizer. Everything below is per model. Keeping them on
+          the same screen but visibly separated is the whole point: the reason
+          one template can serve every model is that the model-specific text
+          lives down here and is appended for you. */}
+      <div className="border-t border-hairline pt-5">
+        <StyleTextSection styles={styles} />
       </div>
     </div>
   )

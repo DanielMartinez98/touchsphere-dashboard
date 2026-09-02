@@ -43,6 +43,22 @@ export interface ImageParams {
   seedMode:     SeedMode
   /** The seed itself, for 'fixed' and as the running value for 'increment'. */
   seed:         number
+  /**
+   * What this style should avoid. '' = use the style's own published negative,
+   * then the house default.
+   *
+   * Per style for the same reason cfg is: a negative is model-specific text.
+   * The booru terms NoobAI's card asks for are wasted on FLUX, which has no
+   * negative at all, and the house English prose is wasted on a tag model.
+   * One global negative would silently be wrong for whichever model was not the
+   * one it was written for.
+   */
+  negative:     string
+  /**
+   * Booster text appended to every prompt for this style. '' = the style's own
+   * published default, which for most is nothing (see styleOptimizations).
+   */
+  optimizations: string
 }
 
 export const DEFAULT_PARAMS: ImageParams = {
@@ -55,6 +71,8 @@ export const DEFAULT_PARAMS: ImageParams = {
   loraStrength: 1,
   seedMode:     'random',
   seed:         0,
+  negative:     '',
+  optimizations: '',
 }
 
 // Bounds. These are operator settings, not model-supplied ones, so they're
@@ -89,6 +107,13 @@ export const MAX_STEPS = 150
 export const MAX_CFG   = 30
 export const MAX_LORA  = 2
 export const MAX_SEED = 2 ** 31 - 1
+
+/**
+ * Cap on the two free-text fields. Long enough for the longest published
+ * negative (NoobAI's is ~170 characters) several times over, short enough that
+ * the store stays a small JSON file the volume can hold a style-key per model.
+ */
+const MAX_TEXT = 2000
 
 const num = (v: unknown): number | null =>
   typeof v === 'number' && Number.isFinite(v) ? v : null
@@ -131,6 +156,16 @@ export function normalizeParams(raw: unknown, base: ImageParams = DEFAULT_PARAMS
       ? mode
       : base.seedMode,
     seed:         seed === null ? base.seed : clamp(Math.round(seed), 0, MAX_SEED),
+    // Free text, so the only rules are a length cap and that whitespace-only
+    // means empty — otherwise a stray space typed into the field would read as
+    // "override with nothing" and silently drop the model's published negative,
+    // which is the one outcome nobody would ever be asking for.
+    negative:      typeof o['negative'] === 'string'
+      ? o['negative'].trim().slice(0, MAX_TEXT)
+      : base.negative,
+    optimizations: typeof o['optimizations'] === 'string'
+      ? o['optimizations'].trim().slice(0, MAX_TEXT)
+      : base.optimizations,
   }
 }
 

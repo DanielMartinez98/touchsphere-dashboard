@@ -38,6 +38,9 @@ import {
   styleNeeds,
   styleLabel,
   stylePromptGuide,
+  styleOptimizations,
+  styleNegativeFor,
+  stylePrefixFor,
   supersededCheckpoints,
   WORKFLOW_PREFIX,
 } from '../image'
@@ -238,8 +241,21 @@ router.get('/params', async (req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-store')
   res.json({
     style,
+    styleLabel: styleLabel(style),
     values,
     defaults: styleDefaults(style),
+    // The text a style brings of its own, so the Settings fields can show what
+    // they are overriding as a placeholder rather than starting blank. A blank
+    // box over a model that HAS a published negative reads as "there is none",
+    // which is the opposite of true and the reason someone would then type a
+    // worse one from memory.
+    text: {
+      negative:      styleNegativeFor(style),
+      optimizations: styleOptimizations(style),
+      // Read-only: this is where a card that specifies a lead-in puts it, and
+      // it is shown so the appended field's placement makes sense.
+      prefix:        stylePrefixFor(style),
+    },
     loras,
     // What turbo would use if the user leaves the LoRA on "Auto" — shown in the
     // panel so "Auto" names a file instead of being a shrug.

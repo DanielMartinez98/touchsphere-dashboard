@@ -36,6 +36,8 @@ export interface ImageSettings {
   /** Set only when the prompt improver rewrote the prompt — see image-prompt.ts. */
   promptOriginal?: string
   improvedBy?:     string
+  /** Booster text that was appended to the prompt, when there was any. */
+  optimizations?:  string
 }
 
 /**
@@ -160,6 +162,10 @@ export interface ImageParams {
   loraStrength: number
   seedMode:     SeedMode
   seed:         number
+  /** What this style avoids. '' = its own published negative, then the house one. */
+  negative:     string
+  /** Booster text appended to every prompt for this style. '' = the style's default. */
+  optimizations: string
 }
 
 /** What the selected style's own graph specifies, so "Auto" can name a number. */
@@ -177,7 +183,7 @@ export interface StyleDefaults {
 }
 
 export const DEFAULT_PARAMS: ImageParams = {
-  megapixels: 0, multipleOf: 8, steps: 0, cfg: 0,
+  megapixels: 0, multipleOf: 8, steps: 0, cfg: 0, negative: '', optimizations: '',
   turbo: false, lora: '', loraStrength: 1,
   seedMode: 'random', seed: 0,
 }
@@ -226,11 +232,24 @@ export const LIMITS = {
 const MIN_SIDE = 256
 const MAX_SIDE = 6144
 
-interface ParamsResponse {
-  values?:   Partial<ImageParams>
-  defaults?: Partial<StyleDefaults>
-  loras?:    string[]
-  autoLora?: string
+/** The text a style brings of its own, before any per-style override. */
+export interface StyleText {
+  /** The negative actually in effect when nobody overrides it. */
+  negative:      string
+  /** Booster appended by default. '' for most styles — see styleOptimizations. */
+  optimizations: string
+  /** The lead-in this model's card puts in FRONT of every prompt. '' for most. */
+  prefix:        string
+}
+
+export interface ParamsResponse {
+  style?:      string
+  styleLabel?: string
+  values?:     Partial<ImageParams>
+  defaults?:   Partial<StyleDefaults>
+  text?:       StyleText
+  loras?:      string[]
+  autoLora?:   string
 }
 
 /**
@@ -442,6 +461,36 @@ export function useImages() {
       void fetchParams(style).then(applyParams)     // put the real values back
     }
   }, [model, fetchParams, applyParams])
+
+  /**
+   * Save knobs for a NAMED style rather than the selected one.
+   *
+   * Settings → Drawing edits every model's negative and booster from one
+   * screen, including models that are not currently in effect, so it cannot go
+   * through `setParams` — that one is bound to `model` on purpose, because the
+   * Draw panel must never write a knob against a style the user has since
+   * switched away from.
+   */
+  const setParamsForStyle = useCallback(async (
+    style: string, patch: Partial<ImageParams>,
+  ): Promise<ParamsResponse | null> => {
+    try {
+      const res = await fetch('/api/image/params', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ style, ...patch }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const j = await res.json() as ParamsResponse
+      // If it happened to be the style in effect, keep the Draw panel in step
+      // rather than letting the two screens disagree until the next reload.
+      if (style === model && j.values) setParamsState({ ...DEFAULT_PARAMS, ...j.values })
+      return j
+    } catch (err) {
+      console.warn('[images] params save failed:', err)
+      return null
+    }
+  }, [model])
 
   /** Forget this style's knobs — back to whatever its own graph specifies. */
   const resetParams = useCallback(async () => {
@@ -729,6 +778,7 @@ export function useImages() {
     params, defaults, loras, autoLora, setParams, resetParams,
     generate, remove, refresh,
     prompter, setPrompter, upload,
+    fetchParams, setParamsForStyle,
   }
 }
 

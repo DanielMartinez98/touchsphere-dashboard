@@ -368,6 +368,8 @@ export interface ImageSettings {
   promptOriginal?: string
   /** Which model did the rewriting. Two models give very different prompts. */
   improvedBy?:     string
+  /** Booster text appended to the prompt for this style, when there was any. */
+  optimizations?:  string
 }
 
 export interface StoredImage {
@@ -558,6 +560,14 @@ export interface ImageJob {
   steps:    number
   /** Guidance scale. 0 = leave whatever the graph specifies. */
   cfg:      number
+  /**
+   * Booster text appended to the positive prompt, already resolved from the
+   * style's own default and the user's per-style override.
+   *
+   * Resolved at QUEUE time like the style and the steps, so editing it in
+   * Settings cannot retroactively change a picture that is already waiting.
+   */
+  optimizations: string
   /** Turbo mode: splice a model-only LoRA in ahead of the sampler. */
   turbo:    boolean
   /** LoRA to splice in ahead of the sampler. '' = none (turbo off, or none found). */
@@ -1050,7 +1060,14 @@ export function startImage(req: ImageRequest): ImageJob {
   const job: ImageJob = {
     id:        crypto.randomBytes(16).toString('hex'),
     prompt:    req.prompt.slice(0, MAX_PROMPT),
-    negative:  (req.negative ?? (styleNegative(style) || DEFAULT_NEGATIVE)).slice(0, MAX_PROMPT),
+    // Precedence, widest to narrowest: this request → the user's per-style
+        // negative from Settings → the style's own published one → the house
+        // default. The middle step is new and is the point of the Settings
+        // section: a model's published negative is a good starting point, not a
+        // decision someone else gets to make permanently.
+    negative:  (req.negative ?? (p.negative || styleNegative(style) || DEFAULT_NEGATIVE))
+      .slice(0, MAX_PROMPT),
+    optimizations: (p.optimizations || styleOptimizations(style)).slice(0, MAX_PROMPT),
     width:     size.width,
     height:    size.height,
     // Random by default: a fixed seed makes every image of "a cat" identical,
@@ -1581,6 +1598,31 @@ function fluxGraph(unet: string, weightDtype: string, t5: string): ComfyGraph {
 }
 
 /**
+ * Anima's published positive prefix and negative, straight off its model card.
+ *
+ * These were simply absent, which meant every Anima render was being driven
+ * with the house English negative ("text, watermark, signature, blurry…") — a
+ * prose string aimed at a model trained on Danbooru tags and score tags, so the
+ * slot was being spent on words the encoder had little use for.
+ *
+ * Base and Turbo take the score tags; AESTHETIC DOES NOT, and that is the card
+ * being specific rather than us being clever: it is fine-tuned on high quality
+ * images with the quality tags stripped from the captions, and its author says
+ * to leave score_* out of BOTH the positive and the negative because they
+ * "push it too hard into slop territory". Two constants rather than one for
+ * exactly that reason.
+ */
+const ANIMA_PREFIX = { positive: 'masterpiece, best quality, score_7, safe, ', negative: '' }
+const ANIMA_NEGATIVE =
+  'worst quality, low quality, score_1, score_2, score_3, artist name, blurry, ' +
+  'jpeg artifacts, chromatic aberration'
+
+/** The aesthetic fine-tune's pair: same idea, no score tags on either side. */
+const ANIMA_AES_PREFIX = { positive: 'masterpiece, best quality, safe, ', negative: '' }
+const ANIMA_AES_NEGATIVE =
+  'worst quality, low quality, artist name, blurry, jpeg artifacts, chromatic aberration'
+
+/**
  * Anima's prompting guidance, shared by all three variants because all three
  * share the Qwen-3 encoder that decides it. Turbo differs in step count, not in
  * how you talk to it.
@@ -1657,6 +1699,23 @@ const BUILTIN_WORKFLOWS: Record<string, {
    */
   promptGuide?: string
   /**
+   * Booster text APPENDED to the positive prompt, after whatever the user or
+   * the improver wrote.
+   *
+   * The sibling of `prefixes`, and separate from it because position is not a
+   * preference here — it is published. NoobAI's card calls its quality ladder a
+   * "Prompt Prefix" and Anima's calls its own a "recommended positive prefix",
+   * so for those models the ladder stays in `prefixes` where the card puts it
+   * and this field is empty; SDXL-family attention weights the front of a
+   * prompt most heavily, so quietly relocating a documented prefix to the end
+   * would weaken it while looking like a tidy-up.
+   *
+   * What this field is for is everything a model wants at the END, and for
+   * whatever the user decides they always want on every picture — it is
+   * overridable per style in Settings → Drawing, which is the real point of it.
+   */
+  optimizations?: string
+  /**
    * True for a style whose step count is a property of the MODEL rather than a
    * quality dial — a distilled one, trained to land in ~10 steps and gaining
    * nothing from 44. The draft/standard/high preset is skipped for these and
@@ -1704,8 +1763,13 @@ const BUILTIN_WORKFLOWS: Record<string, {
       positive: 'masterpiece, best quality, newest, absurdres, highres, safe, ',
       negative: '',
     },
+    // Verbatim from the model card's "Negative Prompt" block. The last six tags
+    // were missing for a while, which is exactly the half that stops an anime
+    // model drifting into furry/anthro output on an ambiguous prompt — a gap
+    // that shows up as "why did it draw that" rather than as an error.
     negative: 'nsfw, worst quality, old, early, low quality, lowres, signature, ' +
-      'username, logo, bad hands, mutated hands',
+      'username, logo, bad hands, mutated hands, mammal, anthro, furry, ' +
+      'ambiguous form, feral, semi-anthro',
     promptStyle: 'tags',
     promptGuide:
       'Write lowercase Danbooru tags separated by commas, never sentences. Lead with the ' +
@@ -1735,6 +1799,11 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'framing, then appearance, clothing, pose and background. A short natural-language ' +
       'clause about the scene at the end is fine. Do not write an instruction line — the ' +
       'model is instruction-tuned and its system line is added for you.',
+    // The Neta Lumina prompt book's own recommendation, and the one style here
+    // whose booster genuinely belongs at the END: its `prefixes` slot is already
+    // taken by the instruction line the model was trained to be addressed with,
+    // and nothing may come between that and `<Prompt Start>`.
+    optimizations: 'best quality',
     supersedes: 'NetaYumev35_pretrained_all_in_one.safetensors',
     // One file, unlike Anima's three — it is an all-in-one checkpoint.
     needs: ['checkpoints/NetaYumev35_pretrained_all_in_one.safetensors'],
@@ -1743,6 +1812,8 @@ const BUILTIN_WORKFLOWS: Record<string, {
     label: 'Anima Aesthetic v1.1',
     promptStyle: 'prose',
     promptGuide: ANIMA_PROMPT_GUIDE,
+    prefixes: ANIMA_AES_PREFIX,
+    negative: ANIMA_AES_NEGATIVE,
     graph: animaGraph('anima-aesthetic-v1.1.safetensors', 30, 4),
     turboHints: ['anima', 'turbo'],
     needs: ['diffusion_models/anima-aesthetic-v1.1.safetensors', ...ANIMA_SHARED],
@@ -1751,6 +1822,13 @@ const BUILTIN_WORKFLOWS: Record<string, {
     label: 'Anima Turbo v1.1',
     promptStyle: 'prose',
     promptGuide: ANIMA_PROMPT_GUIDE,
+    prefixes: ANIMA_PREFIX,
+    // Kept even though this style samples at cfg 1, where classifier-free
+    // guidance — and therefore the negative — does nothing at all. It costs one
+    // encode and it is the right string the moment anyone raises cfg in
+    // Advanced. Settings → Drawing says so on the row rather than leaving a
+    // field that looks live and isn't.
+    negative: ANIMA_NEGATIVE,
     // No turboHints: this IS the distilled model, and stacking a turbo LoRA on
     // top of a turbo checkpoint is how a picture comes out flat and over-baked.
     // Leaving them off is also what makes the Advanced panel hide the toggle.
@@ -1762,6 +1840,8 @@ const BUILTIN_WORKFLOWS: Record<string, {
     label: 'Anima Base v1',
     promptStyle: 'prose',
     promptGuide: ANIMA_PROMPT_GUIDE,
+    prefixes: ANIMA_PREFIX,
+    negative: ANIMA_NEGATIVE,
     graph: animaGraph('anima-base-v1.0.safetensors', 30, 4),
     // Anima ships turbo TWO ways, and both are real:
     //
@@ -1842,6 +1922,54 @@ export function stylePromptGuide(style: string): string {
     if (own) return own
   }
   return GENERIC_PROMPT_GUIDES[stylePromptStyle(style)]
+}
+
+/**
+ * Booster text a style wants appended, before any per-style override.
+ *
+ * Empty for most of them, and that is a statement rather than a gap: where a
+ * model's card puts its quality tags in FRONT they live in `prefixes`, and
+ * where a model's guidance is to describe what you want instead of appending
+ * tags at all — FLUX, whose encoder is T5 and which has no negative to balance
+ * them against — the honest default is nothing. Settings → Drawing shows the
+ * user which of those two applies to the style they are looking at, and lets
+ * them append their own either way.
+ */
+/**
+ * The negative a style will actually use when nobody overrides it.
+ *
+ * Resolves the same chain the render does, so the Settings placeholder shows
+ * the string that is really in effect rather than the style's own field, which
+ * is empty for most of them and would read as "no negative at all".
+ */
+export function styleNegativeFor(style: string): string {
+  return styleNegative(style) || DEFAULT_NEGATIVE
+}
+
+/** The lead-in a style's card puts IN FRONT of every prompt. '' for most. */
+export function stylePrefixFor(style: string): string {
+  return stylePrefixes(style).positive
+}
+
+export function styleOptimizations(style: string): string {
+  if (!style.startsWith(WORKFLOW_PREFIX)) return ''
+  return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.optimizations ?? ''
+}
+
+/**
+ * Glue a booster onto a prompt without producing ", , " or a trailing comma.
+ *
+ * Worth a function because both halves are user-editable text: a prompt that
+ * already ends in a comma and an optimization that starts with one are both
+ * things people type, and an empty tag in a booru prompt is not harmless — it
+ * is one more token the encoder spends on nothing.
+ */
+export function joinPrompt(base: string, extra: string): string {
+  const a = base.trim().replace(/,+\s*$/, '')
+  const b = extra.trim().replace(/^\s*,+/, '').replace(/,+\s*$/, '')
+  if (!b) return a
+  if (!a) return b
+  return `${a}, ${b}`
 }
 
 /** Checkpoint filenames that a `wf:` style replaces and the picker should hide. */
@@ -2036,7 +2164,13 @@ function buildGraph(job: ImageJob, sourceName = ''): ComfyGraph {
   // rather than a branch.
   const pre = stylePrefixes(job.model)
   if (posId && graph[posId] && 'text' in graph[posId]!.inputs) {
-    graph[posId]!.inputs['text'] = pre.positive + job.prompt
+    // prefix + what was asked for + booster, in that order. The booster goes
+    // LAST rather than into the prefix because the prefix is where a model's
+    // card puts its own documented lead-in — Lumina's instruction line has to
+    // be first, and NoobAI's quality ladder is specified as a prefix — so the
+    // user's "always add this" has to be a third position, not a fight with
+    // either of them.
+    graph[posId]!.inputs['text'] = pre.positive + joinPrompt(job.prompt, job.optimizations)
   } else {
     throw new Error("workflow's positive prompt does not reach a text node")
   }
@@ -2189,6 +2323,10 @@ function renderedWith(job: ImageJob, graph: ComfyGraph): ImageSettings {
     ...(job.promptOriginal
       ? { promptOriginal: job.promptOriginal, improvedBy: job.improvedBy }
       : {}),
+    // Recorded only when there was one, so its presence is the record — the
+    // same rule as promptOriginal. Without it the stored prompt and the picture
+    // disagree for no visible reason.
+    ...(job.optimizations ? { optimizations: job.optimizations } : {}),
     ...(job.lora ? { lora: job.lora, loraStrength: job.loraStrength } : {}),
     ...(job.source ? { source: job.source, denoise: job.denoise } : {}),
     tookMs:     Math.max(0, (job.endedAt ?? Date.now()) - job.startedAt),
