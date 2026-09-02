@@ -178,7 +178,15 @@ function generate(prompt: string, orientation: string): BrowseToolResult {
   // Pictures already waiting or drawing when this one was asked for. Counted
   // BEFORE the call, so it is the number in front of the new job.
   const ahead = pendingJobs().length
-  const job: ImageJob = startImage({ prompt: prompt.trim(), width: size.width, height: size.height })
+  // improve:false, explicitly. The prompt improver exists for the person
+  // typing into the Draw panel; a spoken request has already been through a
+  // model that had this style's own prompting guidance in its system prompt
+  // (see imagePromptGuidance below), so running a second model over it is one
+  // paraphrasing another for no gain and several seconds of extra silence
+  // while somebody stands at the kiosk waiting to be answered.
+  const job: ImageJob = startImage({
+    prompt: prompt.trim(), width: size.width, height: size.height, improve: false,
+  })
 
   // startImage refuses rather than throws when the queue is full, and hands
   // back an already-failed job. Nothing is coming, so there is no frame worth
@@ -296,6 +304,8 @@ function redraw(prompt: string, about: string, strength: string): BrowseToolResu
     prompt:  prompt.trim(),
     source:  source.id,
     denoise: STRENGTH[strength] ?? STRENGTH['balanced']!,
+    // Same reasoning as generate_image above.
+    improve: false,
   })
 
   if (job.status === 'failed') {

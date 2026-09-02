@@ -15,10 +15,11 @@ import { useRipple } from '../hooks/useRipple'
 import { useDebugLog, clearDebugLog, getDebugLog } from '../utils/debugLog'
 import { useMemory, type MemoryItem, type MemoryKind } from '../hooks/useMemory'
 import { useGuides } from '../hooks/useGuides'
+import { useImages } from '../hooks/useImages'
 import { useGuideActivity, type ActivityLevel } from '../hooks/useGuideActivity'
 import { TouchInput } from './TouchInput'
 
-type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'system' | 'debug'
+type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'system' | 'debug'
 
 // The preview reuses the dashboard's own renderers. Lazy, same chunks App
 // splits out — opening the VTuber tab is what pulls in the heavy deps, and
@@ -390,6 +391,7 @@ export function SettingsPanel() {
     { id: 'schedule',  label: 'Schedule'  },
     { id: 'memory',    label: 'Memory'    },
     { id: 'guides',    label: 'Guides'    },
+    { id: 'drawing',   label: 'Drawing'   },
     { id: 'system',    label: 'System'    },
     { id: 'debug',     label: 'Debug'     },
   ]
@@ -1338,6 +1340,9 @@ export function SettingsPanel() {
             {/* Guides tab — what the guide researcher is doing, and why */}
             {tab === 'guides' && <GuidesTab />}
 
+            {/* Drawing tab — how the prompt improver is told to rewrite prompts */}
+            {tab === 'drawing' && <DrawingTab />}
+
             {/* Debug tab — config visibility, endpoint checks, error log */}
             {tab === 'debug' && <DebugTab />}
 
@@ -1374,6 +1379,156 @@ function clockTime(iso: string): string {
   return Number.isNaN(d.getTime())
     ? '--:--:--'
     : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+}
+
+/**
+ * Settings → Drawing: the prompt improver's own system prompt.
+ *
+ * The reason this screen exists rather than a constant in the server is that
+ * how you ask a model to write a prompt is a matter of taste, it changes faster
+ * than this app ships, and the person using it has opinions. What is NOT
+ * editable, and is shown read-only below the box, is the model-specific half:
+ * {{style}} and {{guidance}} are substituted from the selected style's own
+ * published guidance, so the same template does the right thing whether the
+ * next picture goes to FLUX's T5-XXL or to a booru-tag model. Getting that
+ * wrong is the one failure the user cannot debug from here, so it is not theirs
+ * to get wrong.
+ *
+ * The preview underneath is the whole point of the layout: a template full of
+ * placeholders cannot be judged on its own, and seeing it expanded for the
+ * style that is actually selected is what makes the model-awareness visible
+ * rather than a claim.
+ */
+function DrawingTab() {
+  const { prompter, setPrompter } = useImages()
+  // Edited locally and saved explicitly. A template is a paragraph typed on an
+  // on-screen keyboard, and saving per keystroke would write the store forty
+  // times and re-fetch the preview on each one.
+  const [draft, setDraft] = useState<{ text: string; seeded: boolean }>({ text: '', seeded: false })
+  if (!draft.seeded && prompter) setDraft({ text: prompter.template, seeded: true })
+  const dirty = prompter !== null && draft.text !== prompter.template
+
+  if (!prompter) {
+    return (
+      <div className="max-w-lg mx-auto py-8 text-center text-white/40 text-sm">
+        Loading the drawing settings…
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-5 max-w-lg mx-auto pb-4">
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          Improve my prompt
+        </span>
+        <p className="text-[12px] text-white/45 leading-relaxed mb-3">
+          When this is on, a separate model rewrites what you type before the picture is
+          drawn — on a brand new conversation every time, so nothing you have said to the
+          assistant can colour it. The switch is also in the Draw panel; this is the same
+          setting.
+        </p>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={prompter.enabled}
+          onClick={() => { void setPrompter({ enabled: !prompter.enabled }) }}
+          className={`w-full flex items-center gap-3 rounded-2xl px-3 py-3 border text-left
+                      transition-colors active:scale-[0.99] ${
+            prompter.enabled ? 'bg-violet-500/15 border-violet-400/40' : 'bg-white/5 border-hairline'
+          }`}
+        >
+          <span className={`w-11 h-6 shrink-0 rounded-full p-0.5 flex transition-colors ${
+            prompter.enabled ? 'bg-violet-400/80 justify-end' : 'bg-white/15 justify-start'
+          }`}>
+            <span className="w-5 h-5 rounded-full bg-white shadow" />
+          </span>
+          <span className="text-[13px] font-semibold text-white/85">
+            {prompter.enabled ? 'On by default' : 'Off by default'}
+          </span>
+        </button>
+      </div>
+
+      {/* The template itself */}
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          How it is asked
+        </span>
+        <p className="text-[12px] text-white/45 leading-relaxed mb-2">
+          This is the whole system prompt. Two placeholders are filled in for you from
+          whichever style is selected:{' '}
+          <code className="text-violet-300">{'{{style}}'}</code> becomes its name, and{' '}
+          <code className="text-violet-300">{'{{guidance}}'}</code> becomes that model's own
+          published advice on how to prompt it. What you type is sent as the user message.
+        </p>
+        <TouchInput
+          value={draft.text}
+          onChange={text => setDraft({ text, seeded: true })}
+          multiline
+          rows={10}
+          ariaLabel="The prompt improver's instructions"
+          className="w-full bg-white/10 text-white rounded-2xl px-4 py-3 text-[13px] leading-relaxed
+                     placeholder:text-white/30 border border-hairline font-mono"
+        />
+        <div className="flex gap-2 mt-2">
+          <button
+            type="button"
+            disabled={!dirty}
+            onClick={() => { void setPrompter({ template: draft.text }); setDraft({ text: draft.text, seeded: true }) }}
+            className={`flex-1 h-12 rounded-xl text-sm font-semibold transition ${
+              dirty ? 'bg-violet-500/80 text-white active:scale-95' : 'bg-white/5 text-white/30'
+            }`}
+          >
+            {dirty ? 'Save' : 'Saved'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setDraft({ text: prompter.defaultTemplate, seeded: true })}
+            className="px-4 h-12 rounded-xl bg-white/10 text-white/70 text-sm font-semibold active:scale-95"
+          >
+            Reset
+          </button>
+        </div>
+      </div>
+
+      {/* Which model does it */}
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          Which model
+        </span>
+        <p className="text-[12px] text-white/45 leading-relaxed mb-2">
+          Leave this empty to use whatever <code className="text-white/60">OLLAMA_IMAGE_MODEL</code>{' '}
+          is set to on the server, and the chat model after that. Nobody is waiting on this
+          call the way they are on a spoken reply, so a slower, better model costs nothing
+          you can perceive.
+        </p>
+        <TouchInput
+          value={prompter.model}
+          onChange={model => { void setPrompter({ model }) }}
+          placeholder="(the server's default)"
+          ariaLabel="Model that rewrites prompts"
+          className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-sm
+                     placeholder:text-white/30 border border-hairline"
+        />
+      </div>
+
+      {/* What it actually turns into, for the style that is selected now */}
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          Right now, for {prompter.styleLabel || 'this style'}
+        </span>
+        <p className="text-[12px] text-white/45 leading-relaxed mb-2">
+          Exactly what the model is told before your prompt. Switch the style in the Draw
+          panel and this changes with it — that is the model-specific half doing its job.
+        </p>
+        <pre className="selectable-text whitespace-pre-wrap break-words text-[11px] leading-relaxed
+                        text-white/60 bg-black/30 border border-hairline rounded-2xl p-3
+                        max-h-72 overflow-y-auto">
+          {prompter.preview}
+        </pre>
+      </div>
+    </div>
+  )
 }
 
 function GuidesTab() {

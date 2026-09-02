@@ -77,6 +77,7 @@ function App() {
     queue: imageQueue, queueMax: imageQueueMax, drawError: imageDrawError,
     cancel: cancelImage,
     drawingEtaMs: imageEtaMs, drawingElapsedMs: imageElapsedMs,
+    prompter: imagePrompter, setPrompter: setImagePrompter, upload: uploadImage,
   } = useImages()
 
   // Drawing from the widget opens the same full-screen frame the assistant's
@@ -84,9 +85,13 @@ function App() {
   // silently in the grid behind the panel — and the twenty seconds it takes are
   // exactly when someone needs to see that something is happening.
   const drawImage = useCallback(async (
-    prompt: string, orientation: Orientation, source: string, denoise: number,
+    prompt: string, orientation: Orientation, source: string, denoise: number, improve: boolean,
   ) => {
-    const id = await generateImage(prompt, orientation, source, denoise)
+    const id = await generateImage(prompt, orientation, source, denoise, improve)
+    // The prompt handed to the frame is the one the user typed. When the
+    // improver is on, the server replaces it a second later and the frame picks
+    // the new one up off the job's own SSE frames — so what is on screen while
+    // it thinks is still recognisably the request that was made.
     if (id) openImage(id, prompt)
   }, [generateImage])
   const { byItem: guides } = useGuides()
@@ -369,6 +374,9 @@ function App() {
             onGenerate={drawImage}
             onDelete={removeImage}
             onCancel={cancelImage}
+            improveDefault={imagePrompter ? imagePrompter.enabled : null}
+            onImproveChange={on => { void setImagePrompter({ enabled: on }) }}
+            onUpload={uploadImage}
           />
         }
       />

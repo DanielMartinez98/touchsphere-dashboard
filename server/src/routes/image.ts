@@ -6,10 +6,11 @@
 // endpoints exist for the case SSE can't cover: a screen that was closed while a
 // render was running and needs to catch up when it reopens.
 
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, raw } from 'express'
 import fs from 'fs'
 import {
   activeJob,
+  addUploadedImage,
   cancelJob,
   comfyStats,
   comfyUrl,
@@ -23,6 +24,7 @@ import {
   listModels,
   listWorkflowStyles,
   MAX_QUEUED,
+  MAX_UPLOAD_BYTES,
   missingFiles,
   pendingJobs,
   pickLora,
@@ -35,9 +37,16 @@ import {
   styleDefaults,
   styleNeeds,
   styleLabel,
+  stylePromptGuide,
   supersededCheckpoints,
   WORKFLOW_PREFIX,
 } from '../image'
+import {
+  buildSystemPrompt,
+  DEFAULT_TEMPLATE,
+  readPrompter,
+  writePrompter,
+} from '../image-prompt'
 import {
   clearParamsFor,
   MEGAPIXEL_CHOICES,
@@ -350,9 +359,87 @@ router.post('/generate', (req: Request, res: Response) => {
     ...(typeof body?.['source'] === 'string' && /^[a-f0-9]{32}$/.test(body['source'])
       ? { source: body['source'] } : {}),
     ...(num('denoise') !== undefined ? { denoise: num('denoise')! } : {}),
+    // Omitted rather than defaulted when the panel doesn't say: undefined means
+    // "use the saved default", which is resolved in startImage() at queue time.
+    ...(typeof body?.['improve'] === 'boolean' ? { improve: body['improve'] } : {}),
   })
   res.status(202).json(jobWire(job))
 })
+
+// GET /api/image/prompter — the prompt improver's settings.
+//
+// Returns the template AND what it currently expands to for the style that is
+// selected, because a template full of {{placeholders}} is genuinely hard to
+// judge in the abstract — the preview is what shows that picking FLUX and
+// picking NoobAI produce two different system prompts from the same words.
+router.get('/prompter', (_req: Request, res: Response) => {
+  const settings = readPrompter()
+  const style = selectedModel()
+  res.json({
+    ...settings,
+    defaultTemplate: DEFAULT_TEMPLATE,
+    style:      style,
+    styleLabel: styleLabel(style),
+    // The model-specific half, shown separately so it is obvious it comes from
+    // the app rather than from anything the user has to maintain.
+    guidance:   stylePromptGuide(style),
+    preview:    buildSystemPrompt(settings.template, {
+      label:    styleLabel(style),
+      guidance: stylePromptGuide(style),
+    }),
+  })
+})
+
+// POST /api/image/prompter — patch one or more of its settings.
+router.post('/prompter', (req: Request, res: Response) => {
+  const body = req.body as Record<string, unknown> | undefined
+  const patch: { enabled?: boolean; template?: string; model?: string } = {}
+  if (typeof body?.['enabled']  === 'boolean') patch.enabled  = body['enabled']
+  if (typeof body?.['template'] === 'string')  patch.template = body['template']
+  if (typeof body?.['model']    === 'string')  patch.model    = body['model']
+  const saved = writePrompter(patch)
+  console.log(
+    `[image] prompt improver ${saved.enabled ? 'on' : 'off'}` +
+    `${patch.template !== undefined ? ', template edited' : ''}` +
+    `${patch.model !== undefined ? `, model=${saved.model || '(default)'}` : ''}`,
+  )
+  res.json(saved)
+})
+
+// POST /api/image/upload — add a picture of the user's own to the gallery.
+//
+// Raw PNG bytes, not multipart: the client has already drawn whatever the user
+// picked onto a canvas and exported it, so there is exactly one file and no
+// fields to go with it — and a multipart parser would be a dependency bought
+// for nothing. The canvas step is also what normalises HEIC, JPEG and whatever
+// else a phone hands over into the one format the gallery stores.
+//
+// The caption rides in a header rather than the body for the same reason: the
+// body IS the file.
+router.post(
+  '/upload',
+  raw({ type: ['image/png'], limit: MAX_UPLOAD_BYTES }),
+  (req: Request, res: Response) => {
+    const bytes = req.body as unknown
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
+      res.status(400).json({ error: 'send the PNG bytes as the request body with Content-Type: image/png' })
+      return
+    }
+    // A header is latin-1 on the wire, so the client sends it URI-encoded.
+    let caption = ''
+    const raw_caption = req.get('x-image-caption')
+    if (raw_caption) {
+      try { caption = decodeURIComponent(raw_caption) } catch { caption = raw_caption }
+    }
+    try {
+      res.status(201).json(addUploadedImage(bytes, caption))
+    } catch (err) {
+      // pngSize() refusing is the expected failure and it is the user's file,
+      // not a server fault, so it is a 400 with the reason rather than a 500.
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+    }
+  },
+)
 
 // GET /api/image — the gallery, newest first.
 router.get('/', (_req: Request, res: Response) => {

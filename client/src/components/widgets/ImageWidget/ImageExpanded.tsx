@@ -10,12 +10,15 @@
 // Tapping a thumbnail opens the existing full-screen ImageOverlay rather than a
 // second viewer, so a picture looks the same however it was asked for.
 
-import { useState } from 'react'
-import { Sparkles, Trash2, AlertTriangle, Check, Layers, Gauge, X, Clock, Brush, Download } from 'lucide-react'
+import { useRef, useState } from 'react'
+import {
+  Sparkles, Trash2, AlertTriangle, Check, Layers, Gauge, X, Clock, Brush, Download,
+  Wand2, ImagePlus, Loader2,
+} from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
 import { openImage } from '../../../hooks/useImageOverlay'
 import {
-  clearImageSource, setImagePrompt, useImagePrompt, useImageSource,
+  clearImageSource, redrawImage, setImagePrompt, useImagePrompt, useImageSource,
 } from '../../../hooks/useImagePrompt'
 import AdvancedPanel from './AdvancedPanel'
 import { STRENGTHS, styleUsable } from '../../../hooks/useImages'
@@ -71,8 +74,21 @@ interface Props {
   onParams:   (patch: Partial<ImageParams>) => void
   onResetParams: () => void
   /** `source`/`denoise` are set only for a redraw; '' / 0 means draw from scratch. */
-  onGenerate: (prompt: string, orientation: Orientation, source: string, denoise: number) => void
+  onGenerate: (
+    prompt: string, orientation: Orientation, source: string, denoise: number, improve: boolean,
+  ) => void
   onDelete:   (id: string) => void
+  /**
+   * Whether the prompt improver is on by default, from the server's store.
+   * null while it is still loading — the switch is hidden until it is known,
+   * because a switch that flips itself a second after the panel opens reads as
+   * the panel having changed the setting.
+   */
+  improveDefault: boolean | null
+  /** Persist the switch, so it is remembered the next time the panel opens. */
+  onImproveChange: (on: boolean) => void
+  /** Add a picture from this device to the gallery. Resolves to its id, or null. */
+  onUpload: (file: File) => Promise<{ id: string; prompt: string; file: string } | null>
 }
 
 /**
@@ -209,6 +225,7 @@ export default function ImageExpanded({
   styles, model, quality,
   params, defaults, loras, autoLora,
   onModel, onQuality, onParams, onResetParams, onGenerate, onDelete, onCancel,
+  improveDefault, onImproveChange, onUpload,
 }: Props) {
   // The compose field lives in a module store rather than here, so the
   // full-screen viewer's "Use as prompt" can hand a finished picture's prompt
@@ -224,6 +241,18 @@ export default function ImageExpanded({
   const source = useImageSource()
   const [strength, setStrength] = useState('balanced')
   const [orientation, setOrientation] = useState<Orientation>('portrait')
+  // The improve switch. Held locally so a tap is instant, seeded from the
+  // server's saved default and re-seeded when that arrives — derived in the
+  // render body rather than in an effect, the pattern the ImageOverlay's
+  // details toggle already uses to stay clear of react-hooks/set-state-in-effect.
+  const [improve, setImprove] = useState({ on: false, seeded: false })
+  if (!improve.seeded && improveDefault !== null) {
+    setImprove({ on: improveDefault, seeded: true })
+  }
+  // The hidden file input behind "Use my own picture". A file picker cannot be
+  // opened programmatically without a real input, so there is one, off screen.
+  const fileRef = useRef<HTMLInputElement | null>(null)
+  const [uploading, setUploading] = useState(false)
   // Two-step delete. These take real time and GPU to make, so a stray fingertip
   // on a 7" screen must not be able to destroy one in a single tap.
   const [confirming, setConfirming] = useState<string | null>(null)
@@ -242,7 +271,7 @@ export default function ImageExpanded({
   function draw() {
     if (!canDraw) return
     const d = STRENGTHS.find(x => x.id === strength)?.denoise ?? 0.65
-    onGenerate(prompt.trim(), orientation, source?.id ?? '', source ? d : 0)
+    onGenerate(prompt.trim(), orientation, source?.id ?? '', source ? d : 0, improve.on)
     // The prompt is deliberately KEPT, not cleared: the common next action is
     // another go at the same idea with a word changed, and re-typing it on an
     // on-screen keyboard is the most expensive thing in this panel.
@@ -363,6 +392,107 @@ export default function ImageExpanded({
                      placeholder:text-white/30 border border-hairline"
         />
       </div>
+
+      {/* ── Improve my prompt ──
+          Directly under the field it acts on, because it changes what that text
+          becomes. A switch rather than a checkbox: this is a setting that
+          persists, not a one-off, and the label says which model does it so it
+          is obvious this is not the assistant reading over your shoulder. */}
+      {improveDefault !== null && (
+        <button
+          type="button"
+          role="switch"
+          aria-checked={improve.on}
+          onClick={() => {
+            const on = !improve.on
+            setImprove({ on, seeded: true })
+            onImproveChange(on)
+          }}
+          className={`shrink-0 flex items-center gap-3 rounded-2xl px-3 py-3 border text-left
+                      transition-colors active:scale-[0.99] ${
+            improve.on
+              ? 'bg-violet-500/15 border-violet-400/40'
+              : 'bg-white/5 border-hairline'
+          }`}
+        >
+          <span className={`w-11 h-6 shrink-0 rounded-full p-0.5 flex transition-colors ${
+            improve.on ? 'bg-violet-400/80 justify-end' : 'bg-white/15 justify-start'
+          }`}>
+            <span className="w-5 h-5 rounded-full bg-white shadow" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center gap-1.5 text-[13px] font-semibold text-white/85">
+              <Wand2 size={13} className={improve.on ? 'text-violet-300' : 'text-white/40'} />
+              Improve my prompt
+            </span>
+            <span className="block text-[11px] text-white/40 leading-snug mt-0.5">
+              {improve.on
+                ? 'A separate model rewrites it the way this style asks to be prompted, ' +
+                  'on a fresh conversation each time.'
+                : 'Draw exactly what you typed.'}
+            </span>
+          </span>
+        </button>
+      )}
+
+      {/* ── Start from a picture of your own ──
+          Hidden while already redrawing: the source card above is the control
+          for that, and a second way in would just be a way to lose the picture
+          you already chose. */}
+      {!source && (
+        <div className="shrink-0">
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={async e => {
+              const file = e.target.files?.[0]
+              // Cleared straight away so picking the SAME file twice still
+              // fires a change event the second time.
+              e.target.value = ''
+              if (!file) return
+              setUploading(true)
+              const added = await onUpload(file)
+              setUploading(false)
+              if (added) {
+                // Straight into the redraw slot: adding your own picture and
+                // then having to find it in the grid to tap "Change this" would
+                // be two steps for one intention.
+                redrawImage({ id: added.id, url: `/api/image/file/${added.file}`, prompt: added.prompt })
+                // …but then blank the compose field. redrawImage seeds it from
+                // the source PROMPT, which is right for one of our own pictures
+                // (its words are the best first draft of the change) and wrong
+                // here, where that string is just the filename. There is no
+                // original prompt for a photo, so the field starts empty and its
+                // placeholder asks the question. The card above keeps the
+                // filename as its caption, which is what makes it identifiable.
+                setImagePrompt('')
+              }
+            }}
+          />
+          <button
+            type="button"
+            disabled={uploading}
+            onClick={() => fileRef.current?.click()}
+            className="w-full flex items-center gap-3 rounded-2xl px-3 h-14 bg-white/5
+                       border border-hairline active:bg-white/10 text-left disabled:opacity-50"
+          >
+            <span className="w-8 h-8 shrink-0 rounded-full bg-white/10 flex items-center
+                             justify-center text-white/60">
+              {uploading ? <Loader2 size={15} className="animate-spin" /> : <ImagePlus size={15} />}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[13px] font-semibold text-white/85">
+                {uploading ? 'Adding it…' : 'Use my own picture'}
+              </span>
+              <span className="block text-[11px] text-white/40 leading-snug">
+                Start from a photo or drawing on this device instead of from scratch
+              </span>
+            </span>
+          </button>
+        </div>
+      )}
 
       {/* Not offered while redrawing: the starters are ideas for a blank box, and
           swapping one in would silently throw away the picture being changed. */}

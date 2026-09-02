@@ -27,6 +27,7 @@ import path from 'path'
 import { broadcast } from './routes/system'
 import { advanceSeed, paramsFor, type ImageParams } from './image-params'
 import { estimateRender, humanMs, recordRender } from './image-timing'
+import { improvePrompt, prompterModel, readPrompter } from './image-prompt'
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -355,6 +356,18 @@ export interface ImageSettings {
   denoise?: number
   /** Wall-clock render time, so "which settings" can be weighed against "how long". */
   tookMs:   number
+  /**
+   * What the user actually typed, when the prompt improver rewrote it.
+   *
+   * Absent when it was off or made no change, so its PRESENCE is the record
+   * that a rewrite happened — the alternative, storing it always, would make
+   * every picture's detail panel show two identical prompts. `prompt` on the
+   * StoredImage is the rewritten one, because that is what the sampler saw and
+   * what "use as prompt" should hand back.
+   */
+  promptOriginal?: string
+  /** Which model did the rewriting. Two models give very different prompts. */
+  improvedBy?:     string
 }
 
 export interface StoredImage {
@@ -369,6 +382,21 @@ export interface StoredImage {
   model?:  string
   /** Everything else about how it was drawn. Absent on anything drawn before this existed. */
   settings?: ImageSettings
+  /**
+   * 'upload' for a picture the user added from their own device rather than one
+   * this app drew.
+   *
+   * It joins the gallery as an ordinary entry ON PURPOSE. `source` on a render
+   * is a gallery id and never a path or a URL — that is what keeps the set of
+   * images this app will hand to the GPU box closed and enumerable — so making
+   * "start from my own picture" work is exactly the job of getting the picture
+   * INTO the gallery. Everything downstream (redraw, "Change this", the viewer's
+   * arrows, pruning) then needs no cases of its own.
+   *
+   * Absent means drawn here, which is what every entry written before this was
+   * added was.
+   */
+  origin?: 'upload'
   /** ISO timestamp. */
   at:      string
 }
@@ -433,6 +461,78 @@ export function forgetImage(id: string): boolean {
   try { fs.unlinkSync(path.join(imagesDir(), hit.file)) } catch { /* already gone */ }
   console.log(`[image] deleted ${hit.file}`)
   return true
+}
+
+/** Biggest upload accepted. A phone photo is ~5 MB; this is generous, not tight. */
+export const MAX_UPLOAD_BYTES = 12 * 1024 * 1024
+
+/**
+ * Width and height straight out of a PNG's IHDR chunk.
+ *
+ * Parsed rather than trusted from the client, because these two numbers are
+ * stored and later shown as fact. It is also the only validation that matters
+ * here: a file whose first 8 bytes are the PNG signature and whose first chunk
+ * is a well-formed IHDR is a PNG, and anything else is refused before it
+ * reaches the disk.
+ *
+ * No image library for this on purpose. `sharp` would be a native dependency on
+ * a multi-arch build that has to keep producing linux/arm64 for the Pi, and the
+ * client hands us PNG already — it draws whatever the user picked onto a canvas
+ * first — so the one thing left to do is read four big-endian integers.
+ */
+function pngSize(bytes: Buffer): { width: number; height: number } | null {
+  const SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  // 8 signature + 4 length + 4 type + 13 IHDR data = 29 bytes minimum.
+  if (bytes.length < 29 || !bytes.subarray(0, 8).equals(SIG)) return null
+  if (bytes.toString('ascii', 12, 16) !== 'IHDR') return null
+  const width = bytes.readUInt32BE(16)
+  const height = bytes.readUInt32BE(20)
+  // PNG allows up to 2^31-1 per side; anything near that is a malformed header
+  // rather than a picture, and these numbers go on to size a latent.
+  if (width < 1 || height < 1 || width > 16384 || height > 16384) return null
+  return { width, height }
+}
+
+/**
+ * Add a picture the user supplied to the gallery, so it can be redrawn.
+ *
+ * The whole feature is this function, and that is the point. `source` on a
+ * render is a gallery id and never a path or a URL — the operator-vs-model
+ * distinction that keeps the set of images this app will hand to the GPU closed
+ * — so "let me start from a picture of my own" is not a new pipeline, it is
+ * getting one more picture into the set. Redraw, "Change this", the viewer's
+ * arrows and the oldest-first pruning then all work with no cases of their own.
+ *
+ * `seed: 0` and no `settings` because there was no render: the details panel
+ * reads `origin` and says where it came from instead of inventing a sampler.
+ */
+export function addUploadedImage(bytes: Buffer, caption: string): StoredImage {
+  const size = pngSize(bytes)
+  if (!size) throw new Error('that file could not be read as a PNG')
+
+  const id = crypto.randomBytes(16).toString('hex')
+  const file = `${id}.png`
+  const dest = path.join(imagesDir(), file)
+  const tmp = `${dest}.tmp-${process.pid}`
+  // Write-then-rename, like every other write to this directory: a half-written
+  // PNG that the gallery has already been told about is a broken thumbnail
+  // forever, because the id never comes round again.
+  fs.writeFileSync(tmp, bytes)
+  fs.renameSync(tmp, dest)
+
+  const entry: StoredImage = {
+    id,
+    prompt: caption.trim().slice(0, MAX_PROMPT),
+    file,
+    width:  size.width,
+    height: size.height,
+    seed:   0,
+    origin: 'upload',
+    at:     new Date().toISOString(),
+  }
+  remember(entry)
+  console.log(`[image] added upload ${file} ${size.width}×${size.height} (${(bytes.length / 1024).toFixed(0)} KB)`)
+  return entry
 }
 
 /** Absolute path of a stored image, or null. Filename is validated by the route. */
@@ -513,6 +613,25 @@ export interface ImageJob {
    * the job doesn't override it. `steps` above is the OVERRIDE and is usually 0.
    */
   plannedSteps: number
+  /**
+   * Run the prompt through the improver before drawing.
+   *
+   * Resolved at QUEUE time from the request or the saved default, like the style
+   * and the quality preset, so flipping the toggle can't retroactively change
+   * what is already waiting in the queue.
+   */
+  improve:  boolean
+  /** What the user typed, once the improver has replaced `prompt`. '' otherwise. */
+  promptOriginal: string
+  /** Which model rewrote it. '' when nothing did. */
+  improvedBy:     string
+  /**
+   * Time spent rewriting, so it can be subtracted from the render's timing
+   * sample. Left in, it would teach image-timing.ts that this style is several
+   * seconds slower than it is, and the estimate would drift with the toggle
+   * rather than with the GPU.
+   */
+  improveMs:      number
   /** When it was asked for. Distinct from startedAt, which run() resets. */
   queuedAt: number
   /** Set once status is 'ready'. Serve via /api/image/file/<file>. */
@@ -802,6 +921,16 @@ export interface ImageRequest {
   /** Guidance override. Omit to use the style's saved cfg, then the graph's. */
   cfg?:      number
   /**
+   * Rewrite the prompt for the chosen style before drawing.
+   *
+   * `undefined` means "whatever the user's saved default says", which is what
+   * the Draw panel relies on. The ASSISTANT passes false explicitly: a spoken
+   * `generate_image` prompt was already written by a model that had this
+   * style's prompting guidance in its system prompt, so improving it again is
+   * one model paraphrasing another for no gain and several seconds of delay.
+   */
+  improve?:  boolean
+  /**
    * REDRAW: the id of a picture in the gallery to start from. The size comes
    * from that picture and `width`/`height` are ignored — an img2img latent is
    * the source's own shape, and quietly rendering a different one would be the
@@ -969,6 +1098,15 @@ export function startImage(req: ImageRequest): ImageJob {
     etaBasis:  '',
     warm:      lastStyleDrawn === style,
     plannedSteps: 0,
+    // Explicit false from the assistant, undefined from the Draw panel, which
+    // is how the saved default reaches a tap without the panel having to send
+    // it. Read here rather than in run() for the same reason as the style: the
+    // picture is drawn the way it was asked for, not the way the toggle happens
+    // to be set two minutes later when it reaches the front of the queue.
+    improve:   typeof req.improve === 'boolean' ? req.improve : readPrompter().enabled,
+    promptOriginal: '',
+    improvedBy:     '',
+    improveMs:      0,
     queuedAt:  Date.now(),
     startedAt: Date.now(),
   }
@@ -1042,9 +1180,46 @@ async function run(job: ImageJob): Promise<void> {
   // estimate is taken again against the truth before the bar is drawn against it.
   job.warm = lastStyleDrawn === job.model
   refreshEstimate(job)
+
+  // ── Rewrite the prompt for this style, if asked ──
+  //
+  // Ahead of the drawing phase rather than inside it, because it changes WHAT
+  // is drawn: the line below names the job, and announcing a prompt that is
+  // about to be replaced would be wrong in the one place the user is looking.
+  //
+  // improvePrompt() never throws and never returns nothing — every failure path
+  // falls back to what the user typed. That is what makes the toggle safe to
+  // leave on: a dead Ollama box costs a better prompt, not the picture. The
+  // reason is carried into the detail line rather than swallowed, because
+  // "it drew what I typed" and "it silently couldn't reach the model" look
+  // identical from the outside otherwise.
+  let improveNote = ''
+  if (job.improve) {
+    push(job, 'improving',
+      `Rewriting the prompt for ${styleLabel(job.model)} before drawing it. This is a ` +
+      `separate model (${prompterModel()}) on a brand new conversation, so nothing else ` +
+      'you have asked for today can colour it.')
+    const better = await improvePrompt(job.prompt, {
+      label:    styleLabel(job.model),
+      guidance: stylePromptGuide(job.model),
+    })
+    job.improveMs = better.ms
+    if (better.changed) {
+      job.promptOriginal = better.original
+      job.improvedBy = better.model
+      job.prompt = better.prompt
+      improveNote = ' The prompt was rewritten for this style first.'
+      console.log(`[image] ${job.id} prompt improved by ${better.model}: "${better.prompt.slice(0, 80)}"`)
+    } else if (better.why) {
+      improveNote = ` The prompt was left exactly as you wrote it — ${better.why}.`
+      console.warn(`[image] ${job.id} prompt not improved — ${better.why}`)
+    }
+  }
+
   push(job, 'drawing',
     `Drawing ${jobShape(job)}. ${etaSentence(job)}` +
-    (job.warm ? '' : ' This style is not on the GPU yet, so loading it comes first.'))
+    (job.warm ? '' : ' This style is not on the GPU yet, so loading it comes first.') +
+    improveNote)
 
   // Claimed the moment the render starts rather than when it finishes: every
   // job queued behind this one is asking "will the checkpoint already be there",
@@ -1129,7 +1304,12 @@ async function run(job: ImageJob): Promise<void> {
       steps:  effectiveSteps(job),
       pixels: job.width * job.height,
       warm:   job.warm,
-      ms:     took,
+      // The GPU's time, not the wall clock. A prompt rewrite is several seconds
+      // of a DIFFERENT model on a different box, and folding it in here would
+      // teach the estimator that this style is slower than it is — so the bar
+      // would drift with a toggle rather than with the hardware, which is the
+      // whole failure image-timing.ts was written to end.
+      ms:     Math.max(1, took - job.improveMs),
       at:     job.endedAt,
     })
     remember({
@@ -1400,6 +1580,18 @@ function fluxGraph(unet: string, weightDtype: string, t5: string): ComfyGraph {
   }
 }
 
+/**
+ * Anima's prompting guidance, shared by all three variants because all three
+ * share the Qwen-3 encoder that decides it. Turbo differs in step count, not in
+ * how you talk to it.
+ */
+const ANIMA_PROMPT_GUIDE =
+  'Write plain English sentences, not tags. This model reads prompts through a Qwen-3 ' +
+  'text encoder, so describe the picture the way you would to a person: the subject, ' +
+  'what they look like and are doing, the setting, the lighting and the mood. It is an ' +
+  'anime model, so naming the art style (cel shaded, soft watercolour, thick lineart) ' +
+  'steers it well. A few vivid sentences beat a wall of tags.'
+
 /** The text encoder and VAE every Anima variant shares. */
 const ANIMA_SHARED = [
   'text_encoders/qwen_3_06b_base.safetensors',
@@ -1449,6 +1641,22 @@ const BUILTIN_WORKFLOWS: Record<string, {
    */
   promptStyle?: 'tags' | 'prose'
   /**
+   * How THIS model asks to be prompted, in the words its own card uses.
+   *
+   * `promptStyle` above is the one-bit version, and one bit is all the system
+   * prompt needs to stop the assistant writing sentences at a booru model. This
+   * is the long version, and it exists because the prompt improver is a model
+   * being asked to write a good prompt for a model — a job it cannot do from
+   * "tags" or "prose" alone. It wants to know that FLUX rewards a paragraph and
+   * has no negative, that NoobAI wants the character tag AND its series, that
+   * Anima reads Qwen-3 prose. Taken from each model's published guidance rather
+   * than invented, exactly like the sampler settings beside it.
+   *
+   * Falls back to a generic line per promptStyle, so a style that says nothing
+   * still improves sensibly and a workflow dropped on the volume needs no entry.
+   */
+  promptGuide?: string
+  /**
    * True for a style whose step count is a property of the MODEL rather than a
    * quality dial — a distilled one, trained to land in ~10 steps and gaining
    * nothing from 44. The draft/standard/high preset is skipped for these and
@@ -1466,6 +1674,14 @@ const BUILTIN_WORKFLOWS: Record<string, {
     // best prose comprehension of anything installed here is the inverse of
     // the mistake promptStyle exists to stop.
     promptStyle: 'prose',
+    promptGuide:
+      'Write one flowing paragraph of plain English, never tags. This model reads ' +
+      'sentences through a T5-XXL text encoder and rewards detail, so name the subject ' +
+      'and what it is doing, then the setting, the lighting, the lens or camera angle if ' +
+      'it matters, the mood, and the art style. Long, specific prompts beat short ones. ' +
+      'It renders legible text, so put any words that should appear in the picture in ' +
+      'quotes. There is NO negative prompt, so never write what you do not want — only ' +
+      'ever describe what you do want.',
     // No `negative`: this style has nowhere to put one (ConditioningZeroOut),
     // and buildGraph/renderedWith both know not to invent one for it.
     // No `turboHints`: the distilled sibling is FLUX.1 schnell, a different
@@ -1491,6 +1707,13 @@ const BUILTIN_WORKFLOWS: Record<string, {
     negative: 'nsfw, worst quality, old, early, low quality, lowres, signature, ' +
       'username, logo, bad hands, mutated hands',
     promptStyle: 'tags',
+    promptGuide:
+      'Write lowercase Danbooru tags separated by commas, never sentences. Lead with the ' +
+      'subject count and framing (1girl, solo, upper body), then — for a named character — ' +
+      'its booru tag AND its series, both underscored (haruno_sakura, naruto_(series)), ' +
+      'then appearance, clothing, pose, expression, background and lighting tags. An ' +
+      'artist tag written as "by <artist>" steers the style hard. The quality ladder is ' +
+      'already prepended for you, so do not repeat masterpiece or best quality.',
     supersedes: 'NoobAI-XL-v1.1.safetensors',
     needs: ['checkpoints/NoobAI-XL-v1.1.safetensors'],
   },
@@ -1505,6 +1728,13 @@ const BUILTIN_WORKFLOWS: Record<string, {
     // Fine-tuned on Danbooru, so it answers to the same character tags NoobAI
     // does — it drew the Byakugō seal on Sakura from the tag alone.
     promptStyle: 'tags',
+    promptGuide:
+      'Write lowercase Danbooru tags separated by commas. This is an anime fine-tune and ' +
+      'answers to character tags directly (hatsune_miku, vocaloid), so name the character ' +
+      'and its series rather than describing the look. Lead with subject count and ' +
+      'framing, then appearance, clothing, pose and background. A short natural-language ' +
+      'clause about the scene at the end is fine. Do not write an instruction line — the ' +
+      'model is instruction-tuned and its system line is added for you.',
     supersedes: 'NetaYumev35_pretrained_all_in_one.safetensors',
     // One file, unlike Anima's three — it is an all-in-one checkpoint.
     needs: ['checkpoints/NetaYumev35_pretrained_all_in_one.safetensors'],
@@ -1512,6 +1742,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
   'anima-aesthetic-v1-1': {
     label: 'Anima Aesthetic v1.1',
     promptStyle: 'prose',
+    promptGuide: ANIMA_PROMPT_GUIDE,
     graph: animaGraph('anima-aesthetic-v1.1.safetensors', 30, 4),
     turboHints: ['anima', 'turbo'],
     needs: ['diffusion_models/anima-aesthetic-v1.1.safetensors', ...ANIMA_SHARED],
@@ -1519,6 +1750,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
   'anima-turbo-v1-1': {
     label: 'Anima Turbo v1.1',
     promptStyle: 'prose',
+    promptGuide: ANIMA_PROMPT_GUIDE,
     // No turboHints: this IS the distilled model, and stacking a turbo LoRA on
     // top of a turbo checkpoint is how a picture comes out flat and over-baked.
     // Leaving them off is also what makes the Advanced panel hide the toggle.
@@ -1529,6 +1761,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
   'anima-base-v1': {
     label: 'Anima Base v1',
     promptStyle: 'prose',
+    promptGuide: ANIMA_PROMPT_GUIDE,
     graph: animaGraph('anima-base-v1.0.safetensors', 30, 4),
     // Anima ships turbo TWO ways, and both are real:
     //
@@ -1574,6 +1807,41 @@ function styleNegative(style: string): string {
 export function stylePromptStyle(style: string): 'tags' | 'prose' {
   if (!style.startsWith(WORKFLOW_PREFIX)) return 'prose'
   return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.promptStyle ?? 'prose'
+}
+
+/**
+ * Generic prompting guidance for a style that names none of its own.
+ *
+ * A plain checkpoint dropped in the models folder gets one of these, which is
+ * the honest amount to say about a model this app knows nothing about beyond
+ * whether it is tag-trained.
+ */
+const GENERIC_PROMPT_GUIDES: Record<'tags' | 'prose', string> = {
+  tags:
+    'Write lowercase Danbooru-style tags separated by commas, not sentences. Lead with ' +
+    'subject count and framing (1girl, solo), then the character tag and its series if ' +
+    'there is one, then appearance, clothing, pose, background and lighting.',
+  prose:
+    'Write a comma-separated English description with the most important idea first: ' +
+    'the subject, then the setting, the lighting, the art style and any quality words. ' +
+    'Stable Diffusion weights the front of a prompt most heavily, so put what matters ' +
+    'at the start and keep the whole thing to roughly 75 words.',
+}
+
+/**
+ * How the chosen model asks to be prompted, in full sentences.
+ *
+ * This is what makes the prompt improver model-aware: the same user template
+ * produces booru tags in front of NoobAI and a T5 paragraph in front of FLUX,
+ * because the half of the system prompt that describes the target model is
+ * substituted from here rather than typed by the user. See image-prompt.ts.
+ */
+export function stylePromptGuide(style: string): string {
+  if (style.startsWith(WORKFLOW_PREFIX)) {
+    const own = BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.promptGuide
+    if (own) return own
+  }
+  return GENERIC_PROMPT_GUIDES[stylePromptStyle(style)]
 }
 
 /** Checkpoint filenames that a `wf:` style replaces and the picker should hide. */
@@ -1915,6 +2183,12 @@ function renderedWith(job: ImageJob, graph: ComfyGraph): ImageSettings {
     sampler:    t(inputs['sampler_name']),
     scheduler:  t(inputs['scheduler']),
     negative:   negId && negId !== posId ? job.negative : '',
+    // Present only when a rewrite actually happened — see ImageSettings. The
+    // stored `prompt` is the rewritten one, because that is what the sampler
+    // read and what "use as prompt" should hand back.
+    ...(job.promptOriginal
+      ? { promptOriginal: job.promptOriginal, improvedBy: job.improvedBy }
+      : {}),
     ...(job.lora ? { lora: job.lora, loraStrength: job.loraStrength } : {}),
     ...(job.source ? { source: job.source, denoise: job.denoise } : {}),
     tookMs:     Math.max(0, (job.endedAt ?? Date.now()) - job.startedAt),

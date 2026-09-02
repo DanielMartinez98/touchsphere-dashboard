@@ -33,12 +33,38 @@ export interface ImageSettings {
   source?:  string
   denoise?: number
   tookMs:   number
+  /** Set only when the prompt improver rewrote the prompt — see image-prompt.ts. */
+  promptOriginal?: string
+  improvedBy?:     string
+}
+
+/**
+ * The prompt improver's settings, plus the read-only context the editor needs.
+ *
+ * `preview` is what the template actually expands to for the style currently
+ * selected — the whole reason it is sent is that a template full of
+ * {{placeholders}} cannot be judged on its own, and the same words produce a
+ * different system prompt in front of FLUX than in front of NoobAI.
+ */
+export interface PrompterSettings {
+  enabled:  boolean
+  template: string
+  model:    string
+  /** The house default, so "reset" doesn't have to duplicate it on the client. */
+  defaultTemplate: string
+  style:      string
+  styleLabel: string
+  /** The selected model's own published prompting guidance. */
+  guidance:   string
+  preview:    string
 }
 
 export interface StoredImage {
   id:     string
   prompt: string
   file:   string
+  /** 'upload' for a picture the user added rather than one this app drew. */
+  origin?: 'upload'
   url:    string
   width:  number
   height: number
@@ -509,6 +535,15 @@ export function useImages() {
     source = '',
     /** How much of that source to throw away. Ignored without a source. */
     denoise = 0,
+    /**
+     * Rewrite the prompt for the chosen style first.
+     *
+     * `undefined` is meaningful and is NOT the same as false: it means "use the
+     * saved default", which the server resolves at queue time. The panel sends
+     * a boolean because it has a switch on screen; anything else can leave it
+     * out and get the user's setting.
+     */
+    improve?: boolean,
   ): Promise<string | null> => {
     const size = SIZES[orientation]
     setDrawError('')
@@ -522,6 +557,7 @@ export function useImages() {
         body: JSON.stringify({
           prompt, width: size.width, height: size.height,
           ...(source ? { source, denoise } : {}),
+          ...(typeof improve === 'boolean' ? { improve } : {}),
         }),
       })
       if (!res.ok) {
@@ -581,6 +617,101 @@ export function useImages() {
   // moment between a job being queued and run() marking it 'running'.
   const drawing = queue.find(j => j.status === 'running') ?? queue[0]
 
+  // ── The prompt improver ──
+  //
+  // Loaded once and re-read whenever the style changes, because `preview` and
+  // `guidance` are answers ABOUT the selected style — a panel still showing
+  // FLUX's guidance after a switch to NoobAI would be describing the wrong
+  // model, which is the one thing this feature exists to get right.
+  const [prompter, setPrompterState] = useState<PrompterSettings | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/image/prompter')
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((j: PrompterSettings) => { if (!cancelled) setPrompterState(j) })
+      .catch(err => console.warn('[images] prompter load failed:', err))
+    return () => { cancelled = true }
+  }, [model])
+
+  /** Patch the improver's settings. Optimistic — it is the user's own tap. */
+  const setPrompter = useCallback(async (patch: Partial<PrompterSettings>) => {
+    setPrompterState(prev => (prev ? { ...prev, ...patch } : prev))
+    try {
+      const res = await fetch('/api/image/prompter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      // Re-read rather than trusting the echo: editing the template changes
+      // `preview`, which is computed server-side and is the point of the panel.
+      const fresh = await fetch('/api/image/prompter')
+      if (fresh.ok) setPrompterState(await fresh.json() as PrompterSettings)
+    } catch (err) {
+      console.warn('[images] prompter save failed:', err)
+    }
+  }, [])
+
+  /**
+   * Add a picture from the user's device to the gallery.
+   *
+   * The file is drawn onto a canvas and re-exported as PNG before it is sent,
+   * which is doing three jobs at once: it normalises whatever the phone handed
+   * over (HEIC, JPEG, anything the BROWSER can decode) into the one format the
+   * gallery stores, it gives the server a file it can size from an IHDR chunk
+   * with no image library on an arm64 build, and it caps the dimensions — a
+   * 12-megapixel photo is a pointless base for an img2img latent and would eat
+   * the upload limit for nothing.
+   */
+  const upload = useCallback(async (file: File): Promise<StoredImage | null> => {
+    setDrawError('')
+    try {
+      const bitmap = await createImageBitmap(file)
+      // Long side capped. Generous enough that a redraw still has real detail
+      // to work from, small enough that the POST is a second, not a minute.
+      const MAX_SIDE = 2048
+      const scale = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height))
+      // Rounded to even numbers: every latent this app produces is a multiple
+      // of 8, and handing the sampler an odd-sized source just makes ComfyUI
+      // round it somewhere we can't see.
+      const w = Math.max(8, Math.round((bitmap.width  * scale) / 2) * 2)
+      const h = Math.max(8, Math.round((bitmap.height * scale) / 2) * 2)
+
+      const canvas = document.createElement('canvas')
+      canvas.width = w
+      canvas.height = h
+      const ctx = canvas.getContext('2d')
+      if (!ctx) throw new Error('this browser would not give us a canvas')
+      ctx.drawImage(bitmap, 0, 0, w, h)
+      bitmap.close()
+
+      const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'))
+      if (!blob) throw new Error('the picture could not be converted')
+
+      const res = await fetch('/api/image/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'image/png',
+          // Headers are latin-1 on the wire and a filename can be anything.
+          'X-Image-Caption': encodeURIComponent(file.name.replace(/\.[^.]+$/, '').slice(0, 200)),
+        },
+        body: blob,
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(j.error ?? `HTTP ${res.status}`)
+      }
+      const stored = await res.json() as StoredImage
+      setImages(prev => [stored, ...prev.filter(e => e.id !== stored.id)])
+      return stored
+    } catch (err) {
+      console.error('[images] upload failed:', err)
+      setDrawError(err instanceof Error ? err.message : 'could not add that picture')
+      return null
+    }
+  }, [])
+
   return {
     images, enabled, loading, busy,
     phase: drawing?.phase ?? '',
@@ -597,6 +728,7 @@ export function useImages() {
     quality, setQuality,
     params, defaults, loras, autoLora, setParams, resetParams,
     generate, remove, refresh,
+    prompter, setPrompter, upload,
   }
 }
 

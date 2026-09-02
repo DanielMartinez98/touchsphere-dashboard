@@ -445,20 +445,30 @@ function ImageDetails({
   const st = image.settings
   const rows: { label: string; value: string }[] = []
 
-  const style = st?.styleLabel || image.modelLabel || st?.style || image.model || ''
-  if (style) rows.push({ label: 'Style', value: style })
+  // A picture the user added from their own device has no style, no sampler and
+  // no seed — it was not drawn here. Saying so once is the whole of its detail
+  // panel; printing "Seed 0, Steps —" against a photograph would be inventing a
+  // render that never happened.
+  const uploaded = image.origin === 'upload'
+
+  if (uploaded) {
+    rows.push({ label: 'Source', value: 'added from your device' })
+  } else {
+    const style = st?.styleLabel || image.modelLabel || st?.style || image.model || ''
+    if (style) rows.push({ label: 'Style', value: style })
+  }
   rows.push({ label: 'Size', value: `${image.width} × ${image.height}` })
   // Steps and cfg are the two numbers anyone actually turns, so they lead.
-  if (st?.steps) rows.push({ label: 'Steps', value: String(st.steps) })
+  if (!uploaded && st?.steps) rows.push({ label: 'Steps', value: String(st.steps) })
   // 0 means the sampler has no cfg input at all (SamplerCustom), which is not
   // the same as cfg 0 — omitting it is the honest rendering of that.
-  if (st?.cfg) rows.push({ label: 'Guidance', value: String(st.cfg) })
-  if (st?.sampler) {
+  if (!uploaded && st?.cfg) rows.push({ label: 'Guidance', value: String(st.cfg) })
+  if (!uploaded && st?.sampler) {
     rows.push({ label: 'Sampler', value: st.scheduler ? `${st.sampler} · ${st.scheduler}` : st.sampler })
   }
   // Last of the numbers, because it is the one you copy rather than read — it
   // is also what makes every other row above it reproducible.
-  rows.push({ label: 'Seed', value: String(image.seed) })
+  if (!uploaded) rows.push({ label: 'Seed', value: String(image.seed) })
   if (st?.lora) {
     rows.push({ label: 'Turbo LoRA', value: `${st.lora} @ ${st.loraStrength ?? 1}` })
   }
@@ -467,9 +477,15 @@ function ImageDetails({
     // means to anyone who didn't pick the number: 0.65 denoise is 65% redrawn.
     rows.push({ label: 'Redrawn from', value: `an earlier picture · ${Math.round((st.denoise ?? 0) * 100)}% changed` })
   }
+  // The prompt improver, when it ran. Named rather than implied: two models
+  // write very different prompts, and "why does this look nothing like what I
+  // typed" has exactly one answer and it is this row.
+  if (st?.promptOriginal && st.improvedBy) {
+    rows.push({ label: 'Prompt improved by', value: st.improvedBy })
+  }
   const when = new Date(image.at)
   rows.push({
-    label: 'Drawn',
+    label: uploaded ? 'Added' : 'Drawn',
     value: `${when.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}${
       st?.tookMs ? ` · took ${(st.tookMs / 1000).toFixed(0)}s` : ''}`,
   })
@@ -489,6 +505,22 @@ function ImageDetails({
             </div>
           ))}
         </dl>
+
+        {/* The prompt as typed, when the improver replaced it. Above the
+            negative because it is the more surprising of the two: the caption
+            over the picture is the REWRITTEN prompt (it is what the sampler
+            read), so without this there is nowhere to see the sentence that was
+            actually asked for. */}
+        {st?.promptOriginal && (
+          <div className="mt-3 pt-3 border-t border-hairline">
+            <p className="text-[10px] uppercase tracking-widest text-white/30 font-semibold mb-1">
+              You asked for
+            </p>
+            <p className="selectable-text text-[11px] text-white/45 leading-snug break-words">
+              {st.promptOriginal}
+            </p>
+          </div>
+        )}
 
         {st?.negative && (
           <div className="mt-3 pt-3 border-t border-hairline">
