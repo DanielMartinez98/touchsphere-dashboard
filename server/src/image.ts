@@ -46,7 +46,18 @@ export function comfyUrl(): string {
 }
 
 // A whole render, not a single HTTP call: queue wait + checkpoint load + steps.
-const TIMEOUT_MS = Number(process.env['COMFYUI_TIMEOUT_MS'] ?? 180_000)
+// How long ONE render may take once the GPU is actually working on it. Raised
+// from 180s because that no longer had to cover queue wait — and because a cold
+// FLUX is 23.8 GB of weights to page in before a single step is drawn, which on
+// its own can pass three minutes.
+const TIMEOUT_MS = Number(process.env['COMFYUI_TIMEOUT_MS'] ?? 600_000)
+
+// The outer bound, covering queue wait as well. Generous on purpose: the whole
+// point is that being tenth in line is not an error, and a kiosk asking for four
+// pictures of an evening should still get the fourth. It exists only so a box
+// that has wedged entirely is eventually given up on rather than holding this
+// server's render chain forever.
+const QUEUE_WAIT_MS = Number(process.env['COMFYUI_QUEUE_WAIT_MS'] ?? 60 * 60_000)
 // How often we ask /history whether it's done. ComfyUI's real per-step progress
 // only comes over its WebSocket, which would mean a new dependency for a
 // prettier bar; polling gets us the finished image just as fast.
@@ -2610,12 +2621,91 @@ async function queuePrompt(graph: ComfyGraph): Promise<string> {
 interface OutputRef { filename: string; subfolder: string; type: string }
 
 /** Poll /history until the render appears, or we run out of patience. */
-async function awaitOutput(promptId: string, job: ImageJob): Promise<OutputRef> {
-  const deadline = Date.now() + TIMEOUT_MS
-  let announcedRunning = false
+/**
+ * Is our prompt still sitting in ComfyUI's queue, un-started?
+ *
+ * Needed because /history only gains an entry when a prompt FINISHES, so from
+ * here "queued behind eleven other jobs" and "rendering right now" look
+ * identical — and they must not, because only one of them should burn the
+ * render deadline. Returns null when ComfyUI can't be asked, which the caller
+ * treats as "assume it is running": erring towards timing out is safer than
+ * erring towards waiting forever.
+ */
+async function stillQueued(promptId: string): Promise<boolean | null> {
+  try {
+    const res = await comfyFetch('/queue', undefined, 10_000)
+    if (!res.ok) return null
+    const q = await res.json() as {
+      queue_pending?: unknown[][]
+      queue_running?: unknown[][]
+    }
+    const idOf = (it: unknown[]): string => (typeof it[1] === 'string' ? it[1] : '')
+    if ((q.queue_running ?? []).some(it => idOf(it) === promptId)) return false
+    return (q.queue_pending ?? []).some(it => idOf(it) === promptId)
+  } catch {
+    return null
+  }
+}
 
-  while (Date.now() < deadline) {
+/**
+ * Drop our prompt from ComfyUI's queue.
+ *
+ * Called when we give up on a render, and it is the fix for a genuine death
+ * spiral rather than tidiness. A timed-out job used to be abandoned while its
+ * prompt stayed queued on the GPU box: the work still ran, nobody collected it,
+ * and it made the queue deeper — so the NEXT render timed out sooner, leaving
+ * another orphan behind it. Thirteen deep, every single render was failing
+ * before it had started, and clearing the queue by hand was the only way out.
+ */
+async function dropFromQueue(promptId: string): Promise<void> {
+  try {
+    await comfyFetch('/queue', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ delete: [promptId] }),
+    }, 10_000)
+    console.log(`[image] dropped abandoned prompt ${promptId} from ComfyUI's queue`)
+  } catch (err) {
+    // Best effort: we are already on a failure path and the render is lost
+    // either way. Saying so beats throwing a second error over the first.
+    console.warn('[image] could not drop the abandoned prompt:', err instanceof Error ? err.message : err)
+  }
+}
+
+async function awaitOutput(promptId: string, job: ImageJob): Promise<OutputRef> {
+  // The deadline covers RENDERING, not queueing.
+  //
+  // ComfyUI is a shared box: its queue can hold work from another client, from
+  // an earlier run of this server that was restarted mid-render, or simply from
+  // the four pictures somebody asked for in a row. Counting that wait against a
+  // render's own budget is what made a busy GPU fail every job it was given —
+  // and each failure left its prompt in the queue, so the backlog grew with
+  // every attempt. So the clock only advances while our prompt is not sitting
+  // in the pending list, and a separate, far more generous budget bounds the
+  // total so a genuinely stuck box still gives up eventually.
+  let deadline = Date.now() + TIMEOUT_MS
+  const hardStop = Date.now() + QUEUE_WAIT_MS
+  let announcedRunning = false
+  let announcedQueued = false
+
+  while (Date.now() < deadline && Date.now() < hardStop) {
     await new Promise(r => setTimeout(r, POLL_MS))
+
+    // Push the render deadline out for as long as we are still behind other
+    // work. Checked before /history so a prompt that is merely waiting can
+    // never consume the budget meant for drawing it.
+    const queued = await stillQueued(promptId)
+    if (queued === true) {
+      deadline = Date.now() + TIMEOUT_MS
+      if (!announcedQueued) {
+        announcedQueued = true
+        push(job, 'waiting for the GPU',
+          'ComfyUI has accepted the job but is still working through other pictures ' +
+          'ahead of it. The render clock has not started yet — this wait does not count ' +
+          'against it, and the picture will begin as soon as the card is free.')
+      }
+      continue
+    }
 
     const res = await comfyFetch(`/history/${encodeURIComponent(promptId)}`)
     if (!res.ok) continue                   // transient; keep waiting
@@ -2666,7 +2756,15 @@ async function awaitOutput(promptId: string, job: ImageJob): Promise<OutputRef> 
       throw new Error('ComfyUI finished but produced no saved image')
     }
   }
-  throw new Error(`render did not finish within ${(TIMEOUT_MS / 1000).toFixed(0)}s`)
+  // Whatever we do next, this prompt must not be left on the GPU box: see
+  // dropFromQueue. Awaited so the slot is actually free before the next job in
+  // our own chain is submitted.
+  await dropFromQueue(promptId)
+  throw new Error(
+    Date.now() >= hardStop
+      ? `gave up after ${humanMs(QUEUE_WAIT_MS)} waiting for the image server`
+      : `render did not finish within ${(TIMEOUT_MS / 1000).toFixed(0)}s`,
+  )
 }
 
 async function downloadOutput(ref: OutputRef): Promise<Buffer> {
