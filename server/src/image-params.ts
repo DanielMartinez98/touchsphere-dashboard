@@ -205,13 +205,39 @@ function file(): string {
   return path.join(process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache', 'image-params.json')
 }
 
+/**
+ * Bumped when the MEANING of a stored value changes rather than its shape.
+ *
+ * v1 stored the text fields as plain strings where '' meant "not set", so an
+ * entry saved for any reason at all — someone nudging cfg — came back carrying
+ * `negative: ''`. v2 made '' a real answer meaning "add nothing", which turns
+ * every one of those v1 entries into an instruction to switch the model's own
+ * published negative OFF. That is not a hypothetical: seven styles on the live
+ * kiosk had exactly that, and reading them under v2 rules silently stripped
+ * NoobAI's, Anima's, NetaYume's and FLUX's negatives on the next render.
+ *
+ * So entries without the marker are migrated on read: '' becomes null (no
+ * override), while any NON-empty string is left exactly alone, because that one
+ * really was somebody typing something.
+ */
+const STORE_VERSION = 2
+
+/** Text fields whose empty-string meaning changed between v1 and v2. */
+const TEXT_KEYS = ['prefix', 'optimizations', 'negative', 'negativePrefix'] as const
+
 function readStore(): Store {
   try {
     const parsed = JSON.parse(fs.readFileSync(file(), 'utf8')) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
     const out: Store = {}
     for (const [style, v] of Object.entries(parsed as Record<string, unknown>)) {
-      out[style] = normalizeParams(v)
+      const entry = normalizeParams(v)
+      const stamped = !!v && typeof v === 'object'
+        && (v as Record<string, unknown>)['v'] === STORE_VERSION
+      if (!stamped) {
+        for (const k of TEXT_KEYS) if (entry[k] === '') entry[k] = null
+      }
+      out[style] = entry
     }
     return out
   } catch {
@@ -225,7 +251,13 @@ function writeStore(store: Store): void {
   const p = file()
   const tmp = `${p}.tmp-${process.pid}`
   try {
-    fs.writeFileSync(tmp, JSON.stringify(store, null, 2), 'utf8')
+    // Stamped per entry rather than once at the top of the file, because the
+    // file is a flat map of style → params and a top-level key would be
+    // indistinguishable from a style called "v".
+    const stamped = Object.fromEntries(
+      Object.entries(store).map(([style, params]) => [style, { ...params, v: STORE_VERSION }]),
+    )
+    fs.writeFileSync(tmp, JSON.stringify(stamped, null, 2), 'utf8')
     fs.renameSync(tmp, p)
   } catch (err) {
     try { fs.unlinkSync(tmp) } catch { /* nothing to clean up */ }
