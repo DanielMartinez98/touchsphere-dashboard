@@ -1341,6 +1341,65 @@ function noobaiGraph(ckpt: string): ComfyGraph {
   }
 }
 
+/**
+ * FLUX.1 dev - a guidance-distilled 12B flow transformer, and the third shape
+ * of "style" this app has to carry.
+ *
+ * Transcribed from ComfyUI's own bundled `flux_dev_full_text_to_image` template
+ * (subgraph flattened away, as Anima's and Lumina's were). Three things in it
+ * are not decoration and are the reason FLUX cannot ride the default graph:
+ *
+ *   - **cfg is 1, and must stay 1.** FLUX.1 dev is guidance-DISTILLED: the
+ *     guidance scale is a conditioning input the model was trained on, not
+ *     classifier-free guidance over a negative prompt. Sampling it at cfg 5 the
+ *     way SDXL wants turns on true CFG against a negative it was never trained
+ *     to use - twice the time for a worse picture. The number a FLUX user
+ *     means by "guidance" is the FluxGuidance node below, which is where
+ *     buildGraph sends the Advanced panel's Guidance knob.
+ *   - **there is no negative prompt.** The template feeds the sampler's
+ *     negative a `ConditioningZeroOut` of the POSITIVE rather than a second
+ *     text encode, which is why this graph has one CLIPTextEncode and not two.
+ *     Encoding a negative through T5-XXL would cost real time to produce
+ *     conditioning the sampler discards at cfg 1.
+ *   - **two text encoders**, loaded by `DualCLIPLoader` with type 'flux':
+ *     CLIP-L for the short tag-ish signal and T5-XXL for the sentence. T5 is
+ *     why prompts here are written as prose - see promptStyle below.
+ *
+ * `weight_dtype` is the one deliberate departure from the template, which ships
+ * 'default'. The published weights are bf16 and 23.8 GB; at full precision they
+ * do not fit a 24 GB card alongside the text encoder, and ComfyUI's answer to
+ * that is to stream the model from system RAM every render - which is not a
+ * slower picture but a stalled one, the same reason there is no CPU twin for
+ * ComfyUI in docker-compose.voice.yml. `fp8_e4m3fn` casts on load to ~12 GB and
+ * is what ComfyUI's own docs recommend at this VRAM. The matching fp8 T5 is
+ * paired with it for the same reason.
+ */
+function fluxGraph(unet: string, weightDtype: string, t5: string): ComfyGraph {
+  return {
+    '1': { class_type: 'UNETLoader', inputs: { unet_name: unet, weight_dtype: weightDtype } },
+    '2': {
+      class_type: 'DualCLIPLoader',
+      inputs: { clip_name1: 'clip_l.safetensors', clip_name2: t5, type: 'flux', device: 'default' },
+    },
+    '3': { class_type: 'VAELoader', inputs: { vae_name: 'ae.safetensors' } },
+    '4': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
+    // The real guidance dial. 3.5 is the published default and ComfyUI's own.
+    '5': { class_type: 'FluxGuidance', inputs: { guidance: 3.5, conditioning: ['4', 0] } },
+    // The "negative": the positive, zeroed. Not a prompt - see above.
+    '6': { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['4', 0] } },
+    '7': { class_type: 'EmptySD3LatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
+    '8': {
+      class_type: 'KSampler',
+      inputs: {
+        seed: 0, steps: 20, cfg: 1, sampler_name: 'euler', scheduler: 'simple', denoise: 1,
+        model: ['1', 0], positive: ['5', 0], negative: ['6', 0], latent_image: ['7', 0],
+      },
+    },
+    '9': { class_type: 'VAEDecode', inputs: { samples: ['8', 0], vae: ['3', 0] } },
+    '10': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['9', 0] } },
+  }
+}
+
 /** The text encoder and VAE every Anima variant shares. */
 const ANIMA_SHARED = [
   'text_encoders/qwen_3_06b_base.safetensors',
@@ -1400,6 +1459,26 @@ const BUILTIN_WORKFLOWS: Record<string, {
    */
   ignoresQuality?: boolean
 }> = {
+  'flux1-dev': {
+    label: 'FLUX.1 dev',
+    graph: fluxGraph('flux1-dev.safetensors', 'fp8_e4m3fn', 't5xxl_fp8_e4m3fn.safetensors'),
+    // T5-XXL reads sentences. Feeding a booru tag list to the model with the
+    // best prose comprehension of anything installed here is the inverse of
+    // the mistake promptStyle exists to stop.
+    promptStyle: 'prose',
+    // No `negative`: this style has nowhere to put one (ConditioningZeroOut),
+    // and buildGraph/renderedWith both know not to invent one for it.
+    // No `turboHints`: the distilled sibling is FLUX.1 schnell, a different
+    // model rather than a LoRA over this one, so the toggle stays hidden.
+    // No `supersedes`: FLUX ships as split files, so there is no all-in-one
+    // checkpoint appearing twice in the picker to hide.
+    needs: [
+      'diffusion_models/flux1-dev.safetensors',
+      'text_encoders/clip_l.safetensors',
+      'text_encoders/t5xxl_fp8_e4m3fn.safetensors',
+      'vae/ae.safetensors',
+    ],
+  },
   'noobai-xl-v11': {
     label: 'NoobAI XL v1.1',
     graph: noobaiGraph('NoobAI-XL-v1.1.safetensors'),
@@ -1604,6 +1683,33 @@ function findNode(graph: ComfyGraph, classes: string[]): string | null {
 }
 
 /**
+ * Follow a sampler's conditioning link back to the text node it came from.
+ *
+ * A sampler's `positive` does not always land straight on a CLIPTextEncode.
+ * Any model family that carries guidance IN the conditioning puts a node in
+ * between - FLUX has `FluxGuidance`, and its negative is a
+ * `ConditioningZeroOut` of the positive rather than a second prompt at all.
+ * Stopping at the first hop, which is what this used to do, made every FLUX
+ * graph fail with "positive prompt does not reach a text node", and meant no
+ * FLUX workflow anyone exported themselves could be dropped on the volume.
+ *
+ * Depth-limited because a workflow is user-supplied data: a cycle in one must
+ * come back as null rather than hang the render thread.
+ */
+function conditioningText(graph: ComfyGraph, startId: string | null): string | null {
+  let id = startId
+  for (let hop = 0; id && hop < 8; hop++) {
+    const node = graph[id]
+    if (!node) return null
+    if ('text' in node.inputs) return id
+    // Every conditioning passthrough names its upstream input `conditioning`.
+    const up = node.inputs['conditioning']
+    id = Array.isArray(up) && typeof up[0] === 'string' ? up[0] : null
+  }
+  return null
+}
+
+/**
  * Patch the prompt, size and seed into whatever graph we've got.
  *
  * Located by CLASS, not by hardcoded node id, so a workflow someone exported
@@ -1636,14 +1742,26 @@ function buildGraph(job: ImageJob, sourceName = ''): ComfyGraph {
   // cfg is only ever set when someone explicitly asked for one. Left alone the
   // graph keeps its own value, which for a style like Anima is the model
   // author's number and not something to overwrite with a house default.
-  if (job.cfg > 0 && 'cfg' in sampler.inputs) sampler.inputs['cfg'] = job.cfg
+  //
+  // For a guidance-distilled style that number is NOT the sampler's cfg. FLUX
+  // samples at cfg 1 and carries its guidance in the conditioning, so the knob
+  // labelled Guidance has to land on the FluxGuidance node; writing it to the
+  // sampler instead would switch on true classifier-free guidance against a
+  // negative the model never had, which costs twice the time for a worse
+  // picture. Same principle as `ignoresQuality`: a control must drive the thing
+  // its label names, or say it doesn't apply.
+  const guidanceId = findNode(graph, ['FluxGuidance'])
+  if (job.cfg > 0) {
+    if (guidanceId) graph[guidanceId]!.inputs['guidance'] = job.cfg
+    else if ('cfg' in sampler.inputs) sampler.inputs['cfg'] = job.cfg
+  }
 
   const link = (key: string): string | null => {
     const v = sampler.inputs[key]
     return Array.isArray(v) && typeof v[0] === 'string' ? v[0] : null
   }
-  const posId = link('positive')
-  const negId = link('negative')
+  const posId = conditioningText(graph, link('positive'))
+  const negId = conditioningText(graph, link('negative'))
   // An instruction-tuned style (Lumina) has to be addressed in the format it
   // was trained on, so its system line goes in front of what the user asked
   // for. Empty for every other style, which is why this is a plain concat
@@ -1654,7 +1772,12 @@ function buildGraph(job: ImageJob, sourceName = ''): ComfyGraph {
   } else {
     throw new Error("workflow's positive prompt does not reach a text node")
   }
-  if (negId && graph[negId] && 'text' in graph[negId]!.inputs) {
+  // `negId !== posId` is load-bearing, not defensive. A style whose negative is
+  // a ConditioningZeroOut of the POSITIVE (FLUX) resolves both links to the one
+  // text node, and writing the negative there would replace the prompt with the
+  // negative and draw a picture of everything the user didn't want. A negative
+  // that is inert in the graph stays inert.
+  if (negId && negId !== posId && graph[negId] && 'text' in graph[negId]!.inputs) {
     graph[negId]!.inputs['text'] = pre.negative + job.negative
   }
 
@@ -1768,14 +1891,30 @@ function renderedWith(job: ImageJob, graph: ComfyGraph): ImageSettings {
   const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
   const t = (v: unknown) => (typeof v === 'string' ? v : '')
 
+  // Guidance and the negative are both read the way buildGraph wrote them,
+  // which for a distilled style is not where a plain SDXL graph keeps them:
+  // the number that steered the picture is on the FluxGuidance node, and the
+  // sampler's cfg 1 beside it would be a true statement that answers the wrong
+  // question. And a style whose negative never reaches a text node of its own
+  // had no negative - recording the house default against a picture it took no
+  // part in is the same silent lie the per-style params exist to avoid.
+  const linked = (key: string): string | null => {
+    const v = inputs[key]
+    return Array.isArray(v) && typeof v[0] === 'string' ? v[0] : null
+  }
+  const posId = conditioningText(graph, linked('positive'))
+  const negId = conditioningText(graph, linked('negative'))
+  const guidanceId = findNode(graph, ['FluxGuidance'])
+  const guidance = guidanceId ? n(graph[guidanceId]!.inputs['guidance']) : 0
+
   return {
     style:      job.model,
     styleLabel: styleLabel(job.model),
     steps:      n(inputs['steps']),
-    cfg:        n(inputs['cfg']),
+    cfg:        guidance || n(inputs['cfg']),
     sampler:    t(inputs['sampler_name']),
     scheduler:  t(inputs['scheduler']),
-    negative:   job.negative,
+    negative:   negId && negId !== posId ? job.negative : '',
     ...(job.lora ? { lora: job.lora, loraStrength: job.loraStrength } : {}),
     ...(job.source ? { source: job.source, denoise: job.denoise } : {}),
     tookMs:     Math.max(0, (job.endedAt ?? Date.now()) - job.startedAt),
@@ -1825,14 +1964,21 @@ export function styleDefaults(style: string): StyleDefaults {
   const n = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d)
   const s = (v: unknown, d: string) => (typeof v === 'string' ? v : d)
 
+  // Same substitution as renderedWith: for a style with a FluxGuidance node the
+  // number behind "Auto" on the Guidance row is that node's, not the sampler's
+  // cfg 1. An Advanced panel whose "Auto" names the wrong number is worse than
+  // one that names none, because it invites correcting a value that was right.
+  const guidanceId = findNode(graph, ['FluxGuidance'])
+  const guidance = guidanceId ? graph[guidanceId]!.inputs['guidance'] : undefined
+
   return {
     steps:     n(inputs['steps'], fallback.steps),
-    cfg:       n(inputs['cfg'], fallback.cfg),
+    cfg:       n(guidance, n(inputs['cfg'], fallback.cfg)),
     width:     n(latent['width'], fallback.width),
     height:    n(latent['height'], fallback.height),
     sampler:   s(inputs['sampler_name'], fallback.sampler),
     scheduler: s(inputs['scheduler'], fallback.scheduler),
-    hasCfg:    'cfg' in inputs,
+    hasCfg:    guidanceId !== null || 'cfg' in inputs,
     turboKnown: fallback.turboKnown,
     qualityApplies: fallback.qualityApplies,
   }
