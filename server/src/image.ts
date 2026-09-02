@@ -1518,18 +1518,20 @@ const NETAYUME_PREFIXES = {
  * than "this model is being driven wrong" — see the prefixes below for the
  * other half of that story.
  */
-function noobaiGraph(ckpt: string): ComfyGraph {
+function sdxlAnimeGraph(
+  ckpt: string, steps: number, cfg: number, sampler: string, scheduler: string,
+): ComfyGraph {
   return {
     '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: ckpt } },
     '2': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['1', 1] } },
     '3': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['1', 1] } },
-    // 832x1216 is one of the buckets NoobAI lists as trained resolutions; the
-    // job overwrites this anyway, it is only the shape of the default.
+    // 832x1216 is a trained-resolution bucket BOTH of these models list; the job
+    // overwrites it anyway, so this is only the shape of the default.
     '4': { class_type: 'EmptyLatentImage', inputs: { width: 832, height: 1216, batch_size: 1 } },
     '5': {
       class_type: 'KSampler',
       inputs: {
-        seed: 0, steps: 28, cfg: 5.5, sampler_name: 'euler_ancestral', scheduler: 'normal', denoise: 1,
+        seed: 0, steps, cfg, sampler_name: sampler, scheduler, denoise: 1,
         model: ['1', 0], positive: ['2', 0], negative: ['3', 0], latent_image: ['4', 0],
       },
     },
@@ -1613,14 +1615,21 @@ function fluxGraph(unet: string, weightDtype: string, t5: string): ComfyGraph {
  * exactly that reason.
  */
 const ANIMA_PREFIX = { positive: 'masterpiece, best quality, score_7, safe, ', negative: '' }
+// `nsfw` is the one addition to the card's verbatim recommended negative, and it
+// comes from the same card: the Limitations section says the model "may generate
+// undesired content, especially if the prompt is short" and to avoid it "by
+// using the appropriate safety tags in the positive AND negative prompts". The
+// positive prefix already carries `safe`; this is the other half. Same reasoning
+// as `safe` in NoobAI's prefix — on a kiosk the assistant draws on unprompted,
+// that tag is doing real work.
 const ANIMA_NEGATIVE =
-  'worst quality, low quality, score_1, score_2, score_3, artist name, blurry, ' +
+  'nsfw, worst quality, low quality, score_1, score_2, score_3, artist name, blurry, ' +
   'jpeg artifacts, chromatic aberration'
 
 /** The aesthetic fine-tune's pair: same idea, no score tags on either side. */
 const ANIMA_AES_PREFIX = { positive: 'masterpiece, best quality, safe, ', negative: '' }
 const ANIMA_AES_NEGATIVE =
-  'worst quality, low quality, artist name, blurry, jpeg artifacts, chromatic aberration'
+  'nsfw, worst quality, low quality, artist name, blurry, jpeg artifacts, chromatic aberration'
 
 /**
  * Anima's prompting guidance, shared by all three variants because all three
@@ -1628,11 +1637,18 @@ const ANIMA_AES_NEGATIVE =
  * how you talk to it.
  */
 const ANIMA_PROMPT_GUIDE =
-  'Write plain English sentences, not tags. This model reads prompts through a Qwen-3 ' +
-  'text encoder, so describe the picture the way you would to a person: the subject, ' +
-  'what they look like and are doing, the setting, the lighting and the mood. It is an ' +
-  'anime model, so naming the art style (cel shaded, soft watercolour, thick lineart) ' +
-  'steers it well. A few vivid sentences beat a wall of tags.'
+  'This model was trained on Danbooru tags, natural-language captions AND mixtures of ' +
+  'the two, so either register works and you should keep whichever one the user wrote ' +
+  'in rather than converting it. If writing tags: lowercase, and SPACES rather than ' +
+  'underscores (score_* tags are the only ones that keep underscores). An artist tag ' +
+  'MUST be written with an @ in front of it — "@artist name" — or its effect is very ' +
+  'weak. Tag order is quality/meta/year/safety, then subject count (1girl, 1boy), then ' +
+  'character, then series, then artist, then everything else. If writing plain English: ' +
+  'use at least two sentences, because very short prompts give unexpected results, and ' +
+  'when you name a character describe their appearance too rather than relying on the ' +
+  'name alone — that matters most with more than one character in the picture. Prompt ' +
+  'weighting works but needs higher weights than SDXL, e.g. (chibi:2). Do not add ' +
+  'quality tags yourself; they are added for you.'
 
 /** The text encoder and VAE every Anima variant shares. */
 const ANIMA_SHARED = [
@@ -1754,9 +1770,38 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'vae/ae.safetensors',
     ],
   },
+  'animagine-xl-4': {
+    label: 'Animagine XL 4.0',
+    // Card: "CFG Scale: 4-7 (5 Recommended)", "Sampling Steps: 25-28 (28
+    // Recommended)", "Preferred Sampler: Euler Ancestral". As a bare checkpoint
+    // this rendered through the default SDXL graph at cfg 8 / euler / normal —
+    // three settings wrong at once, which is exactly the "this model is bad"
+    // reading that NoobAI's entry was created to stop.
+    graph: sdxlAnimeGraph('animagine-xl-4.0.safetensors', 28, 5, 'euler_ancestral', 'normal'),
+    // THE distinguishing case for the `optimizations` field. Every other style
+    // here documents its boosters as a prefix; Animagine's card says, in its
+    // own words, "Add these tags at the end of your prompt" — and its prompt
+    // structure literally ends "...and end with quality enhancement". This is
+    // the model that makes an appended slot necessary rather than tidy.
+    optimizations: 'masterpiece, high score, great score, absurdres',
+    negative: 'lowres, bad anatomy, bad hands, text, error, missing finger, ' +
+      'extra digits, fewer digits, cropped, worst quality, low quality, low score, ' +
+      'bad score, average score, signature, watermark, username, blurry',
+    promptStyle: 'tags',
+    promptGuide:
+      'Write lowercase Danbooru tags separated by commas, with SPACES rather than ' +
+      'underscores, in this order: subject count (1girl, 1boy, 1other), then the ' +
+      'character name, then the series it is from, then the rating, then everything ' +
+      'else in any order. Parentheses in a character or series name are escaped, as in ' +
+      'firefly \\(honkai: star rail\\). Score tags steer this model harder than plain ' +
+      'quality tags do. Do not add the quality tags yourself — they are appended for you.',
+    supersedes: 'animagine-xl-4.0.safetensors',
+    needs: ['checkpoints/animagine-xl-4.0.safetensors'],
+  },
   'noobai-xl-v11': {
     label: 'NoobAI XL v1.1',
-    graph: noobaiGraph('NoobAI-XL-v1.1.safetensors'),
+    // Model card: CFG 5-6, Steps 25-30, Euler a.
+    graph: sdxlAnimeGraph('NoobAI-XL-v1.1.safetensors', 28, 5.5, 'euler_ancestral', 'normal'),
     // Straight off the model card: quality ladder in front, booru terms behind.
     // `safe` is doing real work on a kiosk the assistant draws on unprompted.
     prefixes: {
@@ -1944,6 +1989,39 @@ export function stylePromptGuide(style: string): string {
  */
 export function styleNegativeFor(style: string): string {
   return styleNegative(style) || DEFAULT_NEGATIVE
+}
+
+/**
+ * Whether this style's negative prompt reaches a text node of its own.
+ *
+ * False for FLUX, whose sampler's negative is a ConditioningZeroOut of the
+ * positive — there is no second encode and nothing a negative could be written
+ * into. Black Forest Labs say so directly: describe what you want, not what you
+ * don't. Settings uses this to say the field does not apply rather than showing
+ * an editable box whose contents can never affect a picture, which is the same
+ * silent-override failure the per-style params exist to avoid.
+ *
+ * Distinct from a style that merely samples at cfg 1 (Anima Turbo): there the
+ * negative IS encoded and would take effect the moment guidance is raised, so
+ * that one gets a warning rather than a disabled field.
+ */
+export function styleUsesNegative(style: string): boolean {
+  const graph = style.startsWith(WORKFLOW_PREFIX)
+    ? workflowGraph(style.slice(WORKFLOW_PREFIX.length))
+    : baseGraph()
+  if (!graph) return true
+  const samplerId = findNode(graph, ['KSampler', 'KSamplerAdvanced', 'SamplerCustom'])
+  if (!samplerId) return true
+  const inputs = graph[samplerId]!.inputs
+  const linked = (key: string): string | null => {
+    const v = inputs[key]
+    return Array.isArray(v) && typeof v[0] === 'string' ? v[0] : null
+  }
+  const posId = conditioningText(graph, linked('positive'))
+  const negId = conditioningText(graph, linked('negative'))
+  // The same identity test buildGraph uses before it writes: landing on the
+  // positive's own text node means there is no separate negative.
+  return !!negId && negId !== posId
 }
 
 /** The lead-in a style's card puts IN FRONT of every prompt. '' for most. */

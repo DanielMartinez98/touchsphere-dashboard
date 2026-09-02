@@ -1452,6 +1452,10 @@ function StyleTextSection({ styles }: { styles: { id: string; label: string }[] 
   // live and silently isn't — the same rule the Quality row follows when a
   // distilled style takes it out of play.
   const cfgOne = data?.defaults?.cfg === 1
+  // A model with no second text encode at all — FLUX zeroes the positive out
+  // instead. Undefined from a server that predates the field, which must read
+  // as "it has one", the behaviour every style had before this existed.
+  const hasNegative = text?.usesNegative !== false
 
   const save = async () => {
     await setParamsForStyle(style, draft)
@@ -1527,21 +1531,37 @@ function StyleTextSection({ styles }: { styles: { id: string; label: string }[] 
         <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
           Negative prompt
         </span>
-        <TouchInput
-          value={draft.negative}
-          onChange={v => { setDraft(d => ({ ...d, negative: v })); setSaved(false) }}
-          multiline
-          rows={3}
-          placeholder={text?.negative || 'nothing'}
-          ariaLabel="What this model should avoid"
-          className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px] leading-relaxed
-                     placeholder:text-white/30 border border-hairline"
-        />
-        {cfgOne && (
-          <p className="text-[11px] text-amber-300/70 leading-snug mt-1.5">
-            This style samples at guidance 1, so it does no classifier-free guidance and
-            the negative prompt has no effect on the picture. It is kept for the moment
-            you raise Guidance in the Draw panel's Advanced section.
+        {/* Not disabled — absent. A model that cannot have a negative gets a
+            sentence saying so instead of an editable box whose contents could
+            never reach a picture, which is the same silent-override failure the
+            per-style params exist to prevent. */}
+        {hasNegative ? (
+          <>
+            <TouchInput
+              value={draft.negative}
+              onChange={v => { setDraft(d => ({ ...d, negative: v })); setSaved(false) }}
+              multiline
+              rows={3}
+              placeholder={text?.negative || 'nothing'}
+              ariaLabel="What this model should avoid"
+              className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px] leading-relaxed
+                         placeholder:text-white/30 border border-hairline"
+            />
+            {cfgOne && (
+              <p className="text-[11px] text-amber-300/70 leading-snug mt-1.5">
+                This style samples at guidance 1, so it does no classifier-free guidance and
+                the negative prompt has no effect on the picture. It is kept for the moment
+                you raise Guidance in the Draw panel's Advanced section.
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="text-[12px] text-white/45 leading-relaxed rounded-xl bg-white/[0.04]
+                        border border-hairline px-3 py-2.5">
+            This model has no negative prompt at all — its own guidance is to describe what
+            you want rather than what you don't, and there is nowhere in its pipeline for a
+            negative to go. Put anything you were going to avoid into the prompt as a
+            positive description instead.
           </p>
         )}
       </div>

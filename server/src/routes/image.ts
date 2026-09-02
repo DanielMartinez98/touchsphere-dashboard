@@ -41,6 +41,7 @@ import {
   styleOptimizations,
   styleNegativeFor,
   stylePrefixFor,
+  styleUsesNegative,
   supersededCheckpoints,
   WORKFLOW_PREFIX,
 } from '../image'
@@ -255,6 +256,9 @@ router.get('/params', async (req: Request, res: Response) => {
       // Read-only: this is where a card that specifies a lead-in puts it, and
       // it is shown so the appended field's placement makes sense.
       prefix:        stylePrefixFor(style),
+      // False for a style with no second text encode at all (FLUX). The field
+      // is then shown as not applicable rather than as an empty editable box.
+      usesNegative:  styleUsesNegative(style),
     },
     loras,
     // What turbo would use if the user leaves the LoRA on "Auto" — shown in the

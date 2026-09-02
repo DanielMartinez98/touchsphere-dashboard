@@ -240,6 +240,8 @@ export interface StyleText {
   optimizations: string
   /** The lead-in this model's card puts in FRONT of every prompt. '' for most. */
   prefix:        string
+  /** False for a model with no negative prompt at all (FLUX). Optional: an older server omits it. */
+  usesNegative?: boolean
 }
 
 export interface ParamsResponse {
