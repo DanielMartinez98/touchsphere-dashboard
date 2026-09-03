@@ -65,3 +65,6 @@ client/public/vrma/
 # cubism.live2d.com. Not ours to commit. See:
 # https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html
 client/public/live2dcubismcore.min.js
+
+# Python bytecode from syntax checks
+__pycache__/
