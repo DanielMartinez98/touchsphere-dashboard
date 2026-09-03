@@ -61,7 +61,10 @@ RUN printf '#!/bin/sh\nchown -R app:app /data/cache\nexec su-exec app node serve
 # espeak-ng — server-side text-to-speech for /api/tts
 #             (TouchKio/Electron does NOT implement Web Speech API,
 #              so synthesis must happen server-side and be played as WAV)
-RUN apk add --no-cache su-exec espeak-ng
+# openssh-client — Settings → Server reaches the host over SSH with a key it
+#             generates itself (server/src/host.ts); ssh + ssh-keygen are all
+#             it needs, and both are in this one package.
+RUN apk add --no-cache su-exec espeak-ng openssh-client
 
 # Expose the server port (override via PORT env var if needed)
 EXPOSE 3001

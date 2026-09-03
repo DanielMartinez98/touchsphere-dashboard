@@ -25,6 +25,7 @@ import artworkRouter from './routes/artwork'
 import guidesRouter from './routes/guides'
 import imageRouter from './routes/image'
 import plexRouter from './routes/plex'
+import hostRouter from './routes/host'
 import { elevenLabsKeyState } from './config/keys'
 import { sweepInterrupted } from './guides'
 import { SEARCH_PROVIDER } from './research'
@@ -185,6 +186,9 @@ app.use('/api/notion', dataLimiter, notionRouter)
 app.use('/api/timers', dataLimiter, timersRouter)
 app.use('/api/memory', dataLimiter, memoryRouter)
 app.use('/api/guides', dataLimiter, guidesRouter)
+// Settings → Server: updating the host this container runs on. 404s wholesale
+// without HOST_UPDATE_SSH (see host.ts).
+app.use('/api/host', dataLimiter, hostRouter)
 // Generated images: the gallery pulls a file per thumbnail, so this sits behind
 // the generous tile limiter rather than the 60/min data one, same as artwork.
 app.use('/api/image', tileLimiter, imageRouter)

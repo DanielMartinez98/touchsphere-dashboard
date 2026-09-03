@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, lazy, Suspense } from 'react'
+import { useState, useRef, useEffect, lazy, Suspense, type ReactNode } from 'react'
 import { Check, X as XIcon, RotateCw, ClipboardCopy, MessageSquare, Trash2, Volume2, Download } from 'lucide-react'
 import { useAudioDevices } from '../hooks/useAudioDevices'
 import { useDevice } from '../hooks/useDevice'
@@ -18,9 +18,10 @@ import { useGuides } from '../hooks/useGuides'
 import { useImages } from '../hooks/useImages'
 import type { ParamsResponse } from '../hooks/useImages'
 import { useGuideActivity, type ActivityLevel } from '../hooks/useGuideActivity'
+import { useHost, useHostEnabled, type HostTask } from '../hooks/useHost'
 import { TouchInput } from './TouchInput'
 
-type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'system' | 'debug'
+type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'system' | 'server' | 'debug'
 
 // The preview reuses the dashboard's own renderers. Lazy, same chunks App
 // splits out — opening the VTuber tab is what pulls in the heavy deps, and
@@ -47,6 +48,7 @@ function formatUptime(seconds: number): string {
 export function SettingsPanel() {
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState<Tab>('assistant')
+  const hostEnabled = useHostEnabled()
   const [confirmClose, setConfirmClose] = useState(false)
   const [playingSoundId, setPlayingSoundId] = useState<string | null>(null)
   const [ttsTesting, setTtsTesting] = useState(false)
@@ -394,6 +396,9 @@ export function SettingsPanel() {
     { id: 'guides',    label: 'Guides'    },
     { id: 'drawing',   label: 'Drawing'   },
     { id: 'system',    label: 'System'    },
+    // Only when the server says it is set up: an "update the host" tab that
+    // can't reach a host is a tab full of broken buttons.
+    ...(hostEnabled ? [{ id: 'server' as const, label: 'Server' }] : []),
     { id: 'debug',     label: 'Debug'     },
   ]
 
@@ -1344,6 +1349,9 @@ export function SettingsPanel() {
             {/* Drawing tab — how the prompt improver is told to rewrite prompts */}
             {tab === 'drawing' && <DrawingTab />}
 
+            {/* Server tab — updating the machine this runs on */}
+            {tab === 'server' && <ServerTab />}
+
             {/* Debug tab — config visibility, endpoint checks, error log */}
             {tab === 'debug' && <DebugTab />}
 
@@ -1863,6 +1871,313 @@ function DrawingTab() {
       <div className="border-t border-hairline pt-5">
         <StyleTextSection styles={styles} />
       </div>
+    </div>
+  )
+}
+
+// ── Server tab ────────────────────────────────────────────────────────────────
+// The machine this runs on, and updating it: apt, firmware, Tailscale, the
+// other docker stacks, the dashboard itself, and reboot. See server/src/host.ts
+// for how a container gets to do any of that. The tab is three things: cards
+// that answer "is anything waiting?", one button per job, and the live log —
+// because "install updates" on a kiosk with no keyboard has to show apt working
+// rather than a spinner for four minutes, and a failure has to be readable
+// from the couch.
+
+function fmtUptime(sec: number): string {
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60)
+  return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`
+}
+
+function ServerTab() {
+  const { info, status, statusError, statusBusy, refreshStatus, lines, state, run, runError } = useHost()
+  // The two destructive tasks are asked for twice. One slot rather than one
+  // flag per task: opening a second confirmation closes the first.
+  const [confirming, setConfirming] = useState<HostTask | null>(null)
+  const [copied, setCopied] = useState(false)
+  const logRef = useRef<HTMLDivElement>(null)
+  const running = state.running
+  const busy = running !== null
+
+  // Follow the log as it grows — the interesting line is always the last one.
+  useEffect(() => {
+    const el = logRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [lines.length])
+
+  // A self-update replaces the container and a reboot takes the box down: the
+  // server that would tell us "done" is the thing going away. So once either
+  // has started, watch the API go dark and come back, then reload the page —
+  // the new build is what should be on screen.
+  const leaving = running === 'self-update' || running === 'reboot'
+  useEffect(() => {
+    if (!leaving) return
+    let down = false
+    const t = setInterval(() => {
+      fetch('/api/system/version', { cache: 'no-store' })
+        .then(r => { if (r.ok && down) window.location.reload(); if (!r.ok) down = true })
+        .catch(() => { down = true })
+    }, 5000)
+    return () => clearInterval(t)
+  }, [leaving])
+
+  const copyKey = () => {
+    const key = info?.publicKey ?? ''
+    if (!key) return
+    navigator.clipboard?.writeText(key).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) }).catch(() => {})
+  }
+
+  const taskButton = (task: HostTask, label: string, opts: { tone?: 'normal' | 'danger'; hint?: string } = {}) => {
+    const needsConfirm = info?.confirm.includes(task) ?? false
+    const isRunning = running === task
+    const danger = opts.tone === 'danger'
+    if (needsConfirm && confirming === task) {
+      return (
+        <div className="flex gap-2 flex-1 min-w-0">
+          <button type="button" onClick={() => setConfirming(null)}
+            className="flex-1 h-11 rounded-xl bg-white/10 text-white/60 text-sm font-medium">
+            Cancel
+          </button>
+          <button type="button"
+            onClick={() => { setConfirming(null); void run(task, true) }}
+            className={`flex-1 h-11 rounded-xl text-sm font-bold text-white ${danger ? 'bg-red-500' : 'bg-cyan-500/80'}`}>
+            Yes, {label.toLowerCase()}
+          </button>
+        </div>
+      )
+    }
+    return (
+      <button type="button"
+        disabled={busy}
+        onClick={() => { if (needsConfirm) setConfirming(task); else void run(task) }}
+        className={`h-11 px-4 rounded-xl text-sm font-semibold flex items-center gap-2 transition active:scale-95 ${
+          isRunning ? 'bg-cyan-500/20 text-cyan-200'
+          : busy ? 'bg-white/5 text-white/25'
+          : danger ? 'bg-red-500/15 text-red-300 border border-red-400/30'
+          : 'bg-white/10 text-white/80'
+        }`}>
+        {isRunning && <RotateCw size={14} className="animate-spin" />}
+        {isRunning ? 'Running…' : label}
+      </button>
+    )
+  }
+
+  const card = (title: string, body: ReactNode, actions?: ReactNode) => (
+    <div>
+      <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">{title}</span>
+      <div className="bg-white/5 rounded-2xl px-5 py-4 border border-white/8 space-y-3">
+        {body}
+        {actions && <div className="flex flex-wrap gap-2 pt-1">{actions}</div>}
+      </div>
+    </div>
+  )
+
+  if (!info) {
+    return <div className="max-w-lg mx-auto py-8 text-center text-white/40 text-sm">Loading…</div>
+  }
+
+  const h = status?.host
+  const reboot = status?.reboot
+  const apt = status?.apt
+  const ts = status?.tailscale
+  const fw = status?.firmware
+  const ct = status?.containers
+  const dash = status?.dashboard
+  const rebootNeeded = !!(reboot?.required || reboot?.kernelPending)
+
+  return (
+    <div className="space-y-5 max-w-lg mx-auto pb-4">
+      {/* Not reachable yet: the setup card, with the key. Shown INSTEAD of the
+          cards rather than above them, because until the installer has run
+          every button below would fail the same way. */}
+      {!status && (
+        <div>
+          <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+            {statusBusy ? 'Asking the server…' : 'Not connected'}
+          </span>
+          <div className="bg-white/5 rounded-2xl px-5 py-4 border border-white/8 space-y-3">
+            {statusError && <p className="text-amber-200/80 text-sm leading-snug">{statusError}</p>}
+            <p className="text-white/50 text-[12px] leading-relaxed">
+              The dashboard reaches <span className="text-white/80">{info.target}</span> over SSH with a key
+              of its own. On the server, as the user who owns the docker stacks, run this once from the
+              dashboard's checkout, then set <code className="text-white/70">HOST_UPDATE_SSH</code> in
+              its .env if the installer says to:
+            </p>
+            <pre className="selectable-text whitespace-pre-wrap break-all text-[11px] leading-relaxed text-white/70
+                            bg-black/30 border border-hairline rounded-xl p-3">
+              {`sudo bash scripts/host/install.sh '${info.publicKey}'`}
+            </pre>
+            <div className="flex gap-2">
+              <button type="button" onClick={copyKey}
+                className="h-11 px-4 rounded-xl bg-white/10 text-white/80 text-sm font-semibold flex items-center gap-2 active:scale-95">
+                {copied ? <Check size={14} className="text-emerald-300" /> : <ClipboardCopy size={14} />}
+                {copied ? 'Copied' : 'Copy the key'}
+              </button>
+              <button type="button" onClick={() => { void refreshStatus() }} disabled={statusBusy}
+                className="h-11 px-4 rounded-xl bg-cyan-500/20 text-cyan-200 text-sm font-semibold flex items-center gap-2 active:scale-95">
+                <RotateCw size={14} className={statusBusy ? 'animate-spin' : ''} />
+                Try again
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {status && h && card(
+        h.hostname,
+        <>
+          <p className="text-white/80 text-sm leading-snug">{h.os}{h.model ? ` · ${h.model}` : ''}</p>
+          <p className="text-white/40 text-xs leading-relaxed">
+            {h.kernel} · {h.arch} · up {fmtUptime(h.uptimeSec)} · load {h.load} · disk {h.diskUsedPct}% · memory {h.memUsedPct}%
+            {status.at ? ` · checked ${ago(status.at)}` : ''}
+          </p>
+          {statusError && <p className="text-amber-200/80 text-xs">{statusError}</p>}
+        </>,
+        <button type="button" onClick={() => { void refreshStatus() }} disabled={statusBusy || busy}
+          className="h-11 px-4 rounded-xl bg-white/10 text-white/80 text-sm font-semibold flex items-center gap-2 active:scale-95">
+          <RotateCw size={14} className={statusBusy ? 'animate-spin' : ''} />
+          Refresh
+        </button>,
+      )}
+
+      {status && rebootNeeded && (
+        <div className="bg-amber-500/10 border border-amber-400/30 rounded-2xl px-5 py-4 space-y-3">
+          <p className="text-amber-100 text-sm font-medium">A reboot is needed to finish an update.</p>
+          <p className="text-amber-100/60 text-xs leading-relaxed">
+            {reboot?.kernelPending ? 'A newer kernel is installed but not running. ' : ''}
+            {reboot?.packages.length ? `Waiting on: ${reboot.packages.join(', ')}.` : ''}
+          </p>
+          <div className="flex gap-2">{taskButton('reboot', 'Reboot the server', { tone: 'danger' })}</div>
+        </div>
+      )}
+
+      {status && card(
+        'Packages',
+        <>
+          <p className="text-white/80 text-sm">
+            {apt?.error ? <span className="text-amber-200/80">{apt.error}</span>
+              : apt?.pending ? `${apt.pending} update${apt.pending === 1 ? '' : 's'} waiting`
+              : 'Everything is up to date'}
+          </p>
+          <p className="text-white/35 text-xs leading-relaxed">
+            Last checked {apt?.lastRefresh ? ago(apt.lastRefresh) : 'never'}.
+            {apt?.packages.length ? ` ${apt.packages.slice(0, 8).map(p => p.name).join(', ')}${apt.packages.length > 8 ? `, +${apt.packages.length - 8} more` : ''}` : ''}
+          </p>
+        </>,
+        <>
+          {taskButton('apt-refresh', 'Check')}
+          {taskButton('apt-upgrade', apt?.pending ? `Install ${apt.pending}` : 'Install updates')}
+        </>,
+      )}
+
+      {status && fw && card(
+        'Firmware',
+        fw.installed ? (
+          <>
+            <p className="text-white/80 text-sm">
+              {fw.updates.length ? `${fw.updates.length} device${fw.updates.length === 1 ? '' : 's'} can be updated` : `${fw.devices} devices, nothing waiting`}
+            </p>
+            {fw.updates.length > 0 && (
+              <p className="text-white/35 text-xs leading-relaxed">
+                {fw.updates.map(u => `${u.device} ${u.current} → ${u.to}`).join(' · ')}
+              </p>
+            )}
+            <p className="text-white/25 text-xs">Through fwupd and the LVFS. "Check" fetches the latest list; the status above is from the last one.</p>
+          </>
+        ) : <p className="text-white/40 text-sm">fwupd is not installed on this server.</p>,
+        fw.installed ? <>{taskButton('firmware-check', 'Check')}{taskButton('firmware-update', 'Install firmware')}</> : undefined,
+      )}
+
+      {status && ts && card(
+        'Tailscale',
+        ts.installed ? (
+          <>
+            <p className="text-white/80 text-sm">
+              {ts.version || '?'}
+              {ts.updateAvailable ? <span className="text-cyan-200"> → {ts.latest} available</span>
+                : ts.latest ? <span className="text-white/40"> · latest</span> : ''}
+            </p>
+            <p className="text-white/35 text-xs leading-relaxed">
+              {ts.online === false ? 'Offline' : 'Online'}{ts.ip ? ` · ${ts.ip}` : ''}
+              {ts.health?.length ? ` · ${ts.health.join(' · ')}` : ''}
+            </p>
+          </>
+        ) : <p className="text-white/40 text-sm">Tailscale is not installed on this server.</p>,
+        ts.installed ? taskButton('tailscale-update', 'Update Tailscale') : undefined,
+      )}
+
+      {status && ct && card(
+        'Containers',
+        <>
+          {ct.projects.length === 0
+            ? <p className="text-white/40 text-sm">No other compose stacks were found when the installer ran.</p>
+            : ct.projects.map(p => (
+              <div key={p.file}>
+                <p className="text-white/80 text-sm">{p.name} <span className="text-white/35">· {p.running}/{p.total} running</span></p>
+                <p className="text-white/30 text-xs leading-relaxed truncate">
+                  {p.services.map(s => s.name).join(', ')}
+                </p>
+              </div>
+            ))}
+          <p className="text-white/25 text-xs">Pulls the newest image for every service and restarts the ones that changed. Docker {ct.docker || '?'}.</p>
+        </>,
+        ct.projects.length > 0 ? taskButton('containers', 'Pull and restart') : undefined,
+      )}
+
+      {status && dash && card(
+        'This dashboard',
+        <>
+          <p className="text-white/80 text-sm">
+            {dash.commit ? `Checkout at ${dash.commit}` : 'Checkout not found'}
+            {dash.behind != null && dash.behind > 0 ? <span className="text-cyan-200"> · {dash.behind} commit{dash.behind === 1 ? '' : 's'} behind</span>
+              : dash.behind === 0 ? <span className="text-white/40"> · up to date with the last fetch</span> : ''}
+          </p>
+          <p className="text-white/25 text-xs leading-relaxed">
+            Pulls the repository, rebuilds the image and replaces this container. The screen goes dark for a few
+            minutes and comes back on its own.{dash.lastSelfUpdate ? ` Last done ${ago(dash.lastSelfUpdate)}.` : ''}
+          </p>
+        </>,
+        dash.commit ? taskButton('self-update', 'Update the dashboard') : undefined,
+      )}
+
+      {status && !rebootNeeded && card(
+        'Power',
+        <p className="text-white/40 text-xs leading-relaxed">Restarts the whole server, every container included. Plex, downloads and the assistant are back once it is.</p>,
+        taskButton('reboot', 'Reboot the server', { tone: 'danger' }),
+      )}
+
+      {/* The log. Present whenever there is anything in it. */}
+      {(lines.length > 0 || busy) && (
+        <div>
+          <div className="flex items-baseline justify-between mb-2">
+            <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">
+              {busy ? `Running: ${info.tasks[running]}` : state.last ? `Last: ${info.tasks[state.last.task]}` : 'Log'}
+            </span>
+            {state.last && !busy && (
+              <span className={`text-xs ${state.last.ok ? 'text-emerald-300/80' : 'text-red-300/90'}`}>
+                {state.last.ok ? 'finished' : 'failed'} · {ago(state.last.endedAt)}
+              </span>
+            )}
+          </div>
+          {leaving && (
+            <p className="text-cyan-200/80 text-xs mb-2 leading-relaxed">
+              This screen will lose the server for a while and reload itself when it is back.
+            </p>
+          )}
+          <div ref={logRef}
+            className="selectable-text bg-black/40 border border-hairline rounded-2xl p-3 max-h-72 overflow-y-auto
+                       font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words">
+            {lines.map(l => (
+              <div key={l.id} className={l.stream === 'err' ? 'text-red-200/90' : l.line.startsWith('▶') || l.line.startsWith('✓') ? 'text-cyan-200' : 'text-white/60'}>
+                {l.line}
+              </div>
+            ))}
+            {busy && <div className="text-white/30">…</div>}
+          </div>
+        </div>
+      )}
+
+      {runError && <p className="text-red-300/90 text-sm px-1">{runError}</p>}
     </div>
   )
 }

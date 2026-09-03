@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+# touchsphere-host — the host side of Settings → Server.
+#
+# The dashboard runs in a container and cannot update the machine it runs on:
+# apt, fwupd, tailscale and docker all live on the host. So the container
+# reaches the host over SSH with a key of its own, and THIS script is the only
+# thing that key can run — it is the forced command on that key's
+# authorized_keys line, the verb rides in SSH_ORIGINAL_COMMAND, and anything
+# that is not one of the verbs below is refused. A compromised container can
+# therefore refresh apt or reboot the box; it cannot open a shell on it.
+#
+# It runs in two stages: first as the SSH user (who cannot edit this file — it
+# is root-owned), which checks the verb, then re-executed through sudo for the
+# work, with a sudoers rule that allows exactly these verbs and nothing else.
+# See install.sh, which sets all of that up.
+#
+# Output is plain lines: the dashboard streams them to the screen as they come.
+
+set -u
+CONF=/etc/touchsphere-host.conf
+SELF=/usr/local/bin/touchsphere-host
+VERBS="status apt-refresh apt-upgrade firmware-check firmware-update tailscale-update containers self-update reboot"
+
+verb="${1:-}"
+if [[ -z "$verb" ]]; then
+  # Forced-command entry: whatever the client asked for. First word only — the
+  # rest is discarded, never evaluated.
+  read -r verb _ <<<"${SSH_ORIGINAL_COMMAND:-}"
+fi
+case " $VERBS " in
+  *" $verb "*) ;;
+  *) echo "touchsphere-host: unknown verb '${verb}'" >&2; exit 64 ;;
+esac
+
+if [[ $EUID -ne 0 ]]; then
+  exec sudo -n "$SELF" "$verb"
+fi
+
+# ── root from here ───────────────────────────────────────────────────────────
+DASHBOARD_DIR=""
+DASHBOARD_USER=""
+COMPOSE_FILES=""
+# shellcheck disable=SC1090
+[[ -r "$CONF" ]] && . "$CONF"
+
+export DEBIAN_FRONTEND=noninteractive TERM=dumb NEEDRESTART_MODE=a
+say() { echo "▶ $*"; }
+
+if [[ "$verb" == "status" ]]; then
+  DASHBOARD_DIR="$DASHBOARD_DIR" DASHBOARD_USER="$DASHBOARD_USER" COMPOSE_FILES="$COMPOSE_FILES" \
+  exec python3 - <<'PY'
+import json, os, re, shutil, subprocess, time
+
+def run(cmd, timeout=30):
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout, p.stderr
+    except Exception as e:  # missing binary, timeout
+        return -1, '', str(e)
+
+def iso(ts):
+    return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(ts))
+
+out = {'at': iso(time.time())}
+
+# ── the box ──
+osr = {}
+try:
+    for line in open('/etc/os-release'):
+        if '=' in line:
+            k, v = line.rstrip().split('=', 1)
+            osr[k] = v.strip('"')
+except OSError:
+    pass
+u = os.uname()
+st = os.statvfs('/')
+mem = {}
+try:
+    for line in open('/proc/meminfo'):
+        k, v = line.split(':', 1)
+        mem[k] = int(v.split()[0])
+except (OSError, ValueError):
+    pass
+model = ''
+try:
+    model = open('/proc/device-tree/model').read().strip('\x00\n')
+except OSError:
+    pass
+out['host'] = {
+    'hostname': u.nodename, 'os': osr.get('PRETTY_NAME', ''), 'kernel': u.release,
+    'arch': u.machine, 'model': model,
+    'uptimeSec': int(float(open('/proc/uptime').read().split()[0])),
+    'load': round(os.getloadavg()[0], 2),
+    'diskUsedPct': round(100 * (1 - st.f_bavail / st.f_blocks)) if st.f_blocks else 0,
+    'memUsedPct': round(100 * (1 - mem['MemAvailable'] / mem['MemTotal'])) if mem.get('MemTotal') else 0,
+}
+
+# ── reboot / restarts ──
+pkgs = []
+try:
+    pkgs = sorted({l.strip() for l in open('/var/run/reboot-required.pkgs') if l.strip()})
+except OSError:
+    pass
+reboot = {'required': os.path.exists('/var/run/reboot-required'), 'packages': pkgs[:20],
+          'kernelPending': False, 'servicesToRestart': 0}
+if shutil.which('needrestart'):
+    code, so, _ = run(['needrestart', '-b'], 60)
+    m = re.search(r'NEEDRESTART-KSTA:\s*(\d)', so)
+    if m:
+        reboot['kernelPending'] = m.group(1) in ('2', '3')
+    reboot['servicesToRestart'] = len(re.findall(r'^NEEDRESTART-SVC:', so, re.M))
+out['reboot'] = reboot
+
+# ── apt ──
+code, so, se = run(['apt-get', '-s', '-o', 'Debug::NoLocking=true', 'dist-upgrade'], 90)
+found = re.findall(r'^Inst (\S+) \[([^\]]*)\] \(([^ ]+)', so, re.M)
+apt = {'pending': len(found),
+       'packages': [{'name': n, 'from': f, 'to': t} for n, f, t in found][:80],
+       'error': '' if code == 0 else (se.strip().splitlines() or [f'exit {code}'])[-1][:200]}
+try:
+    apt['lastRefresh'] = iso(os.path.getmtime('/var/lib/apt/lists'))
+except OSError:
+    apt['lastRefresh'] = ''
+out['apt'] = apt
+
+# ── tailscale ──
+ts = {'installed': bool(shutil.which('tailscale'))}
+if ts['installed']:
+    code, so, _ = run(['tailscale', 'version', '--upstream'], 25)
+    if code != 0 or not so.strip():
+        code, so, _ = run(['tailscale', 'version'], 10)
+    lines = [l for l in so.splitlines() if l.strip()]
+    ts['version'] = lines[0].strip() if lines else ''
+    m = re.search(r'upstream:\s*(\S+)', so)
+    ts['latest'] = m.group(1) if m else ''
+    ts['updateAvailable'] = bool(ts['latest'] and ts['version'] and ts['latest'] != ts['version'])
+    code, so, _ = run(['tailscale', 'status', '--json'], 15)
+    try:
+        j = json.loads(so)
+        ts['online'] = bool(j.get('Self', {}).get('Online'))
+        ts['ip'] = (j.get('Self', {}).get('TailscaleIPs') or [''])[0]
+        ts['health'] = [str(h) for h in (j.get('Health') or [])][:5]
+    except (ValueError, AttributeError):
+        pass
+out['tailscale'] = ts
+
+# ── firmware ──
+fw = {'installed': bool(shutil.which('fwupdmgr')), 'devices': 0, 'updates': []}
+if fw['installed']:
+    code, so, _ = run(['fwupdmgr', 'get-devices', '--json'], 40)
+    try:
+        fw['devices'] = len(json.loads(so).get('Devices', []))
+    except ValueError:
+        pass
+    # Exit 2 means "nothing to do" and is not an error. Reads the metadata
+    # already on disk; firmware-check is what refreshes it from LVFS.
+    code, so, _ = run(['fwupdmgr', 'get-updates', '--json'], 40)
+    try:
+        for d in json.loads(so).get('Devices', []):
+            rel = d.get('Releases') or []
+            if rel:
+                fw['updates'].append({'device': d.get('Name', ''), 'current': d.get('Version', ''),
+                                      'to': rel[0].get('Version', '')})
+    except ValueError:
+        pass
+out['firmware'] = fw
+
+# ── containers ──
+projects = []
+for f in os.environ.get('COMPOSE_FILES', '').split():
+    code, so, _ = run(['docker', 'compose', '-f', f, 'ps', '-a', '--format', 'json'], 40)
+    items = []
+    for line in so.splitlines():           # v2.21+ prints one object per line…
+        try:
+            items.append(json.loads(line))
+        except ValueError:
+            pass
+    if not items:                          # …older builds print one array
+        try:
+            items = json.loads(so) or []
+        except ValueError:
+            items = []
+    projects.append({
+        'file': f,
+        'name': (items[0].get('Project') if items else '') or os.path.basename(os.path.dirname(f)),
+        'running': sum(1 for i in items if i.get('State') == 'running'),
+        'total': len(items),
+        'services': [{'name': i.get('Service', ''), 'state': i.get('State', ''), 'image': i.get('Image', '')}
+                     for i in items][:40],
+    })
+code, so, _ = run(['docker', 'version', '--format', '{{.Server.Version}}'], 15)
+out['containers'] = {'projects': projects, 'docker': so.strip() if code == 0 else ''}
+
+# ── the dashboard's own checkout ──
+d = {'dir': os.environ.get('DASHBOARD_DIR', ''), 'commit': '', 'behind': None}
+if d['dir'] and os.environ.get('DASHBOARD_USER'):
+    who = os.environ['DASHBOARD_USER']
+    code, so, _ = run(['sudo', '-u', who, 'git', '-C', d['dir'], 'rev-parse', '--short', 'HEAD'], 15)
+    d['commit'] = so.strip() if code == 0 else ''
+    # How far behind origin/main the checkout is, from what was last fetched —
+    # no network here, the status has to come back fast.
+    code, so, _ = run(['sudo', '-u', who, 'git', '-C', d['dir'], 'rev-list', '--count', 'HEAD..@{upstream}'], 15)
+    if code == 0 and so.strip().isdigit():
+        d['behind'] = int(so.strip())
+try:
+    d['lastSelfUpdate'] = iso(os.path.getmtime('/var/log/touchsphere-self-update.log'))
+except OSError:
+    d['lastSelfUpdate'] = ''
+out['dashboard'] = d
+
+print(json.dumps(out))
+PY
+fi
+
+case "$verb" in
+  apt-refresh)
+    say "apt-get update"
+    apt-get update -q
+    say "Done. $(apt-get -s -o Debug::NoLocking=true dist-upgrade | grep -c '^Inst ') package(s) can be upgraded."
+    ;;
+
+  apt-upgrade)
+    say "apt-get update"
+    apt-get update -q || exit $?
+    say "apt-get dist-upgrade"
+    apt-get -y -q \
+      -o Dpkg::Options::=--force-confdef \
+      -o Dpkg::Options::=--force-confold \
+      -o Dpkg::Progress-Fancy=0 \
+      dist-upgrade || exit $?
+    say "apt-get autoremove"
+    apt-get -y -q autoremove
+    if [[ -f /var/run/reboot-required ]]; then
+      say "A reboot is required to finish: $(tr '\n' ' ' < /var/run/reboot-required.pkgs 2>/dev/null)"
+    else
+      say "Done. No reboot needed."
+    fi
+    ;;
+
+  firmware-check)
+    say "fwupdmgr refresh"
+    fwupdmgr refresh --force || true
+    say "fwupdmgr get-updates"
+    fwupdmgr get-updates; rc=$?
+    # 2 = nothing to update, which is an answer rather than a failure.
+    [[ $rc -eq 2 ]] && { say "All firmware is up to date."; exit 0; }
+    exit $rc
+    ;;
+
+  firmware-update)
+    say "fwupdmgr refresh"
+    fwupdmgr refresh --force || true
+    say "fwupdmgr update"
+    fwupdmgr update -y --no-reboot-check; rc=$?
+    [[ $rc -eq 2 ]] && { say "All firmware is already up to date."; exit 0; }
+    [[ $rc -eq 0 ]] && say "Done. Some firmware only takes effect after a reboot."
+    exit $rc
+    ;;
+
+  tailscale-update)
+    say "tailscale update"
+    tailscale update --yes
+    say "Now running $(tailscale version | head -1)"
+    ;;
+
+  containers)
+    [[ -n "$COMPOSE_FILES" ]] || { echo "No compose files configured in $CONF" >&2; exit 78; }
+    for f in $COMPOSE_FILES; do
+      say "docker compose -f $f pull"
+      docker compose -f "$f" pull --ignore-pull-failures
+      say "docker compose -f $f up -d"
+      docker compose -f "$f" up -d
+    done
+    say "docker image prune"
+    docker image prune -f
+    say "Done."
+    ;;
+
+  self-update)
+    # The dashboard cannot watch its own container being replaced, so this one
+    # is detached: the work carries on after the SSH session (and the process
+    # that opened it) are gone, and logs to a file the next status reports.
+    [[ -n "$DASHBOARD_DIR" && -n "$DASHBOARD_USER" ]] || { echo "DASHBOARD_DIR/USER not set in $CONF" >&2; exit 78; }
+    log=/var/log/touchsphere-self-update.log
+    say "Pulling and rebuilding the dashboard in the background (log: $log)."
+    say "This screen will drop for a few minutes while the container is replaced."
+    nohup setsid sudo -u "$DASHBOARD_USER" -H bash -lc \
+      "cd '$DASHBOARD_DIR' && git pull --ff-only && GIT_SHA=\$(git rev-parse HEAD) docker compose build app && docker compose up -d app" \
+      >"$log" 2>&1 </dev/null &
+    disown
+    sleep 1
+    ;;
+
+  reboot)
+    say "Rebooting in 3 seconds."
+    ( sleep 3; systemctl reboot ) >/dev/null 2>&1 </dev/null &
+    disown
+    ;;
+esac
