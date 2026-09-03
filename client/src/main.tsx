@@ -14,9 +14,21 @@ import './hooks/useForecast'
 import { installDebugLog } from './utils/debugLog'
 // Suppress the phantom tap that a scroll gesture fires when the finger lifts
 import { installTapGuard } from './utils/tapGuard'
+import { clientRole } from './hooks/useClientRole'
 
 installDebugLog()
 installTapGuard()
+
+// The offline cache, on a PHONE only: a companion added to the home screen
+// keeps its shell, its posters and its last weather/calendar/gallery through
+// a dead spot. Never on the kiosk — a service worker handing the wall a stale
+// build is exactly the failure Watchtower exists to prevent — and never over
+// plain http, where the browser refuses it anyway.
+if ('serviceWorker' in navigator && window.isSecureContext && clientRole() === 'companion') {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(err => console.warn('[sw] register failed:', err))
+  })
+}
 
 class ErrorBoundary extends Component<
   { children: ReactNode },

@@ -6,6 +6,7 @@
 import { Router, Request, Response } from 'express'
 import axios from 'axios'
 import crypto from 'crypto'
+import { broadcast, kioskCount } from './system'
 import {
   arrQueue,
   bazarrEnabled,
@@ -430,6 +431,27 @@ router.post('/stop', async (req: Request, res: Response) => {
 })
 
 /** Progress heartbeat from the player — this is what "continue watching" is built from. */
+// ── The kiosk's player, seen from a phone ────────────────────────────────────
+//
+// The kiosk reports its position every 10 s anyway (for Plex's own resume
+// point); keeping the last report here is what lets the phone say "Akira,
+// 0:41:12, playing" without the kiosk having to be asked. Only the KIOSK's
+// reports count — a phone playing something itself is not "on the kiosk".
+
+interface NowPlaying { key: string; title: string; thumb?: string; state: 'playing' | 'paused' | 'stopped'; timeMs: number; durationMs: number; at: number }
+let nowPlaying: NowPlaying | null = null
+const titleCache = new Map<string, { title: string; thumb?: string }>()
+
+async function describe(key: string): Promise<{ title: string; thumb?: string }> {
+  const hit = titleCache.get(key)
+  if (hit) return hit
+  const item = await plexItem(key)
+  const d = item ? { title: displayTitle(item), ...(item.thumb ?? item.grandparentThumb ? { thumb: (item.thumb ?? item.grandparentThumb)! } : {}) } : { title: 'Plex' }
+  titleCache.set(key, d)
+  if (titleCache.size > 200) titleCache.delete(titleCache.keys().next().value!)
+  return d
+}
+
 router.post('/progress', async (req: Request, res: Response) => {
   if (!plexEnabled()) return disabled(res)
   const body = (req.body ?? {}) as Record<string, unknown>
@@ -443,7 +465,45 @@ router.post('/progress', async (req: Request, res: Response) => {
   const session = typeof body['session'] === 'string' ? sessions.get(body['session']) : undefined
   if (session) session.lastSeen = Date.now()
   await plexTimeline(key, state, timeMs, durationMs)
+  if (body['role'] !== 'companion') {
+    if (state === 'stopped') nowPlaying = null
+    else {
+      const d = await describe(key).catch(() => ({ title: 'Plex' }))
+      nowPlaying = { key, ...d, state, timeMs, durationMs, at: Date.now() }
+    }
+    broadcast('plex-now', { playing: nowPlaying }, 'companion')
+  }
   res.json({ ok: true })
+})
+
+/** What the kiosk is playing right now, if anything, and whether one is listening at all. */
+router.get('/now', (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store')
+  // A report older than 90 s is a player that went away without saying so.
+  const fresh = nowPlaying && Date.now() - nowPlaying.at < 90_000 ? nowPlaying : null
+  res.json({ playing: fresh, kiosks: kioskCount() })
+})
+
+/**
+ * Tell the kiosk's player what to do. Goes to the KIOSK connections only —
+ * the phone that sent it must not open a player of its own — and answers with
+ * how many kiosks heard it, which is the honest thing to show when none did.
+ */
+router.post('/remote', async (req: Request, res: Response) => {
+  if (!plexEnabled()) return disabled(res)
+  const body = (req.body ?? {}) as Record<string, unknown>
+  const action = body['action']
+  if (action !== 'play' && action !== 'pause' && action !== 'resume' && action !== 'stop') {
+    return res.status(400).json({ error: 'action must be play, pause, resume or stop' })
+  }
+  const key = String(body['key'] ?? '')
+  if (action === 'play' && !/^\d+$/.test(key)) return res.status(400).json({ error: 'play needs a key' })
+  let title = typeof body['title'] === 'string' ? body['title'] : ''
+  if (action === 'play' && !title) title = (await describe(key).catch(() => ({ title: 'Plex' }))).title
+  const kiosks = kioskCount()
+  broadcast('plex-remote', { action, ...(action === 'play' ? { key, title } : {}) }, 'kiosk')
+  console.log(`[plex] remote ${action}${key ? ` ${key}` : ''} → ${kiosks} kiosk(s)`)
+  res.json({ ok: true, kiosks })
 })
 
 // ── Downloads ────────────────────────────────────────────────────────────────

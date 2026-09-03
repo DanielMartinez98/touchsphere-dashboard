@@ -4,6 +4,8 @@ import ParticleSphere from './components/ParticleSphere/ParticleSphere'
 import { TimeCollapsed } from './components/widgets/TimeWidget/TimeWidget'
 import TimeExpanded from './components/widgets/TimeWidget/TimeExpanded'
 import { PlexCollapsed, usePlexSummary } from './components/widgets/PlexWidget/PlexWidget'
+import { Companion } from './components/Companion'
+import { useClientRole } from './hooks/useClientRole'
 import PlexExpanded from './components/widgets/PlexWidget/PlexExpanded'
 import { PlexPlayer } from './components/PlexPlayer'
 import { onPlexPanelRequest, usePlexStatus } from './hooks/usePlex'
@@ -186,6 +188,10 @@ function App() {
 
   const plexStatus = usePlexStatus()
   const plexSummary = usePlexSummary(plexStatus)
+  // A phone gets the companion layout: a remote for the kiosk instead of the
+  // four corners around a sphere it has no room for. The panels the corners
+  // open are shared; only the home screen differs. See components/Companion.
+  const companion = useClientRole() === 'companion'
 
   // Close the mode-dependent widget when mode changes so stale panels don't
   // linger. That pair lives in the bottom-RIGHT corner now (it moved when the
@@ -252,6 +258,7 @@ function App() {
           a bad/absent .vrm can never leave the kiosk staring at a blank centre.
           Note the Avatar stays mounted on failure (it just stops rendering) —
           unmounting it on 'error' would remount it and retry in a loop. */}
+      {!companion && (<>
       {showAvatar && (
         <Suspense fallback={null}>
           {/* Keyed by model URL so switching assistant tears the old scene down
@@ -314,12 +321,14 @@ function App() {
           style={{ borderColor: 'var(--accent)' }}
         />
       )}
+      </>)}
 
       {/* Top-Left — Plex (amber glow): the library, what's downloading, and
           what's been asked for. The weather lived here until the media stack
           needed a corner; it moved in with the clock, whose corner already
           answers "what's the day looking like". */}
       <Widget
+        pill={!companion}
         position="top-left"
         accent={ACCENT.plex}
         isOpen={open === 'plex'}
@@ -334,6 +343,7 @@ function App() {
           the same question from different sides — "what's today like, what's
           next" — so one corner carries them without feeling crowded. */}
       <Widget
+        pill={!companion}
         position="top-right"
         accent={ACCENT.time}
         isOpen={open === 'time'}
@@ -347,6 +357,7 @@ function App() {
           full-screen viewer, so a picture looks identical however it was asked
           for. */}
       <Widget
+        pill={!companion}
         position="bottom-left"
         accent={ACCENT.images}
         isOpen={open === 'images'}
@@ -395,6 +406,7 @@ function App() {
           Time corner freed the slot; the mode switch between them is unchanged. */}
       {mode === 'work' ? (
         <Widget
+          pill={!companion}
           position="bottom-right"
           accent={ACCENT.notion}
           isOpen={open === 'notion'}
@@ -417,6 +429,7 @@ function App() {
         />
       ) : (
         <Widget
+          pill={!companion}
           position="bottom-right"
           accent={ACCENT.media}
           isOpen={open === 'media'}
@@ -426,20 +439,24 @@ function App() {
         />
       )}
 
+      {/* The phone's home screen — in place of the sphere, the corners and the
+          mode bar, none of which fit or make sense on a remote. */}
+      {companion && <Companion open={open} setOpen={setOpen} plexStatus={plexStatus} plexSummary={plexSummary} />}
+
       {/* Top-Center — Status / Mode selector */}
-      <StatusBar
+      {!companion && <StatusBar
         mode={mode}
         hasCred={hasCred}
         setMode={setMode}
         createPassword={createPassword}
-      />
+      />}
 
       {/* Bottom-Center — Settings, with the virtual mic mute beside it */}
-      <SettingsPanel />
-      <MicMuteButton />
+      <SettingsPanel hideButton={companion} />
+      {!companion && <MicMuteButton />}
 
       {/* Voice interface — transcript + reply overlays (mic button removed; tap the orb) */}
-      <VoiceInterface voice={voice} />
+      {!companion && <VoiceInterface voice={voice} />}
 
       {/* Bedtime alert toast — driven by the schedule in settings */}
       <BedtimeBanner />

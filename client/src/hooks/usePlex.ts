@@ -225,7 +225,11 @@ export const plexApi = {
   play:     (body: { key: string; player?: string; partId?: number; audioStreamId?: number; subtitleStreamId?: number; offsetMs?: number; maxHeight?: number }) =>
     postJson<{ mode: 'local'; key: string; session: string; title: string; src: string; offsetMs: number; durationMs: number } | { mode: 'remote'; key: string; title: string }>('/api/plex/play', body),
   stop:     (session: string, timeMs?: number, durationMs?: number) => postJson<{ ok: true }>('/api/plex/stop', { session, timeMs, durationMs }),
-  progress: (body: { key: string; state: 'playing' | 'paused' | 'stopped'; timeMs: number; durationMs: number; session?: string }) => postJson<{ ok: true }>('/api/plex/progress', body),
+  progress: (body: { key: string; state: 'playing' | 'paused' | 'stopped'; timeMs: number; durationMs: number; session?: string; role?: string }) => postJson<{ ok: true }>('/api/plex/progress', body),
+  /** What the kiosk is playing, for the phone. */
+  now:      () => getJson<{ playing: { key: string; title: string; thumb?: string; state: 'playing' | 'paused' | 'stopped'; timeMs: number; durationMs: number; at: number } | null; kiosks: number }>('/api/plex/now'),
+  /** Tell the kiosk's player what to do. */
+  remote:   (body: { action: 'play' | 'pause' | 'resume' | 'stop'; key?: string; title?: string }) => postJson<{ ok: true; kiosks: number }>('/api/plex/remote', body),
   torrents: () => getJson<{ source: 'qbit' | 'arr'; warning?: string; torrents: Torrent[]; transfer: { dlspeed: number; upspeed: number; connected: boolean } | null }>('/api/plex/torrents'),
   torrent:  (hash: string, action: 'pause' | 'resume') => postJson<{ ok: true }>(`/api/plex/torrents/${hash}/${action}`, {}),
   requests: () => getJson<{ requests: SeerrRequest[] }>('/api/plex/requests'),

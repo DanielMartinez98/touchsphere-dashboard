@@ -31,6 +31,7 @@ import {
   type PlexTab, type SeerrRequest, type SeerrResult, type Torrent,
 } from '../../../hooks/usePlex'
 import { ACCENT, itemTitle, itemSubtitle, PlexColumnSlider, PosterGrid, Row } from './items'
+import { clientRole } from '../../../hooks/useClientRole'
 import {
   BackButton, Backdrop, CastRow, CollectionPage, CrewLine, factsLine, FolderPage, GenreChips, HeaderPoster,
   LibrariesRow, RatingsRow, RelatedShelves, SectionPage, TrailerButton, type Layer,
@@ -423,9 +424,20 @@ function PlayOn({ itemKey }: { itemKey: string }) {
     plexApi.players().then(p => setPlayers(p.players)).catch(err => setError(err.message))
   }, [open])
   const send = async (p: PlexPlayerInfo) => {
-    try { await plexApi.play({ key: itemKey, player: p.id }); setSent(p.name); setTimeout(() => setOpen(false), 1200) }
+    try {
+      // The kiosk is not a Plex player on the network; it is this app on the
+      // wall, reached through the server's remote channel.
+      if (p.id === 'kiosk') {
+        const r = await plexApi.remote({ action: 'play', key: itemKey })
+        if (r.kiosks === 0) throw new Error('The kiosk isn’t connected right now.')
+      } else {
+        await plexApi.play({ key: itemKey, player: p.id })
+      }
+      setSent(p.name); setTimeout(() => setOpen(false), 1200)
+    }
     catch (err) { setError(err instanceof Error ? err.message : String(err)) }
   }
+  const list = players && clientRole() === 'companion' ? [{ id: 'kiosk', name: 'TouchSphere kiosk', product: 'the wall' }, ...players] : players
   return (
     <div className="relative">
       <button type="button" onClick={() => setOpen(o => !o)} aria-label="Play on another device"
@@ -437,8 +449,8 @@ function PlayOn({ itemKey }: { itemKey: string }) {
           <p className="text-[11px] uppercase tracking-widest text-white/40 font-semibold px-2 py-1">Play on</p>
           {error && <p className="text-amber-300 text-sm px-2 py-1">{error}</p>}
           {players === null && !error && <p className="text-ink-dim text-sm px-2 py-1">Looking…</p>}
-          {players?.length === 0 && <p className="text-ink-dim text-sm px-2 py-1">No other Plex apps are on the network right now.</p>}
-          {players?.map(p => (
+          {list?.length === 0 && <p className="text-ink-dim text-sm px-2 py-1">No other Plex apps are on the network right now.</p>}
+          {list?.map(p => (
             <button key={p.id} type="button" onClick={() => void send(p)}
               className="w-full h-12 px-3 rounded-xl flex items-center gap-2 text-left text-sm text-white active:bg-white/15">
               {sent === p.name ? <Check size={16} className="text-green-400" /> : <Tv size={16} className="text-white/50" />}

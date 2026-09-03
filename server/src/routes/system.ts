@@ -222,10 +222,26 @@ router.get('/check/elevenlabs', async (_req: Request, res: Response) => {
 })
 
 // All active SSE clients waiting for server events.
-const sseClients = new Set<Response>()
+/**
+ * Every open dashboard, with what kind of screen it is. `kiosk` is the wall
+ * (or any full dashboard); `companion` is a phone acting as its remote. The
+ * role rides on the connection URL (see client useServerEvents) so a frame
+ * meant for the wall — "play this", "pause" — never reaches the phone that
+ * asked for it.
+ */
+export type ClientRole = 'kiosk' | 'companion'
+const sseClients = new Map<Response, ClientRole>()
 
-// GET /api/system/events  — SSE stream for real-time server → client signals.
+/** How many kiosks are listening — the phone shows "no kiosk online" from this. */
+export function kioskCount(): number {
+  let n = 0
+  for (const role of sseClients.values()) if (role === 'kiosk') n++
+  return n
+}
+
+// GET /api/system/events?role=  — SSE stream for real-time server → client signals.
 router.get('/events', (req: Request, res: Response) => {
+  const role: ClientRole = req.query['role'] === 'companion' ? 'companion' : 'kiosk'
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
@@ -234,7 +250,7 @@ router.get('/events', (req: Request, res: Response) => {
   // Heartbeat every 25 s to keep the connection alive through proxies.
   const heartbeat = setInterval(() => res.write(': ping\n\n'), 25_000)
 
-  sseClients.add(res)
+  sseClients.set(res, role)
 
   req.on('close', () => {
     clearInterval(heartbeat)
@@ -248,10 +264,11 @@ router.get('/events', (req: Request, res: Response) => {
  * restart signal below, and guide generation progress (see guide-generator.ts).
  * Silently drops clients whose socket has already gone away.
  */
-export function broadcast(event: string, data: unknown = {}): void {
+export function broadcast(event: string, data: unknown = {}, only?: ClientRole): void {
   if (sseClients.size === 0) return
   const frame = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
-  for (const client of sseClients) {
+  for (const [client, role] of sseClients) {
+    if (only && role !== only) continue
     try { client.write(frame) } catch { sseClients.delete(client) }
   }
 }

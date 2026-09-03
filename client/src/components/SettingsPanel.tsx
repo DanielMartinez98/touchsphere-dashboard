@@ -45,8 +45,15 @@ function formatUptime(seconds: number): string {
   return `${m}m`
 }
 
-export function SettingsPanel() {
+export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } = {}) {
   const [open, setOpen] = useState(false)
+  // The phone layout has no gear of its own; its tab bar asks for the panel
+  // by event, the same way the corners are asked for by voice.
+  useEffect(() => {
+    const on = () => setOpen(true)
+    window.addEventListener('ts:open-settings', on)
+    return () => window.removeEventListener('ts:open-settings', on)
+  }, [])
   const [tab, setTab] = useState<Tab>('assistant')
   const hostEnabled = useHostEnabled()
   const [confirmClose, setConfirmClose] = useState(false)
@@ -409,7 +416,7 @@ export function SettingsPanel() {
     <>
       {/* Settings gear button — bottom center, enlarged. Offset half a slot left
           so the gear + mic-mute pair reads as centered (see MicMuteButton). */}
-      <button
+      {!hideButton && <button
         onClick={() => setOpen(true)}
         onPointerDown={gearPointerDown}
         className="absolute bottom-3 sm:bottom-5 left-[calc(50%-30px)] sm:left-[calc(50%-38px)] -translate-x-1/2 z-20 w-12 h-12 sm:w-16 sm:h-16 rounded-full bg-white/10 border-2 border-white/40 flex items-center justify-center text-white/70 hover:bg-white/20 hover:text-white active:scale-90 transition-all backdrop-blur-md shadow-lg overflow-hidden"
@@ -420,7 +427,7 @@ export function SettingsPanel() {
           <circle cx="12" cy="12" r="3" />
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
         </svg>
-      </button>
+      </button>}
 
       {/* Full-screen settings overlay */}
       {open && (

@@ -11,6 +11,7 @@
 // listeners.
 
 import { useEffect } from 'react'
+import { clientRole } from './useClientRole'
 
 type Handler = (data: unknown) => void
 
@@ -34,7 +35,9 @@ function attach(event: string): void {
 
 function open(): void {
   if (source) return
-  source = new EventSource('/api/system/events')
+  // The role is how the server knows which screens are the wall: a "play
+  // this" from a phone goes to kiosks only, never back to the phone.
+  source = new EventSource(`/api/system/events?role=${clientRole()}`)
   source.onerror = () => {
     // EventSource reconnects on its own; log once rather than on every retry.
     if (source?.readyState === EventSource.CLOSED) console.warn('[sse] connection closed')

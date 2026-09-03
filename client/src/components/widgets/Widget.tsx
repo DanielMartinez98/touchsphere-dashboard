@@ -13,6 +13,12 @@ interface WidgetProps {
   onToggle: () => void
   /** Accent colour used for the glowing outer halo of the collapsed pill. */
   accent?: string
+  /**
+   * Draw the collapsed corner pill. False on a phone, where the companion
+   * layout's tab bar opens the same expanded panel and the corners would
+   * only overlap it.
+   */
+  pill?: boolean
 }
 
 // Corners are offset by the safe-area insets so a notched phone doesn't put the
@@ -32,7 +38,7 @@ const expandOrigin: Record<WidgetPosition, string> = {
   'bottom-right': 'origin-bottom-right',
 }
 
-export default function Widget({ position, collapsed, expanded, isOpen, onToggle, accent }: WidgetProps) {
+export default function Widget({ position, collapsed, expanded, isOpen, onToggle, accent, pill = true }: WidgetProps) {
   // Swipe-down-to-close: the drag is initiated only from the grab handle at the
   // top of the overlay so it never fights with scrolling content below.
   const dragControls = useDragControls()
@@ -68,7 +74,7 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
         the vw sizing. 34vw caps a phone pill at ~133px, which leaves a real
         gutter down the middle for the centre controls to live in.
       */}
-      <motion.button
+      {pill && <motion.button
         onClick={onToggle}
         onPointerDown={onPointerDown}
         className={`
@@ -93,7 +99,7 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
       >
         {rippleLayer}
         {collapsed}
-      </motion.button>
+      </motion.button>}
 
       {/* Expanded full-screen overlay — portalled to body so it escapes stacking context */}
       {createPortal(

@@ -28,7 +28,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { X, Play, Pause, RotateCcw, RotateCw, AlertTriangle } from 'lucide-react'
-import { closePlexPlayer, plexApi, usePlexPlayerTarget, type PlayTarget } from '../hooks/usePlex'
+import { closePlexPlayer, openPlexPlayer, plexApi, usePlexPlayerTarget, type PlayTarget } from '../hooks/usePlex'
+import { useServerEvent } from '../hooks/useServerEvents'
+import { clientRole } from '../hooks/useClientRole'
 
 const PROGRESS_EVERY_MS = 10_000
 const CONTROLS_HIDE_MS = 4_000
@@ -43,6 +45,14 @@ function fmtClock(ms: number): string {
 
 export function PlexPlayer({ hold = false }: { hold?: boolean }) {
   const target = usePlexPlayerTarget()
+  // A phone told this screen to play or stop something. The server only
+  // sends these to kiosk connections, so no role check is needed here.
+  useServerEvent('plex-remote', useCallback((raw: unknown) => {
+    const f = raw as { action?: string; key?: string; title?: string } | null
+    if (!f || typeof f !== 'object') return
+    if (f.action === 'play' && f.key) openPlexPlayer({ key: f.key, title: f.title ?? 'Plex' })
+    if (f.action === 'stop') closePlexPlayer()
+  }, []))
   if (!target) return null
   // Keyed on seq so asking for a second film tears the first player down
   // entirely — its session, its hls instance, its timers — rather than reusing
@@ -72,6 +82,16 @@ function Player({ target, hold }: { target: PlayTarget; hold: boolean }) {
     const s = sessionRef.current
     return (s?.offsetMs ?? 0) + (v ? v.currentTime * 1000 : 0)
   }, [])
+
+  // Pause / resume from the phone. Counted as the USER pausing, so a voice
+  // hold lifting afterwards doesn't restart a film somebody paused on purpose.
+  useServerEvent('plex-remote', useCallback((raw: unknown) => {
+    const f = raw as { action?: string } | null
+    const v = videoRef.current
+    if (!f || !v) return
+    if (f.action === 'pause' && !v.paused) { userPaused.current = true; v.pause() }
+    if (f.action === 'resume' && v.paused) { userPaused.current = false; v.play().catch(() => setNeedsTap(true)) }
+  }, []))
 
   // ── Start (or restart at an offset) ────────────────────────────────────
   const start = useCallback(async (offsetMs?: number) => {
@@ -159,14 +179,14 @@ function Player({ target, hold }: { target: PlayTarget; hold: boolean }) {
     const v = videoRef.current
     if (!v || !session) return
     const report = (state: 'playing' | 'paused') => {
-      void plexApi.progress({ key: target.key, state, timeMs: absMs(), durationMs: session.durationMs, session: session.id })
+      void plexApi.progress({ key: target.key, state, timeMs: absMs(), durationMs: session.durationMs, session: session.id, role: clientRole() })
     }
     const onTime = () => setPosMs(session.offsetMs + v.currentTime * 1000)
     const onPlay = () => { setPlaying(true); setBuffering(false); report('playing') }
     const onPause = () => { setPlaying(false); report('paused') }
     const onWaiting = () => setBuffering(true)
     const onPlaying = () => setBuffering(false)
-    const onEnded = () => { setPlaying(false); void plexApi.progress({ key: target.key, state: 'stopped', timeMs: session.durationMs, durationMs: session.durationMs, session: session.id }) }
+    const onEnded = () => { setPlaying(false); void plexApi.progress({ key: target.key, state: 'stopped', timeMs: session.durationMs, durationMs: session.durationMs, session: session.id, role: clientRole() }) }
     v.addEventListener('timeupdate', onTime)
     v.addEventListener('play', onPlay)
     v.addEventListener('pause', onPause)
