@@ -118,6 +118,13 @@ export function ImageOverlay() {
   const [details, setDetails] = useState({ open: false, seq })
   if (details.seq !== seq) setDetails({ open: false, seq })
   const detailsOpen = details.open && details.seq === seq
+  // Tapping the picture drops the frame — caption, buttons, border — and
+  // shows nothing but the picture, edge to edge; tapping it again brings the
+  // frame back. Same derive-from-seq pattern as the details panel, so paging
+  // to the next picture with the arrows keeps you in full screen (the seq
+  // changes but the state is carried over) while a fresh open starts framed.
+  const [fill, setFill] = useState<{ on: boolean; seq: number; carried?: number }>({ on: false, seq })
+  const filled = fill.on && (fill.seq === seq || fill.carried === seq)
   // A stored picture keeps the id of the job that drew it (remember() in
   // server/src/image.ts), so one id addresses both halves — which is what lets a
   // render finishing under the frame slot straight into the list without the
@@ -128,8 +135,11 @@ export function ImageOverlay() {
   const entry = index >= 0 ? gallery[index] : undefined
 
   const show = useCallback((entry: GalleryEntry) => {
+    // Paging inside full screen stays in full screen: the next open's seq is
+    // this one plus one, and the state is stamped with it ahead of time.
+    setFill(f => (f.on ? { on: true, seq: f.seq, carried: seq + 1 } : f))
     openImage(entry.id, entry.prompt, entry.url)
-  }, [])
+  }, [seq])
 
   // Arrow keys, for the same reason a dialog closes on Escape: free on a desktop
   // browser, invisible on the kiosk.
@@ -162,6 +172,32 @@ export function ImageOverlay() {
   }, [target, job])
 
   if (!target) return null
+
+  // ── Full screen: the picture and nothing else ──
+  // Its own tree rather than a class toggle on the frame, because nothing of
+  // the frame survives: no caption, no actions, no border, no inset. Only the
+  // close button and the arrows, since those are the two things a person
+  // still needs while looking at a picture this way.
+  if (filled && url) {
+    return createPortal(
+      <div className="fixed inset-0 z-[9400] bg-black flex items-center justify-center">
+        <button
+          type="button"
+          onClick={() => setFill({ on: false, seq })}
+          aria-label="Back to the framed view"
+          className="w-full h-full flex items-center justify-center"
+        >
+          <img src={url} alt={target.prompt} className="max-w-full max-h-full object-contain" />
+        </button>
+        <div className="absolute top-0 right-0" style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))', paddingRight: 'max(0.75rem, env(safe-area-inset-right))' }}>
+          <CloseImageButton onClick={closeImage} />
+        </div>
+        {prev && <NavButton side="left"  label="Previous picture" onClick={() => show(prev)} />}
+        {next && <NavButton side="right" label="Next picture"     onClick={() => show(next)} />}
+      </div>,
+      document.body,
+    )
+  }
 
   return createPortal(
     <>
@@ -255,14 +291,19 @@ export function ImageOverlay() {
         {/* ── Body ── */}
         <div className="flex-1 min-h-0 flex items-center justify-center px-4 pb-4 relative">
           {url ? (
-            <img
-              src={url}
-              alt={target.prompt}
-              // `contain` rather than `cover`: a picture the user asked for should
-              // be shown whole. Cropping the subject out of a portrait render to
-              // fill a frame is the one thing that makes it look broken.
-              className="max-w-full max-h-full object-contain rounded-2xl"
-            />
+            // The picture is a button: tapping it is how the frame gets out of
+            // the way (see `filled` above). `contain` rather than `cover`: a
+            // picture the user asked for should be shown whole. Cropping the
+            // subject out of a portrait render to fill a frame is the one thing
+            // that makes it look broken.
+            <button
+              type="button"
+              onClick={() => setFill({ on: true, seq })}
+              aria-label="Show the picture full screen"
+              className="max-w-full max-h-full flex items-center justify-center"
+            >
+              <img src={url} alt={target.prompt} className="max-w-full max-h-full object-contain rounded-2xl" />
+            </button>
           ) : failed ? (
             <Failed
               message={cancelled
