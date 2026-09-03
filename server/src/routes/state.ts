@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express'
+import { broadcast } from './system'
 import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
@@ -117,6 +118,9 @@ router.post('/mode', (req: Request, res: Response) => {
     return
   }
   console.log(`[state] POST mode → ${mode}`)
+  // Every screen follows: a phone switching the wall to Rest, or the wall
+  // switching while a phone has the header open.
+  broadcast('mode', { mode })
   try {
     writeJSON('mode.json', { mode })
     res.json({ mode })

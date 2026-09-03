@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
+import { onServerEvent } from './useServerEvents'
 
 export type AppMode = 'work' | 'rest' | 'locked'
 
@@ -49,7 +50,16 @@ export function useAppMode() {
       if (!slices || slices.includes('mode')) loadMode('chat-tool')
     }
     window.addEventListener('ts:state-changed', onChange)
-    return () => window.removeEventListener('ts:state-changed', onChange)
+    // …and from any other screen: a phone's Work/Rest switch reaches the
+    // wall through the server's `mode` frame.
+    const off = onServerEvent('mode', raw => {
+      const m = (raw as { mode?: string } | null)?.mode
+      if (m === 'work' || m === 'rest' || m === 'locked') {
+        setModeState(m)
+        if (m !== 'locked') setPrevUnlocked(m)
+      }
+    })
+    return () => { window.removeEventListener('ts:state-changed', onChange); off() }
   }, [])
 
   const setMode = useCallback((m: AppMode) => {

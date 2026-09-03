@@ -16,7 +16,9 @@
 // tells the wall to.
 
 import { useCallback, useEffect, useState } from 'react'
-import { Clapperboard, Brush, ListChecks, Clock, Settings, Pause, Play, Square, Tv, Smartphone, WifiOff, Radio, Sparkles } from 'lucide-react'
+import { Fragment } from 'react'
+import { Clapperboard, Brush, ListChecks, Settings, Pause, Play, Square, Tv, Smartphone, WifiOff, Radio, Sparkles, Lock, Briefcase, Moon } from 'lucide-react'
+import type { AppMode } from '../hooks/useAppMode'
 import { openPlexPlayer, plexApi, plexImg, type PlexItem, type PlexStatus } from '../hooks/usePlex'
 import { onServerEvent } from '../hooks/useServerEvents'
 import type { PlexSummary } from './widgets/PlexWidget/PlexWidget'
@@ -76,7 +78,7 @@ function nextLine(i: PlexItem): string {
   return i.title
 }
 
-export function Companion({ open, setOpen, plexStatus, plexSummary, agent, setAgent, voice }: {
+export function Companion({ open, setOpen, plexStatus, plexSummary, agent, setAgent, voice, mode, setMode }: {
   open: OpenWidget
   setOpen: (w: OpenWidget) => void
   plexStatus: PlexStatus | null
@@ -85,6 +87,9 @@ export function Companion({ open, setOpen, plexStatus, plexSummary, agent, setAg
   agent: boolean
   setAgent: (on: boolean) => void
   voice: { isListening: boolean; isThinking: boolean; isSpeaking: boolean }
+  /** The kiosk's mode — shared state, so switching it here switches the wall. */
+  mode: AppMode
+  setMode: (m: AppMode) => void
 }) {
   const online = useOnline()
   const { now, kiosks, refresh } = useKioskNow()
@@ -116,14 +121,17 @@ export function Companion({ open, setOpen, plexStatus, plexSummary, agent, setAg
   // an SSE frame is fresh by definition.
   const live = now && now.state !== 'stopped' ? now : null
 
-  const TABS: { id: OpenWidget | 'settings' | 'agent'; label: string; icon: React.ReactElement; badge?: number }[] = [
-    { id: 'agent',  label: 'Agent',  icon: <Sparkles size={20} /> },
+  // Two tabs either side of the Agent button in the middle — the layout a
+  // camera app uses for its shutter, because talking to the assistant is the
+  // one thing here that isn't "open a panel". Time went: the clock is on the
+  // phone's own screen, and its corner is reachable from Settings if wanted.
+  const TABS: { id: OpenWidget | 'settings'; label: string; icon: React.ReactElement; badge?: number }[] = [
     { id: 'plex',   label: 'Plex',   icon: <Clapperboard size={20} />, ...(plexSummary?.downloading ? { badge: plexSummary.downloading } : {}) },
     { id: 'images', label: 'Draw',   icon: <Brush size={20} />, ...(queued ? { badge: queued } : {}) },
     { id: 'media',  label: 'List',   icon: <ListChecks size={20} /> },
-    { id: 'time',   label: 'Time',   icon: <Clock size={20} /> },
     { id: 'settings', label: 'Settings', icon: <Settings size={20} /> },
   ]
+  const rest = mode === 'rest'
 
   const activeTab = open ?? (agent ? 'agent' : null)
 
@@ -134,15 +142,38 @@ export function Companion({ open, setOpen, plexStatus, plexSummary, agent, setAg
          style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
       {/* Header */}
       <div className="flex items-center gap-3 px-5 pt-4 pb-3 pointer-events-auto">
-        <Smartphone size={18} className="text-cyan-300" />
-        <span className="text-base font-semibold">TouchSphere</span>
-        <span className="ml-auto flex items-center gap-1.5 text-[12px] text-white/45">
-          {!online
-            ? <><WifiOff size={13} className="text-amber-300" /><span className="text-amber-200/80">Offline · showing the last thing fetched</span></>
-            : kiosks > 0
-              ? <><Radio size={13} className="text-emerald-300" />kiosk connected</>
-              : <><Radio size={13} className="text-white/30" />no kiosk online</>}
-        </span>
+        <Smartphone size={18} className={rest ? 'text-violet-300' : 'text-cyan-300'} />
+        <div className="min-w-0">
+          <span className="text-base font-semibold block leading-tight">TouchSphere</span>
+          <span className="flex items-center gap-1.5 text-[11px] text-white/45 leading-tight">
+            {!online
+              ? <><WifiOff size={11} className="text-amber-300" /><span className="text-amber-200/80">Offline · last fetched</span></>
+              : kiosks > 0
+                ? <><Radio size={11} className="text-emerald-300" />kiosk connected</>
+                : <><Radio size={11} className="text-white/30" />no kiosk online</>}
+          </span>
+        </div>
+        {/* The kiosk's mode. Work and Rest are one shared setting, so this
+            switches the wall as well as this screen's colours. Locked is not
+            offered from here: unlocking wants the PIN, on the kiosk. */}
+        <div className="ml-auto shrink-0">
+          {mode === 'locked' ? (
+            <span className="h-10 px-3 rounded-full bg-white/5 border border-hairline flex items-center gap-1.5 text-[12px] text-white/50">
+              <Lock size={13} />Kiosk locked
+            </span>
+          ) : (
+            <div role="radiogroup" aria-label="Mode" className="h-10 p-1 rounded-full bg-white/5 border border-hairline flex">
+              <button type="button" role="radio" aria-checked={mode === 'work'} onClick={() => { if (mode !== 'work') setMode('work') }}
+                className={`h-8 px-3 rounded-full text-[12px] font-semibold flex items-center gap-1.5 transition ${mode === 'work' ? 'bg-cyan-500/30 text-cyan-100' : 'text-white/45'}`}>
+                <Briefcase size={13} />Work
+              </button>
+              <button type="button" role="radio" aria-checked={mode === 'rest'} onClick={() => { if (mode !== 'rest') setMode('rest') }}
+                className={`h-8 px-3 rounded-full text-[12px] font-semibold flex items-center gap-1.5 transition ${mode === 'rest' ? 'bg-violet-500/30 text-violet-100' : 'text-white/45'}`}>
+                <Moon size={13} />Rest
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {agent ? (
@@ -230,20 +261,36 @@ export function Companion({ open, setOpen, plexStatus, plexSummary, agent, setAg
       </div>
       )}
 
-      {/* Tab bar */}
-      <div className="shrink-0 border-t border-hairline bg-black/90 px-2 pt-2 pb-1 flex pointer-events-auto">
-        {TABS.map(t => (
-          <button key={t.id} type="button"
-            onClick={() => {
-              if (t.id === 'settings') window.dispatchEvent(new CustomEvent('ts:open-settings'))
-              else if (t.id === 'agent') setAgent(!agent)
-              else setOpen(t.id as OpenWidget)
-            }}
-            className={`flex-1 h-14 rounded-xl flex flex-col items-center justify-center gap-1 text-[11px] font-medium relative active:bg-white/10 ${
-              activeTab === t.id ? 'text-cyan-200' : 'text-white/60'}`}>
-            {t.icon}{t.label}
-            {t.badge ? <span className="absolute top-1 right-3 min-w-[18px] h-[18px] px-1 rounded-full bg-[#e5a00d] text-black text-[10px] font-bold flex items-center justify-center">{t.badge}</span> : null}
-          </button>
+      {/* Tab bar: two tabs, the Agent button, two tabs. */}
+      <div className="shrink-0 border-t border-hairline bg-black/90 px-2 pt-2 pb-1 flex items-end pointer-events-auto">
+        {TABS.map((t, i) => (
+          <Fragment key={t.id}>
+            {i === 2 && (
+              <div className="flex-1 flex flex-col items-center justify-end -mt-7">
+                <button type="button" onClick={() => setAgent(!agent)} aria-pressed={agent} aria-label="Agent"
+                  className={`w-[68px] h-[68px] rounded-full flex items-center justify-center border-2 transition active:scale-95 shadow-lg ${
+                    agent
+                      ? rest ? 'bg-violet-500/30 border-violet-300 text-violet-100 shadow-violet-500/30'
+                             : 'bg-cyan-500/30 border-cyan-300 text-cyan-100 shadow-cyan-500/30'
+                      : 'bg-black border-white/40 text-white/80'}`}>
+                  <span className={`w-[52px] h-[52px] rounded-full flex items-center justify-center ${agent ? 'bg-white/10' : 'bg-white/5'}`}>
+                    <Sparkles size={26} />
+                  </span>
+                </button>
+                <span className={`text-[11px] font-medium mt-1 ${agent ? (rest ? 'text-violet-200' : 'text-cyan-200') : 'text-white/60'}`}>Agent</span>
+              </div>
+            )}
+            <button type="button"
+              onClick={() => {
+                if (t.id === 'settings') window.dispatchEvent(new CustomEvent('ts:open-settings'))
+                else setOpen(t.id as OpenWidget)
+              }}
+              className={`flex-1 h-14 rounded-xl flex flex-col items-center justify-center gap-1 text-[11px] font-medium relative active:bg-white/10 ${
+                activeTab === t.id ? (rest ? 'text-violet-200' : 'text-cyan-200') : 'text-white/60'}`}>
+              {t.icon}{t.label}
+              {t.badge ? <span className="absolute top-1 right-3 min-w-[18px] h-[18px] px-1 rounded-full bg-[#e5a00d] text-black text-[10px] font-bold flex items-center justify-center">{t.badge}</span> : null}
+            </button>
+          </Fragment>
         ))}
       </div>
     </div>

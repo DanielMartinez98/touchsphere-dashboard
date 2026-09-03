@@ -447,7 +447,7 @@ function App() {
 
       {/* The phone's home screen — in place of the sphere, the corners and the
           mode bar, none of which fit or make sense on a remote. */}
-      {companion && <Companion open={open} setOpen={setOpen} plexStatus={plexStatus} plexSummary={plexSummary} agent={agentView} setAgent={setAgentView} voice={voice} />}
+      {companion && <Companion open={open} setOpen={setOpen} plexStatus={plexStatus} plexSummary={plexSummary} agent={agentView} setAgent={setAgentView} voice={voice} mode={mode} setMode={setMode} />}
 
       {/* Top-Center — Status / Mode selector */}
       {!companion && <StatusBar
