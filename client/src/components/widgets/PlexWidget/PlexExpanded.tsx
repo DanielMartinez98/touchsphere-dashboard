@@ -30,7 +30,7 @@ import {
   type LanguageSummary, type PlexItem, type PlexItemDetail, type PlexPlayerInfo, type PlexStatus, type PlexStream,
   type PlexTab, type SeerrRequest, type SeerrResult, type Torrent,
 } from '../../../hooks/usePlex'
-import { ACCENT, itemTitle, itemSubtitle, PlexColumnChips, PosterGrid, Row } from './items'
+import { ACCENT, itemTitle, itemSubtitle, PlexColumnSlider, PosterGrid, Row } from './items'
 import {
   BackButton, Backdrop, CastRow, CollectionPage, CrewLine, factsLine, FolderPage, GenreChips, HeaderPoster,
   LibrariesRow, RatingsRow, RelatedShelves, SectionPage, TrailerButton, type Layer,
@@ -171,7 +171,7 @@ function BrowseLayer({ query, setQuery, onOpen, onPush }: { query: string; setQu
             <section>
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-[11px] uppercase tracking-widest text-white/40 font-semibold">Results</h3>
-                <PlexColumnChips />
+                <PlexColumnSlider />
               </div>
               <PosterGrid items={results} onOpen={onOpen} />
             </section>
@@ -192,7 +192,7 @@ function BrowseLayer({ query, setQuery, onOpen, onPush }: { query: string; setQu
             <section>
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-[11px] uppercase tracking-widest text-white/40 font-semibold">Recently added</h3>
-                <PlexColumnChips />
+                <PlexColumnSlider />
               </div>
               <PosterGrid items={home.recent} onOpen={onOpen} />
             </section>

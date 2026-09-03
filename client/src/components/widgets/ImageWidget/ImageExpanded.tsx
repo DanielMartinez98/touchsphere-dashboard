@@ -18,7 +18,7 @@ import {
 import { TouchInput } from '../../TouchInput'
 import { openImage } from '../../../hooks/useImageOverlay'
 import { setGalleryColumns, useGalleryColumns, usePinchColumns } from '../../../hooks/useGalleryColumns'
-import { ColumnChips } from '../../ColumnChips'
+import { ColumnSlider } from '../../ColumnSlider'
 import {
   clearImageSource, redrawImage, setImagePrompt, useImagePrompt, useImageSource,
 } from '../../../hooks/useImagePrompt'
@@ -836,7 +836,7 @@ export default function ImageExpanded({
             <span className="text-[11px] uppercase tracking-widest text-white/35 font-semibold flex items-center gap-1.5">
               <LayoutGrid size={13} />Gallery <span className="text-white/20 normal-case tracking-normal">· {images.length}</span>
             </span>
-            <ColumnChips value={columns} onChange={setGalleryColumns} />
+            <ColumnSlider value={columns} onChange={setGalleryColumns} />
           </div>
         )}
         {images.length === 0 ? (

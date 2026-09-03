@@ -7,7 +7,7 @@
 import { Check, Tv } from 'lucide-react'
 import { plexImg, type PlexItem } from '../../../hooks/usePlex'
 import { setPlexColumns, usePinchColumns, usePlexColumns } from '../../../hooks/useGalleryColumns'
-import { ColumnChips } from '../../ColumnChips'
+import { ColumnSlider } from '../../ColumnSlider'
 
 export const ACCENT = '#e5a00d'
 
@@ -74,10 +74,10 @@ export function PosterGrid({ items, onOpen }: { items: PlexItem[]; onOpen: (key:
   )
 }
 
-/** The chips for the grid above, in the corner's amber. */
-export function PlexColumnChips() {
+/** The slider for the grid above, in the corner's amber. */
+export function PlexColumnSlider() {
   const columns = usePlexColumns()
-  return <ColumnChips value={columns} onChange={setPlexColumns} accent="amber" />
+  return <ColumnSlider value={columns} onChange={setPlexColumns} accent="amber" />
 }
 
 /** A landscape row: for episodes and continue-watching, where the title carries more than the art. */

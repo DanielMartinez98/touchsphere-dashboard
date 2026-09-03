@@ -14,8 +14,8 @@
 
 import { useRef, useSyncExternalStore, type TouchEvent, type TouchList } from 'react'
 
-export const MIN_COLUMNS = 2
-export const MAX_COLUMNS = 6
+export const MIN_COLUMNS = 1
+export const MAX_COLUMNS = 12
 
 interface ColumnsStore {
   use: () => number
