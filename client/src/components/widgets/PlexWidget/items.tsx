@@ -6,6 +6,8 @@
 
 import { Check, Tv } from 'lucide-react'
 import { plexImg, type PlexItem } from '../../../hooks/usePlex'
+import { setPlexColumns, usePinchColumns, usePlexColumns } from '../../../hooks/useGalleryColumns'
+import { ColumnChips } from '../../ColumnChips'
 
 export const ACCENT = '#e5a00d'
 
@@ -56,12 +58,26 @@ export function PosterCell({ item, onOpen, className = '' }: { item: PlexItem; o
   )
 }
 
+/**
+ * Always `columns` across — a per-device setting shared by every poster grid
+ * in the corner (see useGalleryColumns), changed with the chips beside a grid's
+ * heading or by pinching the grid. It was hard-coded to three, which is right
+ * on the 7" kiosk and wrong on everything else.
+ */
 export function PosterGrid({ items, onOpen }: { items: PlexItem[]; onOpen: (key: string) => void }) {
+  const columns = usePlexColumns()
+  const pinch = usePinchColumns(columns, setPlexColumns)
   return (
-    <div className="grid grid-cols-3 gap-3">
+    <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }} {...pinch}>
       {items.map(i => <PosterCell key={i.key} item={i} onOpen={onOpen} />)}
     </div>
   )
+}
+
+/** The chips for the grid above, in the corner's amber. */
+export function PlexColumnChips() {
+  const columns = usePlexColumns()
+  return <ColumnChips value={columns} onChange={setPlexColumns} accent="amber" />
 }
 
 /** A landscape row: for episodes and continue-watching, where the title carries more than the art. */

@@ -22,7 +22,7 @@ import {
   openPlexPlayer, plexApi, plexArt, plexImg,
   type PlexCollection, type PlexFolderEntry, type PlexHub, type PlexItem, type PlexSectionInfo, type SectionSort,
 } from '../../../hooks/usePlex'
-import { ACCENT, itemTitle, Poster, PosterCell, PosterGrid, Row } from './items'
+import { ACCENT, itemTitle, PlexColumnChips, Poster, PosterCell, PosterGrid, Row } from './items'
 
 export type Layer =
   | { kind: 'item'; key: string }
@@ -179,12 +179,15 @@ export function SectionPage({ id, title, onOpen, onPush, onBack }: {
 
       {/* The whole list: sort, unwatched, genre, and the disk folders. */}
       <section className="flex flex-col gap-3">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <h3 className="text-[11px] uppercase tracking-widest text-white/40 font-semibold">Everything</h3>
-          <button type="button" onClick={() => onPush({ kind: 'folder', id, title })}
-            className="h-9 px-3 rounded-full bg-white/5 border border-hairline flex items-center gap-1.5 text-[12px] text-white/70 active:bg-white/20">
-            <Folder size={14} />Browse folders
-          </button>
+          <div className="flex items-center gap-2">
+            <PlexColumnChips />
+            <button type="button" onClick={() => onPush({ kind: 'folder', id, title })}
+              className="h-9 px-3 rounded-full bg-white/5 border border-hairline flex items-center gap-1.5 text-[12px] text-white/70 active:bg-white/20">
+              <Folder size={14} />Browse folders
+            </button>
+          </div>
         </div>
         <div className="flex gap-2 overflow-x-auto -mx-6 px-6 pb-1">
           {SORTS.map(s => (
@@ -297,7 +300,10 @@ export function CollectionPage({ collectionKey, title, onOpen, onBack }: { colle
   return (
     <div className="flex flex-col gap-4">
       <BackButton onBack={onBack} label="Back" />
-      <h2 className="text-lg text-white font-semibold leading-tight">{title}</h2>
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-lg text-white font-semibold leading-tight">{title}</h2>
+        <PlexColumnChips />
+      </div>
       {error && <p className="text-amber-300 text-sm">{error}</p>}
       {!items && !error && <p className="text-ink-dim text-sm">Loading…</p>}
       {items && <PosterGrid items={items} onOpen={onOpen} />}

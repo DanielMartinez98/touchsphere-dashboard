@@ -17,7 +17,8 @@ import {
 } from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
 import { openImage } from '../../../hooks/useImageOverlay'
-import { MAX_COLUMNS, MIN_COLUMNS, setGalleryColumns, useGalleryColumns } from '../../../hooks/useGalleryColumns'
+import { setGalleryColumns, useGalleryColumns, usePinchColumns } from '../../../hooks/useGalleryColumns'
+import { ColumnChips } from '../../ColumnChips'
 import {
   clearImageSource, redrawImage, setImagePrompt, useImagePrompt, useImageSource,
 } from '../../../hooks/useImagePrompt'
@@ -282,24 +283,7 @@ export default function ImageExpanded({
   // it: the chips above the grid, and pinching the grid itself — the gesture
   // every photo app uses for exactly this, and the one a finger tries first.
   const columns = useGalleryColumns()
-  const pinch = useRef<{ start: number; columns: number } | null>(null)
-  const pinchDistance = (t: React.TouchList) => {
-    const a = t[0], b = t[1]
-    return a && b ? Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) : 0
-  }
-  const onPinchStart = (e: React.TouchEvent) => {
-    if (e.touches.length === 2) pinch.current = { start: pinchDistance(e.touches), columns }
-  }
-  const onPinchMove = (e: React.TouchEvent) => {
-    const p = pinch.current
-    if (!p || e.touches.length !== 2 || !p.start) return
-    // Spreading the fingers makes each picture bigger — fewer across. One
-    // column per ~35% of spread, from the count the pinch began at.
-    const ratio = pinchDistance(e.touches) / p.start
-    const steps = Math.round(Math.log(ratio) / Math.log(1.35))
-    if (steps !== 0) setGalleryColumns(p.columns - steps)
-  }
-  const onPinchEnd = () => { pinch.current = null }
+  const pinch = usePinchColumns(columns, setGalleryColumns)
 
   // Deliberately NOT gated on `busy` any more. Renders are still drawn one at a
   // time, but asking for four pictures is one thought, and making someone stand
@@ -852,22 +836,7 @@ export default function ImageExpanded({
             <span className="text-[11px] uppercase tracking-widest text-white/35 font-semibold flex items-center gap-1.5">
               <LayoutGrid size={13} />Gallery <span className="text-white/20 normal-case tracking-normal">· {images.length}</span>
             </span>
-            <div className="flex items-center gap-1" role="radiogroup" aria-label="Pictures per row">
-              {Array.from({ length: MAX_COLUMNS - MIN_COLUMNS + 1 }, (_, i) => MIN_COLUMNS + i).map(n => (
-                <button
-                  key={n}
-                  type="button"
-                  role="radio"
-                  aria-checked={columns === n}
-                  onClick={() => setGalleryColumns(n)}
-                  className={`w-9 h-9 rounded-lg text-[13px] font-semibold tabular-nums active:scale-90 transition ${
-                    columns === n ? 'bg-pink-500/25 text-pink-200 border border-pink-400/40' : 'bg-white/5 text-white/45 border border-transparent'
-                  }`}
-                >
-                  {n}
-                </button>
-              ))}
-            </div>
+            <ColumnChips value={columns} onChange={setGalleryColumns} />
           </div>
         )}
         {images.length === 0 ? (
@@ -878,10 +847,7 @@ export default function ImageExpanded({
           <div
             className="grid gap-2"
             style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
-            onTouchStart={onPinchStart}
-            onTouchMove={onPinchMove}
-            onTouchEnd={onPinchEnd}
-            onTouchCancel={onPinchEnd}
+            {...pinch}
           >
             {images.map(img => (
               <div key={img.id} className="relative aspect-square">

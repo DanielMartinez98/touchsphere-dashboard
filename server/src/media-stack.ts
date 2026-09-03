@@ -400,11 +400,36 @@ export async function plexOnDeck(limit = 12): Promise<PlexItem[]> {
   return metadata(await plexGet('/library/onDeck', { 'X-Plex-Container-Size': limit })).slice(0, limit)
 }
 
-/** Newest arrivals across every movie/show section, newest first. */
+/**
+ * Newest arrivals across every movie/show section, newest first.
+ *
+ * Plex's recentlyAdded lists the SEASON that arrived, not the show — which
+ * drew a grid of season posters captioned "Season 3", "Season 16", each one
+ * a tap away from the thing anyone would look for. So a season is replaced by
+ * its show (one batched fetch for all of them), once per show, in the order
+ * the seasons arrived. Films pass through as they are.
+ */
 export async function plexRecentlyAdded(limit = 24): Promise<PlexItem[]> {
-  const items = metadata(await plexGet('/library/recentlyAdded', { 'X-Plex-Container-Size': limit }))
-  // recentlyAdded lists seasons for shows; the show is what someone taps.
-  return items.slice(0, limit)
+  const items = metadata(await plexGet('/library/recentlyAdded', { 'X-Plex-Container-Size': limit * 2 }))
+  const showKeys = [...new Set(items.flatMap(i => (i.type === 'season' && i.parentKey ? [i.parentKey] : [])))]
+  const shows = new Map<string, PlexItem>()
+  if (showKeys.length) {
+    try {
+      for (const s of await plexItemsByKey(showKeys)) shows.set(s.key, s)
+    } catch (err) {
+      console.warn('[plex] recently added: could not resolve shows:', err instanceof Error ? err.message : String(err))
+    }
+  }
+  const out: PlexItem[] = []
+  const seen = new Set<string>()
+  for (const i of items) {
+    const item = i.type === 'season' && i.parentKey ? shows.get(i.parentKey) ?? i : i
+    if (seen.has(item.key)) continue
+    seen.add(item.key)
+    out.push(item)
+    if (out.length >= limit) break
+  }
+  return out
 }
 
 /**
