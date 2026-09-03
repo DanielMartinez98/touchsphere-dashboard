@@ -35,6 +35,7 @@ import { GUIDE_VIEW_TOOLS, GUIDE_VIEW_MUTATING, runGuideViewTool } from './guide
 import { IMAGE_TOOLS, imagePromptGuidance, runImageTool } from './image-tools'
 import { PLEX_TOOLS, runPlexTool } from './plex-tools'
 import { addMemory, formatForPrompt as formatMemoryForPrompt } from '../memory'
+import { presenceForPrompt } from '../presence'
 import {
   saveSession, updateSessionSummary, loadSession, scoreContinuation, sessionAgeMinutes,
   type SessionTurn,
@@ -641,8 +642,10 @@ router.post('/', async (req: Request, res: Response) => {
   const profile = getSelectedProfile()
   const memoryBlock = formatMemoryForPrompt()
   const basePrompt = buildSystemPrompt(profile)
+  // Whether they are at the desk right now, from the sensor on the Pi — one
+  // line, per request, since it changes between one question and the next.
   const systemContent =
-    basePrompt + (memoryBlock ? `\n${memoryBlock}` : '') + (carry ? `\n${carry.note}` : '')
+    basePrompt + presenceForPrompt() + (memoryBlock ? `\n${memoryBlock}` : '') + (carry ? `\n${carry.note}` : '')
   const messages: ChatMessage[] = [
     { role: 'system', content: systemContent },
     ...(carry?.turns ?? []),

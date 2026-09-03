@@ -26,6 +26,7 @@ import guidesRouter from './routes/guides'
 import imageRouter from './routes/image'
 import plexRouter from './routes/plex'
 import hostRouter from './routes/host'
+import presenceRouter from './routes/presence'
 import { elevenLabsKeyState } from './config/keys'
 import { sweepInterrupted } from './guides'
 import { startPlexWatch } from './plex-watch'
@@ -193,6 +194,9 @@ app.use('/api/guides', dataLimiter, guidesRouter)
 // Settings → Server: updating the host this container runs on. 404s wholesale
 // without HOST_UPDATE_SSH (see host.ts).
 app.use('/api/host', dataLimiter, hostRouter)
+// The desk sensor on the Pi reports here (a change, plus a heartbeat every
+// 30 s) and the screen and the assistant read from it.
+app.use('/api/presence', dataLimiter, presenceRouter)
 // Generated images: the gallery pulls a file per thumbnail, so this sits behind
 // the generous tile limiter rather than the 60/min data one, same as artwork.
 app.use('/api/image', tileLimiter, imageRouter)

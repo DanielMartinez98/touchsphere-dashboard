@@ -1,0 +1,23 @@
+# /etc/systemd/system/touchsphere-presence.service
+#
+# Reads the HC-SR04 on the Pi's GPIO and reports desk presence to the
+# dashboard. Installed by scripts/presence/install.sh.
+
+[Unit]
+Description=TouchSphere desk presence (HC-SR04)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/touchsphere-presence.py
+Restart=always
+RestartSec=5
+# gpiozero needs the gpio group on Raspberry Pi OS; root is simplest and the
+# script does nothing but read two pins and POST.
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

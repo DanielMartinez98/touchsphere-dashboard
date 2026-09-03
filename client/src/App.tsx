@@ -6,6 +6,7 @@ import TimeExpanded from './components/widgets/TimeWidget/TimeExpanded'
 import { PlexCollapsed, usePlexSummary } from './components/widgets/PlexWidget/PlexWidget'
 import { Companion } from './components/Companion'
 import { useClientRole } from './hooks/useClientRole'
+import { usePresence } from './hooks/usePresence'
 import PlexExpanded from './components/widgets/PlexWidget/PlexExpanded'
 import { PlexPlayer } from './components/PlexPlayer'
 import { onPlexPanelRequest, usePlexStatus } from './hooks/usePlex'
@@ -192,6 +193,19 @@ function App() {
   // four corners around a sphere it has no room for. The panels the corners
   // open are shared; only the home screen differs. See components/Companion.
   const companion = useClientRole() === 'companion'
+  // The desk sensor: dim the kiosk after a while away. A touch lifts the dim
+  // for a couple of minutes on its own, so a sensor pointed the wrong way
+  // can never leave someone tapping at a dark screen.
+  const { shouldDim, now: presenceNow } = usePresence()
+  const [touchedAt, setTouchedAt] = useState(0)
+  useEffect(() => {
+    if (companion) return
+    const on = () => setTouchedAt(Date.now())
+    window.addEventListener('pointerdown', on, { passive: true })
+    return () => window.removeEventListener('pointerdown', on)
+  }, [companion])
+  // `presenceNow` is the hook's once-a-minute tick, so this is pure per render.
+  const dimmed = !companion && shouldDim && presenceNow - touchedAt > 120_000
   // The phone's Agent view: the avatar (or sphere) full screen with tap-to-
   // talk, exactly the kiosk's centre. On by default — the app opens on the
   // agent, and the remote is one tap away on the bar.
@@ -509,6 +523,10 @@ function App() {
       {/* Above the browser window and the guide — a picture is the thing that
           was just asked for, and it can be asked for while a video is playing. */}
       <ImageOverlay />
+
+      {/* Away — the desk has been empty for a while: dim the whole screen
+          (over every overlay, under the lock) and let the first tap through. */}
+      {dimmed && <div aria-hidden className="fixed inset-0 z-[9700] bg-black/85 pointer-events-none transition-opacity duration-1000" />}
 
       {/* Lock screen — covers everything when mode is 'locked' */}
       {mode === 'locked' && (

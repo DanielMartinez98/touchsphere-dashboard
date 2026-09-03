@@ -19,6 +19,7 @@ import { useImages } from '../hooks/useImages'
 import type { ParamsResponse } from '../hooks/useImages'
 import { useGuideActivity, type ActivityLevel } from '../hooks/useGuideActivity'
 import { useHost, useHostEnabled, type HostTask } from '../hooks/useHost'
+import { usePresence } from '../hooks/usePresence'
 import { TouchInput } from './TouchInput'
 
 type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'system' | 'server' | 'debug'
@@ -1039,6 +1040,8 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
             {/* Hardware tab */}
             {tab === 'hardware' && (
               <div className="space-y-4 max-w-lg mx-auto">
+                <DeskSensorCard />
+
                 {/* ── Audio Devices (mic + speaker selectors) ── */}
                 <div className="flex items-center justify-between">
                   <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Audio Devices</span>
@@ -2189,6 +2192,58 @@ function ServerTab() {
       )}
 
       {runError && <p className="text-red-300/90 text-sm px-1">{runError}</p>}
+    </div>
+  )
+}
+
+// ── Desk sensor ───────────────────────────────────────────────────────────────
+// The HC-SR04 on the Pi (scripts/presence/). What it says right now, and the
+// one thing the screen does with it: dim after a while away.
+
+const DIM_CHOICES = [0, 2, 5, 10, 30]
+
+function DeskSensorCard() {
+  const { presence, settings, setDimAfter, live, awayForMin } = usePresence()
+  const status = !presence.sensor
+    ? 'No sensor has reported yet.'
+    : presence.stale ? 'The reader on the Pi has gone quiet.'
+    : presence.present ? 'Someone is at the desk.'
+    : `Nobody at the desk for ${Math.round(awayForMin)} min.`
+  return (
+    <div>
+      <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Desk sensor</span>
+      <div className="bg-white/5 rounded-2xl px-5 py-4 border border-white/8 space-y-3">
+        <div className="flex items-center gap-3">
+          <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+            !live ? 'bg-white/20' : presence.present ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+          <p className="text-white/80 text-sm flex-1">{status}</p>
+          {live && presence.distanceCm !== null && (
+            <span className="text-white/40 text-xs tabular-nums">{Math.round(presence.distanceCm)} cm{presence.thresholdCm ? ` / ${Math.round(presence.thresholdCm)}` : ''}</span>
+          )}
+        </div>
+        {!presence.sensor && (
+          <p className="text-white/30 text-xs leading-relaxed">
+            An HC-SR04 ultrasonic module on the Pi, read by scripts/presence/presence.py. Run
+            scripts/presence/install.sh on the Pi to set it up; the wiring is in the script's header.
+          </p>
+        )}
+        <div>
+          <p className="text-white/40 text-xs mb-2">Dim the kiosk when the desk has been empty for</p>
+          <div className="flex gap-2">
+            {DIM_CHOICES.map(n => (
+              <button key={n} type="button" onClick={() => { void setDimAfter(n) }}
+                className={`flex-1 h-10 rounded-xl text-sm font-semibold active:scale-95 ${
+                  settings.dimAfterMin === n ? 'bg-cyan-500/25 text-cyan-100 border border-cyan-400/40' : 'bg-white/5 text-white/50 border border-transparent'}`}>
+                {n === 0 ? 'Never' : `${n} min`}
+              </button>
+            ))}
+          </div>
+          <p className="text-white/25 text-xs mt-2 leading-relaxed">
+            A tap always lifts it, and it lifts on its own when someone sits back down. The
+            assistant is told whether you are at the desk, so it can adjust how it answers.
+          </p>
+        </div>
+      </div>
     </div>
   )
 }

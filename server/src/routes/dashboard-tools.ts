@@ -12,6 +12,7 @@
 import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
+import { presenceState } from '../presence'
 import { addMemory, loadMemories, removeMemories, isTopic } from '../memory'
 import { nextRecurringFireAt, sanitizeRepeatDays } from './timers'
 import { findCover, artworkConfigured } from './artwork'
@@ -691,9 +692,13 @@ async function getDeviceStatus(): Promise<string> {
   if (!d) return 'Device status unavailable.'
   const upH = Math.floor(d.uptimeSeconds / 3600)
   const upM = Math.floor((d.uptimeSeconds % 3600) / 60)
+  const p = presenceState()
+  const desk = !p.sensor ? '' : p.stale ? ' Desk sensor: not reporting.' : p.present
+    ? ` Desk sensor: someone is at the desk (${p.distanceCm ?? '?'} cm).`
+    : ` Desk sensor: nobody at the desk since ${p.since ?? '?'}.`
   return `CPU ${d.cpuTempC ?? '?'}°C, load ${d.loadAvg1}/${d.cpuCount}, ` +
          `mem ${d.memUsedPct}% used (${d.memAvailableMB}/${d.memTotalMB} MB free), ` +
-         `uptime ${upH}h ${upM}m.`
+         `uptime ${upH}h ${upM}m.${desk}`
 }
 
 // ── Memory ────────────────────────────────────────────────────────────────────
