@@ -92,6 +92,13 @@ if (ELEVEN_KEY_MALFORMED) {
 }
 
 const app = express()
+// Exactly one proxy sits in front of this process — Caddy, in the same compose
+// network (`reverse_proxy app:3001`) — and it sets X-Forwarded-For. With
+// `trust proxy` off, express-rate-limit keys every request on Caddy's own
+// address and logs a ValidationError on each; `1` trusts that single hop and
+// no further, so a client-supplied X-Forwarded-For still can't spoof its way
+// past the limiter.
+app.set('trust proxy', 1)
 const PORT = process.env['PORT'] ?? 3001
 const isProd = process.env['NODE_ENV'] === 'production'
 
