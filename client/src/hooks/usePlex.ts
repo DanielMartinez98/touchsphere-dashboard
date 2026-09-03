@@ -13,7 +13,16 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 
 // ── Types (mirror server/src/media-stack.ts) ─────────────────────────────────
 
-export type PlexType = 'movie' | 'show' | 'season' | 'episode'
+export type PlexType = 'movie' | 'show' | 'season' | 'episode' | 'clip'
+
+export interface PlexPerson { name: string; role?: string; thumb?: string }
+export interface PlexRating { source: string; value: number; kind: 'audience' | 'critic' }
+export interface PlexExtra { key: string; title: string; subtype?: string; duration?: number; thumb?: string }
+export interface PlexHub { id: string; title: string; items: PlexItem[]; more?: boolean }
+export interface PlexSectionInfo { key: string; title: string; type: 'movie' | 'show' | string; count: number; posters: string[] }
+export interface PlexFolderEntry { parent: string; title: string }
+export interface PlexCollection { key: string; title: string; count: number; thumb?: string; art?: string }
+export type SectionSort = 'title' | 'added' | 'released' | 'rating' | 'watched' | 'random'
 
 export interface PlexItem {
   key: string
@@ -39,7 +48,27 @@ export interface PlexItem {
   childCount?: number
   contentRating?: string
   rating?: number
+  criticRating?: number
   media?: PlexMedia[]
+  tagline?: string
+  studio?: string
+  originalTitle?: string
+  originallyAvailableAt?: string
+  sectionId?: number
+  sectionTitle?: string
+  parentThumb?: string
+  grandparentThumb?: string
+  grandparentArt?: string
+  genres?: string[]
+  colors?: { topLeft: string; topRight: string; bottomLeft: string; bottomRight: string }
+  countries?: string[]
+  directors?: PlexPerson[]
+  writers?: PlexPerson[]
+  cast?: PlexPerson[]
+  ratings?: PlexRating[]
+  guids?: Record<string, string>
+  extras?: PlexExtra[]
+  related?: PlexHub[]
 }
 
 export interface PlexStream {
@@ -154,7 +183,15 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
 /** Poster URL for a Plex item — the server proxies it, so the token stays on the server. */
 export function plexImg(path: string | undefined, w = 300): string | null {
   if (!path) return null
+  // Cast headshots are absolute URLs on Plex's public CDN; nothing to proxy.
+  if (/^https?:/.test(path)) return path
   return `/api/plex/img?path=${encodeURIComponent(path)}&w=${w}&h=${Math.round(w * 1.5)}`
+}
+
+/** Backdrop URL, 16:9. Same proxy, landscape size. */
+export function plexArt(path: string | undefined, w = 720): string | null {
+  if (!path) return null
+  return `/api/plex/img?path=${encodeURIComponent(path)}&w=${w}&h=${Math.round(w * 9 / 16)}`
 }
 
 /** TMDB poster for a Seerr hit; `poster` is "/abc.jpg". */
@@ -167,6 +204,21 @@ export const plexApi = {
   status:   () => getJson<PlexStatus>('/api/plex/status'),
   home:     () => getJson<{ onDeck: PlexItem[]; recent: PlexItem[] }>('/api/plex/home'),
   search:   (q: string) => getJson<{ items: PlexItem[] }>(`/api/plex/search?q=${encodeURIComponent(q)}`),
+  sections: () => getJson<{ sections: PlexSectionInfo[] }>('/api/plex/sections'),
+  section:  (id: string, q: { sort?: SectionSort; genre?: string; unwatched?: boolean; offset?: number; limit?: number }) => {
+    const p = new URLSearchParams()
+    if (q.sort) p.set('sort', q.sort)
+    if (q.genre) p.set('genre', q.genre)
+    if (q.unwatched) p.set('unwatched', '1')
+    if (q.offset) p.set('offset', String(q.offset))
+    if (q.limit) p.set('limit', String(q.limit))
+    return getJson<{ items: PlexItem[]; total: number; offset: number }>(`/api/plex/section/${id}?${p.toString()}`)
+  },
+  sectionGenres:      (id: string) => getJson<{ genres: { id: string; title: string }[] }>(`/api/plex/section/${id}/genres`),
+  sectionHubs:        (id: string) => getJson<{ hubs: PlexHub[] }>(`/api/plex/section/${id}/hubs`),
+  sectionFolder:      (id: string, parent?: string) => getJson<{ title: string; folders: PlexFolderEntry[]; items: PlexItem[] }>(`/api/plex/section/${id}/folder${parent ? `?parent=${parent}` : ''}`),
+  sectionCollections: (id: string) => getJson<{ collections: PlexCollection[] }>(`/api/plex/section/${id}/collections`),
+  collection:         (key: string) => getJson<{ items: PlexItem[] }>(`/api/plex/collection/${key}`),
   item:     (key: string) => getJson<PlexItemDetail>(`/api/plex/item/${key}`),
   players:  () => getJson<{ players: PlexPlayerInfo[] }>('/api/plex/players'),
   play:     (body: { key: string; player?: string; partId?: number; audioStreamId?: number; subtitleStreamId?: number; offsetMs?: number; maxHeight?: number }) =>

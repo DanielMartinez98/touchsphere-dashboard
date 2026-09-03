@@ -74,7 +74,16 @@ export function plexHeaders(): Record<string, string> {
 
 // ── Plex ─────────────────────────────────────────────────────────────────────
 
-export type PlexType = 'movie' | 'show' | 'season' | 'episode'
+export type PlexType = 'movie' | 'show' | 'season' | 'episode' | 'clip'
+
+/** Someone credited on an item. `thumb` is an absolute URL on Plex's public CDN. */
+export interface PlexPerson { name: string; role?: string; thumb?: string }
+/** One score from one source: "imdb" 6.2 audience, "rottentomatoes" 4.3 critic. */
+export interface PlexRating { source: string; value: number; kind: 'audience' | 'critic' }
+/** A trailer or featurette Plex fetched for the item; playable by key like anything else. */
+export interface PlexExtra { key: string; title: string; subtype?: string; duration?: number; thumb?: string }
+/** A shelf: "Related Shows", "More with Yuki Kaji", "Recently Added in Anime". */
+export interface PlexHub { id: string; title: string; items: PlexItem[]; more?: boolean }
 
 /** One row of the library, flattened from Plex's Metadata element. */
 export interface PlexItem {
@@ -105,8 +114,43 @@ export interface PlexItem {
   /** Content rating and audience score, for the detail card. */
   contentRating?: string
   rating?: number
+  /** The critics' score, when the agent found one (Rotten Tomatoes on films). */
+  criticRating?: number
   /** Per-file streams; only on items fetched by key (see itemsByKey). */
   media?: PlexMedia[]
+
+  // ── What the agent wrote on the item ──────────────────────────────────────
+  // Plex's own apps draw every one of these; the panel used to draw none.
+  tagline?: string
+  studio?: string
+  originalTitle?: string
+  /** "2016-04-02" — release or first-air date. */
+  originallyAvailableAt?: string
+  /** Which library it lives in. */
+  sectionId?: number
+  sectionTitle?: string
+  /** An episode's season poster and its show's poster/backdrop. */
+  parentThumb?: string
+  grandparentThumb?: string
+  grandparentArt?: string
+  genres?: string[]
+  /**
+   * The four corner colours Plex derives from the poster ("UltraBlurColors"),
+   * as bare hex — what its new apps paint behind an item page instead of a
+   * blurred backdrop, and what makes each page look like its own poster.
+   */
+  colors?: { topLeft: string; topRight: string; bottomLeft: string; bottomRight: string }
+
+  // ── Only on a full fetch (plexItemFull) ───────────────────────────────────
+  countries?: string[]
+  directors?: PlexPerson[]
+  writers?: PlexPerson[]
+  cast?: PlexPerson[]
+  ratings?: PlexRating[]
+  /** imdb → "tt5603356", tmdb → "66103", tvdb → … */
+  guids?: Record<string, string>
+  extras?: PlexExtra[]
+  related?: PlexHub[]
 }
 
 export interface PlexStream {
@@ -181,16 +225,99 @@ function toMedia(m: Raw): PlexMedia {
   }
 }
 
-export function toItem(m: Raw): PlexItem | null {
+function tags(v: unknown): string[] {
+  return Array.isArray(v) ? (v as Raw[]).flatMap(t => (str(t['tag']) ? [str(t['tag'])!] : [])) : []
+}
+
+function people(v: unknown): PlexPerson[] {
+  if (!Array.isArray(v)) return []
+  return (v as Raw[]).flatMap(p => {
+    const name = str(p['tag'])
+    if (!name) return []
+    return [{ name, ...(str(p['role']) ? { role: str(p['role']) } : {}), ...(str(p['thumb']) ? { thumb: str(p['thumb']) } : {}) }]
+  })
+}
+
+/**
+ * Plex names a rating's source in the image URI it ships for its badge —
+ * `imdb://image.rating`, `rottentomatoes://image.rating.rotten` — so the
+ * scheme is the source.
+ */
+function ratings(v: unknown): PlexRating[] {
+  if (!Array.isArray(v)) return []
+  return (v as Raw[]).flatMap(r => {
+    const value = num(r['value'])
+    const image = str(r['image']) ?? ''
+    const source = image.split('://')[0] ?? ''
+    if (value === undefined || !source) return []
+    return [{ source, value, kind: str(r['type']) === 'critic' ? 'critic' as const : 'audience' as const }]
+  })
+}
+
+/**
+ * `full` adds the long tail — cast, crew, per-source ratings, trailers, the
+ * related shelves — which is per-item weight the list views never show and a
+ * 24-item grid would otherwise carry 24 casts of.
+ */
+export function toItem(m: Raw, full = false): PlexItem | null {
   const key = str(m['ratingKey'])
   const type = str(m['type'])
   const title = str(m['title'])
   if (!key || !title || !type) return null
-  if (type !== 'movie' && type !== 'show' && type !== 'season' && type !== 'episode') return null
+  if (type !== 'movie' && type !== 'show' && type !== 'season' && type !== 'episode' && type !== 'clip') return null
   const opt = <K extends keyof PlexItem>(k: K, v: PlexItem[K] | undefined) =>
     v === undefined ? {} : { [k]: v }
+  const ultra = m['UltraBlurColors']
+  const colors = ultra && typeof ultra === 'object' ? (ultra as Raw) : null
+  const c = (k: string) => (str(colors?.[k]) ?? '').replace(/^#/, '')
+  const genres = tags(m['Genre'])
+  const related = m['Related'] && typeof m['Related'] === 'object' ? (m['Related'] as Raw)['Hub'] : undefined
+  const extras = m['Extras'] && typeof m['Extras'] === 'object' ? (m['Extras'] as Raw)['Metadata'] : undefined
+  const guidList = Array.isArray(m['Guid']) ? (m['Guid'] as Raw[]) : []
+  const guids: Record<string, string> = {}
+  for (const g of guidList) {
+    const id = str(g['id']) ?? ''
+    const [scheme, value] = id.split('://')
+    if (scheme && value) guids[scheme] = value
+  }
   return {
     key, type, title,
+    ...opt('tagline', str(m['tagline'])),
+    ...opt('studio', str(m['studio'])),
+    ...opt('originalTitle', str(m['originalTitle'])),
+    ...opt('originallyAvailableAt', str(m['originallyAvailableAt'])),
+    ...opt('sectionId', num(m['librarySectionID'])),
+    ...opt('sectionTitle', str(m['librarySectionTitle'])),
+    ...opt('parentThumb', str(m['parentThumb'])),
+    ...opt('grandparentThumb', str(m['grandparentThumb'])),
+    ...opt('grandparentArt', str(m['grandparentArt'])),
+    ...(genres.length ? { genres } : {}),
+    ...(colors && c('topLeft') && c('topRight') && c('bottomLeft') && c('bottomRight')
+      ? { colors: { topLeft: c('topLeft'), topRight: c('topRight'), bottomLeft: c('bottomLeft'), bottomRight: c('bottomRight') } }
+      : {}),
+    // The bare `rating` is the critics' number when Plex ships a critic badge
+    // for it, and a duplicate of the audience one otherwise.
+    ...(str(m['ratingImage']) && num(m['rating']) !== undefined ? { criticRating: num(m['rating']) } : {}),
+    ...(full ? {
+      ...(tags(m['Country']).length ? { countries: tags(m['Country']) } : {}),
+      ...(people(m['Director']).length ? { directors: people(m['Director']) } : {}),
+      ...(people(m['Writer']).length ? { writers: people(m['Writer']) } : {}),
+      ...(people(m['Role']).length ? { cast: people(m['Role']) } : {}),
+      ...(ratings(m['Rating']).length ? { ratings: ratings(m['Rating']) } : {}),
+      ...(Object.keys(guids).length ? { guids } : {}),
+      ...(Array.isArray(extras) ? {
+        extras: (extras as Raw[]).flatMap(e => {
+          const k = str(e['ratingKey']); const t = str(e['title'])
+          return k && t ? [{
+            key: k, title: t,
+            ...(str(e['subtype']) ? { subtype: str(e['subtype']) } : {}),
+            ...(num(e['duration']) !== undefined ? { duration: num(e['duration']) } : {}),
+            ...(str(e['thumb']) ? { thumb: str(e['thumb']) } : {}),
+          }] : []
+        }),
+      } : {}),
+      ...(Array.isArray(related) ? { related: hubs(related as Raw[]) } : {}),
+    } : {}),
     ...opt('year', num(m['year'])),
     ...opt('summary', str(m['summary'])),
     ...opt('thumb', str(m['thumb'])),
@@ -215,6 +342,17 @@ export function toItem(m: Raw): PlexItem | null {
   }
 }
 
+/** Plex's shelves, dropping the empty ones and anything that isn't a library item. */
+function hubs(list: Raw[]): PlexHub[] {
+  return list.flatMap(h => {
+    const id = str(h['hubIdentifier']) ?? str(h['key']) ?? ''
+    const title = str(h['title']) ?? ''
+    const items = Array.isArray(h['Metadata']) ? (h['Metadata'] as Raw[]).map(x => toItem(x)).filter((x): x is PlexItem => !!x) : []
+    if (!id || !title || !items.length) return []
+    return [{ id, title, items, ...(h['more'] ? { more: true } : {}) }]
+  })
+}
+
 async function plexGet<T = Raw>(path: string, params: Record<string, string | number> = {}, cfg: AxiosRequestConfig = {}): Promise<T> {
   const { data } = await axios.get<T>(`${PLEX_URL}${path}`, {
     headers: plexHeaders(),
@@ -232,7 +370,7 @@ function container(data: unknown): Raw {
 
 function metadata(data: unknown): PlexItem[] {
   const list = container(data)['Metadata']
-  return Array.isArray(list) ? (list as Raw[]).map(toItem).filter((x): x is PlexItem => !!x) : []
+  return Array.isArray(list) ? (list as Raw[]).map(x => toItem(x)).filter((x): x is PlexItem => !!x) : []
 }
 
 export interface PlexIdentity { name: string; version: string; machineIdentifier: string }
@@ -282,7 +420,7 @@ export async function plexSearch(query: string, limit = 12): Promise<PlexItem[]>
   const byType: Record<string, PlexItem[]> = {}
   for (const hub of hubs as Raw[]) {
     const type = str(hub['type']) ?? ''
-    const list = Array.isArray(hub['Metadata']) ? (hub['Metadata'] as Raw[]).map(toItem).filter((x): x is PlexItem => !!x) : []
+    const list = Array.isArray(hub['Metadata']) ? (hub['Metadata'] as Raw[]).map(x => toItem(x)).filter((x): x is PlexItem => !!x) : []
     byType[type] = list
   }
   return [...(byType['movie'] ?? []), ...(byType['show'] ?? []), ...(byType['episode'] ?? [])].slice(0, limit)
@@ -307,6 +445,129 @@ export async function plexItemsByKey(keys: string[]): Promise<PlexItem[]> {
 export async function plexItem(key: string): Promise<PlexItem | null> {
   const [item] = await plexItemsByKey([key])
   return item ?? null
+}
+
+/**
+ * Everything the agent wrote on one item — cast with headshots, crew, every
+ * rating source, the trailer, and the "Related" shelves Plex computes (similar
+ * titles, more from the studio, more with each lead). One call: the extras
+ * and related shelves ride along on the metadata endpoint when asked for.
+ */
+export async function plexItemFull(key: string): Promise<PlexItem | null> {
+  const data = await plexGet(`/library/metadata/${key}`, { includeExtras: 1, includeRelated: 1, includeRelatedCount: 8 })
+  const list = container(data)['Metadata']
+  const raw = Array.isArray(list) ? (list[0] as Raw | undefined) : undefined
+  return raw ? toItem(raw, true) : null
+}
+
+// ── Libraries, the way Plex organises them ───────────────────────────────────
+//
+// A Plex server is a set of LIBRARIES ("sections"): Movies, Anime, TV Shows…
+// Each is a folder on disk plus a scanner (which reads the file/folder names)
+// and an agent (which fetches the metadata and artwork for what the scanner
+// found). Everything below is a view over one library: its shelves, its full
+// list sorted and filtered, its genres, its disk folders, its collections.
+
+export interface PlexSectionInfo {
+  key: string
+  title: string
+  type: 'movie' | 'show' | string
+  /** How many films or shows. */
+  count: number
+  /** A few recent posters, for a tile — libraries have no artwork of their own. */
+  posters: string[]
+}
+
+export async function plexSectionsDetailed(): Promise<PlexSectionInfo[]> {
+  const sections = (await plexSections()).filter(s => s.type === 'movie' || s.type === 'show')
+  return Promise.all(sections.map(async s => {
+    const data = await plexGet(`/library/sections/${s.key}/all`, {
+      type: s.type === 'movie' ? 1 : 2, sort: 'addedAt:desc', 'X-Plex-Container-Start': 0, 'X-Plex-Container-Size': 4,
+    })
+    const mc = container(data)
+    const items = metadata(data)
+    return { ...s, count: num(mc['totalSize']) ?? num(mc['size']) ?? items.length, posters: items.flatMap(i => (i.thumb ? [i.thumb] : [])) }
+  }))
+}
+
+/** The sort keys Plex's own apps offer, as `sort=` values. */
+export const SECTION_SORTS: Record<string, string> = {
+  title:    'titleSort:asc',
+  added:    'addedAt:desc',
+  released: 'originallyAvailableAt:desc',
+  rating:   'audienceRating:desc',
+  watched:  'lastViewedAt:desc',
+  random:   'random',
+}
+
+export interface SectionQuery { sort?: string; genre?: string; unwatched?: boolean; offset?: number; limit?: number }
+
+/** One page of a library, sorted and filtered the way Plex does it. */
+export async function plexSectionItems(section: PlexSection, q: SectionQuery): Promise<{ items: PlexItem[]; total: number }> {
+  const params: Record<string, string | number> = {
+    type: section.type === 'movie' ? 1 : 2,
+    sort: SECTION_SORTS[q.sort ?? 'title'] ?? SECTION_SORTS['title']!,
+    'X-Plex-Container-Start': q.offset ?? 0,
+    'X-Plex-Container-Size': q.limit ?? 30,
+  }
+  if (q.genre) params['genre'] = q.genre
+  // A film is unwatched; a show has unwatched episodes left. Different flags.
+  if (q.unwatched) params[section.type === 'movie' ? 'unwatched' : 'unwatchedLeaves'] = 1
+  const data = await plexGet(`/library/sections/${section.key}/all`, params)
+  const mc = container(data)
+  const items = metadata(data)
+  return { items, total: num(mc['totalSize']) ?? num(mc['size']) ?? items.length }
+}
+
+export async function plexSectionGenres(sectionKey: string): Promise<{ id: string; title: string }[]> {
+  const list = container(await plexGet(`/library/sections/${sectionKey}/genre`))['Directory']
+  if (!Array.isArray(list)) return []
+  return (list as Raw[]).flatMap(d => (str(d['key']) && str(d['title']) ? [{ id: str(d['key'])!, title: str(d['title'])! }] : []))
+}
+
+/** The shelves Plex draws at the top of a library: continue watching, recently added, start watching, top rated… */
+export async function plexSectionHubs(sectionKey: string, count = 10): Promise<PlexHub[]> {
+  const list = container(await plexGet(`/hubs/sections/${sectionKey}`, { count }))['Hub']
+  return Array.isArray(list) ? hubs(list as Raw[]) : []
+}
+
+export interface PlexFolderEntry { parent: string; title: string }
+
+/**
+ * The library as it is on disk. Plex keeps the folder tree beside the
+ * metadata tree, and `folder?parent=` walks it: a folder row has no
+ * ratingKey and a `key` pointing one level down; a file is a real item.
+ */
+export async function plexFolder(sectionKey: string, parent?: string): Promise<{ title: string; folders: PlexFolderEntry[]; items: PlexItem[] }> {
+  const data = await plexGet(`/library/sections/${sectionKey}/folder`, parent ? { parent } : {})
+  const mc = container(data)
+  const list = Array.isArray(mc['Metadata']) ? (mc['Metadata'] as Raw[]) : []
+  const folders: PlexFolderEntry[] = []
+  const items: PlexItem[] = []
+  for (const m of list) {
+    if (str(m['ratingKey'])) { const it = toItem(m); if (it) items.push(it); continue }
+    const key = str(m['key']) ?? ''
+    const p = key.match(/[?&]parent=(\d+)/)?.[1]
+    const title = str(m['title'])
+    if (p && title) folders.push({ parent: p, title })
+  }
+  return { title: str(mc['title2']) ?? str(mc['title1']) ?? '', folders, items }
+}
+
+export interface PlexCollection { key: string; title: string; count: number; thumb?: string; art?: string }
+
+export async function plexCollections(sectionKey: string): Promise<PlexCollection[]> {
+  const list = container(await plexGet(`/library/sections/${sectionKey}/collections`))['Metadata']
+  if (!Array.isArray(list)) return []
+  return (list as Raw[]).flatMap(m => {
+    const key = str(m['ratingKey']); const title = str(m['title'])
+    if (!key || !title) return []
+    return [{
+      key, title, count: num(m['childCount']) ?? 0,
+      ...(str(m['thumb']) ? { thumb: str(m['thumb']) } : {}),
+      ...(str(m['art']) ? { art: str(m['art']) } : {}),
+    }]
+  })
 }
 
 /** Seasons of a show, or episodes of a season. */

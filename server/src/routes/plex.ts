@@ -13,10 +13,18 @@ import {
   nextEpisode,
   PLEX_URL,
   plexChildren,
+  plexCollections,
   plexEnabled,
+  plexFolder,
   plexHeaders,
   plexItem,
+  plexItemFull,
   plexLanguages,
+  plexSectionGenres,
+  plexSectionHubs,
+  plexSectionItems,
+  plexSections,
+  plexSectionsDetailed,
   plexOnDeck,
   plexPlayOn,
   plexPlayers,
@@ -77,6 +85,104 @@ router.get('/home', async (_req: Request, res: Response) => {
   }
 })
 
+// ── Libraries ────────────────────────────────────────────────────────────────
+// The way Plex itself is organised: a library per folder on disk, each with
+// its own shelves, its sortable/filterable list, its genres, its disk folders
+// and its collections. Everything here is read straight from the section.
+
+router.get('/sections', async (_req: Request, res: Response) => {
+  if (!plexEnabled()) return disabled(res)
+  res.setHeader('Cache-Control', 'no-store')
+  try { res.json({ sections: await plexSectionsDetailed() }) }
+  catch (err) { res.status(502).json({ error: `Plex: ${msg(err)}` }) }
+})
+
+async function sectionOr404(id: string, res: Response) {
+  if (!/^\d+$/.test(id)) { res.status(400).json({ error: 'bad section' }); return null }
+  const s = (await plexSections()).find(x => x.key === id)
+  if (!s) { res.status(404).json({ error: 'no such library' }); return null }
+  return s
+}
+
+router.get('/section/:id', async (req: Request, res: Response) => {
+  if (!plexEnabled()) return disabled(res)
+  res.setHeader('Cache-Control', 'no-store')
+  try {
+    const s = await sectionOr404(String(req.params['id'] ?? ''), res)
+    if (!s) return
+    const offset = Math.max(0, Number(req.query['offset']) || 0)
+    const limit = Math.min(60, Math.max(1, Number(req.query['limit']) || 30))
+    const genre = String(req.query['genre'] ?? '')
+    const { items, total } = await plexSectionItems(s, {
+      sort: String(req.query['sort'] ?? 'title'),
+      ...(/^\d+$/.test(genre) ? { genre } : {}),
+      unwatched: req.query['unwatched'] === '1',
+      offset, limit,
+    })
+    res.json({ section: s, items: items.map(slim), total, offset })
+  } catch (err) {
+    res.status(502).json({ error: `Plex: ${msg(err)}` })
+  }
+})
+
+router.get('/section/:id/genres', async (req: Request, res: Response) => {
+  if (!plexEnabled()) return disabled(res)
+  try {
+    const s = await sectionOr404(String(req.params['id'] ?? ''), res)
+    if (!s) return
+    res.json({ genres: await plexSectionGenres(s.key) })
+  } catch (err) {
+    res.status(502).json({ error: `Plex: ${msg(err)}` })
+  }
+})
+
+router.get('/section/:id/hubs', async (req: Request, res: Response) => {
+  if (!plexEnabled()) return disabled(res)
+  res.setHeader('Cache-Control', 'no-store')
+  try {
+    const s = await sectionOr404(String(req.params['id'] ?? ''), res)
+    if (!s) return
+    const hubs = await plexSectionHubs(s.key, 12)
+    res.json({ hubs: hubs.map(h => ({ ...h, items: h.items.map(slim) })) })
+  } catch (err) {
+    res.status(502).json({ error: `Plex: ${msg(err)}` })
+  }
+})
+
+router.get('/section/:id/folder', async (req: Request, res: Response) => {
+  if (!plexEnabled()) return disabled(res)
+  res.setHeader('Cache-Control', 'no-store')
+  try {
+    const s = await sectionOr404(String(req.params['id'] ?? ''), res)
+    if (!s) return
+    const parent = String(req.query['parent'] ?? '')
+    const f = await plexFolder(s.key, /^\d+$/.test(parent) ? parent : undefined)
+    res.json({ ...f, items: f.items.map(slim) })
+  } catch (err) {
+    res.status(502).json({ error: `Plex: ${msg(err)}` })
+  }
+})
+
+router.get('/section/:id/collections', async (req: Request, res: Response) => {
+  if (!plexEnabled()) return disabled(res)
+  try {
+    const s = await sectionOr404(String(req.params['id'] ?? ''), res)
+    if (!s) return
+    res.json({ collections: await plexCollections(s.key) })
+  } catch (err) {
+    res.status(502).json({ error: `Plex: ${msg(err)}` })
+  }
+})
+
+/** A collection's members — Plex models a collection as an item with children. */
+router.get('/collection/:key', async (req: Request, res: Response) => {
+  if (!plexEnabled()) return disabled(res)
+  const key = String(req.params['key'] ?? '')
+  if (!/^\d+$/.test(key)) return res.status(400).json({ error: 'bad key' })
+  try { res.json({ items: (await plexChildren(key)).map(slim) }) }
+  catch (err) { res.status(502).json({ error: `Plex: ${msg(err)}` }) }
+})
+
 router.get('/search', async (req: Request, res: Response) => {
   if (!plexEnabled()) return disabled(res)
   const q = String(req.query['q'] ?? '').trim()
@@ -101,7 +207,14 @@ router.get('/item/:key', async (req: Request, res: Response) => {
   try {
     const langs = await plexLanguages(key)
     if (!langs) return res.status(404).json({ error: 'not in the library' })
-    const { item, summary, episodes } = langs
+    const { summary, episodes } = langs
+    // The stream-bearing item from the languages pass, plus everything the
+    // agent wrote on it — cast, ratings, trailer, related — from the full one.
+    let item = langs.item
+    try {
+      const full = await plexItemFull(key)
+      if (full) item = { ...full, ...(item.media ? { media: item.media } : {}) }
+    } catch (err) { console.warn('[plex] full metadata:', msg(err)) }
     const children = item.type === 'show' || item.type === 'season' ? await plexChildren(key) : []
     let subtitles: Awaited<ReturnType<typeof bazarrWanted>> = null
     if (bazarrEnabled() && (item.type === 'show' || item.type === 'movie')) {

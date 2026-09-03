@@ -22,42 +22,21 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  Library, Download, Inbox, ChevronLeft, Play, Tv, Pause, Search, Check, Clock, Languages, Subtitles, AlertTriangle, RefreshCw,
+  Library, Download, Inbox, Play, Tv, Pause, Search, Check, Clock, Languages, Subtitles, AlertTriangle, RefreshCw,
 } from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
 import {
-  openPlexPlayer, plexApi, plexImg, tmdbPoster, usePlexPanelRequest,
+  openPlexPlayer, plexApi, tmdbPoster, usePlexPanelRequest,
   type LanguageSummary, type PlexItem, type PlexItemDetail, type PlexPlayerInfo, type PlexStatus, type PlexStream,
   type PlexTab, type SeerrRequest, type SeerrResult, type Torrent,
 } from '../../../hooks/usePlex'
-
-const ACCENT = '#e5a00d'
+import { ACCENT, itemTitle, itemSubtitle, PosterGrid, Row } from './items'
+import {
+  BackButton, Backdrop, CastRow, CollectionPage, CrewLine, factsLine, FolderPage, GenreChips, HeaderPoster,
+  LibrariesRow, RatingsRow, RelatedShelves, SectionPage, TrailerButton, type Layer,
+} from './LibraryBrowse'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-function itemTitle(i: PlexItem): string {
-  if (i.type === 'episode') {
-    const se = i.parentIndex !== undefined && i.index !== undefined ? `S${i.parentIndex}E${i.index} · ` : ''
-    return `${se}${i.title}`
-  }
-  return i.title
-}
-
-function itemSubtitle(i: PlexItem): string {
-  if (i.type === 'episode') return i.grandparentTitle ?? ''
-  if (i.type === 'season') return i.parentTitle ?? ''
-  const bits: string[] = []
-  if (i.year) bits.push(String(i.year))
-  if (i.type === 'show' && i.leafCount) bits.push(`${i.leafCount} episodes`)
-  if (i.type === 'movie' && i.duration) bits.push(`${Math.round(i.duration / 60000)} min`)
-  return bits.join(' · ')
-}
-
-function progressOf(i: PlexItem): number {
-  if (i.type === 'show' || i.type === 'season') return i.leafCount ? (i.viewedLeafCount ?? 0) / i.leafCount : 0
-  if (i.viewOffset && i.duration) return i.viewOffset / i.duration
-  return i.viewCount ? 1 : 0
-}
 
 function fmtBytes(b: number): string {
   if (b >= 1e9) return `${(b / 1e9).toFixed(1)} GB`
@@ -81,8 +60,9 @@ function fmtEta(sec: number): string {
 
 export default function PlexExpanded({ status }: { status: PlexStatus | null }) {
   const [tab, setTab] = useState<PlexTab>('library')
-  // The browse stack: [] = the browse layer, else the item pages opened in order.
-  const [stack, setStack] = useState<string[]>([])
+  // The browse stack: [] = the browse layer, else the pages opened in order —
+  // a library, a folder, a collection, or an item, each a place to go back from.
+  const [stack, setStack] = useState<Layer[]>([])
   const [query, setQuery] = useState('')
   const req = usePlexPanelRequest()
   const seenReq = useRef(0)
@@ -92,7 +72,7 @@ export default function PlexExpanded({ status }: { status: PlexStatus | null }) 
     if (!req || req.seq === seenReq.current) return
     seenReq.current = req.seq
     setTab(req.tab)
-    if (req.key) setStack([req.key])
+    if (req.key) setStack([{ kind: 'item', key: req.key }])
     else if (req.query !== undefined) { setStack([]); setQuery(req.query) }
     else setStack([])
   }, [req])
@@ -105,8 +85,10 @@ export default function PlexExpanded({ status }: { status: PlexStatus | null }) 
     ...(showRequests ? [{ id: 'requests' as const, label: 'Requests', icon: <Inbox size={18} /> }] : []),
   ]
 
-  const open = useCallback((key: string) => setStack(s => [...s, key]), [])
+  const open = useCallback((key: string) => setStack(s => [...s, { kind: 'item', key }]), [])
+  const push = useCallback((l: Layer) => setStack(s => [...s, l]), [])
   const back = useCallback(() => setStack(s => s.slice(0, -1)), [])
+  const top = stack[stack.length - 1]
 
   if (status && !status.enabled) {
     return (
@@ -140,9 +122,11 @@ export default function PlexExpanded({ status }: { status: PlexStatus | null }) 
           </div>
         )}
         {tab === 'library' && (
-          stack.length
-            ? <ItemPage key={stack[stack.length - 1]} itemKey={stack[stack.length - 1]!} depth={stack.length} onOpen={open} onBack={back} subtitlesWanted={!!status?.features.subtitles} />
-            : <BrowseLayer query={query} setQuery={setQuery} onOpen={open} />
+          !top ? <BrowseLayer query={query} setQuery={setQuery} onOpen={open} onPush={push} />
+          : top.kind === 'item' ? <ItemPage key={top.key} itemKey={top.key} depth={stack.length} onOpen={open} onBack={back} subtitlesWanted={!!status?.features.subtitles} />
+          : top.kind === 'section' ? <SectionPage key={top.id} id={top.id} title={top.title} onOpen={open} onPush={push} onBack={back} />
+          : top.kind === 'folder' ? <FolderPage key={`${top.id}/${top.parent ?? ''}`} id={top.id} parent={top.parent} title={top.title} onOpen={open} onPush={push} onBack={back} />
+          : <CollectionPage key={top.key} collectionKey={top.key} title={top.title} onOpen={open} onBack={back} />
         )}
         {tab === 'downloads' && <DownloadsTab canControl={!!status?.features.torrents} />}
         {tab === 'requests' && <RequestsTab />}
@@ -153,7 +137,7 @@ export default function PlexExpanded({ status }: { status: PlexStatus | null }) 
 
 // ── Library: browse layer ────────────────────────────────────────────────────
 
-function BrowseLayer({ query, setQuery, onOpen }: { query: string; setQuery: (q: string) => void; onOpen: (key: string) => void }) {
+function BrowseLayer({ query, setQuery, onOpen, onPush }: { query: string; setQuery: (q: string) => void; onOpen: (key: string) => void; onPush: (l: Layer) => void }) {
   const [home, setHome] = useState<{ onDeck: PlexItem[]; recent: PlexItem[] } | null>(null)
   const [results, setResults] = useState<PlexItem[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -187,6 +171,7 @@ function BrowseLayer({ query, setQuery, onOpen }: { query: string; setQuery: (q:
           : <p className="text-ink-dim text-sm">Nothing called “{query.trim()}” in the library.</p>
       ) : (
         <>
+          <LibrariesRow onPush={onPush} />
           {home?.onDeck.length ? (
             <section>
               <h3 className="text-[11px] uppercase tracking-widest text-white/40 font-semibold mb-2">Continue watching</h3>
@@ -205,57 +190,6 @@ function BrowseLayer({ query, setQuery, onOpen }: { query: string; setQuery: (q:
           {!home && !error && <p className="text-ink-dim text-sm">Loading…</p>}
         </>
       )}
-    </div>
-  )
-}
-
-function Poster({ item, w = 120 }: { item: PlexItem; w?: number }) {
-  const src = plexImg(item.thumb ?? item.art, w * 2)
-  return src
-    ? <img src={src} alt="" loading="lazy" className="w-full h-full object-cover" />
-    : <div className="w-full h-full bg-gradient-to-br from-white/15 to-white/5 flex items-center justify-center"><Tv size={28} className="text-white/30" /></div>
-}
-
-function PosterGrid({ items, onOpen }: { items: PlexItem[]; onOpen: (key: string) => void }) {
-  return (
-    <div className="grid grid-cols-3 gap-3">
-      {items.map(i => {
-        const p = progressOf(i)
-        return (
-          <button key={i.key} type="button" onClick={() => onOpen(i.key)} className="text-left active:scale-95 transition-transform">
-            <div className="relative aspect-[2/3] rounded-xl overflow-hidden border border-hairline bg-white/5">
-              <Poster item={i} />
-              {p > 0 && p < 1 && <div className="absolute bottom-0 left-0 h-1 bg-[#e5a00d]" style={{ width: `${p * 100}%` }} />}
-              {p >= 1 && <span className="absolute top-1.5 right-1.5 w-6 h-6 rounded-full bg-black/60 flex items-center justify-center"><Check size={14} className="text-white" /></span>}
-            </div>
-            <p className="mt-1.5 text-[13px] text-white leading-tight line-clamp-2">{itemTitle(i)}</p>
-            <p className="text-[12px] text-ink-dim leading-tight line-clamp-1">{itemSubtitle(i)}</p>
-          </button>
-        )
-      })}
-    </div>
-  )
-}
-
-/** A landscape row: for episodes and continue-watching, where the title carries more than the art. */
-function Row({ item, onOpen, trailing }: { item: PlexItem; onOpen: (key: string) => void; trailing?: React.ReactNode }) {
-  const p = progressOf(item)
-  return (
-    <div className="flex items-center gap-3 rounded-2xl bg-white/5 border border-hairline overflow-hidden">
-      <button type="button" onClick={() => onOpen(item.key)} className="flex items-center gap-3 flex-1 min-w-0 text-left p-2 active:bg-white/10">
-        <div className="relative w-14 h-[84px] rounded-lg overflow-hidden shrink-0 bg-white/5">
-          <Poster item={item} w={56} />
-          {p > 0 && p < 1 && <div className="absolute bottom-0 left-0 h-1 bg-[#e5a00d]" style={{ width: `${p * 100}%` }} />}
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-[12px] text-ink-dim line-clamp-1">{itemSubtitle(item)}</p>
-          <p className="text-sm text-white font-semibold leading-snug line-clamp-2">{itemTitle(item)}</p>
-          {item.viewOffset && item.duration ? (
-            <p className="text-[12px] text-white/50 mt-0.5">{Math.round((item.duration - item.viewOffset) / 60000)} min left</p>
-          ) : null}
-        </div>
-      </button>
-      {trailing}
     </div>
   )
 }
@@ -284,7 +218,7 @@ function ItemPage({ itemKey, depth, onOpen, onBack, subtitlesWanted }: {
   }, [itemKey])
 
   const item = detail?.item
-  const playable = item?.type === 'movie' || item?.type === 'episode'
+  const playable = item?.type === 'movie' || item?.type === 'episode' || item?.type === 'clip'
   const part = item?.media?.[0]?.parts[0]
   const streams = part?.streams ?? []
   const audioStreams = streams.filter(s => s.streamType === 2)
@@ -300,30 +234,36 @@ function ItemPage({ itemKey, depth, onOpen, onBack, subtitlesWanted }: {
   }
 
   return (
-    <div className="flex flex-col gap-5">
-      <button type="button" onClick={onBack}
-        className="self-start h-11 px-4 -ml-1 rounded-full bg-glass-2 border border-hairline flex items-center gap-1.5 text-sm text-white/80 active:bg-white/25">
-        <ChevronLeft size={18} />{depth > 1 ? 'Back' : 'Library'}
-      </button>
+    <div className="relative flex flex-col gap-5">
+      {/* The agent's backdrop and the poster's own colours, behind the header —
+          what turns a metadata card into the page Plex's apps draw. */}
+      {item && <Backdrop item={item} />}
+      <BackButton onBack={onBack} label={depth > 1 ? 'Back' : 'Library'} />
 
       {error && <p className="text-amber-300 text-sm flex items-center gap-2"><AlertTriangle size={16} />{error}</p>}
       {!detail && !error && <p className="text-ink-dim text-sm">Loading…</p>}
 
       {item && (
         <>
-          <div className="flex gap-4">
-            <div className="w-28 aspect-[2/3] rounded-xl overflow-hidden border border-hairline shrink-0 bg-white/5">
-              <Poster item={item} w={112} />
+          <div className="flex gap-4 pt-16">
+            <div className="w-28 aspect-[2/3] rounded-xl overflow-hidden border border-hairline shrink-0 bg-white/5 shadow-2xl">
+              <HeaderPoster item={item} />
             </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-[12px] text-ink-dim">{itemSubtitle(item)}</p>
-              <h2 className="text-lg text-white font-semibold leading-snug">{itemTitle(item)}</h2>
-              <p className="text-[12px] text-white/50 mt-1">
-                {[item.contentRating, item.rating ? `★ ${item.rating.toFixed(1)}` : null, item.media?.[0]?.videoResolution ? `${item.media[0].videoResolution}p` : null].filter(Boolean).join(' · ')}
-              </p>
-              {item.summary && <p className="text-[13px] text-white/70 leading-snug mt-2 line-clamp-4">{item.summary}</p>}
+            <div className="min-w-0 flex-1 self-end">
+              <p className="text-[12px] text-ink-dim">{item.type === 'episode' || item.type === 'season' ? itemSubtitle(item) : item.sectionTitle ?? ''}</p>
+              <h2 className="text-xl text-white font-semibold leading-tight">{itemTitle(item)}</h2>
+              {item.originalTitle && item.originalTitle !== item.title && (
+                <p className="text-[12px] text-white/45 leading-snug">{item.originalTitle}</p>
+              )}
+              {item.tagline && <p className="text-[13px] text-white/70 italic leading-snug mt-1">{item.tagline}</p>}
+              <p className="text-[12px] text-white/50 mt-1">{factsLine(item)}</p>
             </div>
           </div>
+          <RatingsRow item={item} />
+          <GenreChips item={item} />
+          {item.summary && <p className="text-[13px] text-white/70 leading-snug">{item.summary}</p>}
+          <CrewLine item={item} />
+          <TrailerButton item={item} />
 
           {/* Play */}
           <div className="flex gap-2">
@@ -371,6 +311,8 @@ function ItemPage({ itemKey, depth, onOpen, onBack, subtitlesWanted }: {
             </div>
           )}
 
+          <CastRow item={item} />
+
           {/* Children */}
           {detail!.children.length > 0 && (
             <section>
@@ -402,6 +344,8 @@ function ItemPage({ itemKey, depth, onOpen, onBack, subtitlesWanted }: {
               </div>
             </section>
           )}
+
+          <RelatedShelves item={item} onOpen={onOpen} />
         </>
       )}
     </div>
