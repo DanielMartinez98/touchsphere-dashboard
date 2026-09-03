@@ -113,10 +113,61 @@ export interface PlexItemDetail {
 
 export interface PlexPlayerInfo { id: string; name: string; product?: string }
 
+/** What the panel can offer to do about a download (server/src/downloads.ts). */
+export type DownloadAction =
+  | 'resume' | 'pause' | 'recheck' | 'reannounce' | 'force-start' | 'top'
+  | 'refresh-import' | 'replace' | 'remove' | 'remove-data'
+
+export interface DownloadAdvice {
+  level: 'ok' | 'working' | 'info' | 'warn' | 'error'
+  headline: string
+  detail: string
+  actions: DownloadAction[]
+  evidence: string[]
+}
+
+export interface StackAdvice { level: DownloadAdvice['level']; headline: string; detail: string }
+
+export interface StackHealth {
+  connection: 'connected' | 'firewalled' | 'disconnected' | 'unknown'
+  dhtNodes: number
+  altSpeed: boolean
+  maxActiveDownloads: number
+  queueing: boolean
+  freeSpaceGB: number | null
+  downloadPath: string | null
+}
+
+export interface TorrentTracker { url: string; status: number; msg?: string; peers: number; seeds: number }
+
+export interface TorrentProps {
+  savePath?: string
+  seeds: number; seedsTotal: number; peers: number; peersTotal: number
+  connections: number; uploaded: number; wasted: number
+  timeElapsedSec: number; seedingTimeSec: number; lastSeenComplete: number
+  piecesHave: number; piecesNum: number; reannounceInSec: number
+}
+
+export interface ArrQueueRow {
+  downloadId: string; queueId: number; title: string; kind: 'show' | 'movie'
+  status?: string; trackedState?: string; sizeleft?: number; size?: number; note?: string
+}
+
+export interface TorrentDetail {
+  torrent: Torrent
+  trackers: TorrentTracker[]
+  props: TorrentProps | null
+  health: StackHealth | null
+  arr: ArrQueueRow | null
+  advice: DownloadAdvice
+}
+
 export interface Torrent {
   hash: string
   name: string
   note?: string
+  /** The server's verdict: what is wrong and what would fix it. */
+  advice?: DownloadAdvice
   label?: string
   kind?: 'show' | 'movie'
   state: string
@@ -172,6 +223,13 @@ async function getJson<T>(url: string): Promise<T> {
   const body = await res.json().catch(() => ({})) as T & { error?: string }
   if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
   return body
+}
+
+async function delJson<T>(url: string): Promise<T> {
+  const res = await fetch(url, { method: 'DELETE' })
+  const data = await res.json().catch(() => ({})) as T & { error?: string }
+  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
+  return data
 }
 
 async function postJson<T>(url: string, body: unknown): Promise<T> {
@@ -230,8 +288,22 @@ export const plexApi = {
   now:      () => getJson<{ playing: { key: string; title: string; thumb?: string; state: 'playing' | 'paused' | 'stopped'; timeMs: number; durationMs: number; at: number } | null; kiosks: number }>('/api/plex/now'),
   /** Tell the kiosk's player what to do. */
   remote:   (body: { action: 'play' | 'pause' | 'resume' | 'stop'; key?: string; title?: string }) => postJson<{ ok: true; kiosks: number }>('/api/plex/remote', body),
-  torrents: () => getJson<{ source: 'qbit' | 'arr'; warning?: string; torrents: Torrent[]; transfer: { dlspeed: number; upspeed: number; connected: boolean } | null }>('/api/plex/torrents'),
-  torrent:  (hash: string, action: 'pause' | 'resume') => postJson<{ ok: true }>(`/api/plex/torrents/${hash}/${action}`, {}),
+  torrents: () => getJson<{
+    source: 'qbit' | 'arr'; warning?: string; torrents: Torrent[]
+    transfer: { dlspeed: number; upspeed: number; connected: boolean } | null
+    health: StackHealth | null; stackAdvice: StackAdvice[]
+  }>('/api/plex/torrents'),
+  /** One download in full, with the trackers and the precise verdict. */
+  torrent:  (hash: string) => getJson<TorrentDetail>(`/api/plex/torrents/${hash}`),
+  torrentAction: (hash: string, action: DownloadAction) =>
+    postJson<{ ok: true; did?: string; detail?: string }>(`/api/plex/torrents/${hash}/${action}`, {}),
+  removeTorrent: (hash: string, opts: { files: boolean; blocklist: boolean; search: boolean }) => {
+    const p = new URLSearchParams()
+    if (opts.files) p.set('files', '1')
+    if (opts.blocklist) p.set('blocklist', '1')
+    if (opts.search) p.set('search', '1')
+    return delJson<{ ok: true; detail?: string }>(`/api/plex/torrents/${hash}?${p.toString()}`)
+  },
   requests: () => getJson<{ requests: SeerrRequest[] }>('/api/plex/requests'),
   discover: (q: string) => getJson<{ results: SeerrResult[] }>(`/api/plex/discover?q=${encodeURIComponent(q)}`),
   request:  (mediaType: 'movie' | 'tv', tmdbId: number, seasons?: number[]) => postJson<{ request: SeerrRequest }>('/api/plex/request', { mediaType, tmdbId, seasons }),

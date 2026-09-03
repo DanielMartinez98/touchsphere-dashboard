@@ -830,6 +830,8 @@ export async function plexTimeline(key: string, state: 'playing' | 'paused' | 's
 export interface ArrQueueItem {
   /** Torrent hash, lowercased — the join key against qBittorrent. */
   downloadId: string
+  /** The *arr's own queue row id — what DELETE /api/v3/queue/{id} takes. */
+  queueId: number
   title: string          // "Severance · S2E3 · Who Is Alive?" or the film's title
   kind: 'show' | 'movie'
   status?: string
@@ -888,7 +890,7 @@ export async function arrQueue(): Promise<Map<string, ArrQueueItem>> {
         const se = ep ? ` · S${num(ep['seasonNumber']) ?? '?'}E${num(ep['episodeNumber']) ?? '?'}` : ''
         const epTitle = str(ep?.['title']) ? ` · ${str(ep?.['title'])}` : ''
         out.set(id, {
-          downloadId: id, title: `${show}${se}${epTitle}`, kind: 'show',
+          downloadId: id, queueId: num(r['id']) ?? 0, title: `${show}${se}${epTitle}`, kind: 'show',
           ...(str(r['status']) ? { status: str(r['status']) } : {}),
           ...(str(r['trackedDownloadState']) ? { trackedState: str(r['trackedDownloadState']) } : {}),
           ...(num(r['sizeleft']) !== undefined ? { sizeleft: num(r['sizeleft']) } : {}),
@@ -908,7 +910,7 @@ export async function arrQueue(): Promise<Map<string, ArrQueueItem>> {
         const title = str(movie?.['title']) ?? str(r['title']) ?? 'Unknown film'
         const year = num(movie?.['year'])
         out.set(id, {
-          downloadId: id, title: year ? `${title} (${year})` : title, kind: 'movie',
+          downloadId: id, queueId: num(r['id']) ?? 0, title: year ? `${title} (${year})` : title, kind: 'movie',
           ...(str(r['status']) ? { status: str(r['status']) } : {}),
           ...(str(r['trackedDownloadState']) ? { trackedState: str(r['trackedDownloadState']) } : {}),
           ...(num(r['sizeleft']) !== undefined ? { sizeleft: num(r['sizeleft']) } : {}),
@@ -929,6 +931,12 @@ export interface Torrent {
   name: string
   /** Sonarr/Radarr's explanation of the row's state, when it has one. */
   note?: string
+  /**
+   * The verdict, attached by the route rather than by the client here — see
+   * server/src/downloads.ts. Optional because the list builder does not know
+   * about it; everything that reads a Torrent may or may not find one.
+   */
+  advice?: { level: string; headline: string; detail: string; actions: string[]; evidence: string[] }
   /** What the *arr stack says this is, when it knows: "Severance · S2E3". */
   label?: string
   kind?: 'show' | 'movie'
@@ -1055,6 +1063,215 @@ export async function torrents(): Promise<Torrent[]> {
       ...(str(t['category']) ? { category: str(t['category']) } : {}),
     }]
   })
+}
+
+/** One tracker's opinion of this torrent. `msg` is where the real answer lives. */
+export interface TorrentTracker {
+  url: string
+  /** qBittorrent's codes: 0 disabled, 1 not contacted, 2 working, 3 updating, 4 not working. */
+  status: number
+  msg?: string
+  peers: number
+  seeds: number
+}
+
+/** The per-torrent detail qBittorrent keeps but does not put in the list. */
+export interface TorrentProps {
+  savePath?: string
+  seeds: number
+  seedsTotal: number
+  peers: number
+  peersTotal: number
+  connections: number
+  uploaded: number
+  wasted: number
+  timeElapsedSec: number
+  seedingTimeSec: number
+  lastSeenComplete: number
+  piecesHave: number
+  piecesNum: number
+  reannounceInSec: number
+}
+
+/** What every torrent shares: the connection, the limits, the disk. */
+export interface StackHealth {
+  connection: 'connected' | 'firewalled' | 'disconnected' | 'unknown'
+  dhtNodes: number
+  altSpeed: boolean
+  maxActiveDownloads: number
+  queueing: boolean
+  freeSpaceGB: number | null
+  downloadPath: string | null
+}
+
+/** Trackers for one torrent, including qBittorrent's DHT/PeX/LSD pseudo-rows. */
+export async function torrentTrackers(hash: string): Promise<TorrentTracker[]> {
+  const raw = await qbitFetch<Raw[]>('/api/v2/torrents/trackers', { hash })
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap(t => {
+    const url = str(t['url'])
+    if (!url) return []
+    return [{
+      url,
+      status: num(t['status']) ?? 0,
+      ...(str(t['msg']) ? { msg: str(t['msg']) } : {}),
+      peers: num(t['num_peers']) ?? 0,
+      seeds: num(t['num_seeds']) ?? 0,
+    }]
+  })
+}
+
+export async function torrentProperties(hash: string): Promise<TorrentProps | null> {
+  const p = await qbitFetch<Raw>('/api/v2/torrents/properties', { hash })
+  if (!p || typeof p !== 'object') return null
+  return {
+    ...(str(p['save_path']) ? { savePath: str(p['save_path']) } : {}),
+    seeds: num(p['seeds']) ?? 0,
+    seedsTotal: num(p['seeds_total']) ?? 0,
+    peers: num(p['peers']) ?? 0,
+    peersTotal: num(p['peers_total']) ?? 0,
+    connections: num(p['nb_connections']) ?? 0,
+    uploaded: num(p['total_uploaded']) ?? 0,
+    wasted: num(p['total_wasted']) ?? 0,
+    timeElapsedSec: num(p['time_elapsed']) ?? 0,
+    seedingTimeSec: num(p['seeding_time']) ?? 0,
+    lastSeenComplete: num(p['last_seen']) ?? 0,
+    piecesHave: num(p['pieces_have']) ?? 0,
+    piecesNum: num(p['pieces_num']) ?? 0,
+    reannounceInSec: num(p['reannounce']) ?? 0,
+  }
+}
+
+/**
+ * The stack-wide facts: whether peers can reach this box (behind a VPN the
+ * usual answer is "firewalled"), whether the slow speed limits are on, how
+ * many downloads qBittorrent will run at once, and how much disk is left.
+ * Every part is optional — a missing one reports as unknown rather than
+ * failing the whole call, since this only ever decorates a list.
+ */
+export async function stackDownloadHealth(): Promise<StackHealth> {
+  const out: StackHealth = {
+    connection: 'unknown', dhtNodes: 0, altSpeed: false,
+    maxActiveDownloads: 0, queueing: false, freeSpaceGB: null, downloadPath: null,
+  }
+  await Promise.all([
+    (async () => {
+      try {
+        const t = await qbitFetch<Raw>('/api/v2/transfer/info')
+        const c = str(t['connection_status']) ?? ''
+        out.connection = c === 'connected' || c === 'firewalled' || c === 'disconnected' ? c : 'unknown'
+        out.dhtNodes = num(t['dht_nodes']) ?? 0
+      } catch { /* leave unknown */ }
+    })(),
+    (async () => {
+      try { out.altSpeed = String(await qbitFetch<unknown>('/api/v2/transfer/speedLimitsMode')).trim() === '1' } catch { /* no */ }
+    })(),
+    (async () => {
+      try {
+        const p = await qbitFetch<Raw>('/api/v2/app/preferences')
+        out.maxActiveDownloads = num(p['max_active_downloads']) ?? 0
+        out.queueing = p['queueing_enabled'] === true
+        out.downloadPath = str(p['save_path']) ?? null
+      } catch { /* no */ }
+    })(),
+    (async () => {
+      // Disk space comes from whichever *arr is configured; both report the
+      // same mounts, and neither needs qBittorrent to be reachable.
+      const base = sonarrEnabled() ? SONARR_URL : radarrEnabled() ? RADARR_URL : ''
+      const key = sonarrEnabled() ? SONARR_KEY : radarrEnabled() ? RADARR_KEY : ''
+      if (!base) return
+      try {
+        const disks = await arrGet<Raw[]>(base, key, '/api/v3/diskspace')
+        if (!Array.isArray(disks) || !disks.length) return
+        // The fullest mount is the one that will stop a download first.
+        let worst: number | null = null
+        for (const d of disks) {
+          const free = num(d['freeSpace'])
+          if (free === undefined) continue
+          const gb = free / 1e9
+          if (worst === null || gb < worst) worst = gb
+        }
+        out.freeSpaceGB = worst
+      } catch { /* no */ }
+    })(),
+  ])
+  return out
+}
+
+/** Ask the trackers again now, verify the data, or jump the queue. */
+export async function torrentCommand(hash: string, action: 'recheck' | 'reannounce' | 'force-start' | 'top'): Promise<void> {
+  if (action === 'recheck')    { await qbitFetch('/api/v2/torrents/recheck', { hashes: hash }, 'post'); return }
+  if (action === 'reannounce') { await qbitFetch('/api/v2/torrents/reannounce', { hashes: hash }, 'post'); return }
+  if (action === 'top')        { await qbitFetch('/api/v2/torrents/topPrio', { hashes: hash }, 'post'); return }
+  // Force-start also needs the torrent started, or it sits there forced and stopped.
+  await qbitFetch('/api/v2/torrents/setForceStart', { hashes: hash, value: 'true' }, 'post')
+  try { await torrentControl(hash, 'resume') } catch { /* already running */ }
+}
+
+/** Remove a torrent from qBittorrent, optionally deleting what it downloaded. */
+export async function torrentRemove(hash: string, deleteFiles: boolean): Promise<void> {
+  await qbitFetch('/api/v2/torrents/delete', { hashes: hash, deleteFiles: deleteFiles ? 'true' : 'false' }, 'post')
+}
+
+// ── The *arr side of removing something ──────────────────────────────────────
+
+function arrFor(kind: 'show' | 'movie'): { base: string; key: string; name: string } | null {
+  if (kind === 'show') return sonarrEnabled() ? { base: SONARR_URL, key: SONARR_KEY, name: 'Sonarr' } : null
+  return radarrEnabled() ? { base: RADARR_URL, key: RADARR_KEY, name: 'Radarr' } : null
+}
+
+async function arrSend(base: string, key: string, path: string, method: 'delete' | 'post', params: Record<string, string | number> = {}, body?: unknown): Promise<void> {
+  await axios.request({
+    url: `${base}${path}`,
+    method,
+    headers: { 'X-Api-Key': key, Accept: 'application/json' },
+    params,
+    ...(body !== undefined ? { data: body } : {}),
+    timeout: HTTP_TIMEOUT_MS,
+  })
+}
+
+/**
+ * Take one row out of Sonarr/Radarr's queue.
+ *
+ * `blocklist` is the interesting half: it records the release as bad so the
+ * *arr never grabs that same file again, which is the difference between
+ * "delete it" and "delete it and stop it coming back". `search` then asks for
+ * a replacement — the two together are what the panel calls "Find another".
+ * `removeFromClient` is left to the caller, because the panel deletes from
+ * qBittorrent itself (and decides about the files there).
+ */
+export async function arrQueueRemove(
+  item: ArrQueueItem,
+  opts: { blocklist: boolean; search: boolean; removeFromClient: boolean },
+): Promise<string | null> {
+  const arr = arrFor(item.kind)
+  if (!arr || !item.queueId) return null
+  await arrSend(arr.base, arr.key, `/api/v3/queue/${item.queueId}`, 'delete', {
+    removeFromClient: opts.removeFromClient ? 'true' : 'false',
+    blocklist: opts.blocklist ? 'true' : 'false',
+    // The *arr's own flag is the negative: skipping redownload means NOT
+    // searching for a replacement.
+    skipRedownload: opts.search ? 'false' : 'true',
+  })
+  return arr.name
+}
+
+/**
+ * Make Sonarr/Radarr look at its queue again and import anything ready.
+ * The one useful answer to "it downloaded but never appeared".
+ */
+export async function arrRefreshImports(kind?: 'show' | 'movie'): Promise<string[]> {
+  const done: string[] = []
+  for (const k of (kind ? [kind] : ['show', 'movie'] as const)) {
+    const arr = arrFor(k)
+    if (!arr) continue
+    try {
+      await arrSend(arr.base, arr.key, '/api/v3/command', 'post', {}, { name: 'RefreshMonitoredDownloads' })
+      done.push(arr.name)
+    } catch (err) { console.warn(`[media] ${arr.name} refresh failed:`, err instanceof Error ? err.message : err) }
+  }
+  return done
 }
 
 export interface TransferInfo { dlspeed: number; upspeed: number; connected: boolean }

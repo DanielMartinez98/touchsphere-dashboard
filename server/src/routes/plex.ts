@@ -8,6 +8,7 @@ import axios from 'axios'
 import crypto from 'crypto'
 import { broadcast, kioskCount } from './system'
 import { nudgePlexWatch } from '../plex-watch'
+import { diagnose, diagnoseStack } from '../downloads'
 import {
   arrQueue,
   bazarrEnabled,
@@ -41,8 +42,15 @@ import {
   seerrRequests,
   seerrSearch,
   stackHealth,
+  arrQueueRemove,
+  arrRefreshImports,
+  stackDownloadHealth,
+  torrentCommand,
   torrentControl,
+  torrentProperties,
+  torrentRemove,
   torrents,
+  torrentTrackers,
   transcodeParams,
   transferInfo,
   type PlexItem,
@@ -520,8 +528,19 @@ router.get('/torrents', async (_req: Request, res: Response) => {
   let qbitError: string | null = null
   if (qbitEnabled()) {
     try {
-      const [list, transfer] = await Promise.all([torrents(), transferInfo()])
-      return res.json({ source: 'qbit', torrents: list, transfer })
+      // The per-row verdict here is the CHEAP one: no trackers and no
+      // properties, because those are a call each and this list runs to a
+      // hundred rows. Opening a row fetches them and re-judges it precisely.
+      const [list, transfer, health, arr] = await Promise.all([
+        torrents(), transferInfo(), stackDownloadHealth(), arrQueue(),
+      ])
+      return res.json({
+        source: 'qbit',
+        torrents: list.map(t => ({ ...t, advice: diagnose({ torrent: t, arr: arr.get(t.hash), stack: health }) })),
+        transfer,
+        health,
+        stackAdvice: diagnoseStack(health, list),
+      })
     } catch (err) {
       qbitError = msg(err)
     }
@@ -535,20 +554,117 @@ router.get('/torrents', async (_req: Request, res: Response) => {
       progress: q.size && q.sizeleft !== undefined ? 1 - q.sizeleft / q.size : 0,
       size: q.size ?? 0, downloaded: (q.size ?? 0) - (q.sizeleft ?? 0),
       dlspeed: 0, upspeed: 0, eta: 8640000, seeds: 0, peers: 0, ratio: 0, addedOn: 0,
-    })), transfer: null })
+    })), transfer: null, health: null, stackAdvice: [] })
   } catch (err) {
     res.status(502).json({ error: qbitError ? `qBittorrent: ${qbitError}` : msg(err) })
   }
 })
 
+/**
+ * Everything known about one download, and the precise verdict — the list's
+ * cheap one re-judged with the trackers and properties, which is what turns
+ * "no seeders" into "the tracker has dropped this torrent".
+ */
+router.get('/torrents/:hash', async (req: Request, res: Response) => {
+  if (!qbitEnabled()) return disabled(res, 'qBittorrent')
+  const hash = String(req.params['hash'] ?? '').toLowerCase()
+  if (!/^[0-9a-f]{40}$/.test(hash)) return res.status(400).json({ error: 'bad hash' })
+  res.setHeader('Cache-Control', 'no-store')
+  try {
+    const [list, arr, health] = await Promise.all([torrents(), arrQueue(), stackDownloadHealth()])
+    const torrent = list.find(t => t.hash === hash)
+    if (!torrent) return res.status(404).json({ error: 'qBittorrent has no torrent with that hash' })
+    // These two are per-torrent calls, which is why they are here and not in
+    // the list. Either failing costs precision, not the answer.
+    const [trackers, props] = await Promise.all([
+      torrentTrackers(hash).catch(() => undefined),
+      torrentProperties(hash).catch(() => undefined),
+    ])
+    const item = arr.get(hash)
+    res.json({
+      torrent, trackers: trackers ?? [], props: props ?? null, health,
+      arr: item ?? null,
+      advice: diagnose({ torrent, arr: item, trackers, props: props ?? undefined, stack: health }),
+    })
+  } catch (err) {
+    res.status(502).json({ error: `qBittorrent: ${msg(err)}` })
+  }
+})
+
+const ACTIONS = new Set(['pause', 'resume', 'recheck', 'reannounce', 'force-start', 'top', 'refresh-import', 'replace'])
+
+/**
+ * Do something about one download.
+ *
+ * The first six go straight to qBittorrent. `refresh-import` pokes the *arr
+ * into re-examining its queue. `replace` is the compound one people actually
+ * want for a dead release: blocklist it so the *arr never grabs that file
+ * again, search for a different one, and bin the torrent and its data.
+ */
 router.post('/torrents/:hash/:action', async (req: Request, res: Response) => {
   if (!qbitEnabled()) return disabled(res, 'qBittorrent')
   const hash = String(req.params['hash'] ?? '').toLowerCase()
   const action = String(req.params['action'] ?? '')
   if (!/^[0-9a-f]{40}$/.test(hash)) return res.status(400).json({ error: 'bad hash' })
-  if (action !== 'pause' && action !== 'resume') return res.status(400).json({ error: 'pause or resume only' })
-  try { await torrentControl(hash, action); res.json({ ok: true }) }
-  catch (err) { res.status(502).json({ error: `qBittorrent: ${msg(err)}` }) }
+  if (!ACTIONS.has(action)) return res.status(400).json({ error: `action must be one of ${[...ACTIONS].join(', ')}` })
+  try {
+    if (action === 'pause' || action === 'resume') {
+      await torrentControl(hash, action)
+      return res.json({ ok: true, did: action })
+    }
+    if (action === 'refresh-import') {
+      const item = (await arrQueue()).get(hash)
+      const names = await arrRefreshImports(item?.kind)
+      return res.json({ ok: true, did: 'refresh-import', detail: names.length ? `${names.join(' and ')} ${names.length > 1 ? 'are' : 'is'} re-checking the queue.` : 'No *arr is configured to import this.' })
+    }
+    if (action === 'replace') {
+      const item = (await arrQueue()).get(hash)
+      let arrName: string | null = null
+      if (item) arrName = await arrQueueRemove(item, { blocklist: true, search: true, removeFromClient: false })
+      await torrentRemove(hash, true)
+      return res.json({
+        ok: true, did: 'replace',
+        detail: arrName
+          ? `${arrName} has blocklisted that release and is searching for another; the torrent and its files are gone.`
+          : 'The torrent and its files are gone. No *arr was tracking it, so nothing will be searched for automatically.',
+      })
+    }
+    await torrentCommand(hash, action as 'recheck' | 'reannounce' | 'force-start' | 'top')
+    res.json({ ok: true, did: action })
+  } catch (err) {
+    res.status(502).json({ error: msg(err) })
+  }
+})
+
+/**
+ * Remove a download. `files=1` deletes what it downloaded, `blocklist=1`
+ * records the release as bad in the *arr so it is never grabbed again, and
+ * `search=1` asks for a replacement. The three are separate because "I have
+ * this already" and "this release is broken" want different combinations.
+ */
+router.delete('/torrents/:hash', async (req: Request, res: Response) => {
+  if (!qbitEnabled()) return disabled(res, 'qBittorrent')
+  const hash = String(req.params['hash'] ?? '').toLowerCase()
+  if (!/^[0-9a-f]{40}$/.test(hash)) return res.status(400).json({ error: 'bad hash' })
+  const files = req.query['files'] === '1'
+  const blocklist = req.query['blocklist'] === '1'
+  const search = req.query['search'] === '1'
+  try {
+    const item = (await arrQueue()).get(hash)
+    let arrName: string | null = null
+    // The *arr goes first: removing the torrent underneath it would leave the
+    // queue row orphaned and complaining about a download that no longer exists.
+    if (item) arrName = await arrQueueRemove(item, { blocklist, search, removeFromClient: false })
+    await torrentRemove(hash, files)
+    const parts = [files ? 'the torrent and its files are gone' : 'the torrent is gone, its files are still on disk']
+    if (arrName && blocklist) parts.push(`${arrName} has blocklisted that release`)
+    if (arrName && search) parts.push('and is searching for another')
+    else if (arrName) parts.push(`and dropped it from ${arrName}'s queue`)
+    console.log(`[plex] removed torrent ${hash.slice(0, 8)} files=${files} blocklist=${blocklist} search=${search}`)
+    res.json({ ok: true, detail: `${parts.join(', ')}.` })
+  } catch (err) {
+    res.status(502).json({ error: msg(err) })
+  }
 })
 
 // ── Requests ─────────────────────────────────────────────────────────────────

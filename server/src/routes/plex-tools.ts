@@ -23,6 +23,7 @@ import {
   plexItemFull,
 } from '../media-stack'
 import { displayTitle } from './plex'
+import { diagnose } from '../downloads'
 import type { BrowseToolResult, DisplayPayload } from './browse'
 
 export const PLEX_TOOLS = !plexEnabled() ? [] : [
@@ -326,7 +327,12 @@ function fmtSpeed(bps: number): string {
   return `${bps} B/s`
 }
 
-function fmtNote(t: Torrent): string { return t.note ? ` — ${t.note}` : '' }
+function fmtNote(t: Torrent): string {
+  // The verdict when there is one — it already folds the *arr's note in and
+  // says what to do, which is the half worth speaking.
+  if (t.advice && t.advice.level !== 'ok') return ` — ${t.advice.headline}. ${t.advice.detail}`
+  return t.note ? ` — ${t.note}` : ''
+}
 
 function fmtTorrent(t: Torrent): string {
   const name = t.label ?? t.name

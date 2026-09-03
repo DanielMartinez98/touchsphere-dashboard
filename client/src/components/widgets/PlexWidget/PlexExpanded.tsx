@@ -22,16 +22,17 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  Library, Download, Inbox, Play, Tv, Pause, Search, Check, Clock, Languages, Subtitles, AlertTriangle, RefreshCw,
+  Library, Download, Inbox, Play, Tv, Search, Check, Clock, Languages, Subtitles, AlertTriangle, RefreshCw,
 } from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
 import {
   openPlexPlayer, plexApi, tmdbPoster, usePlexPanelRequest,
   type LanguageSummary, type PlexItem, type PlexItemDetail, type PlexPlayerInfo, type PlexStatus, type PlexStream,
-  type PlexTab, type SeerrRequest, type SeerrResult, type Torrent,
+  type PlexTab, type SeerrRequest, type SeerrResult,
 } from '../../../hooks/usePlex'
 import { ACCENT, itemTitle, itemSubtitle, PlexColumnSlider, PosterGrid, Row } from './items'
 import { clientRole } from '../../../hooks/useClientRole'
+import { DownloadsTab } from './DownloadsTab'
 import {
   BackButton, Backdrop, CastRow, CollectionPage, CrewLine, factsLine, FolderPage, GenreChips, HeaderPoster,
   LibrariesRow, RatingsRow, RelatedShelves, SectionPage, TrailerButton, type Layer,
@@ -39,23 +40,6 @@ import {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function fmtBytes(b: number): string {
-  if (b >= 1e9) return `${(b / 1e9).toFixed(1)} GB`
-  if (b >= 1e6) return `${Math.round(b / 1e6)} MB`
-  return `${Math.round(b / 1e3)} kB`
-}
-function fmtSpeed(bps: number): string {
-  if (bps >= 1e6) return `${(bps / 1e6).toFixed(1)} MB/s`
-  if (bps >= 1e3) return `${Math.round(bps / 1e3)} kB/s`
-  return bps ? `${bps} B/s` : '—'
-}
-function fmtEta(sec: number): string {
-  if (sec >= 8640000 || sec < 0) return '∞'
-  if (sec < 60) return '<1m'
-  if (sec < 3600) return `${Math.round(sec / 60)}m`
-  const h = Math.floor(sec / 3600)
-  return h >= 48 ? `${Math.round(h / 24)}d` : `${h}h ${Math.round((sec % 3600) / 60)}m`
-}
 
 // ── The panel ────────────────────────────────────────────────────────────────
 
@@ -458,105 +442,6 @@ function PlayOn({ itemKey }: { itemKey: string }) {
               {p.product && <span className="text-[11px] text-white/40 truncate max-w-[80px]">{p.product}</span>}
             </button>
           ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ── Downloads ────────────────────────────────────────────────────────────────
-
-function DownloadsTab({ canControl }: { canControl: boolean }) {
-  const [data, setData] = useState<{ source: 'qbit' | 'arr'; warning?: string; torrents: Torrent[]; transfer: { dlspeed: number; upspeed: number; connected: boolean } | null } | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState<string | null>(null)
-
-  const load = useCallback(async () => {
-    try { setData(await plexApi.torrents()); setError(null) } catch (err) { setError(err instanceof Error ? err.message : String(err)) }
-  }, [])
-  useEffect(() => {
-    void load()
-    const t = setInterval(() => { void load() }, 8_000)
-    return () => clearInterval(t)
-  }, [load])
-
-  const control = async (t: Torrent) => {
-    setBusy(t.hash)
-    try { await plexApi.torrent(t.hash, t.phase === 'paused' ? 'resume' : 'pause'); await load() }
-    catch (err) { setError(err instanceof Error ? err.message : String(err)) }
-    finally { setBusy(null) }
-  }
-
-  const list = data?.torrents ?? []
-  const active = list.filter(t => t.phase !== 'done' && t.phase !== 'seeding')
-  const finished = list.filter(t => t.phase === 'done' || t.phase === 'seeding')
-
-  return (
-    <div className="flex flex-col gap-4">
-      {data?.transfer && (
-        <p className="text-[13px] text-white/60 tabular-nums flex items-center gap-3">
-          <span className={`w-2 h-2 rounded-full ${data.transfer.connected ? 'bg-green-400' : 'bg-amber-400'}`} />
-          ↓ {fmtSpeed(data.transfer.dlspeed)} <span className="text-white/30">·</span> ↑ {fmtSpeed(data.transfer.upspeed)}
-        </p>
-      )}
-      {error && <p className="text-amber-300 text-sm flex items-center gap-2"><AlertTriangle size={16} />{error}</p>}
-      {data?.warning && <p className="text-amber-300/80 text-[13px] flex items-center gap-2"><AlertTriangle size={14} />{data.warning} — showing Sonarr/Radarr's queue instead.</p>}
-      {!data && !error && <p className="text-ink-dim text-sm">Loading…</p>}
-      {data && !list.length && <p className="text-ink-dim text-sm">Nothing is downloading.</p>}
-
-      {active.length > 0 && (
-        <section className="flex flex-col gap-2">
-          {active.map(t => <TorrentRow key={t.hash} t={t} busy={busy === t.hash} onControl={canControl && data?.source === 'qbit' ? () => void control(t) : undefined} />)}
-        </section>
-      )}
-      {finished.length > 0 && (
-        <section>
-          <h3 className="text-[11px] uppercase tracking-widest text-white/40 font-semibold mb-2">Finished</h3>
-          <div className="flex flex-col gap-2">
-            {finished.slice(0, 12).map(t => <TorrentRow key={t.hash} t={t} busy={false} />)}
-          </div>
-        </section>
-      )}
-    </div>
-  )
-}
-
-const PHASE_LABEL: Record<Torrent['phase'], string> = {
-  downloading: 'Downloading', seeding: 'Seeding', paused: 'Paused', stalled: 'Stalled', queued: 'Queued', checking: 'Checking', done: 'Finished', error: 'Error',
-}
-
-function TorrentRow({ t, busy, onControl }: { t: Torrent; busy: boolean; onControl?: () => void }) {
-  const pct = Math.round(t.progress * 100)
-  const live = t.phase === 'downloading'
-  return (
-    <div className="rounded-2xl bg-white/5 border border-hairline p-3">
-      <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <p className="text-sm text-white font-semibold leading-snug line-clamp-2">{t.label ?? t.name}</p>
-          {t.label && <p className="text-[11px] text-white/35 line-clamp-1 mt-0.5">{t.name}</p>}
-          <p className={`text-[12px] mt-1 tabular-nums ${t.phase === 'error' ? 'text-red-300' : t.phase === 'stalled' ? 'text-amber-300' : 'text-white/55'}`}>
-            {PHASE_LABEL[t.phase]}
-            {t.phase !== 'done' && t.phase !== 'seeding' && ` · ${pct}%`}
-            {live && ` · ${fmtSpeed(t.dlspeed)} · ${fmtEta(t.eta)} left`}
-            {t.phase === 'seeding' && ` · ↑ ${fmtSpeed(t.upspeed)} · ratio ${t.ratio.toFixed(1)}`}
-            {(t.phase === 'stalled' || live) && ` · ${t.seeds} seeds`}
-            {` · ${fmtBytes(t.size)}`}
-          </p>
-          {/* Sonarr/Radarr's own account of why it is where it is — "waiting
-              for a better release", "import failed: file already exists" —
-              which is the question a stuck row actually raises. */}
-          {t.note && <p className="text-[11px] text-amber-200/80 leading-snug mt-1 line-clamp-2">{t.note}</p>}
-        </div>
-        {onControl && (t.phase === 'downloading' || t.phase === 'stalled' || t.phase === 'queued' || t.phase === 'paused') && (
-          <button type="button" onClick={onControl} disabled={busy} aria-label={t.phase === 'paused' ? 'Resume' : 'Pause'}
-            className="w-12 h-12 shrink-0 rounded-full bg-white/10 border border-hairline flex items-center justify-center text-white active:bg-white/25 disabled:opacity-50">
-            {t.phase === 'paused' ? <Play size={18} fill="currentColor" className="ml-0.5" /> : <Pause size={18} fill="currentColor" />}
-          </button>
-        )}
-      </div>
-      {t.phase !== 'done' && t.phase !== 'seeding' && (
-        <div className="mt-2 h-1.5 rounded-full bg-white/10 overflow-hidden">
-          <div className={`h-full ${t.phase === 'paused' ? 'bg-white/40' : t.phase === 'stalled' ? 'bg-amber-400' : 'bg-[#e5a00d]'}`} style={{ width: `${pct}%` }} />
         </div>
       )}
     </div>
