@@ -175,9 +175,8 @@ export function ImageOverlay() {
 
   // ── Full screen: the picture and nothing else ──
   // Its own tree rather than a class toggle on the frame, because nothing of
-  // the frame survives: no caption, no actions, no border, no inset. Only the
-  // close button and the arrows, since those are the two things a person
-  // still needs while looking at a picture this way.
+  // the frame survives: no caption, no actions, no border, no inset, no
+  // arrows. Only the close button — the picture, and the way out.
   if (filled && url) {
     return createPortal(
       <div className="fixed inset-0 z-[9400] bg-black flex items-center justify-center">
@@ -189,11 +188,12 @@ export function ImageOverlay() {
         >
           <img src={url} alt={target.prompt} className="max-w-full max-h-full object-contain" />
         </button>
+        {/* Only the way out. No arrows here: full screen is for looking at
+            one picture, and the framed view a tap away still pages through
+            them (the arrow keys still work from here on a keyboard). */}
         <div className="absolute top-0 right-0" style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))', paddingRight: 'max(0.75rem, env(safe-area-inset-right))' }}>
           <CloseImageButton onClick={closeImage} />
         </div>
-        {prev && <NavButton side="left"  label="Previous picture" onClick={() => show(prev)} />}
-        {next && <NavButton side="right" label="Next picture"     onClick={() => show(next)} />}
       </div>,
       document.body,
     )
