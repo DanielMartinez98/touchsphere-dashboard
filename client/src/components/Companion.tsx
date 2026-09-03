@@ -16,7 +16,7 @@
 // tells the wall to.
 
 import { useCallback, useEffect, useState } from 'react'
-import { Clapperboard, Brush, ListChecks, Clock, Settings, Pause, Play, Square, Tv, Smartphone, WifiOff, Radio } from 'lucide-react'
+import { Clapperboard, Brush, ListChecks, Clock, Settings, Pause, Play, Square, Tv, Smartphone, WifiOff, Radio, Sparkles } from 'lucide-react'
 import { openPlexPlayer, plexApi, plexImg, type PlexItem, type PlexStatus } from '../hooks/usePlex'
 import { onServerEvent } from '../hooks/useServerEvents'
 import type { PlexSummary } from './widgets/PlexWidget/PlexWidget'
@@ -76,11 +76,15 @@ function nextLine(i: PlexItem): string {
   return i.title
 }
 
-export function Companion({ open, setOpen, plexStatus, plexSummary }: {
+export function Companion({ open, setOpen, plexStatus, plexSummary, agent, setAgent, voice }: {
   open: OpenWidget
   setOpen: (w: OpenWidget) => void
   plexStatus: PlexStatus | null
   plexSummary: PlexSummary | null
+  /** The Agent tab: App renders the avatar/sphere and the voice UI behind this layout while it is on. */
+  agent: boolean
+  setAgent: (on: boolean) => void
+  voice: { isListening: boolean; isThinking: boolean; isSpeaking: boolean }
 }) {
   const online = useOnline()
   const { now, kiosks, refresh } = useKioskNow()
@@ -112,7 +116,8 @@ export function Companion({ open, setOpen, plexStatus, plexSummary }: {
   // an SSE frame is fresh by definition.
   const live = now && now.state !== 'stopped' ? now : null
 
-  const TABS: { id: OpenWidget | 'settings'; label: string; icon: React.ReactElement; badge?: number }[] = [
+  const TABS: { id: OpenWidget | 'settings' | 'agent'; label: string; icon: React.ReactElement; badge?: number }[] = [
+    { id: 'agent',  label: 'Agent',  icon: <Sparkles size={20} /> },
     { id: 'plex',   label: 'Plex',   icon: <Clapperboard size={20} />, ...(plexSummary?.downloading ? { badge: plexSummary.downloading } : {}) },
     { id: 'images', label: 'Draw',   icon: <Brush size={20} />, ...(queued ? { badge: queued } : {}) },
     { id: 'media',  label: 'List',   icon: <ListChecks size={20} /> },
@@ -120,11 +125,15 @@ export function Companion({ open, setOpen, plexStatus, plexSummary }: {
     { id: 'settings', label: 'Settings', icon: <Settings size={20} /> },
   ]
 
+  const activeTab = open ?? (agent ? 'agent' : null)
+
   return (
-    <div className="absolute inset-0 flex flex-col bg-black text-white"
+    // In the Agent view this layout goes transparent and lets taps through to
+    // the sphere behind it; only the header and the tab bar stay solid.
+    <div className={`absolute inset-0 flex flex-col text-white ${agent ? 'bg-transparent pointer-events-none' : 'bg-black'}`}
          style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
       {/* Header */}
-      <div className="flex items-center gap-3 px-5 pt-4 pb-3">
+      <div className="flex items-center gap-3 px-5 pt-4 pb-3 pointer-events-auto">
         <Smartphone size={18} className="text-cyan-300" />
         <span className="text-base font-semibold">TouchSphere</span>
         <span className="ml-auto flex items-center gap-1.5 text-[12px] text-white/45">
@@ -136,6 +145,13 @@ export function Companion({ open, setOpen, plexStatus, plexSummary }: {
         </span>
       </div>
 
+      {agent ? (
+        <div className="flex-1 min-h-0 flex flex-col items-center justify-end pb-6 pointer-events-none">
+          <p className="text-[13px] text-white/50 text-center px-8 leading-snug">
+            {voice.isListening ? 'Listening…' : voice.isThinking ? 'Thinking…' : voice.isSpeaking ? 'Speaking' : 'Tap the sphere to talk'}
+          </p>
+        </div>
+      ) : (
       <div className="flex-1 min-h-0 overflow-y-auto px-5 pb-4 flex flex-col gap-4">
         {/* Now on the kiosk */}
         <section>
@@ -212,17 +228,19 @@ export function Companion({ open, setOpen, plexStatus, plexSummary }: {
           Drawings queued here are drawn there. Add this page to your home screen to keep it working offline.
         </p>
       </div>
+      )}
 
       {/* Tab bar */}
-      <div className="shrink-0 border-t border-hairline bg-black/90 px-2 pt-2 pb-1 flex">
+      <div className="shrink-0 border-t border-hairline bg-black/90 px-2 pt-2 pb-1 flex pointer-events-auto">
         {TABS.map(t => (
           <button key={t.id} type="button"
             onClick={() => {
               if (t.id === 'settings') window.dispatchEvent(new CustomEvent('ts:open-settings'))
+              else if (t.id === 'agent') setAgent(!agent)
               else setOpen(t.id as OpenWidget)
             }}
             className={`flex-1 h-14 rounded-xl flex flex-col items-center justify-center gap-1 text-[11px] font-medium relative active:bg-white/10 ${
-              open === t.id ? 'text-cyan-200' : 'text-white/60'}`}>
+              activeTab === t.id ? 'text-cyan-200' : 'text-white/60'}`}>
             {t.icon}{t.label}
             {t.badge ? <span className="absolute top-1 right-3 min-w-[18px] h-[18px] px-1 rounded-full bg-[#e5a00d] text-black text-[10px] font-bold flex items-center justify-center">{t.badge}</span> : null}
           </button>

@@ -192,6 +192,11 @@ function App() {
   // four corners around a sphere it has no room for. The panels the corners
   // open are shared; only the home screen differs. See components/Companion.
   const companion = useClientRole() === 'companion'
+  // The phone's Agent tab: the avatar (or sphere) full screen with tap-to-
+  // talk, exactly the kiosk's centre. Off by default because the sphere
+  // costs battery and the remote is what a phone opens for.
+  const [agentView, setAgentView] = useState(false)
+  const showCentre = !companion || agentView
 
   // Close the mode-dependent widget when mode changes so stale panels don't
   // linger. That pair lives in the bottom-RIGHT corner now (it moved when the
@@ -258,7 +263,7 @@ function App() {
           a bad/absent .vrm can never leave the kiosk staring at a blank centre.
           Note the Avatar stays mounted on failure (it just stops rendering) —
           unmounting it on 'error' would remount it and retry in a loop. */}
-      {!companion && (<>
+      {showCentre && (<>
       {showAvatar && (
         <Suspense fallback={null}>
           {/* Keyed by model URL so switching assistant tears the old scene down
@@ -441,7 +446,7 @@ function App() {
 
       {/* The phone's home screen — in place of the sphere, the corners and the
           mode bar, none of which fit or make sense on a remote. */}
-      {companion && <Companion open={open} setOpen={setOpen} plexStatus={plexStatus} plexSummary={plexSummary} />}
+      {companion && <Companion open={open} setOpen={setOpen} plexStatus={plexStatus} plexSummary={plexSummary} agent={agentView} setAgent={setAgentView} voice={voice} />}
 
       {/* Top-Center — Status / Mode selector */}
       {!companion && <StatusBar
@@ -456,7 +461,7 @@ function App() {
       {!companion && <MicMuteButton />}
 
       {/* Voice interface — transcript + reply overlays (mic button removed; tap the orb) */}
-      {!companion && <VoiceInterface voice={voice} />}
+      {showCentre && <VoiceInterface voice={voice} />}
 
       {/* Bedtime alert toast — driven by the schedule in settings */}
       <BedtimeBanner />
