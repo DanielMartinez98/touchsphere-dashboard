@@ -81,6 +81,8 @@ export interface MediaItem {
   status: MediaStatus
   starred?: boolean
   cover?: string
+  /** The Plex ratingKey this row follows (plex-watch.ts), so a retitled row still lines up. */
+  plexKey?: string
 }
 
 // Mirror the server's normalizer so legacy items (no `status`) read sanely
@@ -100,6 +102,7 @@ function normalize(raw: Partial<MediaItem> & { type: MediaType }): MediaItem {
     status,
     ...(raw.starred ? { starred: true } : {}),
     ...(raw.cover ? { cover: raw.cover } : {}),
+    ...(raw.plexKey ? { plexKey: raw.plexKey } : {}),
   }
 }
 
@@ -109,7 +112,7 @@ export function readMedia(): MediaItem[] {
   const raw = readJSON<Array<Partial<MediaItem> & { type: MediaType }>>('media.json', [])
   return raw.map(normalize)
 }
-function writeMedia(items: MediaItem[]): void {
+export function writeMedia(items: MediaItem[]): void {
   writeJSON('media.json', items)
 }
 

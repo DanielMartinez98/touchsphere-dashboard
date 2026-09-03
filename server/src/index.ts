@@ -28,6 +28,7 @@ import plexRouter from './routes/plex'
 import hostRouter from './routes/host'
 import { elevenLabsKeyState } from './config/keys'
 import { sweepInterrupted } from './guides'
+import { startPlexWatch } from './plex-watch'
 import { SEARCH_PROVIDER } from './research'
 
 dotenv.config()
@@ -75,6 +76,9 @@ console.log('[startup] ============================================')
 // middle of one leaves a guide stuck on "generating" — a spinner with nothing
 // behind it. Fail those now so the view can offer Retry.
 sweepInterrupted()
+// The Watch/Play list follows Plex: playing adds and starts a row, finishing
+// ticks it. No-op without a Plex URL.
+startPlexWatch()
 
 // Fail fast if the required API key is missing
 if (!process.env['OPENWEATHER_API_KEY']) {

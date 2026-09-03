@@ -147,7 +147,7 @@ export async function searchArtwork(type: MediaType, query: string, limit = 8): 
  * two items sharing a poster share one file. Returns null on any failure —
  * callers fall back to the generated gradient tile.
  */
-export async function cacheCover(imageUrl: string): Promise<string | null> {
+export async function cacheCover(imageUrl: string, headers?: Record<string, string>): Promise<string | null> {
   const file = `${crypto.createHash('sha1').update(imageUrl).digest('hex')}.jpg`
   const dest = path.join(coversDir(), file)
 
@@ -160,6 +160,9 @@ export async function cacheCover(imageUrl: string): Promise<string | null> {
     const { data } = await axios.get<ArrayBuffer>(imageUrl, {
       responseType: 'arraybuffer',
       timeout: HTTP_TIMEOUT_MS,
+      // A Plex poster needs the token, and it goes here rather than in the
+      // URL so the log line below never prints it.
+      ...(headers ? { headers } : {}),
     })
     const buffer = Buffer.from(data)
     // Write to a temp name first so a crash mid-download can't leave a

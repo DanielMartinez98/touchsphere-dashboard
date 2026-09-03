@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
+import { onServerEvent } from './useServerEvents'
 import type { MediaItem, MediaStatus, MediaType } from '../types'
 
 const API = '/api/state/media'
@@ -34,9 +35,13 @@ export function useMediaList() {
       if (!slices || slices.includes('media')) load('chat-tool')
     }
     window.addEventListener('ts:state-changed', onChange)
+    // …and when the server changed it on its own: Plex playback adds and
+    // ticks rows (server/src/plex-watch.ts) and says so with a `media` frame.
+    const offMedia = onServerEvent('media', () => load('plex'))
     return () => {
       cancelled = true
       window.removeEventListener('ts:state-changed', onChange)
+      offMedia()
     }
   }, [])
 

@@ -595,6 +595,11 @@ export async function plexCollections(sectionKey: string): Promise<PlexCollectio
   })
 }
 
+/** What is playing right now, on every Plex client — the kiosk, the TV app, a phone. */
+export async function plexSessions(): Promise<PlexItem[]> {
+  return metadata(await plexGet('/status/sessions'))
+}
+
 /** Seasons of a show, or episodes of a season. */
 export async function plexChildren(key: string): Promise<PlexItem[]> {
   return metadata(await plexGet(`/library/metadata/${key}/children`))

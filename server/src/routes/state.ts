@@ -76,6 +76,8 @@ interface MediaItem {
   done: boolean
   status: MediaStatus
   starred?: boolean
+  /** The Plex ratingKey this row follows (plex-watch.ts). */
+  plexKey?: string
   // Filename of a poster cached under $CACHE_DIR/covers, served by
   // GET /api/artwork/cover/:file. Absent when no artwork was found — the
   // client falls back to a gradient tile generated from the title.
@@ -98,6 +100,7 @@ function normalizeMediaItem(raw: Partial<MediaItem> & { type: MediaType }): Medi
     status,
     ...(raw.starred ? { starred: true } : {}),
     ...(raw.cover ? { cover: raw.cover } : {}),
+    ...(raw.plexKey ? { plexKey: raw.plexKey } : {}),
   }
 }
 

@@ -7,6 +7,7 @@ import { Router, Request, Response } from 'express'
 import axios from 'axios'
 import crypto from 'crypto'
 import { broadcast, kioskCount } from './system'
+import { nudgePlexWatch } from '../plex-watch'
 import {
   arrQueue,
   bazarrEnabled,
@@ -465,6 +466,8 @@ router.post('/progress', async (req: Request, res: Response) => {
   const session = typeof body['session'] === 'string' ? sessions.get(body['session']) : undefined
   if (session) session.lastSeen = Date.now()
   await plexTimeline(key, state, timeMs, durationMs)
+  // The list follows: added and in progress on play, done once Plex says so.
+  nudgePlexWatch()
   if (body['role'] !== 'companion') {
     if (state === 'stopped') nowPlaying = null
     else {
