@@ -296,11 +296,15 @@ export function ImageOverlay() {
             // picture the user asked for should be shown whole. Cropping the
             // subject out of a portrait render to fill a frame is the one thing
             // that makes it look broken.
+            // The button fills the body so the image's max-h-full has a real
+            // height to be a fraction of. Sized to content, as it briefly was,
+            // the picture took its natural height and pushed the caption and
+            // the buttons off the frame on any screen taller than the kiosk.
             <button
               type="button"
               onClick={() => setFill({ on: true, seq })}
               aria-label="Show the picture full screen"
-              className="max-w-full max-h-full flex items-center justify-center"
+              className="w-full h-full min-h-0 flex items-center justify-center"
             >
               <img src={url} alt={target.prompt} className="max-w-full max-h-full object-contain rounded-2xl" />
             </button>

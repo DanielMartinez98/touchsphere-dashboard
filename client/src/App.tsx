@@ -192,10 +192,10 @@ function App() {
   // four corners around a sphere it has no room for. The panels the corners
   // open are shared; only the home screen differs. See components/Companion.
   const companion = useClientRole() === 'companion'
-  // The phone's Agent tab: the avatar (or sphere) full screen with tap-to-
-  // talk, exactly the kiosk's centre. Off by default because the sphere
-  // costs battery and the remote is what a phone opens for.
-  const [agentView, setAgentView] = useState(false)
+  // The phone's Agent view: the avatar (or sphere) full screen with tap-to-
+  // talk, exactly the kiosk's centre. On by default — the app opens on the
+  // agent, and the remote is one tap away on the bar.
+  const [agentView, setAgentView] = useState(true)
   const showCentre = !companion || agentView
 
   // Close the mode-dependent widget when mode changes so stale panels don't
