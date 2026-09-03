@@ -23,6 +23,7 @@ import {
   listLoras,
   listModels,
   listWorkflowStyles,
+  styleEdits,
   MAX_QUEUED,
   MAX_UPLOAD_BYTES,
   missingFiles,
@@ -143,6 +144,9 @@ router.get('/models', async (_req: Request, res: Response) => {
       ...workflows.map(w => ({
         id: w.id, label: w.label, kind: 'workflow' as const,
         missing: styleNeeds(w.id).filter(n => absent.has(n)),
+        // An editor rather than a painter: the panel hides the strength chips,
+        // relabels the button and refuses to offer "Draw it" with no source.
+        ...(styleEdits(w.id) ? { edits: true } : {}),
       })),
     ]
     res.setHeader('Cache-Control', 'no-store')
@@ -365,6 +369,18 @@ router.post('/generate', (req: Request, res: Response) => {
     const v = body?.[k]
     return typeof v === 'number' && Number.isFinite(v) ? v : undefined
   }
+  const source = typeof body?.['source'] === 'string' && /^[a-f0-9]{32}$/.test(body['source'])
+    ? body['source'] : ''
+  // Same reasoning as the queue-full check above: startImage() refuses this
+  // too, but the panel wants a status it can print under the button.
+  const style = typeof body?.['model'] === 'string' && body['model'] ? body['model'] : selectedModel()
+  if (styleEdits(style) && !source) {
+    res.status(400).json({
+      error: 'This style changes an existing picture rather than drawing one — tap "Change this" ' +
+             'on a picture first, or pick a different style.',
+    })
+    return
+  }
   const job = startImage({
     prompt,
     ...(typeof body?.['model'] === 'string' && body['model'] ? { model: body['model'] } : {}),
@@ -378,8 +394,7 @@ router.post('/generate', (req: Request, res: Response) => {
     // refusal arrives on the same channel every other outcome does — as a
     // failed job with a sentence in it, not as a 400 the overlay has no frame
     // for. The shape check is here because an id is a filename stem.
-    ...(typeof body?.['source'] === 'string' && /^[a-f0-9]{32}$/.test(body['source'])
-      ? { source: body['source'] } : {}),
+    ...(source ? { source } : {}),
     ...(num('denoise') !== undefined ? { denoise: num('denoise')! } : {}),
     // Omitted rather than defaulted when the panel doesn't say: undefined means
     // "use the saved default", which is resolved in startImage() at queue time.

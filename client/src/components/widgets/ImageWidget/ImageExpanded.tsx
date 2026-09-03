@@ -240,6 +240,27 @@ export default function ImageExpanded({
   // the request being composed, and both are set from the full-screen viewer.
   const source = useImageSource()
   const [strength, setStrength] = useState('balanced')
+  // The selected style, and whether it EDITS rather than draws. An editor
+  // (FLUX Kontext) changes the meaning of nearly everything below: the prompt
+  // is an instruction, there is no strength to choose, and with no source
+  // there is nothing it can do at all.
+  const current = styles.find(st => st.id === model)
+  const editStyle = current?.edits === true
+  // The one installed editor, for the shortcut chip on the source card. Only
+  // offered when it is usable and not already selected — a dead chip on a
+  // touchscreen is a tap that looks broken.
+  const editor = styles.find(st => st.edits && styleUsable(st))
+  // "Change this" seeds the field with the original's own prompt, which is the
+  // right start for img2img (the edit is then two words) and the wrong one for
+  // an editor, where the original's description reads as "repaint all of this".
+  // Cleared once per source, and only while it still IS the seed — a
+  // half-typed instruction is never thrown away. Derived in the render body
+  // rather than an effect, the pattern the improve switch below already uses.
+  const [unseeded, setUnseeded] = useState('')
+  if (source && editStyle && unseeded !== source.id && prompt === source.prompt) {
+    setPrompt('')
+    setUnseeded(source.id)
+  }
   const [orientation, setOrientation] = useState<Orientation>('portrait')
   // The improve switch. Held locally so a tap is instant, seeded from the
   // server's saved default and re-seeded when that arrives — derived in the
@@ -262,7 +283,7 @@ export default function ImageExpanded({
   // at the kiosk for ninety seconds between them was the feature that was
   // missing. The only thing that closes the button is a full queue.
   const full = queue.length >= queueMax
-  const canDraw = enabled !== false && prompt.trim().length > 0 && !full
+  const canDraw = enabled !== false && prompt.trim().length > 0 && !full && !(editStyle && !source)
   // A distilled style carries its own step count; the draft/standard/high preset
   // does not reach it. Defaults to true so a server that predates the field —
   // Watchtower updates the two halves independently — keeps the row live.
@@ -271,7 +292,9 @@ export default function ImageExpanded({
   function draw() {
     if (!canDraw) return
     const d = STRENGTHS.find(x => x.id === strength)?.denoise ?? 0.65
-    onGenerate(prompt.trim(), orientation, source?.id ?? '', source ? d : 0, improve.on)
+    // An editor takes no strength: it runs the whole schedule over the source
+    // and keeps what the instruction doesn't touch. 1 says so on the wire.
+    onGenerate(prompt.trim(), orientation, source?.id ?? '', source ? (editStyle ? 1 : d) : 0, improve.on)
     // The prompt is deliberately KEPT, not cleared: the common next action is
     // another go at the same idea with a word changed, and re-typing it on an
     // on-screen keyboard is the most expensive thing in this panel.
@@ -349,11 +372,28 @@ export default function ImageExpanded({
             </button>
           </div>
 
+          {/* The shortcut to the editor, when one is installed and this isn't
+              it. "Change this" is the moment someone wants Kontext, and the
+              style row is a scroller a screen further down. */}
+          {editor && !editStyle && (
+            <button
+              type="button"
+              onClick={() => onModel(editor.id)}
+              className="h-11 rounded-xl px-3 flex items-center justify-center gap-2 text-[13px] font-semibold
+                         bg-white/5 text-white/70 border border-hairline active:scale-[0.98] active:bg-white/15"
+            >
+              <Wand2 size={15} className="text-pink-300" />
+              Edit it with {editor.label} instead
+            </button>
+          )}
+
           {/* How far to go. Three words, not a slider: nobody standing at a
               kiosk knows what 0.65 means, and a fingertip can't land it on a
               7" screen anyway. Same three numbers the assistant's redraw_image
-              uses, so asking out loud and tapping land in the same place. */}
-          <div className="flex gap-2">
+              uses, so asking out loud and tapping land in the same place.
+              Absent for an editor, which has no such dial: it keeps what the
+              instruction doesn't mention, however much that is. */}
+          {!editStyle && <div className="flex gap-2">
             {STRENGTHS.map(st => (
               <button
                 key={st.id}
@@ -370,11 +410,34 @@ export default function ImageExpanded({
                 <span className="text-[10px] text-white/35">{st.hint}</span>
               </button>
             ))}
-          </div>
+          </div>}
 
+          {/* What to type differs by KIND of style, and it is the thing most
+              likely to go wrong: img2img repaints from the words alone, so a
+              prompt that only names the change draws the change; an editor is
+              the reverse, and a whole description reads as "repaint it all". */}
           <span className="text-[11px] text-white/30 leading-snug">
-            The original is kept — this makes another picture beside it. Its size and
-            shape come from the original, so the orientation buttons don't apply.
+            {editStyle
+              ? 'Say what to change — "make it night", "put a hat on the cat" — and the rest ' +
+                'stays as it is. Name the subject rather than saying "it".'
+              : 'Describe the whole picture you want out, not just the change: this style ' +
+                'repaints from your words and the original\'s layout. With Improve on, the ' +
+                'original is looked at and the description written for you.'}
+            {' '}The original is kept — this makes another picture beside it. Its shape
+            comes from the original, so the orientation buttons don't apply.
+          </span>
+        </div>
+      )}
+
+      {/* An editor with nothing to edit. Said here, above the field, rather
+          than as a greyed button with no explanation. */}
+      {editStyle && !source && (
+        <div className="flex items-start gap-3 rounded-2xl bg-white/5 border border-hairline p-3 shrink-0">
+          <Wand2 size={18} className="text-pink-300 shrink-0 mt-0.5" />
+          <span className="text-[13px] text-white/60 leading-snug">
+            <span className="text-white">{current?.label}</span> changes a picture rather than
+            drawing one. Tap a picture below and choose "Change this", or use one of your own —
+            or pick another style to draw from scratch.
           </span>
         </div>
       )}
@@ -386,7 +449,7 @@ export default function ImageExpanded({
           onChange={setPrompt}
           multiline
           rows={3}
-          placeholder="A ginger cat in a spacesuit…"
+          placeholder={editStyle ? 'Make it night time, keep everything else the same…' : 'A ginger cat in a spacesuit…'}
           ariaLabel="What should the picture show?"
           className="w-full bg-white/10 text-white rounded-2xl px-4 py-3 text-sm leading-relaxed
                      placeholder:text-white/30 border border-hairline"
@@ -705,7 +768,7 @@ export default function ImageExpanded({
         ) : source ? (
           <>
             <Brush size={20} />
-            Redraw it
+            {editStyle ? 'Edit it' : 'Redraw it'}
           </>
         ) : (
           <>

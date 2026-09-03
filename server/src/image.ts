@@ -27,7 +27,7 @@ import path from 'path'
 import { broadcast } from './routes/system'
 import { advanceSeed, paramsFor, type ImageParams } from './image-params'
 import { estimateRender, humanMs, recordRender } from './image-timing'
-import { improvePrompt, prompterModel, readPrompter } from './image-prompt'
+import { composeRedrawPrompt, visionModel, improvePrompt, prompterModel, readPrompter } from './image-prompt'
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -599,6 +599,23 @@ export interface ImageJob {
   source:   string
   /** The source's file on the volume, resolved at queue time. '' when none. */
   sourceFile: string
+  /**
+   * The source's own pixel size. `width`/`height` above are the size the
+   * render is drawn at, and for a redraw the two differ on purpose: the source
+   * is fitted to the style's megapixel budget before it is encoded, because a
+   * 3 MP phone photo handed straight to a model trained at 1 MP comes back as
+   * a smeared enlargement of itself. buildGraph inserts the resize when the
+   * numbers differ. 0 when there is no source.
+   */
+  sourceWidth:  number
+  sourceHeight: number
+  /**
+   * True when the source came from the user's device rather than a render. An
+   * upload has no prompt — its "prompt" is a filename — so a redraw of one
+   * cannot be seeded with a description of what it shows, and the picture has
+   * to be LOOKED at to write one. See composeRedrawPrompt.
+   */
+  sourceUpload: boolean
   /** How much of the source to throw away, 0.05-1. Meaningless without a source. */
   denoise:  number
   status:   JobStatus
@@ -1067,11 +1084,36 @@ export function startImage(req: ImageRequest): ImageJob {
   // anything else here would put a number on screen that the render then
   // ignores. Orientation and the megapixel budget simply don't apply, and the
   // Draw panel says so rather than showing controls that do nothing.
+  //
+  // Not the source's OWN size any more, though. It used to be, on the grounds
+  // that VAEEncode makes a latent the shape of what it is given — true, but a
+  // 3 MP phone photo encoded as-is is handed to a model trained at 1 MP, which
+  // repaints it as a smeared enlargement, and a 600px web image is repainted
+  // with no room for detail. So the source keeps its SHAPE and is fitted to the
+  // style's megapixel budget (1 MP when Advanced leaves it at Auto, the number
+  // every model here was trained around) before it is encoded; buildGraph
+  // inserts the resize. An edit style has its own idea of the size — Kontext
+  // snaps the source to one of its published resolutions — and that is
+  // mirrored here so the frame's size text is right before the render starts.
+  const edits = styleEdits(style)
   const size = source
-    ? { width: source.width, height: source.height }
+    ? edits
+      ? kontextSize(source.width, source.height)
+      : sizeForMegapixels(source.width, source.height, p.megapixels > 0 ? p.megapixels : 1, p.multipleOf)
     : p.megapixels > 0
       ? sizeForMegapixels(asked.width, asked.height, p.megapixels, p.multipleOf)
       : asked
+  // How much of the source is thrown away. An editor takes none of this: it
+  // runs at denoise 1 over the encoded source and decides what to keep from the
+  // instruction, so the three strength words simply do not apply to it.
+  const denoise = source && !edits
+    ? clampDenoise(Number.isFinite(req.denoise) ? Number(req.denoise) : DEFAULT_DENOISE)
+    : 1
+  const baseSteps = Number.isFinite(req.steps) && Number(req.steps) > 0
+    ? Math.max(1, Math.min(150, Math.round(Number(req.steps))))
+    : p.steps > 0 ? p.steps
+    : styleIgnoresQuality(style) ? 0
+    : (QUALITY_STEPS[selectedQuality()] ?? 0)
 
   const job: ImageJob = {
     id:        crypto.randomBytes(16).toString('hex'),
@@ -1101,23 +1143,35 @@ export function startImage(req: ImageRequest): ImageJob {
     // preset. A distilled style skips the last of those and keeps the number in
     // its graph: 44 steps at cfg 1 is not a better picture, it is the same
     // picture four times slower.
-    steps:     Number.isFinite(req.steps) && Number(req.steps) > 0
-      ? Math.max(1, Math.min(150, Math.round(Number(req.steps))))
-      : p.steps > 0 ? p.steps
-      : styleIgnoresQuality(style) ? 0
-      : (QUALITY_STEPS[selectedQuality()] ?? 0),
+    //
+    // A plain img2img redraw then gets its step count RAISED to compensate for
+    // denoise: a KSampler at 30 steps and 0.65 denoise runs ~20 of them, and at
+    // Draft × Light that was 12 × 0.45 ≈ 5 sampling steps — a picture nobody
+    // would call finished, from a setting that said "draft", which reads as
+    // "redrawing is bad". The sampler is asked for enough steps that the ones
+    // it actually runs come to what a fresh render at these settings would get
+    // (never fewer than 20 for a normal model; a distilled one keeps its own
+    // number, since 20 is four times what it wants). effectiveSteps() takes
+    // the same discount back off for the estimate and the status line.
+    steps:     source && !edits && denoise < 1
+      ? Math.min(150, Math.ceil(
+          (styleIgnoresQuality(style)
+            ? (baseSteps > 0 ? baseSteps : styleDefaults(style).steps)
+            : Math.max(20, baseSteps > 0 ? baseSteps : styleDefaults(style).steps)) / denoise))
+      : baseSteps,
     // cfg has no quality-preset layer on purpose — it is per-model tuning, not
     // a speed/quality dial. 0 all the way down means "whatever the graph says".
     cfg:       Number.isFinite(req.cfg) && Number(req.cfg) > 0 ? Number(req.cfg) : p.cfg,
     turbo:     p.turbo,
     source:     source?.id ?? '',
     sourceFile: source?.file ?? '',
-    // Clamped here so the number the UI shows and the number the sampler gets
+    sourceWidth:  source?.width ?? 0,
+    sourceHeight: source?.height ?? 0,
+    sourceUpload: source?.origin === 'upload',
+    // Clamped above so the number the UI shows and the number the sampler gets
     // are the same one. Without a source it stays 1 — a full render — which is
     // also exactly what the sampler wants for txt2img.
-    denoise:    source
-      ? clampDenoise(Number.isFinite(req.denoise) ? Number(req.denoise) : DEFAULT_DENOISE)
-      : 1,
+    denoise,
     // May be '' here and filled in by run(), which can ask ComfyUI what LoRAs
     // exist; startImage must stay synchronous for the chat tool that calls it.
     lora:      p.turbo ? p.lora : '',
@@ -1166,6 +1220,23 @@ export function startImage(req: ImageRequest): ImageJob {
     return job
   }
 
+  // An editor with nothing to edit. Drawing from an empty latent with Kontext
+  // is not "a worse picture", it is a graph with a LoadImage that names no
+  // file, which ComfyUI rejects with a bare validation error twenty seconds
+  // from now — so it is refused here, in a sentence, while the button is
+  // still under the finger.
+  if (edits && !source) {
+    job.status = 'failed'
+    job.error = `${styleLabel(style)} edits a picture rather than drawing one — pick one to change first`
+    job.endedAt = Date.now()
+    console.warn(`[image] refused ${job.id}: edit style with no source`)
+    push(job, 'failed',
+      `${styleLabel(style)} changes an existing picture and cannot draw one from nothing. ` +
+      'Tap "Change this" on a picture in the gallery, or add one of your own, and say what ' +
+      'to change — or pick a different style to draw from scratch.')
+    return job
+  }
+
   // Refused, not enqueued — but still a real job with a real id, so whoever
   // asked gets the reason on the same channel every other outcome arrives on.
   const waiting = pendingJobs().length - 1
@@ -1186,7 +1257,8 @@ export function startImage(req: ImageRequest): ImageJob {
   console.log(
     `[image] queued ${job.id} "${job.prompt.slice(0, 60)}" ${job.width}×${job.height} ` +
     `seed=${job.seed} steps=${job.steps || 'graph'} cfg=${job.cfg || 'graph'}` +
-    `${job.turbo ? ' turbo' : ''}${job.source ? ` redraw of ${job.source} denoise=${job.denoise}` : ''}` +
+    `${job.turbo ? ' turbo' : ''}` +
+    `${job.source ? ` ${edits ? 'edit' : 'redraw'} of ${job.source} (${job.sourceWidth}×${job.sourceHeight}) denoise=${job.denoise}` : ''}` +
     `${waiting > 0 ? ` (${waiting} ahead of it)` : ''}`,
   )
   pushQueued(job)
@@ -1229,7 +1301,51 @@ async function run(job: ImageJob): Promise<void> {
   // "it drew what I typed" and "it silently couldn't reach the model" look
   // identical from the outside otherwise.
   let improveNote = ''
-  if (job.improve) {
+  const edits = styleEdits(job.model)
+  // ── A redraw needs a description of the whole picture, and usually hasn't one ──
+  //
+  // img2img repaints the source's layout from the PROMPT, and the prompt is
+  // the only thing the sampler is told about what that layout depicts — so
+  // "make it night" over a picture of a fox draws "make it night" in a
+  // fox-shaped composition. The Draw panel seeds the field with the original's
+  // own prompt to make the edit two words, but an uploaded picture has no
+  // prompt (its "prompt" is the filename), and out loud nobody says the whole
+  // description again. So when the improver is on, or the source is an upload,
+  // the picture is SHOWN to a vision model along with what was typed and the
+  // model writes the description-with-the-change in this style's register.
+  // Never for an edit style: Kontext wants the instruction verbatim, and a
+  // model that helpfully expands "make it night" into a paragraph describing
+  // the scene turns an edit into a repaint — the exact thing it exists to avoid.
+  if (job.source && !edits && (job.improve || job.sourceUpload)) {
+    push(job, 'looking at the picture',
+      `Showing the original to ${visionModel()} so it can describe the whole picture with ` +
+      'your change applied. The picture model repaints from words alone and never sees ' +
+      'the original, so a prompt that only names the change would draw the change and ' +
+      'nothing else.')
+    let bytes: Buffer | null = null
+    try { bytes = fs.readFileSync(path.join(imagesDir(), job.sourceFile)) } catch { bytes = null }
+    const seen = bytes
+      ? await composeRedrawPrompt(bytes, job.prompt, {
+          label: styleLabel(job.model), guidance: stylePromptGuide(job.model),
+        })
+      : null
+    job.improveMs += seen?.ms ?? 0
+    if (seen?.changed) {
+      job.promptOriginal = seen.original
+      job.improvedBy = seen.model
+      job.prompt = seen.prompt
+      improveNote = ' The prompt was written from the original picture plus your change.'
+      console.log(`[image] ${job.id} redraw prompt composed by ${seen.model}: "${seen.prompt.slice(0, 80)}"`)
+    } else if (seen?.why) {
+      improveNote = ` The prompt was left exactly as you wrote it — ${seen.why}.`
+      console.warn(`[image] ${job.id} redraw prompt not composed — ${seen.why}`)
+    }
+  } else if (edits) {
+    // Nothing to improve: an instruction is the format, and the user's own
+    // words are the instruction. Said in the detail so a switched-on improver
+    // that appears to do nothing here reads as deliberate.
+    if (job.improve) improveNote = ' The prompt is used as written: this style takes instructions, not descriptions.'
+  } else if (job.improve) {
     push(job, 'improving',
       `Rewriting the prompt for ${styleLabel(job.model)} before drawing it. This is a ` +
       `separate model (${prompterModel()}) on a brand new conversation, so nothing else ` +
@@ -1238,7 +1354,7 @@ async function run(job: ImageJob): Promise<void> {
       label:    styleLabel(job.model),
       guidance: stylePromptGuide(job.model),
     })
-    job.improveMs = better.ms
+    job.improveMs += better.ms
     if (better.changed) {
       job.promptOriginal = better.original
       job.improvedBy = better.model
@@ -1294,7 +1410,7 @@ async function run(job: ImageJob): Promise<void> {
     let sourceName = ''
     if (job.source) {
       push(job, 'sending the picture over',
-        'Uploading the picture this one is redrawing to the GPU box. There is no ' +
+        `Uploading the picture this one is ${edits ? 'editing' : 'redrawing'} to the GPU box. There is no ` +
         'shared disk between the two machines, so the bytes have to travel before ' +
         'ComfyUI can load them.')
       sourceName = await uploadSource(job)
@@ -1320,6 +1436,16 @@ async function run(job: ImageJob): Promise<void> {
       'dashboard, which is where the gallery reads it from.')
 
     const bytes = await downloadOutput(output)
+    // The size the picture actually came back at wins over the one computed at
+    // queue time. They agree for a fresh render; for an edit or a resized
+    // redraw the graph's own scaling node had the final say, and the number
+    // stored against the picture must be the number in its header.
+    const real = pngSize(bytes)
+    if (real && (real.width !== job.width || real.height !== job.height)) {
+      console.log(`[image] ${job.id} came back ${real.width}×${real.height} (expected ${job.width}×${job.height})`)
+      job.width = real.width
+      job.height = real.height
+    }
     const file = `${job.id}.png`
     const dest = path.join(imagesDir(), file)
     const tmp = `${dest}.tmp-${process.pid}`
@@ -1618,6 +1744,92 @@ function fluxGraph(unet: string, weightDtype: string, t5: string): ComfyGraph {
 }
 
 /**
+ * FLUX.1 Kontext dev — an EDITOR, not a painter.
+ *
+ * Transcribed from ComfyUI's own `flux_kontext_dev_basic` template with its
+ * frontend subgraph flattened and its second, bypassed LoadImage + ImageStitch
+ * (the two-picture input) dropped. It is the answer to the thing plain img2img
+ * cannot do: "this exact picture, but at night". img2img is SDEdit — the
+ * source is noised part-way and repainted from the PROMPT, so the prompt has to
+ * describe the whole picture and the composition is all that survives. Kontext
+ * is handed the source as a reference latent alongside the conditioning
+ * (`ReferenceLatent`), reads the prompt as an INSTRUCTION, and keeps whatever
+ * the instruction does not touch — the face, the pose, the lighting, the text
+ * on the sign. Which is why its sampler runs `denoise: 1` on the encoded source
+ * and there is no strength to choose: the model decides what to keep from what
+ * you said, not from how much noise was added.
+ *
+ * Three things follow that buildGraph has to honour, and does through
+ * `styleEdits()`: the source goes into THIS graph's own LoadImage rather than
+ * being spliced in as a latent, `denoise` is left alone, and there is no size
+ * to set — `FluxKontextImageScale` resizes the source to the nearest of the
+ * model's published resolutions (~1 MP), which is what `kontextSize()` mirrors
+ * at queue time so the frame's size text is right before the render starts.
+ *
+ * Same FLUX-family facts as fluxGraph(): guidance-distilled, so cfg 1 on the
+ * sampler and the real dial on FluxGuidance (2.5 is the template's number,
+ * lower than dev's 3.5 because an editor that is pushed hard drifts away from
+ * its reference); the "negative" is a ConditioningZeroOut of the positive; two
+ * text encoders, CLIP-L and T5. The published fp8 checkpoint is already scaled,
+ * so `weight_dtype` stays `default` — casting it again would be wrong.
+ * It reuses FLUX dev's own encoder and VAE files, so a box with dev installed
+ * needs exactly one more download.
+ */
+function kontextGraph(): ComfyGraph {
+  return {
+    '1': { class_type: 'UNETLoader', inputs: { unet_name: 'flux1-dev-kontext_fp8_scaled.safetensors', weight_dtype: 'default' } },
+    '2': {
+      class_type: 'DualCLIPLoader',
+      inputs: { clip_name1: 'clip_l.safetensors', clip_name2: 't5xxl_fp8_e4m3fn.safetensors', type: 'flux', device: 'default' },
+    },
+    '3': { class_type: 'VAELoader', inputs: { vae_name: 'ae.safetensors' } },
+    '4': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
+    // Filled in by buildGraph with the uploaded source's name. Empty here so a
+    // graph that somehow reaches the GPU without one fails loudly in ComfyUI
+    // rather than editing a stale file from a previous render.
+    '5': { class_type: 'LoadImage', inputs: { image: '' } },
+    '6': { class_type: 'FluxKontextImageScale', inputs: { image: ['5', 0] } },
+    '7': { class_type: 'VAEEncode', inputs: { pixels: ['6', 0], vae: ['3', 0] } },
+    // The source, as conditioning: this is what makes it an edit of THAT
+    // picture rather than a repaint over its silhouette.
+    '8': { class_type: 'ReferenceLatent', inputs: { conditioning: ['4', 0], latent: ['7', 0] } },
+    '9': { class_type: 'FluxGuidance', inputs: { guidance: 2.5, conditioning: ['8', 0] } },
+    '10': { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['4', 0] } },
+    '11': {
+      class_type: 'KSampler',
+      inputs: {
+        seed: 0, steps: 20, cfg: 1, sampler_name: 'euler', scheduler: 'simple', denoise: 1,
+        model: ['1', 0], positive: ['9', 0], negative: ['10', 0], latent_image: ['7', 0],
+      },
+    },
+    '12': { class_type: 'VAEDecode', inputs: { samples: ['11', 0], vae: ['3', 0] } },
+    '13': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['12', 0] } },
+  }
+}
+
+/**
+ * The resolutions Kontext was trained at, as ComfyUI's FluxKontextImageScale
+ * node lists them. The node picks the one whose aspect is closest to the
+ * source's; this does the same sum at queue time so the job carries the size
+ * the picture will actually come back at rather than the source's.
+ */
+const KONTEXT_SIZES: [number, number][] = [
+  [672, 1568], [688, 1504], [720, 1456], [752, 1392], [800, 1328], [832, 1248],
+  [880, 1184], [944, 1104], [1024, 1024], [1104, 944], [1184, 880], [1248, 832],
+  [1328, 800], [1392, 752], [1456, 720], [1504, 688], [1568, 672],
+]
+function kontextSize(width: number, height: number): { width: number; height: number } {
+  const aspect = width / Math.max(1, height)
+  let best = KONTEXT_SIZES[8]!
+  let miss = Infinity
+  for (const [w, h] of KONTEXT_SIZES) {
+    const d = Math.abs(aspect - w / h)
+    if (d < miss) { miss = d; best = [w, h] }
+  }
+  return { width: best[0], height: best[1] }
+}
+
+/**
  * Anima's published positive prefix and negative, straight off its model card.
  *
  * These were simply absent, which meant every Anima render was being driven
@@ -1759,6 +1971,15 @@ const BUILTIN_WORKFLOWS: Record<string, {
    * overrides it — a preset that isn't in effect must never look like it is.
    */
   ignoresQuality?: boolean
+  /**
+   * True for a style that EDITS a picture rather than drawing one: it has a
+   * LoadImage of its own that the source goes into, wants the prompt as an
+   * instruction ("make it night"), and has no strength to choose because it
+   * decides what to keep from the words rather than from how much noise was
+   * added. Such a style cannot draw from nothing — startImage() refuses a job
+   * with no source, and the Draw panel says so instead of offering "Draw it".
+   */
+  edits?: boolean
 }> = {
   'flux1-dev': {
     label: 'FLUX.1 dev',
@@ -1783,6 +2004,34 @@ const BUILTIN_WORKFLOWS: Record<string, {
     // checkpoint appearing twice in the picker to hide.
     needs: [
       'diffusion_models/flux1-dev.safetensors',
+      'text_encoders/clip_l.safetensors',
+      'text_encoders/t5xxl_fp8_e4m3fn.safetensors',
+      'vae/ae.safetensors',
+    ],
+  },
+  'flux-kontext-dev': {
+    label: 'FLUX Kontext (edit)',
+    graph: kontextGraph(),
+    edits: true,
+    promptStyle: 'prose',
+    // Black Forest Labs' own Kontext prompting guide, condensed. The whole of
+    // it is about being specific about the change and explicit about what is
+    // NOT to change, because that is the axis this model actually has.
+    promptGuide:
+      'This model EDITS the picture it is shown, so the prompt is an instruction, not a ' +
+      'description of a scene. Say what to change in plain English, precisely: "change the ' +
+      'car to red", "make it night time", "put a straw hat on the cat". Name the subject ' +
+      'explicitly ("the woman in the red coat", never "her"). Say what should stay: "while ' +
+      'keeping everything else the same", "keep the same facial features, pose and ' +
+      'expression", "maintain the original composition". For a style change name the ' +
+      'style and its traits: "convert to a watercolour painting with soft washes and visible ' +
+      'paper texture". Put any text to add or replace in quotes. Do not describe the parts of ' +
+      'the picture that are not changing, and never write a full scene description — that ' +
+      'reads as a request to repaint everything.',
+    // No `negative`, no prefix, no booster: an instruction with "masterpiece,
+    // best quality" glued on is an instruction to change the quality tags.
+    needs: [
+      'diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors',
       'text_encoders/clip_l.safetensors',
       'text_encoders/t5xxl_fp8_e4m3fn.safetensors',
       'vae/ae.safetensors',
@@ -2118,6 +2367,12 @@ function turboHints(style: string): string[] {
   return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.turboHints ?? []
 }
 
+/** True for a style that edits an existing picture rather than drawing one. */
+export function styleEdits(style: string): boolean {
+  if (!style.startsWith(WORKFLOW_PREFIX)) return false
+  return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.edits === true
+}
+
 /** True for a distilled style, whose step count is the model's, not a preference. */
 export function styleIgnoresQuality(style: string): boolean {
   if (!style.startsWith(WORKFLOW_PREFIX)) return false
@@ -2339,7 +2594,16 @@ function buildGraph(job: ImageJob, sourceName = ''): ComfyGraph {
   // because that link is the only place in a graph that says which VAE this
   // pipeline actually uses — the same reasoning as resolving the two
   // CLIPTextEncode boxes through the sampler's positive/negative links.
-  if (sourceName) {
+  if (sourceName && styleEdits(job.model)) {
+    // An edit style brings its own LoadImage, wired through whatever the model
+    // needs between it and the sampler (Kontext: a scale node, an encode and a
+    // ReferenceLatent into the conditioning). Splicing the generic img2img
+    // pair in here would hand the sampler the source twice and set a denoise
+    // the model was not trained for — so the ONLY patch is the filename.
+    const loadId = findNode(graph, ['LoadImage'])
+    if (!loadId) throw new Error("this editing style's workflow has no LoadImage node to put the picture in")
+    graph[loadId]!.inputs['image'] = sourceName
+  } else if (sourceName) {
     const decodeId = findNode(graph, ['VAEDecode', 'VAEDecodeTiled'])
     const vae = decodeId ? graph[decodeId]!.inputs['vae'] : undefined
     if (!Array.isArray(vae)) {
@@ -2352,7 +2616,24 @@ function buildGraph(job: ImageJob, sourceName = ''): ComfyGraph {
     // `image` is LoadImage's only real input — the `upload` key ComfyUI's own
     // exports carry is a frontend widget hint, not something /prompt reads.
     graph[loadId] = { class_type: 'LoadImage', inputs: { image: sourceName } }
-    graph[encId]  = { class_type: 'VAEEncode', inputs: { pixels: [loadId, 0], vae } }
+    // Fit the source to the size startImage() settled on — the style's
+    // megapixel budget at the source's own shape — before it is encoded, so the
+    // model works at the resolution it was trained at rather than at whatever
+    // a phone camera produced. Skipped when the numbers already agree, which
+    // is the case for redrawing one of this app's own renders at the same
+    // budget. `center` crop rather than `disabled`: the budget size is snapped
+    // to the grid, so the aspect is off by a few pixels, and a crop of those
+    // beats a stretch of them.
+    let pixels: [string, number] = [loadId, 0]
+    if (job.sourceWidth > 0 && (job.width !== job.sourceWidth || job.height !== job.sourceHeight)) {
+      const scaleId = 'touchsphere_source_scale'
+      graph[scaleId] = {
+        class_type: 'ImageScale',
+        inputs: { image: pixels, upscale_method: 'lanczos', width: job.width, height: job.height, crop: 'center' },
+      }
+      pixels = [scaleId, 0]
+    }
+    graph[encId]  = { class_type: 'VAEEncode', inputs: { pixels, vae } }
     sampler.inputs['latent_image'] = [encId, 0]
 
     // KSamplerAdvanced has no denoise input — it expresses the same idea as

@@ -47,6 +47,13 @@ const OLLAMA_API_KEY = process.env['OLLAMA_API_KEY'] ?? ''
 
 /** The model that rewrites prompts. See the header for why it is not the chat one. */
 const ENV_MODEL = process.env['OLLAMA_IMAGE_MODEL'] ?? ''
+/**
+ * The model that LOOKS at a picture before a redraw — see composeRedrawPrompt.
+ * Falls back to the improver's model and then the chat model, because on the
+ * box this was written for the chat model (gemma4) can see, and a separate
+ * setting nobody fills in would silently switch the feature off.
+ */
+const ENV_VISION_MODEL = process.env['OLLAMA_VISION_MODEL'] ?? ''
 
 // Shorter than the guide generator's three minutes and longer than the chat
 // route's: a render is already tens of seconds, so a few more for a better
@@ -269,6 +276,110 @@ export async function improvePrompt(prompt: string, style: StyleFacts): Promise<
     const msg = err instanceof Error ? err.message : String(err)
     console.warn('[image-prompt] error:', msg)
     return give(false, prompt, `the prompt model could not be reached (${msg.slice(0, 80)})`)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** The model composeRedrawPrompt() will use. */
+export function visionModel(): string {
+  return ENV_VISION_MODEL || prompterModel()
+}
+
+/**
+ * Write the full prompt for an img2img redraw by LOOKING at the source picture.
+ *
+ * Plain img2img has a contract that nobody standing at a kiosk knows about: the
+ * prompt has to describe the WHOLE picture that should come out, not the
+ * change. The sampler is handed the source's layout as a noised latent and the
+ * prompt as the only description of what that layout depicts — so "make it
+ * night" over a picture of a fox produces a picture of "make it night", with a
+ * fox-shaped composition. And for a picture the user uploaded there is no
+ * description at all: its "prompt" is the filename.
+ *
+ * So this call does the thing the user is being asked to do by hand: it is
+ * given the picture and the change, and it returns a description of the
+ * picture WITH the change, written in the register the target model wants
+ * (booru tags for NoobAI, a T5 paragraph for FLUX) — the same `{{guidance}}`
+ * the improver substitutes, because it is the same fact about the same model.
+ *
+ * Same contract as improvePrompt(): a fresh two-message conversation every
+ * time, no tools, never throws, never fails the render. A dead vision model
+ * costs a better prompt, not the picture.
+ */
+export async function composeRedrawPrompt(
+  image: Buffer, change: string, style: StyleFacts,
+): Promise<Improvement> {
+  const started = Date.now()
+  const model = visionModel()
+  const give = (changed: boolean, text: string, why: string): Improvement => ({
+    prompt: text, original: change, changed, model, ms: Date.now() - started, why,
+  })
+
+  const system =
+    'You write prompts for an image model that REPAINTS an existing picture. You are shown ' +
+    'the picture, and the user says what they want changed about it.\n\n' +
+    `The image model is ${style.label}.\n` +
+    'How this model asks to be prompted:\n' +
+    `${style.guidance}\n\n` +
+    'Rules:\n' +
+    '- Describe the WHOLE picture as it should look AFTER the change: the subject, its ' +
+    'appearance, pose, clothing, the setting, the lighting and the art style. The model does ' +
+    'not see the original — your description is all it gets, so anything you leave out is lost.\n' +
+    '- Keep everything the user did not ask to change exactly as it is in the picture. Apply ' +
+    'their change fully and literally.\n' +
+    '- If the user typed a complete description rather than a change, use it as the description ' +
+    'and only add what you can see that it leaves out.\n' +
+    '- Do not invent extra people, and do not ask for text, captions, watermarks or signatures.\n' +
+    '- Reply with the prompt itself and nothing else — no quotes, no preamble, no explanation, ' +
+    'no markdown.'
+
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
+  try {
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
+
+    const res = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
+      method: 'POST',
+      headers,
+      signal: ctrl.signal,
+      body: JSON.stringify({
+        model,
+        stream: false,
+        think: false,
+        messages: [
+          { role: 'system', content: system },
+          // Ollama's multimodal shape: base64 images ride beside the text.
+          { role: 'user', content: `Change wanted: ${change}`, images: [image.toString('base64')] },
+        ],
+        // Cooler than the improver's 0.7: this is description, not invention,
+        // and the whole point is fidelity to what is in the picture.
+        options: { temperature: 0.4, num_predict: 500 },
+      }),
+    })
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      console.warn(`[image-prompt] vision ${res.status}: ${body.slice(0, 200)}`)
+      return give(false, change, `the vision model answered ${res.status}`)
+    }
+    const json = (await res.json()) as { message?: { content?: string }; response?: string }
+    const text = unwrap(json.message?.content ?? json.response ?? '')
+    if (!text) return give(false, change, 'the vision model returned nothing')
+    if (text.length > MAX_PROMPT_CHARS) {
+      return give(false, change, `the description came back ${text.length} characters long`)
+    }
+    // A description of a whole picture is never shorter than the change asked
+    // for. One that is has refused, or answered a question nobody asked.
+    if (text.length < Math.min(24, change.length)) {
+      return give(false, change, 'the description came back too short to be a prompt')
+    }
+    return give(text !== change, text, '')
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.warn('[image-prompt] vision error:', msg)
+    return give(false, change, `the vision model could not be reached (${msg.slice(0, 80)})`)
   } finally {
     clearTimeout(timer)
   }

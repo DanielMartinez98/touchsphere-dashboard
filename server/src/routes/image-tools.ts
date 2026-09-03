@@ -13,7 +13,7 @@
 // promise a picture before discovering there's no GPU behind it.
 
 import {
-  imagesEnabled, listImages, pendingJobs, selectedModel, startImage, stylePromptStyle,
+  imagesEnabled, listImages, pendingJobs, selectedModel, startImage, styleEdits, stylePromptStyle,
   type ImageJob, type StoredImage,
 } from '../image'
 import type { BrowseToolResult, DisplayPayload } from './browse'
@@ -37,6 +37,20 @@ import type { BrowseToolResult, DisplayPayload } from './browse'
  */
 export function imagePromptGuidance(): string {
   if (!imagesEnabled()) return ''
+  // An editing style turns the two tools around: redraw_image is the one that
+  // works, generate_image cannot (there is nothing to edit), and the prompt is
+  // an instruction rather than a description. The tool schemas are fixed at
+  // module load, so this is the only place that can say so.
+  if (styleEdits(selectedModel())) {
+    return ' DRAWING STYLE: the current picture model is an EDITOR (FLUX Kontext). It changes ' +
+      'an existing picture and cannot draw one from nothing, so generate_image will be refused ' +
+      '— offer redraw_image instead, or tell the user to pick a drawing style. For ' +
+      "redraw_image write the prompt as a plain-English INSTRUCTION saying what to change, " +
+      'not a description of the whole picture: "make it night time while keeping everything ' +
+      'else the same", "change the car to red", "put a straw hat on the cat, keep the same pose ' +
+      'and expression". Name the subject explicitly rather than saying "it" or "her". The ' +
+      'strength argument is ignored for this style.'
+  }
   if (stylePromptStyle(selectedModel()) !== 'tags') {
     return ' DRAWING STYLE: the current picture model reads plain English, so write ' +
       "generate_image's prompt as a descriptive phrase — subject, setting, lighting, style."
@@ -112,10 +126,12 @@ export const IMAGE_TOOLS = !imagesEnabled() ? [] : [
           prompt: {
             type: 'string',
             description:
-              'A full description of the picture you want OUT — not just the change. The model ' +
-              'redraws from the description, so "a ginger cat in a spacesuit, floating in a ' +
-              'nebula, at night" is right and "make it night" is not. Start from what the ' +
-              'original was of and fold the change into it, as a comma-separated list of details.',
+              'For a drawing style: a full description of the picture you want OUT — not just ' +
+              'the change. The model redraws from the description, so "a ginger cat in a ' +
+              'spacesuit, floating in a nebula, at night" is right and "make it night" is not. ' +
+              'Start from what the original was of and fold the change into it. For an EDITING ' +
+              'style (the DRAWING STYLE note says which is current): the opposite — a plain ' +
+              'instruction saying only what to change and what to keep.',
           },
           about: {
             type: 'string',

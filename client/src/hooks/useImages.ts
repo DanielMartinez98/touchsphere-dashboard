@@ -133,6 +133,12 @@ export interface ImageStyle {
    * greys these and prints the filename instead.
    */
   missing?: string[]
+  /**
+   * True for a style that EDITS a picture rather than drawing one (FLUX
+   * Kontext). It needs a source, takes the prompt as an instruction, and has
+   * no strength to pick — the panel changes shape around all three.
+   */
+  edits?: boolean
 }
 
 interface StylesResponse {
