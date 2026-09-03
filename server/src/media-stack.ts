@@ -47,7 +47,7 @@ const QBIT_USER   = env('MEDIA_QBIT_USER');   const QBIT_PASS  = process.env['ME
 /** The whole feature hangs off Plex: without it there is nothing to play. */
 export function plexEnabled(): boolean { return !!(PLEX_URL && PLEX_TOKEN) }
 export function seerrEnabled(): boolean { return !!(SEERR_URL && SEERR_KEY) }
-export function qbitEnabled(): boolean { return !!(QBIT_URL && QBIT_USER) }
+export function qbitEnabled(): boolean { return !!(QBIT_URL && QBIT_USER && QBIT_PASS) }
 export function bazarrEnabled(): boolean { return !!(BAZARR_URL && BAZARR_KEY) }
 export function sonarrEnabled(): boolean { return !!(SONARR_URL && SONARR_KEY) }
 export function radarrEnabled(): boolean { return !!(RADARR_URL && RADARR_KEY) }
@@ -628,7 +628,18 @@ export interface Torrent {
 
 let qbitCookie: string | null = null
 
+// A failed login is remembered for a while rather than retried on every poll:
+// qBittorrent bans the caller's IP after a handful of bad attempts (an hour by
+// default), and the status probe alone would burn through that in minutes —
+// which is exactly what a wrong MEDIA_QBIT_PASS did the first time it shipped.
+const LOGIN_BACKOFF_MS = 10 * 60_000
+let qbitLoginFailedAt = 0
+let qbitLoginError = ''
+
 async function qbitLogin(): Promise<void> {
+  if (qbitLoginFailedAt && Date.now() - qbitLoginFailedAt < LOGIN_BACKOFF_MS) {
+    throw new Error(`${qbitLoginError} — not retrying for a few minutes`)
+  }
   const body = new URLSearchParams({ username: QBIT_USER, password: QBIT_PASS })
   const res = await axios.post<string>(`${QBIT_URL}/api/v2/auth/login`, body.toString(), {
     headers: { 'content-type': 'application/x-www-form-urlencoded', Referer: QBIT_URL, Origin: QBIT_URL },
@@ -636,8 +647,13 @@ async function qbitLogin(): Promise<void> {
     validateStatus: () => true,
   })
   if (res.status !== 200 || !/^Ok\.?$/i.test(String(res.data).trim())) {
-    throw new Error(res.status === 403 ? 'qBittorrent refused the login (banned IP or wrong password)' : `qBittorrent login failed (${res.status})`)
+    qbitLoginFailedAt = Date.now()
+    qbitLoginError = res.status === 403
+      ? 'qBittorrent refused the login (banned IP or wrong password)'
+      : `qBittorrent login failed (${res.status === 200 ? 'wrong password' : res.status})`
+    throw new Error(qbitLoginError)
   }
+  qbitLoginFailedAt = 0
   const cookie = (res.headers['set-cookie'] ?? []).map((c: string) => c.split(';')[0]).find((c: string) => c.startsWith('SID='))
   if (!cookie) throw new Error('qBittorrent login returned no session cookie')
   qbitCookie = cookie

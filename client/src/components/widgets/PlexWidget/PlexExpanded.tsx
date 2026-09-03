@@ -497,7 +497,7 @@ function PlayOn({ itemKey }: { itemKey: string }) {
 // ── Downloads ────────────────────────────────────────────────────────────────
 
 function DownloadsTab({ canControl }: { canControl: boolean }) {
-  const [data, setData] = useState<{ torrents: Torrent[]; transfer: { dlspeed: number; upspeed: number; connected: boolean } | null } | null>(null)
+  const [data, setData] = useState<{ source: 'qbit' | 'arr'; warning?: string; torrents: Torrent[]; transfer: { dlspeed: number; upspeed: number; connected: boolean } | null } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
 
@@ -530,12 +530,13 @@ function DownloadsTab({ canControl }: { canControl: boolean }) {
         </p>
       )}
       {error && <p className="text-amber-300 text-sm flex items-center gap-2"><AlertTriangle size={16} />{error}</p>}
+      {data?.warning && <p className="text-amber-300/80 text-[13px] flex items-center gap-2"><AlertTriangle size={14} />{data.warning} — showing Sonarr/Radarr's queue instead.</p>}
       {!data && !error && <p className="text-ink-dim text-sm">Loading…</p>}
       {data && !list.length && <p className="text-ink-dim text-sm">Nothing is downloading.</p>}
 
       {active.length > 0 && (
         <section className="flex flex-col gap-2">
-          {active.map(t => <TorrentRow key={t.hash} t={t} busy={busy === t.hash} onControl={canControl ? () => void control(t) : undefined} />)}
+          {active.map(t => <TorrentRow key={t.hash} t={t} busy={busy === t.hash} onControl={canControl && data?.source === 'qbit' ? () => void control(t) : undefined} />)}
         </section>
       )}
       {finished.length > 0 && (

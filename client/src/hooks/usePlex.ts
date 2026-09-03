@@ -173,7 +173,7 @@ export const plexApi = {
     postJson<{ mode: 'local'; key: string; session: string; title: string; src: string; offsetMs: number; durationMs: number } | { mode: 'remote'; key: string; title: string }>('/api/plex/play', body),
   stop:     (session: string, timeMs?: number, durationMs?: number) => postJson<{ ok: true }>('/api/plex/stop', { session, timeMs, durationMs }),
   progress: (body: { key: string; state: 'playing' | 'paused' | 'stopped'; timeMs: number; durationMs: number; session?: string }) => postJson<{ ok: true }>('/api/plex/progress', body),
-  torrents: () => getJson<{ source: 'qbit' | 'arr'; torrents: Torrent[]; transfer: { dlspeed: number; upspeed: number; connected: boolean } | null }>('/api/plex/torrents'),
+  torrents: () => getJson<{ source: 'qbit' | 'arr'; warning?: string; torrents: Torrent[]; transfer: { dlspeed: number; upspeed: number; connected: boolean } | null }>('/api/plex/torrents'),
   torrent:  (hash: string, action: 'pause' | 'resume') => postJson<{ ok: true }>(`/api/plex/torrents/${hash}/${action}`, {}),
   requests: () => getJson<{ requests: SeerrRequest[] }>('/api/plex/requests'),
   discover: (q: string) => getJson<{ results: SeerrResult[] }>(`/api/plex/discover?q=${encodeURIComponent(q)}`),

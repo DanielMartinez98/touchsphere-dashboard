@@ -79,7 +79,13 @@ def qbit_creds():
     for c in clients:
         if (c.get('implementation') or '').lower() != 'qbittorrent': continue
         f = {x['name']: x.get('value') for x in c.get('fields', [])}
-        return f.get('username') or '', f.get('password') or ''
+        pw = f.get('password') or ''
+        # Sonarr v4 redacts password fields in its API — what comes back is
+        # "********", which is not a password. Say so rather than write it.
+        if pw and set(pw) == {'*'}:
+            print('  MEDIA_QBIT_PASS: Sonarr masks it — set it by hand in .env (qBittorrent → Options → Web UI)')
+            pw = ''
+        return f.get('username') or '', pw
     return None
 
 creds = None
@@ -90,7 +96,8 @@ except Exception as e:
 if creds:
     found['MEDIA_QBIT_USER'], found['MEDIA_QBIT_PASS'] = creds
     print(f'  MEDIA_QBIT_USER: found ({creds[0]!r} — the username is not secret)')
-    print(f'  MEDIA_QBIT_PASS: {"found" if creds[1] else "EMPTY"}')
+    if creds[1]: print('  MEDIA_QBIT_PASS: found')
+    else: del found['MEDIA_QBIT_PASS']
 else:
     print('  qBittorrent: no qBittorrent download client in Sonarr')
 

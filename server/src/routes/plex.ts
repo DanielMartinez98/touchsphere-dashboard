@@ -337,23 +337,30 @@ router.post('/progress', async (req: Request, res: Response) => {
 
 router.get('/torrents', async (_req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-store')
-  if (!qbitEnabled()) {
-    // Without qBittorrent the *arr queues still say what is on the way, just
-    // without speeds — better than an empty tab.
+  // Without qBittorrent — not configured, or configured and not answering,
+  // which on this stack means a wrong password or gluetun mid-reconnect — the
+  // *arr queues still say what is on the way, just without speeds. Better
+  // than an empty tab, and the same shape, so the panel needn't know.
+  let qbitError: string | null = null
+  if (qbitEnabled()) {
+    try {
+      const [list, transfer] = await Promise.all([torrents(), transferInfo()])
+      return res.json({ source: 'qbit', torrents: list, transfer })
+    } catch (err) {
+      qbitError = msg(err)
+    }
+  }
+  try {
     const queue = [...(await arrQueue()).values()]
-    return res.json({ source: 'arr', torrents: queue.map(q => ({
+    res.json({ source: 'arr', ...(qbitError ? { warning: `qBittorrent: ${qbitError}` } : {}), torrents: queue.map(q => ({
       hash: q.downloadId, name: q.title, label: q.title, kind: q.kind, state: q.status ?? 'unknown',
       phase: q.trackedState === 'importPending' || q.trackedState === 'importing' ? 'done' : 'downloading',
       progress: q.size && q.sizeleft !== undefined ? 1 - q.sizeleft / q.size : 0,
       size: q.size ?? 0, downloaded: (q.size ?? 0) - (q.sizeleft ?? 0),
       dlspeed: 0, upspeed: 0, eta: 8640000, seeds: 0, peers: 0, ratio: 0, addedOn: 0,
     })), transfer: null })
-  }
-  try {
-    const [list, transfer] = await Promise.all([torrents(), transferInfo()])
-    res.json({ source: 'qbit', torrents: list, transfer })
   } catch (err) {
-    res.status(502).json({ error: `qBittorrent: ${msg(err)}` })
+    res.status(502).json({ error: qbitError ? `qBittorrent: ${qbitError}` : msg(err) })
   }
 })
 
