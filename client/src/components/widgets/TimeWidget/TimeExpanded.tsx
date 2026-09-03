@@ -1,22 +1,27 @@
-// The expanded top-right corner: calendar and clock as two tabs.
+// The expanded top-right corner: clock, calendar and weather as three tabs.
 //
-// Both panels are the ORIGINAL components, unchanged and unmoved — merging the
-// two corners is a layout decision, and rewriting a working month grid or the
-// timer tools to achieve it would be a much larger change than the one that was
-// asked for. This file is only the switch between them.
+// All three panels are the ORIGINAL components, unchanged and unmoved — merging
+// corners is a layout decision, and rewriting a working month grid, the timer
+// tools or the weather map to achieve it would be a much larger change than
+// the one that was asked for. This file is only the switch between them. The
+// weather arrived last, when the media stack needed the top-left corner: it
+// belongs with the clock because the two are read together ("what's the day
+// looking like") and because the calendar pill already sets the pattern of a
+// corner that answers more than one question.
 //
 // Which tab opens first is a real choice: the clock lands first because the
 // collapsed pill already shows the next event, so someone who opened this corner
 // having seen that line usually wants the timers, not to re-read the agenda.
 
 import { useState } from 'react'
-import { CalendarDays, Clock } from 'lucide-react'
+import { CalendarDays, Clock, CloudSun } from 'lucide-react'
 import CalendarExpanded from '../CalendarWidget/CalendarExpanded'
 import WorldClock from '../ClockWidget/WorldClock'
+import WeatherMap from '../WeatherWidget/WeatherMap'
 import type { TimersApi } from '../../../hooks/useTimers'
 import type { StopwatchApi } from '../../../hooks/useStopwatch'
 
-type Tab = 'clock' | 'calendar'
+type Tab = 'clock' | 'calendar' | 'weather'
 
 export default function TimeExpanded({ timers, stopwatch }: { timers?: TimersApi; stopwatch?: StopwatchApi }) {
   const [tab, setTab] = useState<Tab>('clock')
@@ -24,6 +29,7 @@ export default function TimeExpanded({ timers, stopwatch }: { timers?: TimersApi
   const TABS: { id: Tab; label: string; icon: React.ReactElement }[] = [
     { id: 'clock',    label: 'Clock',    icon: <Clock size={18} /> },
     { id: 'calendar', label: 'Calendar', icon: <CalendarDays size={18} /> },
+    { id: 'weather',  label: 'Weather',  icon: <CloudSun size={18} /> },
   ]
 
   return (
@@ -50,7 +56,7 @@ export default function TimeExpanded({ timers, stopwatch }: { timers?: TimersApi
             type="button"
             onClick={() => setTab(t.id)}
             // 56px tall: this is a corner someone reaches for mid-task, and
-            // these are the two targets everything else here is behind.
+            // these are the three targets everything else here is behind.
             className={`flex-1 h-14 rounded-2xl flex items-center justify-center gap-2 text-sm font-semibold
                         transition-colors active:scale-95 ${
               tab === t.id
@@ -70,9 +76,9 @@ export default function TimeExpanded({ timers, stopwatch }: { timers?: TimersApi
           already at its own scroll extent. `nested` tells each panel not to
           reserve room for the widget chrome — the tab bar above already did. */}
       <div style={{ paddingBottom: 'max(0px, env(safe-area-inset-bottom))' }}>
-        {tab === 'clock'
-          ? <WorldClock timers={timers} stopwatch={stopwatch} nested />
-          : <CalendarExpanded nested />}
+        {tab === 'clock' && <WorldClock timers={timers} stopwatch={stopwatch} nested />}
+        {tab === 'calendar' && <CalendarExpanded nested />}
+        {tab === 'weather' && <WeatherMap nested />}
       </div>
     </div>
   )

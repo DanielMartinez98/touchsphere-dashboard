@@ -17,6 +17,7 @@
     "@tailwindcss/vite": "^4.2.4",
     "@types/three": "^0.184.0",
     "framer-motion": "^12.38.0",
+    "hls.js": "^1.7.2",
     "lucide-react": "^1.23.0",
     "pixi-live2d-display-lipsyncpatch": "^0.5.0-ls-8",
     "pixi.js": "^7.4.3",

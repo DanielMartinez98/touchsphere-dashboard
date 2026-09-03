@@ -62,6 +62,11 @@ export type DisplayPayload =
   // overlay opens on the job id and fills in from the `image` SSE event, so the
   // frame appears at the same moment as the spoken reply rather than 20s later.
   | { kind: 'image'; jobId: string; prompt: string; url?: string }
+  // The media stack. `play` starts a library item (ratingKey) full screen on the
+  // kiosk — the client owns the transcode session, so nothing is started here;
+  // `open` brings the Plex corner up on a tab, optionally on one item or search.
+  | { kind: 'plex'; action: 'play'; key: string; title: string }
+  | { kind: 'plex'; action: 'open'; tab: 'library' | 'downloads' | 'requests'; title: string; key?: string; query?: string }
   | { kind: 'close' }
 
 // ── URL helpers ──────────────────────────────────────────────────────────────

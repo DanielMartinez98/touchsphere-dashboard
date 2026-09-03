@@ -3,8 +3,10 @@ import Widget from './components/widgets/Widget'
 import ParticleSphere from './components/ParticleSphere/ParticleSphere'
 import { TimeCollapsed } from './components/widgets/TimeWidget/TimeWidget'
 import TimeExpanded from './components/widgets/TimeWidget/TimeExpanded'
-import { WeatherCollapsed } from './components/widgets/WeatherWidget/WeatherWidget'
-import WeatherMap from './components/widgets/WeatherWidget/WeatherMap'
+import { PlexCollapsed, usePlexSummary } from './components/widgets/PlexWidget/PlexWidget'
+import PlexExpanded from './components/widgets/PlexWidget/PlexExpanded'
+import { PlexPlayer } from './components/PlexPlayer'
+import { onPlexPanelRequest, usePlexStatus } from './hooks/usePlex'
 import { MediaCollapsed } from './components/widgets/MediaListWidget/MediaListWidget'
 import MediaListExpanded from './components/widgets/MediaListWidget/MediaListExpanded'
 import { ImageCollapsed } from './components/widgets/ImageWidget/ImageWidget'
@@ -49,12 +51,12 @@ const Avatar = lazy(() => import('./components/Avatar/Avatar'))
 const Live2DAvatar = lazy(() => import('./components/Avatar/Live2DAvatar'))
 
 // 'time' is the merged calendar+clock corner; 'images' is the ComfyUI corner.
-type OpenWidget = 'time' | 'weather' | 'media' | 'notion' | 'images' | null
+type OpenWidget = 'time' | 'plex' | 'media' | 'notion' | 'images' | null
 
 // Distinct glowing accent colour per corner.
 const ACCENT = {
-  weather: '#3b82f6', // blue
-  time:    '#facc15', // yellow (calendar + clock, merged into one corner)
+  plex:    '#e5a00d', // Plex amber (library, downloads, requests)
+  time:    '#facc15', // yellow (calendar, clock and now the weather)
   media:   '#ef4444', // red  (collection)
   notion:  '#22c55e', // green (work tasks)
   images:  '#ec4899', // pink (drawing)
@@ -180,6 +182,10 @@ function App() {
   // than a piece of derived state, because this is an event — asking twice in a
   // row has to open the panel twice, and nothing should reopen it at boot.
   useEffect(() => onDrawPanelRequest(() => setOpen('images')), [])
+  useEffect(() => onPlexPanelRequest(() => setOpen('plex')), [])
+
+  const plexStatus = usePlexStatus()
+  const plexSummary = usePlexSummary(plexStatus)
 
   // Close the mode-dependent widget when mode changes so stale panels don't
   // linger. That pair lives in the bottom-RIGHT corner now (it moved when the
@@ -309,21 +315,24 @@ function App() {
         />
       )}
 
-      {/* Top-Left — Weather (blue glow) */}
+      {/* Top-Left — Plex (amber glow): the library, what's downloading, and
+          what's been asked for. The weather lived here until the media stack
+          needed a corner; it moved in with the clock, whose corner already
+          answers "what's the day looking like". */}
       <Widget
         position="top-left"
-        accent={ACCENT.weather}
-        isOpen={open === 'weather'}
-        onToggle={() => toggle('weather')}
-        collapsed={<WeatherCollapsed />}
-        expanded={<WeatherMap />}
+        accent={ACCENT.plex}
+        isOpen={open === 'plex'}
+        onToggle={() => toggle('plex')}
+        collapsed={<PlexCollapsed status={plexStatus} summary={plexSummary} />}
+        expanded={<PlexExpanded status={plexStatus} />}
       />
 
-      {/* Top-Right — Time: calendar and clock merged (yellow glow).
-          They were two corners until image generation needed one. Merging them
-          costs nothing because they answer the same question from two sides —
-          "what time is it, what's next" — and it freed bottom-right for the
-          Notion/Media pair that bottom-left used to carry. */}
+      {/* Top-Right — Time: calendar, clock and weather (yellow glow).
+          Calendar and clock were two corners until image generation needed
+          one; the weather joined when Plex needed another. All three answer
+          the same question from different sides — "what's today like, what's
+          next" — so one corner carries them without feeling crowded. */}
       <Widget
         position="top-right"
         accent={ACCENT.time}
@@ -463,6 +472,12 @@ function App() {
           keeps a video paused for as long as she has the floor, so playback and
           the voice loop never talk over each other. */}
       <BrowserOverlay hold={voice.isListening || voice.isThinking || voice.isSpeaking} />
+
+      {/* Plex playback — a film or episode playing on the kiosk, from a tap in
+          the Plex corner or a spoken play_media. Same `hold` as the browser
+          window: it pauses while the assistant has the floor. Above the browser
+          window and the guide, below a generated picture. */}
+      <PlexPlayer hold={voice.isListening || voice.isThinking || voice.isSpeaking} />
 
       {/* Game guide — opened by a tap in the Watch/Play list or by the assistant
           (show_game_guide). Top-level so it can be up with every widget closed. */}

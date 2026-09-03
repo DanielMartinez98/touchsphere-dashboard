@@ -8,12 +8,35 @@
 //
 // The collapsed pill is ordered by how often it's actually read: the time is the
 // thing you look up twenty times a day, so it stays the big number the clock
-// pill always was; the next event sits under it, and a running timer or alarm
-// keeps its purple badge at the bottom.
+// pill always was; the weather sits beside the date (it moved in from the
+// top-left corner when Plex needed it — one line, temperature and sky, since
+// the full map is a tab away); the next event sits under that, and a running
+// timer or alarm keeps its purple badge at the bottom.
 
-import { CalendarDays, Timer, AlarmClock, Hourglass } from 'lucide-react'
+import { useState } from 'react'
+import { CalendarDays, Timer, AlarmClock, Hourglass, Thermometer } from 'lucide-react'
 import { useClock } from '../../../hooks/useClock'
 import { useCalendar } from '../../../hooks/useCalendar'
+import { useWeather } from '../../../hooks/useWeather'
+
+const ICON_URL = (code: string) => `https://openweathermap.org/img/wn/${code}@2x.png`
+
+function WeatherLine() {
+  const { weather, error } = useWeather()
+  const [iconError, setIconError] = useState(false)
+  if (error || !weather) return null
+  return (
+    <span className="flex items-center gap-1 w-full justify-end -mt-0.5">
+      {iconError ? (
+        <Thermometer size={16} className="text-sky-300 shrink-0" />
+      ) : (
+        <img src={ICON_URL(weather.icon)} alt="" className="w-7 h-7 -my-1.5 shrink-0" onError={() => setIconError(true)} />
+      )}
+      <span className="text-sm font-semibold tabular-nums text-white">{Math.round(weather.temp)}°</span>
+      <span className="text-[13px] text-ink-dim capitalize truncate">{weather.description}</span>
+    </span>
+  )
+}
 import { formatRemaining, formatClock, type TimersApi } from '../../../hooks/useTimers'
 import { formatStopwatch, type StopwatchApi } from '../../../hooks/useStopwatch'
 
@@ -43,6 +66,7 @@ export function TimeCollapsed({ timers, stopwatch }: { timers?: TimersApi; stopw
     <>
       <span className="text-3xl font-bold font-display tracking-tight tabular-nums text-white">{time}</span>
       <span className="text-sm text-ink-mid">{date}</span>
+      <WeatherLine />
 
       {/* The agenda line. Deliberately one line and truncated — the pill is a
           glance, and the full day is one tap away in the Calendar tab. */}

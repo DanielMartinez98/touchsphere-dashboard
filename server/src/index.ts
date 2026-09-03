@@ -24,6 +24,7 @@ import memoryRouter from './routes/memory'
 import artworkRouter from './routes/artwork'
 import guidesRouter from './routes/guides'
 import imageRouter from './routes/image'
+import plexRouter from './routes/plex'
 import { elevenLabsKeyState } from './config/keys'
 import { sweepInterrupted } from './guides'
 import { SEARCH_PROVIDER } from './research'
@@ -180,6 +181,11 @@ app.use('/api/guides', dataLimiter, guidesRouter)
 // Generated images: the gallery pulls a file per thumbnail, so this sits behind
 // the generous tile limiter rather than the 60/min data one, same as artwork.
 app.use('/api/image', tileLimiter, imageRouter)
+// The media stack. Posters and the HLS video stream are fetched by the dozen
+// (a segment every few seconds for the length of a film) so they ride the tile
+// budget; the rest calls Plex/Seerr/qBittorrent upstream and stays strict.
+app.use('/api/plex', (req, res, next) =>
+  /^\/(hls|img|poster)\//.test(req.path) ? tileLimiter(req, res, next) : dataLimiter(req, res, next), plexRouter)
 // Artwork is split across both limiters. Cached covers are served off local
 // disk and a full list fetches one per item, so they need the tile budget —
 // but /search calls TMDB/IGDB upstream, so it stays on the strict data budget

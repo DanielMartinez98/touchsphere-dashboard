@@ -33,6 +33,7 @@ import { DASHBOARD_TOOLS, MUTATING_TOOLS, TOOL_SLICE, runDashboardTool } from '.
 import { BROWSE_TOOLS, runBrowseTool, type DisplayPayload } from './browse'
 import { GUIDE_VIEW_TOOLS, GUIDE_VIEW_MUTATING, runGuideViewTool } from './guide-view-tools'
 import { IMAGE_TOOLS, imagePromptGuidance, runImageTool } from './image-tools'
+import { PLEX_TOOLS, runPlexTool } from './plex-tools'
 import { addMemory, formatForPrompt as formatMemoryForPrompt } from '../memory'
 import {
   saveSession, updateSessionSummary, loadSession, scoreContinuation, sessionAgeMinutes,
@@ -204,6 +205,17 @@ const SYSTEM_PROMPT_BODY =
       "FROM one already drawn — that is the tool for \"make it night time\", \"same cat but blue\", " +
       "\"add a hat\"; pass the whole picture you want, not just the change, because it redraws from " +
       "the description. show_last_image puts an earlier one back up."
+    : "") +
+  // Same rule: only described when the media stack is configured.
+  (PLEX_TOOLS.length > 0
+    ? " PLEX: the house has a Plex library. play_media starts a film or episode full screen here " +
+      "(or on a named Plex player) — use it for \"play\", \"put on\", \"continue\" with a title; " +
+      "NOT play_video, which is YouTube. whats_on_plex says what is in the library or what is new; " +
+      "media_languages answers dub and subtitle questions; download_status is the torrents. " +
+      (PLEX_TOOLS.some(t => t.function.name === 'request_media')
+        ? "request_media asks for something to be ADDED — say what was requested and whether it was approved. "
+        : "") +
+      "Speak the title, never ids or file names."
     : "")
 
 // Compose the full system prompt for a given assistant: its personality up
@@ -312,7 +324,7 @@ const TURN_CONTROL_TOOLS = [
 // even without an Ollama web-search key.) IMAGE_TOOLS is empty unless COMFYUI_URL
 // is set — unlike TTS there is no fallback renderer, so a model that can see the
 // tool would promise a picture no configured box can draw.
-const TOOLS = [...DASHBOARD_TOOLS, ...BROWSE_TOOLS, ...GUIDE_VIEW_TOOLS, ...IMAGE_TOOLS, ...TURN_CONTROL_TOOLS, ...WEB_TOOLS]
+const TOOLS = [...DASHBOARD_TOOLS, ...BROWSE_TOOLS, ...GUIDE_VIEW_TOOLS, ...IMAGE_TOOLS, ...PLEX_TOOLS, ...TURN_CONTROL_TOOLS, ...WEB_TOOLS]
 
 // ── Tool implementations ──────────────────────────────────────────────────
 async function runWebSearch(query: string): Promise<string> {
@@ -735,6 +747,7 @@ router.post('/', async (req: Request, res: Response) => {
         // runTool. Guide-view tools also mutate, so their slice is flagged too.
         const browsed = (await runGuideViewTool(name, args))
           ?? (await runImageTool(name, args))
+          ?? (await runPlexTool(name, args))
           ?? (await runBrowseTool(name, args))
         if (browsed && GUIDE_VIEW_MUTATING.has(name) && !/^(There (is|are)|Which game|Every step|"|The guide)/.test(browsed.text)) {
           changed.add('guides')

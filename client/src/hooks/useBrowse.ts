@@ -12,6 +12,7 @@
 import { useSyncExternalStore } from 'react'
 import { closeGuide, openGuide } from './useGuideOverlay'
 import { closeImage, openImage } from './useImageOverlay'
+import { closePlexPlayer, openPlexPlayer, requestPlexPanel } from './usePlex'
 
 /** Mirrors DisplayPayload in server/src/routes/browse.ts. */
 export type BrowseTarget =
@@ -55,6 +56,7 @@ export function openBrowseFromPayload(raw: unknown): void {
   // validation at the call site.
   if (d['kind'] === 'guide' && typeof d['itemId'] === 'string' && d['itemId']) {
     closeBrowse()
+    closePlexPlayer()
     openGuide(d['itemId'], typeof d['chapter'] === 'string' && d['chapter'] ? d['chapter'] : undefined)
     return
   }
@@ -71,16 +73,39 @@ export function openBrowseFromPayload(raw: unknown): void {
     openImage(d['jobId'], typeof d['prompt'] === 'string' ? d['prompt'] : '', src)
     return
   }
+  // The media stack: `play` starts a library item full screen (the player
+  // starts the transcode itself — a relative /api/plex path, no url here to
+  // guard); `open` brings the Plex corner up on a tab.
+  if (d['kind'] === 'plex') {
+    const title = typeof d['title'] === 'string' ? d['title'] : ''
+    if (d['action'] === 'play' && typeof d['key'] === 'string' && /^\d+$/.test(d['key'])) {
+      closeBrowse()
+      openPlexPlayer({ key: d['key'], title: title || 'Plex' })
+      return
+    }
+    if (d['action'] === 'open' && (d['tab'] === 'library' || d['tab'] === 'downloads' || d['tab'] === 'requests')) {
+      requestPlexPanel({
+        tab: d['tab'],
+        ...(typeof d['key'] === 'string' && /^\d+$/.test(d['key']) ? { key: d['key'] } : {}),
+        ...(typeof d['query'] === 'string' && d['query'] ? { query: d['query'] } : {}),
+      })
+    }
+    return
+  }
   if (d['kind'] === 'close') {
     closeBrowse()
     closeGuide()
     closeImage()
+    closePlexPlayer()
     return
   }
 
   const url   = typeof d['url']   === 'string' ? d['url']   : ''
   const title = typeof d['title'] === 'string' ? d['title'] : ''
   if (!/^https?:\/\//i.test(url)) return
+  // One window at a time: a video or page arriving while a film is playing
+  // replaces it, as it would replace another page.
+  closePlexPlayer()
   if (d['kind'] === 'video' && typeof d['videoId'] === 'string' && /^[\w-]{11}$/.test(d['videoId'])) {
     openBrowse({
       kind: 'video',

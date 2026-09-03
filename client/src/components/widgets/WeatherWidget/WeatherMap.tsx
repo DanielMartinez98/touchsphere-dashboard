@@ -85,7 +85,15 @@ function loadSimple(): boolean {
   } catch { return true }
 }
 
-export default function WeatherMap() {
+/**
+ * `nested`: rendered as a tab inside the Time corner rather than owning a
+ * corner of its own. Widget's wrapper is then a natural-height scroll
+ * container (so the calendar tab can scroll), which means `h-full` resolves
+ * to nothing — the map needs an explicit height, sized to what is left of the
+ * viewport under the tab bar, and it no longer reserves room for the widget
+ * chrome because that bar already did.
+ */
+export default function WeatherMap({ nested = false }: { nested?: boolean } = {}) {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<any>(null)
   const markerRef = useRef<any>(null)
@@ -327,7 +335,11 @@ export default function WeatherMap() {
   const hasData = stats.length > 0
 
   return (
-    <div className="flex flex-col h-full pt-16">
+    <div
+      className={nested ? 'flex flex-col' : 'flex flex-col h-full pt-16'}
+      // Tab bar: pt-16 (4rem) + h-14 (3.5rem) + pb-3 (0.75rem) = 8.25rem.
+      style={nested ? { height: 'calc(100dvh - 8.25rem - env(safe-area-inset-bottom))' } : undefined}
+    >
       {/* Map */}
       <div className="relative flex-1 min-h-0">
         {/* touch-none passes pinch gestures to Leaflet */}
