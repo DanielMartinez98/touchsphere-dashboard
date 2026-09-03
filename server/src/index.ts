@@ -195,8 +195,18 @@ app.use('/api/image', tileLimiter, imageRouter)
 // The media stack. Posters and the HLS video stream are fetched by the dozen
 // (a segment every few seconds for the length of a film) so they ride the tile
 // budget; the rest calls Plex/Seerr/qBittorrent upstream and stays strict.
+// The browse reads (libraries, shelves, folders, item pages) ask the Plex
+// box on the LAN, not a metered API, and one library page is a dozen of them,
+// so they get the tile budget too; only the Seerr and torrent routes — which
+// reach upstream services — stay on the strict one.
+//
+// `/img` has no trailing slash (`/img?path=…`), and a regex that demanded one
+// quietly put every poster on the 60-a-minute data budget. The old panel drew
+// ~35 posters a screen and stayed just under; a library page draws over a
+// hundred and 429'd on the second shelf.
+const PLEX_STRICT = /^\/(discover|request|requests|torrents)(\/|$)/
 app.use('/api/plex', (req, res, next) =>
-  /^\/(hls|img|poster)\//.test(req.path) ? tileLimiter(req, res, next) : dataLimiter(req, res, next), plexRouter)
+  PLEX_STRICT.test(req.path) ? dataLimiter(req, res, next) : tileLimiter(req, res, next), plexRouter)
 // Artwork is split across both limiters. Cached covers are served off local
 // disk and a full list fetches one per item, so they need the tile budget —
 // but /search calls TMDB/IGDB upstream, so it stays on the strict data budget
