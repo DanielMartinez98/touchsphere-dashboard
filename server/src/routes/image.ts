@@ -46,6 +46,7 @@ import {
   styleNegativePrefixFor,
   supersededCheckpoints,
   WORKFLOW_PREFIX,
+  clearImages,
 } from '../image'
 import {
   buildSystemPrompt,
@@ -510,6 +511,11 @@ router.get('/', (_req: Request, res: Response) => {
       modelLabel: styleLabel(e.settings?.style ?? e.model ?? ''),
     })),
   })
+})
+
+// DELETE /api/image — the whole gallery. The panel asks twice before calling.
+router.delete('/', (_req: Request, res: Response) => {
+  res.json({ ok: true, removed: clearImages() })
 })
 
 // DELETE /api/image/:id — drop one image and its file.

@@ -13,7 +13,7 @@
 import { useRef, useState } from 'react'
 import {
   Sparkles, Trash2, AlertTriangle, Check, Layers, Gauge, X, Clock, Brush, Download,
-  Wand2, ImagePlus, Loader2, LayoutGrid, Camera, History,
+  Wand2, ImagePlus, Loader2, LayoutGrid, Camera, History, ChevronDown, ChevronRight, Lightbulb,
 } from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
 import { openImage } from '../../../hooks/useImageOverlay'
@@ -80,6 +80,8 @@ interface Props {
     prompt: string, orientation: Orientation, source: string, denoise: number, improve: boolean,
   ) => void
   onDelete:   (id: string) => void
+  /** Empty the whole gallery — every render and upload. */
+  onClear:    () => void
   /**
    * Whether the prompt improver is on by default, from the server's store.
    * null while it is still loading — the switch is hidden until it is known,
@@ -226,7 +228,7 @@ export default function ImageExpanded({
   images, enabled, busy, queue, queueMax, drawError,
   styles, model, quality,
   params, defaults, loras, autoLora,
-  onModel, onQuality, onParams, onResetParams, onGenerate, onDelete, onCancel,
+  onModel, onQuality, onParams, onResetParams, onGenerate, onDelete, onClear, onCancel,
   improveDefault, onImproveChange, onUpload,
 }: Props) {
   // The compose field lives in a module store rather than here, so the
@@ -319,6 +321,17 @@ export default function ImageExpanded({
   // Two-step delete. These take real time and GPU to make, so a stray fingertip
   // on a 7" screen must not be able to destroy one in a single tap.
   const [confirming, setConfirming] = useState<string | null>(null)
+  // "Clear all" asks twice; the second tap has a few seconds to arrive.
+  const [clearing, setClearing] = useState(false)
+  // The ideas (recent prompts + starters) fold away, closed by default and
+  // remembered per device: open, they push the gallery a screen down from the
+  // prompt, and on a kiosk the gallery is what most visits are for.
+  const [ideasOpen, setIdeasOpen] = useState<boolean>(() => {
+    try { return localStorage.getItem('image.ideasOpen') === '1' } catch { return false }
+  })
+  const toggleIdeas = () => {
+    setIdeasOpen(o => { try { localStorage.setItem('image.ideasOpen', o ? '0' : '1') } catch { /* fine */ } return !o })
+  }
   // How many across. Per device, see useGalleryColumns. Two ways to change
   // it: the chips above the grid, and pinching the grid itself — the gesture
   // every photo app uses for exactly this, and the one a finger tries first.
@@ -591,45 +604,60 @@ export default function ImageExpanded({
         </div>
       )}
 
-      {/* ── Recent prompts ──
-          Offered whenever the field is empty, above the starters: a thing you
-          already asked for is a better first draft than an invented one. Tap
-          to put it back in the box; Improve and the style apply as usual. */}
-      {prompt.trim() === '' && !source && recentPrompts.length > 0 && (
-        <div className="flex flex-col gap-2 shrink-0">
-          <span className="text-xs uppercase tracking-widest text-white/35 font-semibold flex items-center gap-1.5">
-            <History size={12} />Recent
-          </span>
-          {recentPrompts.map(p => (
-            <button
-              key={p}
-              type="button"
-              onClick={() => setPrompt(p)}
-              className="text-left text-[13px] text-white/60 bg-white/5 rounded-xl px-3 py-2.5
-                         border border-hairline active:bg-white/15 active:scale-[0.99] transition line-clamp-2"
-            >
-              {p}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Not offered while redrawing: the starters are ideas for a blank box, and
-          swapping one in would silently throw away the picture being changed. */}
+      {/* ── Ideas: recent prompts, then the starters ──
+          One folding section, closed by default (see ideasOpen). Only for a
+          blank box with no source: the starters are ideas for nothing, and
+          swapping one in would silently throw away the picture being changed.
+          Recent first — a thing you already asked for is a better first draft
+          than an invented one. */}
       {prompt.trim() === '' && !source && (
         <div className="flex flex-col gap-2 shrink-0">
-          <span className="text-xs uppercase tracking-widest text-white/35 font-semibold">Try one</span>
-          {SUGGESTIONS.map(s => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => setPrompt(s)}
-              className="text-left text-[13px] text-white/60 bg-white/5 rounded-xl px-3 py-2.5
-                         border border-hairline active:bg-white/15 active:scale-[0.99] transition"
-            >
-              {s}
-            </button>
-          ))}
+          <button
+            type="button"
+            onClick={toggleIdeas}
+            aria-expanded={ideasOpen}
+            className="h-11 -mx-1 px-1 rounded-xl flex items-center gap-2 text-xs uppercase tracking-widest text-white/35 font-semibold active:bg-white/5"
+          >
+            {ideasOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            <Lightbulb size={12} />Ideas
+            <span className="normal-case tracking-normal text-white/25 font-normal">
+              · {recentPrompts.length ? `${recentPrompts.length} recent, ` : ''}{SUGGESTIONS.length} starters
+            </span>
+          </button>
+          {ideasOpen && (
+            <>
+              {recentPrompts.length > 0 && (
+                <>
+                  <span className="text-[11px] uppercase tracking-widest text-white/30 font-semibold flex items-center gap-1.5 mt-1">
+                    <History size={12} />Recent
+                  </span>
+                  {recentPrompts.map(p => (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => setPrompt(p)}
+                      className="text-left text-[13px] text-white/60 bg-white/5 rounded-xl px-3 py-2.5
+                                 border border-hairline active:bg-white/15 active:scale-[0.99] transition line-clamp-2"
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </>
+              )}
+              <span className="text-[11px] uppercase tracking-widest text-white/30 font-semibold mt-1">Try one</span>
+              {SUGGESTIONS.map(s => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setPrompt(s)}
+                  className="text-left text-[13px] text-white/60 bg-white/5 rounded-xl px-3 py-2.5
+                             border border-hairline active:bg-white/15 active:scale-[0.99] transition"
+                >
+                  {s}
+                </button>
+              ))}
+            </>
+          )}
         </div>
       )}
 
@@ -886,7 +914,31 @@ export default function ImageExpanded({
             <span className="text-[11px] uppercase tracking-widest text-white/35 font-semibold flex items-center gap-1.5">
               <LayoutGrid size={13} />Gallery <span className="text-white/20 normal-case tracking-normal">· {images.length}</span>
             </span>
-            <ColumnSlider value={columns} onChange={setGalleryColumns} />
+            <div className="flex items-center gap-2">
+              {/* Clear the lot. Two taps, and the second must come within a
+                  few seconds; the button says what it will do rather than
+                  opening a dialog. */}
+              {clearing ? (
+                <button
+                  type="button"
+                  onClick={() => { setClearing(false); onClear() }}
+                  onBlur={() => setClearing(false)}
+                  className="h-9 px-3 rounded-lg bg-red-600/85 text-white text-[12px] font-semibold active:scale-95"
+                >
+                  Delete all {images.length}?
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => { setClearing(true); setTimeout(() => setClearing(false), 4000) }}
+                  aria-label="Clear the whole gallery"
+                  className="h-9 px-3 rounded-lg bg-white/5 text-white/45 text-[12px] font-semibold flex items-center gap-1.5 active:bg-white/15"
+                >
+                  <Trash2 size={13} />Clear all
+                </button>
+              )}
+              <ColumnSlider value={columns} onChange={setGalleryColumns} />
+            </div>
           </div>
         )}
         {images.length === 0 ? (

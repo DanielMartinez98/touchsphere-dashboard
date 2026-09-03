@@ -690,6 +690,18 @@ export function useImages() {
     }
   }, [refresh])
 
+  /** Empty the gallery. The panel's "Clear all", after its second tap. */
+  const clear = useCallback(async () => {
+    setImages([])
+    try {
+      const res = await fetch('/api/image', { method: 'DELETE' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    } catch (err) {
+      console.warn('[images] clear failed:', err)
+      void refresh()
+    }
+  }, [refresh])
+
   const busy = queue.length > 0
   // The head of the queue is the one on the GPU — pendingJobs() on the server is
   // in draw order and mergeJob preserves it. Falling back to [0] covers the
@@ -806,7 +818,7 @@ export function useImages() {
     styles, model, setModel,
     quality, setQuality,
     params, defaults, loras, autoLora, setParams, resetParams,
-    generate, remove, refresh,
+    generate, remove, clear, refresh,
     prompter, setPrompter, upload,
     fetchParams, setParamsForStyle,
   }

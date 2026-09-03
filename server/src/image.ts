@@ -476,6 +476,17 @@ export function forgetImage(id: string): boolean {
   return true
 }
 
+/** Empty the gallery: every render and upload, and the files behind them. */
+export function clearImages(): number {
+  const all = listImages()
+  saveIndex([])
+  for (const e of all) {
+    try { fs.unlinkSync(path.join(imagesDir(), e.file)) } catch { /* already gone */ }
+  }
+  console.log(`[image] cleared the gallery (${all.length} pictures)`)
+  return all.length
+}
+
 /** Biggest upload accepted. A phone photo is ~5 MB; this is generous, not tight. */
 export const MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 

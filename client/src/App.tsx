@@ -77,7 +77,7 @@ function App() {
     quality: imageQuality, setQuality: setImageQuality,
     params: imageParams, defaults: imageDefaults, loras: imageLoras,
     autoLora: imageAutoLora, setParams: setImageParams, resetParams: resetImageParams,
-    generate: generateImage, remove: removeImage,
+    generate: generateImage, remove: removeImage, clear: clearImages,
     queue: imageQueue, queueMax: imageQueueMax, drawError: imageDrawError,
     cancel: cancelImage,
     drawingEtaMs: imageEtaMs, drawingElapsedMs: imageElapsedMs,
@@ -398,6 +398,7 @@ function App() {
             onResetParams={resetImageParams}
             onGenerate={drawImage}
             onDelete={removeImage}
+            onClear={clearImages}
             onCancel={cancelImage}
             improveDefault={imagePrompter ? imagePrompter.enabled : null}
             onImproveChange={on => { void setImagePrompter({ enabled: on }) }}
