@@ -1640,6 +1640,9 @@ function OverrideField({
       <TouchInput
         value={value ?? ''}
         onChange={onChange}
+        // Each value is saved to the server and shown back as "overridden";
+        // half-typed text must not be.
+        commitOn="done"
         multiline
         rows={rows}
         placeholder={overridden ? 'nothing will be added' : (fallback || 'nothing by default')}
@@ -1775,6 +1778,7 @@ function DrawingTab() {
         <TouchInput
           value={prompter.model}
           onChange={model => { void setPrompter({ model }) }}
+          commitOn="done"
           placeholder="(the server's default)"
           ariaLabel="Model that rewrites prompts"
           className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-sm

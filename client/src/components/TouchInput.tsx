@@ -4,8 +4,13 @@ import { TouchKeyboard, type KeyboardTarget } from './TouchKeyboard'
 // Drop-in replacement for <input> / <textarea> that opens the on-screen
 // TouchKeyboard when tapped (kiosk has no physical keyboard). `inputMode='none'`
 // is what keeps the native IME away. Edits go through TouchKeyboard's onChange
-// and commit to the parent either live (commitOn='change') or only when Done is
-// tapped (commitOn='done').
+// and commit to the parent live (commitOn='change', the default) or only when
+// Done is tapped (commitOn='done'). Live is the default because a field whose
+// parent only learns the text on Done reads as broken: a search that doesn't
+// search, a Save button that stays grey, a prompt the Draw button ignores —
+// every one of those was reported as "the text does not update". 'done' is
+// for the few fields whose parent does something expensive or lossy per
+// value (a POST, a clamp), and those name it explicitly.
 //
 // The element is handed to TouchKeyboard by ref, which is what makes the caret
 // real — tap to put it anywhere, drag or double-tap to select, and the keyboard
@@ -18,8 +23,8 @@ interface Props {
   multiline?:   boolean
   className?:   string
   ariaLabel?:   string
-  // 'done' is safer for parents that should only see the final value, but
-  // 'change' is needed when the parent autosaves (BlockEditor).
+  // 'change' (default) hands every keystroke to the parent; 'done' only the
+  // final value, for parents that POST or clamp on each one.
   commitOn?:    'done' | 'change'
   rows?:        number
   /** Draw the dialler pad instead of the letter board (steps, cfg, seed…). */
@@ -28,7 +33,7 @@ interface Props {
 
 export function TouchInput({
   value, onChange, placeholder, multiline = false,
-  className = '', ariaLabel, commitOn = 'done', rows, numeric = false,
+  className = '', ariaLabel, commitOn = 'change', rows, numeric = false,
 }: Props) {
   const [open,  setOpen]  = useState(false)
   const [draft, setDraft] = useState(value)

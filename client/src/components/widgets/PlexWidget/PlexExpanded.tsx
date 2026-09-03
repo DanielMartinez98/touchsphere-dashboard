@@ -152,8 +152,11 @@ function BrowseLayer({ query, setQuery, onOpen, onPush }: { query: string; setQu
     const q = query.trim()
     if (!q) { setResults(null); return }
     let cancelled = false
-    plexApi.search(q).then(r => { if (!cancelled) setResults(r.items) }).catch(err => { if (!cancelled) setError(err.message) })
-    return () => { cancelled = true }
+    // The field commits every keystroke; wait for a pause before asking Plex.
+    const t = setTimeout(() => {
+      plexApi.search(q).then(r => { if (!cancelled) setResults(r.items) }).catch(err => { if (!cancelled) setError(err.message) })
+    }, 300)
+    return () => { cancelled = true; clearTimeout(t) }
   }, [query])
 
   return (
@@ -567,8 +570,10 @@ function RequestsTab() {
     const q = query.trim()
     if (!q) { setResults(null); return }
     let cancelled = false
-    plexApi.discover(q).then(r => { if (!cancelled) setResults(r.results) }).catch(err => { if (!cancelled) setError(err.message) })
-    return () => { cancelled = true }
+    const t = setTimeout(() => {
+      plexApi.discover(q).then(r => { if (!cancelled) setResults(r.results) }).catch(err => { if (!cancelled) setError(err.message) })
+    }, 400)
+    return () => { cancelled = true; clearTimeout(t) }
   }, [query])
 
   const request = async (r: SeerrResult) => {

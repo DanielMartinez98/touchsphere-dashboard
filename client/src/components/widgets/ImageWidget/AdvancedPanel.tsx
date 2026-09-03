@@ -126,6 +126,8 @@ function NumberField({
       <TouchInput
         value={shown}
         onChange={commit}
+        // commit() clamps and saves; "9" on the way to "96" must not be either.
+        commitOn="done"
         placeholder={auto ?? ''}
         ariaLabel={ariaLabel}
         numeric
@@ -469,6 +471,7 @@ export default function AdvancedPanel({
                     })
                   }}
                   ariaLabel="Seed value"
+                  commitOn="done"
                   numeric
                   className="flex-1 h-12 bg-white/[0.07] text-white rounded-xl px-4 text-[15px]
                              font-semibold tabular-nums border border-hairline"
