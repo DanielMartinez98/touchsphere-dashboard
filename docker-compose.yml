@@ -1,7 +1,11 @@
 services:
   # ── TouchSphere dashboard (internal only — Caddy proxies it) ──────────────
   app:
-    image: ghcr.io/mmdan/touchsphere-dashboard:latest
+    # Must match what .github/workflows/docker-publish.yml publishes:
+    # ghcr.io/<github owner, lowercased>/touchsphere-dashboard. It said `mmdan`
+    # for months, which nothing publishes to, so Watchtower polled a 403 and
+    # every deploy was a manual rebuild on the box.
+    image: ghcr.io/danielmartinez98/touchsphere-dashboard:latest
     # Allow building the image locally from the repo's Dockerfile (e.g. on the
     # server) instead of pulling the prebuilt image from GHCR. Run:
     #   docker compose build app && docker compose up -d app

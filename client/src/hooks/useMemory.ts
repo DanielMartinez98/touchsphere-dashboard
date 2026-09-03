@@ -11,6 +11,9 @@ const API = ''
 export type MemoryKind   = 'fact' | 'preference'
 export type MemorySource = 'assistant' | 'auto' | 'user'
 
+export type MemoryTopic = 'people' | 'food' | 'home' | 'media' | 'games' | 'work' | 'schedule' | 'health' | 'other'
+export const MEMORY_TOPICS: MemoryTopic[] = ['people', 'food', 'home', 'media', 'games', 'work', 'schedule', 'health', 'other']
+
 export interface MemoryItem {
   id:        string
   content:   string
@@ -18,6 +21,8 @@ export interface MemoryItem {
   expiresAt?: string
   source?:   MemorySource
   kind?:     MemoryKind
+  topic?:    MemoryTopic
+  pinned?:   boolean
 }
 
 /** The last conversation, if one is still inside its 12h window. */
@@ -92,6 +97,15 @@ export function useMemory() {
     await load()
   }, [load])
 
+  /** Correct the wording, re-file under a topic, or pin one. */
+  const update = useCallback(async (id: string, patch: { content?: string; topic?: MemoryTopic; pinned?: boolean }) => {
+    const res = await fetch(`${API}/api/memory/${encodeURIComponent(id)}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch),
+    })
+    if (!res.ok) throw new Error(`http ${res.status}`)
+    await load()
+  }, [load])
+
   const remove = useCallback(async (id: string) => {
     const res = await fetch(`${API}/api/memory/${encodeURIComponent(id)}`, { method: 'DELETE' })
     if (!res.ok) throw new Error(`http ${res.status}`)
@@ -103,5 +117,5 @@ export function useMemory() {
     await load()
   }, [load])
 
-  return { ...data, loading, error, reload: load, add, remove, forgetSession }
+  return { ...data, loading, error, reload: load, add, update, remove, forgetSession }
 }

@@ -139,7 +139,10 @@ const SYSTEM_PROMPT_BODY =
   "get_air_quality, get_calendar_today, get_calendar_day, get_calendar_week, get_calendar_range, get_device_status, " +
   "remember (save a fact), remember_preference (save how the user likes to be answered), " +
   "forget (remove memories matching a query), and list_memories. " +
-  "GAME GUIDES: create_game_guide / get_game_guide_progress / check_off_guide_step. " +
+  "GAME GUIDES: create_game_guide / get_game_guide_progress / check_off_guide_step, and BY VOICE while playing: " +
+  "read_guide_step reads the current step aloud (\"read me the next step\", \"what now\"), next_guide_step " +
+  "ticks it and reads the one after (\"next\", \"done\", \"got it\") — hands are on a controller, so read " +
+  "the step as given and stop; never read a whole chapter. " +
   "When the user wants a guide, walkthrough, checklist, or 100% route for a GAME, call create_game_guide — " +
   "it researches the game online and builds a tickable, section-by-section guide attached to that game in the " +
   "Watch/Play list (adding the game first if it isn't there). It takes a few minutes and keeps working after " +
@@ -209,7 +212,9 @@ const SYSTEM_PROMPT_BODY =
   // Same rule: only described when the media stack is configured.
   (PLEX_TOOLS.length > 0
     ? " PLEX: the house has a Plex library. play_media starts a film or episode full screen here " +
-      "(or on a named Plex player) — use it for \"play\", \"put on\", \"continue\" with a title; " +
+      "(or on a named Plex player) — use it for \"play\", \"put on\", \"continue\" with a title. " +
+      "For a long film nobody has started it may come back with an OFFER instead of playing: then ask " +
+      "\"want the trailer first?\" and call keep_listening, and call play_media again with mode trailer or film. " +
       "NOT play_video, which is YouTube. whats_on_plex says what is in the library or what is new; " +
       "media_languages answers dub and subtitle questions; download_status is the torrents. " +
       (PLEX_TOOLS.some(t => t.function.name === 'request_media')

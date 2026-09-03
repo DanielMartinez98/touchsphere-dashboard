@@ -831,6 +831,33 @@ export interface ArrQueueItem {
   trackedState?: string
   sizeleft?: number
   size?: number
+  /**
+   * Why it is where it is, in Sonarr/Radarr's own words: "waiting for a
+   * better release", "import failed: file already exists", "no files found
+   * eligible for import". The one thing anyone looking at a stuck row wants.
+   */
+  note?: string
+}
+
+/**
+ * Sonarr/Radarr keep the explanation in two places: `statusMessages` (a list
+ * of {title, messages[]}) and, for an outright failure, `errorMessage`. Both
+ * are flattened to one line; a queue row usually has one sentence and never
+ * needs more than a couple.
+ */
+function arrNote(r: Raw): string | undefined {
+  const parts: string[] = []
+  const sm = r['statusMessages']
+  if (Array.isArray(sm)) {
+    for (const m of sm as Raw[]) {
+      const msgs = Array.isArray(m['messages']) ? (m['messages'] as unknown[]).filter((x): x is string => typeof x === 'string') : []
+      for (const t of msgs) if (t && !parts.includes(t)) parts.push(t)
+    }
+  }
+  const err = str(r['errorMessage'])
+  if (err && !parts.includes(err)) parts.unshift(err)
+  const line = parts.join(' · ').trim()
+  return line ? line.slice(0, 240) : undefined
 }
 
 async function arrGet<T>(base: string, key: string, path: string, params: Record<string, string | number> = {}): Promise<T> {
@@ -861,6 +888,7 @@ export async function arrQueue(): Promise<Map<string, ArrQueueItem>> {
           ...(str(r['trackedDownloadState']) ? { trackedState: str(r['trackedDownloadState']) } : {}),
           ...(num(r['sizeleft']) !== undefined ? { sizeleft: num(r['sizeleft']) } : {}),
           ...(num(r['size']) !== undefined ? { size: num(r['size']) } : {}),
+          ...(arrNote(r) ? { note: arrNote(r) } : {}),
         })
       }
     } catch (err) { console.warn('[media] sonarr queue:', err instanceof Error ? err.message : err) }
@@ -880,6 +908,7 @@ export async function arrQueue(): Promise<Map<string, ArrQueueItem>> {
           ...(str(r['trackedDownloadState']) ? { trackedState: str(r['trackedDownloadState']) } : {}),
           ...(num(r['sizeleft']) !== undefined ? { sizeleft: num(r['sizeleft']) } : {}),
           ...(num(r['size']) !== undefined ? { size: num(r['size']) } : {}),
+          ...(arrNote(r) ? { note: arrNote(r) } : {}),
         })
       }
     } catch (err) { console.warn('[media] radarr queue:', err instanceof Error ? err.message : err) }
@@ -893,6 +922,8 @@ export async function arrQueue(): Promise<Map<string, ArrQueueItem>> {
 export interface Torrent {
   hash: string
   name: string
+  /** Sonarr/Radarr's explanation of the row's state, when it has one. */
+  note?: string
   /** What the *arr stack says this is, when it knows: "Severance · S2E3". */
   label?: string
   kind?: 'show' | 'movie'
@@ -1006,6 +1037,7 @@ export async function torrents(): Promise<Torrent[]> {
       hash, name, state, progress,
       phase: phaseOf(state, progress),
       ...(label ? { label: label.title, kind: label.kind } : {}),
+      ...(label?.note ? { note: label.note } : {}),
       size: num(t['size']) ?? 0,
       downloaded: num(t['downloaded']) ?? num(t['completed']) ?? 0,
       dlspeed: num(t['dlspeed']) ?? 0,

@@ -35,6 +35,10 @@ export type MemoryKind   = 'fact' | 'preference'
 /** 'auto' = end-of-conversation summary, 'user' = typed into Settings by hand. */
 export type MemorySource = 'assistant' | 'auto' | 'user'
 
+/** What a fact is about. The Memory tab groups by these; the prompt does too. */
+export const TOPICS = ['people', 'food', 'home', 'media', 'games', 'work', 'schedule', 'health', 'other'] as const
+export type MemoryTopic = typeof TOPICS[number]
+
 export interface Memory {
   id:        string
   content:   string
@@ -42,6 +46,33 @@ export interface Memory {
   expiresAt?: string               // ISO timestamp, short-term only
   source?:   MemorySource
   kind?:     MemoryKind
+  /** Absent on older records — guessed on read, see topicOf(). */
+  topic?:    MemoryTopic
+  /** Never evicted by the cap, listed first. The user's "this one matters". */
+  pinned?:   boolean
+}
+
+const TOPIC_WORDS: Record<MemoryTopic, RegExp> = {
+  people:   /\b(wife|husband|partner|girlfriend|boyfriend|mum|mom|dad|mother|father|sister|brother|son|daughter|kid|child|friend|colleague|boss|name is|birthday|anniversary)\b/i,
+  food:     /\b(allerg|vegan|vegetarian|eat|food|coffee|tea|drink|recipe|cook|dinner|lunch|breakfast|pizza|sushi|restaurant|dislike.*(taste|flavour))\b/i,
+  home:     /\b(house|home|flat|apartment|room|kitchen|garden|thermostat|light|lamp|plant|pet|dog|cat|car|address|lives? in)\b/i,
+  media:    /\b(film|movie|show|series|episode|anime|watch|plex|music|song|band|album|podcast|book|read)\b/i,
+  games:    /\b(game|gaming|play(s|ed|ing)?|boss|level|switch|playstation|xbox|steam|pc build|guide|walkthrough)\b/i,
+  work:     /\b(work|job|office|project|deadline|meeting|client|study|studies|university|school|exam|course)\b/i,
+  schedule: /\b(every (day|week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|routine|wake|bed ?time|sleep|appointment|schedule|calendar|weekend|mornings?|evenings?)\b/i,
+  health:   /\b(health|doctor|dentist|medic|pill|medication|gym|run|exercise|diet|weight|sleep apnea|migraine|pain)\b/i,
+  other:    /$^/,
+}
+
+/** The stored topic, else a guess from the words — good enough to group a list. */
+export function topicOf(m: Memory): MemoryTopic {
+  if (m.topic && (TOPICS as readonly string[]).includes(m.topic)) return m.topic
+  for (const t of TOPICS) if (t !== 'other' && TOPIC_WORDS[t].test(m.content)) return t
+  return 'other'
+}
+
+export function isTopic(v: unknown): v is MemoryTopic {
+  return typeof v === 'string' && (TOPICS as readonly string[]).includes(v)
 }
 
 export interface MemoryStore {
@@ -122,6 +153,7 @@ export function addMemory(
   scope: 'short' | 'long',
   source: MemorySource = 'assistant',
   kind: MemoryKind = 'fact',
+  topic?: MemoryTopic,
 ): Memory {
   const trimmed = content.trim().slice(0, MAX_CONTENT_CHARS)
   const now = new Date()
@@ -131,6 +163,7 @@ export function addMemory(
     createdAt: now.toISOString(),
     source,
     kind,
+    ...(topic ? { topic } : {}),
   }
   if (scope === 'short') {
     mem.expiresAt = new Date(now.getTime() + SHORT_TERM_TTL_MS).toISOString()
@@ -154,7 +187,9 @@ export function addMemory(
   bucket.push(mem)
   const cap = scope === 'long' ? MAX_LONG_TERM : MAX_SHORT_TERM
   if (bucket.length > cap) {
-    bucket.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    // Oldest first, but a pinned entry is never the one to go: pinning is
+    // the user saying this one matters more than the cap does.
+    bucket.sort((a, b) => Number(!!a.pinned) - Number(!!b.pinned) || a.createdAt.localeCompare(b.createdAt))
     const dropped = bucket.splice(0, bucket.length - cap)
     console.log(`[memory] evicted ${dropped.length} oldest ${scope}-term entries (cap ${cap})`)
   }
@@ -203,6 +238,19 @@ export function removeMemories(query: string): ForgetResult {
   return { removed: hits }
 }
 
+/** Edit one entry in place: its wording, its topic, whether it is pinned. */
+export function updateMemory(id: string, patch: { content?: string; topic?: MemoryTopic; pinned?: boolean }): Memory | null {
+  const store = pruneExpired(read())
+  const mem = store.longTerm.find(m => m.id === id) ?? store.shortTerm.find(m => m.id === id)
+  if (!mem) return null
+  if (typeof patch.content === 'string' && patch.content.trim()) mem.content = patch.content.trim().slice(0, MAX_CONTENT_CHARS)
+  if (patch.topic) mem.topic = patch.topic
+  if (typeof patch.pinned === 'boolean') { if (patch.pinned) mem.pinned = true; else delete mem.pinned }
+  write(store)
+  console.log(`[memory] edited ${id}`)
+  return mem
+}
+
 /** Exact-id delete, for the Settings UI where the user picked a specific row. */
 export function removeMemoryById(id: string): boolean {
   const store = pruneExpired(read())
@@ -235,8 +283,16 @@ export function formatForPrompt(): string {
 
   const lines: string[] = ['', 'PERSISTENT MEMORY (treat as things you already know about the user):']
   if (facts.length > 0) {
+    // Grouped by topic, pinned first within each: a model reading "Food:"
+    // above the allergy is likelier to connect it to a recipe question than
+    // one reading it from the middle of a flat list.
     lines.push('Facts:')
-    for (const m of facts) lines.push(`  - ${m.content}`)
+    for (const t of TOPICS) {
+      const group = facts.filter(m => topicOf(m) === t).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned))
+      if (!group.length) continue
+      lines.push(`  ${t[0]!.toUpperCase()}${t.slice(1)}:`)
+      for (const m of group) lines.push(`    - ${m.content}`)
+    }
   }
   if (store.shortTerm.length > 0) {
     lines.push('Recent context (last 24h):')

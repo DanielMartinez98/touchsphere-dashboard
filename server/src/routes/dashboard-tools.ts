@@ -12,7 +12,7 @@
 import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
-import { addMemory, loadMemories, removeMemories } from '../memory'
+import { addMemory, loadMemories, removeMemories, isTopic } from '../memory'
 import { nextRecurringFireAt, sanitizeRepeatDays } from './timers'
 import { findCover, artworkConfigured } from './artwork'
 import { guideProgress, listGuides, loadGuide, setStepDone } from '../guides'
@@ -694,11 +694,11 @@ async function getDeviceStatus(): Promise<string> {
 }
 
 // ── Memory ────────────────────────────────────────────────────────────────────
-function rememberFact(content: string, scope: string): string {
+function rememberFact(content: string, scope: string, topic = ''): string {
   const c = content.trim()
   if (!c) return 'Error: content is required.'
   const s: 'short' | 'long' = scope === 'long' ? 'long' : 'short'
-  const mem = addMemory(c, s, 'assistant')
+  const mem = addMemory(c, s, 'assistant', 'fact', isTopic(topic) ? topic : undefined)
   return `Saved to ${s}-term memory: "${mem.content}"`
 }
 
@@ -1410,6 +1410,7 @@ export const DASHBOARD_TOOLS = [
         properties: {
           content: { type: 'string', description: 'The fact or note to remember, as a complete sentence.' },
           scope:   { type: 'string', enum: ['short', 'long'], description: '"long" = forever, "short" = 24h.' },
+          topic:   { type: 'string', enum: ['people', 'food', 'home', 'media', 'games', 'work', 'schedule', 'health', 'other'], description: 'What it is about, so the memory screen can file it.' },
         },
         required: ['content', 'scope'],
       },
@@ -1640,7 +1641,7 @@ export async function runDashboardTool(
     case 'get_calendar_week':  return getCalendarWeek(str('start'))
     case 'get_calendar_range': return getCalendarRange(str('start'), str('end'))
     case 'get_device_status':  return getDeviceStatus()
-    case 'remember':            return rememberFact(str('content'), str('scope'))
+    case 'remember':            return rememberFact(str('content'), str('scope'), str('topic'))
     case 'remember_preference': return rememberPreference(str('content'))
     case 'forget':             return forgetFact(str('query'))
     case 'list_memories':      return listMemoriesTool()

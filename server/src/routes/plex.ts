@@ -467,6 +467,7 @@ router.get('/torrents', async (_req: Request, res: Response) => {
     const queue = [...(await arrQueue()).values()]
     res.json({ source: 'arr', ...(qbitError ? { warning: `qBittorrent: ${qbitError}` } : {}), torrents: queue.map(q => ({
       hash: q.downloadId, name: q.title, label: q.title, kind: q.kind, state: q.status ?? 'unknown',
+      ...(q.note ? { note: q.note } : {}),
       phase: q.trackedState === 'importPending' || q.trackedState === 'importing' ? 'done' : 'downloading',
       progress: q.size && q.sizeleft !== undefined ? 1 - q.sizeleft / q.size : 0,
       size: q.size ?? 0, downloaded: (q.size ?? 0) - (q.sizeleft ?? 0),

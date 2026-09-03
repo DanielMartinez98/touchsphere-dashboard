@@ -15,8 +15,10 @@ import {
   guideProgress,
   loadGuide,
   setSectionDone,
+  setStepDone,
   type Guide,
   type GuideSection,
+  type GuideStep,
 } from '../guides'
 import { isGenerating, regenerateSection } from '../guide-generator'
 import { pushGuide } from '../guide-events'
@@ -76,6 +78,40 @@ const chapterLine = (s: GuideSection, i: number) => {
 // ── Tools ────────────────────────────────────────────────────────────────────
 
 export const GUIDE_VIEW_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'read_guide_step',
+      description:
+        'Read the CURRENT step of a game guide aloud — the first unticked step of the chapter the player is ' +
+        'on (or a chapter they name), with its explanation. For "read me the next step", "what do I do now", ' +
+        '"where was I in the guide". Opens the guide on that chapter as well. Hands are on a controller: read ' +
+        'the step as given, then stop and listen — "next" or "done" means next_guide_step.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title:   { type: 'string', description: 'The game, if said. Omit when only one guide exists or one is on screen.' },
+          chapter: { type: 'string', description: 'A chapter name or number, if they named one.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'next_guide_step',
+      description:
+        'Tick off the current step of a game guide and read the one after it. For "next", "done", "got it", ' +
+        '"that\'s done" while working through a guide by voice. Same chapter as the last read_guide_step.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title:   { type: 'string', description: 'The game, if said.' },
+          chapter: { type: 'string', description: 'A chapter name or number, if they named one.' },
+        },
+      },
+    },
+  },
   {
     type: 'function',
     function: {
@@ -249,6 +285,73 @@ function showGuide(title: string, chapterHint: string): BrowseToolResult {
       `Say one short sentence about what is on screen. Do not read the chapter list aloud.`,
     display,
   }
+}
+
+/**
+ * Where the player is: the named chapter, else the first chapter with a step
+ * left, else nothing. A chapter that is still generating has no steps yet
+ * and is skipped over rather than read as "done".
+ */
+function currentChapter(guide: Guide, hint: string): GuideSection | undefined {
+  if (hint.trim()) return findChapter(guide, hint)
+  return guide.sections.find(s => s.steps.some(x => !x.done))
+}
+
+function stepText(guide: Guide, chapter: GuideSection, step: GuideStep, i: number): string {
+  const sub = step.subs?.filter(x => !x.done).map(x => x.text) ?? []
+  return (
+    `Chapter "${chapter.title}", step ${i + 1} of ${chapter.steps.length}: ${step.text}.` +
+    `${step.note ? ` ${step.note}` : ''}` +
+    `${sub.length ? ` It breaks down into: ${sub.join('; ')}.` : ''}` +
+    ` (${guide.title}.) Read the step and its explanation aloud, close to as written, then stop — ` +
+    `they will say "next" or "done" when ready, which means next_guide_step.`
+  )
+}
+
+function readStep(title: string, chapterHint: string): BrowseToolResult {
+  const found = resolveGuide(title)
+  if (typeof found === 'string') return noDisplay(found)
+  const { item, guide } = found
+  const chapter = currentChapter(guide, chapterHint)
+  if (!chapter) {
+    return chapterHint.trim()
+      ? noDisplay(`"${chapterHint}" isn't a chapter in the guide for ${guide.title}. Its chapters are: ${guide.sections.map((s, i) => chapterLine(s, i)).join('; ')}.`)
+      : noDisplay(`Every step in the guide for ${guide.title} is ticked off. Congratulate them, or ask which chapter to redo.`)
+  }
+  const i = chapter.steps.findIndex(s => !s.done)
+  if (i < 0) return noDisplay(`Every step in "${chapter.title}" is done. Offer the next chapter: ${guide.sections.map((s, k) => chapterLine(s, k)).join('; ')}.`)
+  const shown = showGuide(item.title, chapter.title)
+  return { text: stepText(guide, chapter, chapter.steps[i]!, i), display: shown.display }
+}
+
+function nextStep(title: string, chapterHint: string): BrowseToolResult {
+  const found = resolveGuide(title)
+  if (typeof found === 'string') return noDisplay(found)
+  const { item, guide } = found
+  const chapter = currentChapter(guide, chapterHint)
+  if (!chapter) return noDisplay(`Nothing left to tick off in the guide for ${guide.title}.`)
+  const i = chapter.steps.findIndex(s => !s.done)
+  if (i < 0) return noDisplay(`"${chapter.title}" is already complete. Offer the next chapter.`)
+  const step = chapter.steps[i]!
+  // Same store write as a tap on the box, so the bar on screen moves under
+  // their eyes and the tick survives a restart.
+  const saved = setStepDone(item.id, chapter.id, step.id, true)
+  if (!saved) return noDisplay(`Couldn't tick "${step.text}" — try again.`)
+  pushGuide(saved)
+  note({ itemId: item.id, title: saved.title, section: chapter.title, stage: 'progress', level: 'info', message: `Ticked "${step.text}" by voice` })
+  const fresh = saved.sections.find(s => s.id === chapter.id) ?? chapter
+  const j = fresh.steps.findIndex(s => !s.done)
+  const p = guideProgress(saved)
+  console.log(`[chat:tool] next_guide_step → ${chapter.title} #${i + 1} done (${p.percent}%)`)
+  if (j < 0) {
+    const after = saved.sections.find(s => s.steps.some(x => !x.done))
+    return noDisplay(
+      `Ticked "${step.text}" — that finishes "${chapter.title}"` +
+      `${after ? `. The next chapter is "${after.title}"; offer to read its first step` : `, and the whole guide is ${p.percent}% done`}.`,
+    )
+  }
+  const shown = showGuide(item.title, chapter.title)
+  return { text: `Ticked "${step.text}". ` + stepText(saved, fresh, fresh.steps[j]!, j), display: shown.display }
 }
 
 function closeScreen(): BrowseToolResult {
@@ -425,6 +528,8 @@ export async function runGuideViewTool(
   const str = (k: string) => (typeof args[k] === 'string' ? (args[k] as string) : '')
   switch (name) {
     case 'show_game_guide':        return showGuide(str('title'), str('chapter'))
+    case 'read_guide_step':        return readStep(str('title'), str('chapter'))
+    case 'next_guide_step':        return nextStep(str('title'), str('chapter'))
     case 'close_screen':           return closeScreen()
     case 'play_guide_video':       return playGuideVideo(str('title'), str('chapter'))
     case 'check_off_guide_chapter': {
@@ -440,6 +545,7 @@ export async function runGuideViewTool(
 
 /** Guide-view tools that change stored state, for the chat route's refetch hints. */
 export const GUIDE_VIEW_MUTATING = new Set([
+  'next_guide_step',
   'check_off_guide_chapter',
   'regenerate_guide_chapter',
   'delete_game_guide',

@@ -530,6 +530,10 @@ function TorrentRow({ t, busy, onControl }: { t: Torrent; busy: boolean; onContr
             {(t.phase === 'stalled' || live) && ` · ${t.seeds} seeds`}
             {` · ${fmtBytes(t.size)}`}
           </p>
+          {/* Sonarr/Radarr's own account of why it is where it is — "waiting
+              for a better release", "import failed: file already exists" —
+              which is the question a stuck row actually raises. */}
+          {t.note && <p className="text-[11px] text-amber-200/80 leading-snug mt-1 line-clamp-2">{t.note}</p>}
         </div>
         {onControl && (t.phase === 'downloading' || t.phase === 'stalled' || t.phase === 'queued' || t.phase === 'paused') && (
           <button type="button" onClick={onControl} disabled={busy} aria-label={t.phase === 'paused' ? 'Resume' : 'Pause'}

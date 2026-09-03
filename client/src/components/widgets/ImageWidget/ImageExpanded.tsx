@@ -13,7 +13,7 @@
 import { useRef, useState } from 'react'
 import {
   Sparkles, Trash2, AlertTriangle, Check, Layers, Gauge, X, Clock, Brush, Download,
-  Wand2, ImagePlus, Loader2, LayoutGrid,
+  Wand2, ImagePlus, Loader2, LayoutGrid, Camera, History,
 } from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
 import { openImage } from '../../../hooks/useImageOverlay'
@@ -276,6 +276,46 @@ export default function ImageExpanded({
   // opened programmatically without a real input, so there is one, off screen.
   const fileRef = useRef<HTMLInputElement | null>(null)
   const [uploading, setUploading] = useState(false)
+  // The gallery's file picker and the camera share one handler.
+  const cameraRef = useRef<HTMLInputElement>(null)
+  const onPicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    // Cleared straight away so picking the SAME file twice still fires a
+    // change event the second time.
+    e.target.value = ''
+    if (!file) return
+    setUploading(true)
+    const added = await onUpload(file)
+    setUploading(false)
+    if (added) {
+      // Straight into the redraw slot: adding your own picture and then having
+      // to find it in the grid to tap "Change this" would be two steps for one
+      // intention.
+      redrawImage({ id: added.id, url: `/api/image/file/${added.file}`, prompt: added.prompt })
+      // …but then blank the compose field. redrawImage seeds it from the
+      // source PROMPT, which is right for one of our own pictures and wrong
+      // here, where that string is just the filename. The card keeps the
+      // filename as its caption, which is what makes it identifiable.
+      setImagePrompt('')
+    }
+  }
+  // The last few things asked for, newest first, one entry per distinct
+  // prompt. Re-typing forty words on the on-screen keyboard is the most
+  // expensive thing this app asks of anyone, and the gallery already knows
+  // every prompt that ever worked.
+  const recentPrompts = (() => {
+    const seen = new Set<string>()
+    const out: string[] = []
+    for (const img of images) {
+      if (img.origin === 'upload') continue
+      const p = img.prompt.trim()
+      if (!p || seen.has(p.toLowerCase())) continue
+      seen.add(p.toLowerCase())
+      out.push(p)
+      if (out.length >= 6) break
+    }
+    return out
+  })()
   // Two-step delete. These take real time and GPU to make, so a stray fingertip
   // on a 7" screen must not be able to destroy one in a single tap.
   const [confirming, setConfirming] = useState<string | null>(null)
@@ -511,56 +551,66 @@ export default function ImageExpanded({
           you already chose. */}
       {!source && (
         <div className="shrink-0">
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={async e => {
-              const file = e.target.files?.[0]
-              // Cleared straight away so picking the SAME file twice still
-              // fires a change event the second time.
-              e.target.value = ''
-              if (!file) return
-              setUploading(true)
-              const added = await onUpload(file)
-              setUploading(false)
-              if (added) {
-                // Straight into the redraw slot: adding your own picture and
-                // then having to find it in the grid to tap "Change this" would
-                // be two steps for one intention.
-                redrawImage({ id: added.id, url: `/api/image/file/${added.file}`, prompt: added.prompt })
-                // …but then blank the compose field. redrawImage seeds it from
-                // the source PROMPT, which is right for one of our own pictures
-                // (its words are the best first draft of the change) and wrong
-                // here, where that string is just the filename. There is no
-                // original prompt for a photo, so the field starts empty and its
-                // placeholder asks the question. The card above keeps the
-                // filename as its caption, which is what makes it identifiable.
-                setImagePrompt('')
-              }
-            }}
-          />
-          <button
-            type="button"
-            disabled={uploading}
-            onClick={() => fileRef.current?.click()}
-            className="w-full flex items-center gap-3 rounded-2xl px-3 h-14 bg-white/5
-                       border border-hairline active:bg-white/10 text-left disabled:opacity-50"
-          >
-            <span className="w-8 h-8 shrink-0 rounded-full bg-white/10 flex items-center
-                             justify-center text-white/60">
-              {uploading ? <Loader2 size={15} className="animate-spin" /> : <ImagePlus size={15} />}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-[13px] font-semibold text-white/85">
-                {uploading ? 'Adding it…' : 'Use my own picture'}
+          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onPicked} />
+          {/* `capture` is what makes a phone open the camera directly instead
+              of the photo library. On a desktop or the kiosk it degrades to
+              the same file picker — never a dead button. */}
+          <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={onPicked} />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={uploading}
+              onClick={() => fileRef.current?.click()}
+              className="flex-1 min-w-0 flex items-center gap-3 rounded-2xl px-3 h-14 bg-white/5
+                         border border-hairline active:bg-white/10 text-left disabled:opacity-50"
+            >
+              <span className="w-8 h-8 shrink-0 rounded-full bg-white/10 flex items-center
+                               justify-center text-white/60">
+                {uploading ? <Loader2 size={15} className="animate-spin" /> : <ImagePlus size={15} />}
               </span>
-              <span className="block text-[11px] text-white/40 leading-snug">
-                Start from a photo or drawing on this device instead of from scratch
+              <span className="min-w-0 flex-1">
+                <span className="block text-[13px] font-semibold text-white/85">
+                  {uploading ? 'Adding it…' : 'Use my own picture'}
+                </span>
+                <span className="block text-[11px] text-white/40 leading-snug">
+                  Start from a photo or drawing on this device instead of from scratch
+                </span>
               </span>
-            </span>
-          </button>
+            </button>
+            <button
+              type="button"
+              disabled={uploading}
+              onClick={() => cameraRef.current?.click()}
+              aria-label="Take a photo and change it"
+              className="w-14 h-14 shrink-0 rounded-2xl bg-white/5 border border-hairline flex items-center
+                         justify-center text-white/70 active:bg-white/10 disabled:opacity-50"
+            >
+              <Camera size={20} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Recent prompts ──
+          Offered whenever the field is empty, above the starters: a thing you
+          already asked for is a better first draft than an invented one. Tap
+          to put it back in the box; Improve and the style apply as usual. */}
+      {prompt.trim() === '' && !source && recentPrompts.length > 0 && (
+        <div className="flex flex-col gap-2 shrink-0">
+          <span className="text-xs uppercase tracking-widest text-white/35 font-semibold flex items-center gap-1.5">
+            <History size={12} />Recent
+          </span>
+          {recentPrompts.map(p => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => setPrompt(p)}
+              className="text-left text-[13px] text-white/60 bg-white/5 rounded-xl px-3 py-2.5
+                         border border-hairline active:bg-white/15 active:scale-[0.99] transition line-clamp-2"
+            >
+              {p}
+            </button>
+          ))}
         </div>
       )}
 

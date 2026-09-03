@@ -116,6 +116,7 @@ export interface PlexPlayerInfo { id: string; name: string; product?: string }
 export interface Torrent {
   hash: string
   name: string
+  note?: string
   label?: string
   kind?: 'show' | 'movie'
   state: string

@@ -284,8 +284,11 @@ case "$verb" in
     log=/var/log/touchsphere-self-update.log
     say "Pulling and rebuilding the dashboard in the background (log: $log)."
     say "This screen will drop for a few minutes while the container is replaced."
+    # Pull the image CI published for the newest commit; build here only when
+    # the pull fails (no image yet, or a box with no registry access). A pull
+    # is seconds where a build is minutes — this is Watchtower's job, on demand.
     nohup setsid sudo -u "$DASHBOARD_USER" -H bash -lc \
-      "cd '$DASHBOARD_DIR' && git pull --ff-only && GIT_SHA=\$(git rev-parse HEAD) docker compose build app && docker compose up -d app" \
+      "cd '$DASHBOARD_DIR' && git pull --ff-only && (docker compose pull app || GIT_SHA=\$(git rev-parse HEAD) docker compose build app) && docker compose up -d app" \
       >"$log" 2>&1 </dev/null &
     disown
     sleep 1

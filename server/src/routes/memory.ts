@@ -8,7 +8,7 @@
 
 import { Router, type Request, type Response } from 'express'
 import {
-  loadMemories, addMemory, removeMemoryById,
+  loadMemories, addMemory, removeMemoryById, updateMemory, isTopic, topicOf, TOPICS,
   type MemoryKind,
 } from '../memory'
 import { loadSession, clearSession, sessionAgeMinutes } from '../session'
@@ -22,7 +22,10 @@ router.get('/', (_req: Request, res: Response) => {
   const store = loadMemories()
   const session = loadSession()
   res.json({
-    facts:       store.longTerm.filter(m => m.kind !== 'preference'),
+    topics:      TOPICS,
+    // Every fact carries its topic on the wire, guessed for the old ones, so
+    // the tab groups without repeating the guess.
+    facts:       store.longTerm.filter(m => m.kind !== 'preference').map(m => ({ ...m, topic: topicOf(m) })),
     preferences: store.longTerm.filter(m => m.kind === 'preference'),
     shortTerm:   store.shortTerm.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     session: session
@@ -51,8 +54,27 @@ router.post('/', (req: Request, res: Response) => {
   // Anything typed in by hand defaults to permanent — the user went to the
   // trouble of opening Settings, they don't mean "for the next 24 hours".
   const scope: 'short' | 'long' = body.scope === 'short' ? 'short' : 'long'
-  const mem = addMemory(content, scope, 'user', kind)
+  const topic = (body as { topic?: unknown }).topic
+  const mem = addMemory(content, scope, 'user', kind, isTopic(topic) ? topic : undefined)
   return res.status(201).json(mem)
+})
+
+// PATCH /api/memory/:id { content?, topic?, pinned? } → correct, re-file or pin one.
+router.patch('/:id', (req: Request, res: Response) => {
+  const raw = req.params['id']
+  const id = typeof raw === 'string' ? raw : ''
+  const body = req.body as { content?: unknown; topic?: unknown; pinned?: unknown }
+  const patch: { content?: string; topic?: import('../memory').MemoryTopic; pinned?: boolean } = {}
+  if (typeof body.content === 'string') {
+    if (!body.content.trim()) return res.status(400).json({ error: 'content cannot be empty' })
+    if (body.content.length > MAX_CONTENT) return res.status(400).json({ error: `content must be ${MAX_CONTENT} chars or fewer` })
+    patch.content = body.content
+  }
+  if (isTopic(body.topic)) patch.topic = body.topic
+  if (typeof body.pinned === 'boolean') patch.pinned = body.pinned
+  const mem = updateMemory(id, patch)
+  if (!mem) return res.status(404).json({ error: 'no such memory' })
+  return res.json({ ...mem, topic: topicOf(mem) })
 })
 
 // DELETE /api/memory/session → drop the carried-over conversation only.

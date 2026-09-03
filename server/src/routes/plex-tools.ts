@@ -20,6 +20,7 @@ import {
   seerrEnabled, seerrSearch, seerrRequest, seerrRequests,
   bazarrEnabled, bazarrWanted,
   type PlexItem, type Torrent,
+  plexItemFull,
 } from '../media-stack'
 import { displayTitle } from './plex'
 import type { BrowseToolResult, DisplayPayload } from './browse'
@@ -42,6 +43,13 @@ export const PLEX_TOOLS = !plexEnabled() ? [] : [
           season:  { type: 'integer', description: 'Season number, if they said one.' },
           episode: { type: 'integer', description: 'Episode number, if they said one.' },
           player:  { type: 'string', description: 'Name of another Plex player to play ON ("the TV", "living room"); leave empty to play here on the dashboard.' },
+          mode:    {
+            type: 'string', enum: ['film', 'trailer'],
+            description:
+              'Omit normally. For a long UNWATCHED film the tool may answer with an offer instead of playing — ' +
+              'ask "want the trailer first?" and call keep_listening; then call again with "trailer" (yes) or ' +
+              '"film" (no, or they said "just play it"). Pass "film" straight away when they were explicit.',
+          },
         },
         required: ['title'],
       },
@@ -187,7 +195,10 @@ function openPanel(tab: 'library' | 'downloads' | 'requests', title: string, ext
 
 // ── Tools ────────────────────────────────────────────────────────────────────
 
-async function playMedia(title: string, season?: number, episode?: number, playerName?: string): Promise<BrowseToolResult> {
+/** Films this long, never started, get a "trailer first?" before two hours are committed. */
+const TRAILER_OFFER_MIN = 95
+
+async function playMedia(title: string, season?: number, episode?: number, playerName?: string, mode = ''): Promise<BrowseToolResult> {
   if (!title.trim()) return { text: 'play_media needs a title.', display: null }
   const hit = await resolveTitle(title)
   if (!hit) return { text: `"${title}" isn't in the Plex library. Offer to request it if that would help.`, display: null }
@@ -200,6 +211,34 @@ async function playMedia(title: string, season?: number, episode?: number, playe
   }
   const label = displayTitle(target)
   const resume = target.viewOffset ? ` (resuming at ${Math.round(target.viewOffset / 60000)} min)` : ''
+
+  // The trailer, when asked for outright.
+  if (mode === 'trailer') {
+    const full = await plexItemFull(target.type === 'episode' && target.grandparentKey ? target.grandparentKey : target.key)
+    const trailer = full?.extras?.find(e => e.subtype === 'trailer') ?? full?.extras?.[0]
+    if (!trailer) return { text: `There is no trailer for ${label} in the library. Offer to play the film itself.`, display: null }
+    return {
+      text: `Playing the trailer for ${label} on the dashboard. Keep the reply to a few words. When they want the film, call play_media with mode "film".`,
+      display: { kind: 'plex', action: 'play', key: trailer.key, title: `${label} — trailer` },
+    }
+  }
+  // A long film nobody has started: offer the trailer before committing two
+  // hours of the evening to it. Once, and only when there IS a trailer —
+  // asking a question the library can't answer would be worse than not asking.
+  const minutes = Math.round((target.duration ?? 0) / 60000)
+  if (mode !== 'film' && !playerName && target.type === 'movie' && !target.viewOffset && !target.viewCount && minutes >= TRAILER_OFFER_MIN) {
+    let hasTrailer = false
+    try { hasTrailer = !!(await plexItemFull(target.key))?.extras?.length } catch { /* offer nothing */ }
+    if (hasTrailer) {
+      return {
+        text:
+          `${label} is ${minutes} minutes long and hasn't been started, and there is a trailer. Do NOT play yet: ask ` +
+          `"want the trailer first?" in one short sentence and call keep_listening. Yes → play_media with mode "trailer"; ` +
+          `no → play_media with mode "film".`,
+        display: null,
+      }
+    }
+  }
 
   if (playerName) {
     const players = await plexPlayers()
@@ -287,17 +326,19 @@ function fmtSpeed(bps: number): string {
   return `${bps} B/s`
 }
 
+function fmtNote(t: Torrent): string { return t.note ? ` — ${t.note}` : '' }
+
 function fmtTorrent(t: Torrent): string {
   const name = t.label ?? t.name
   const pct = Math.round(t.progress * 100)
   switch (t.phase) {
-    case 'downloading': return `${name}: ${pct}% at ${fmtSpeed(t.dlspeed)}, ${fmtEta(t.eta)}`
-    case 'stalled':     return `${name}: ${pct}%, stalled (no peers)`
-    case 'paused':      return `${name}: ${pct}%, paused`
-    case 'queued':      return `${name}: queued`
-    case 'checking':    return `${name}: checking files`
-    case 'error':       return `${name}: error`
-    default:            return `${name}: finished${t.phase === 'seeding' ? ', seeding' : ''}`
+    case 'downloading': return `${name}: ${pct}% at ${fmtSpeed(t.dlspeed)}, ${fmtEta(t.eta)}` + fmtNote(t)
+    case 'stalled':     return `${name}: ${pct}%, stalled (no peers)` + fmtNote(t)
+    case 'paused':      return `${name}: ${pct}%, paused` + fmtNote(t)
+    case 'queued':      return `${name}: queued` + fmtNote(t)
+    case 'checking':    return `${name}: checking files` + fmtNote(t)
+    case 'error':       return `${name}: error` + fmtNote(t)
+    default:            return `${name}: finished${t.phase === 'seeding' ? ', seeding' : ''}` + fmtNote(t)
   }
 }
 
@@ -396,7 +437,7 @@ export async function runPlexTool(name: string, args: Record<string, unknown>): 
   }
   try {
     switch (name) {
-      case 'play_media':       return await playMedia(str('title'), int('season'), int('episode'), str('player') || undefined)
+      case 'play_media':       return await playMedia(str('title'), int('season'), int('episode'), str('player') || undefined, str('mode'))
       case 'whats_on_plex':    return await whatsOn(str('query'))
       case 'media_languages':  return await mediaLanguages(str('title'), int('season'))
       case 'download_status':  return await downloadStatus(str('query'))

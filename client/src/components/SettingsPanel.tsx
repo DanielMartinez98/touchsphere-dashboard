@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, lazy, Suspense, type ReactNode } from 'react'
-import { Check, X as XIcon, RotateCw, ClipboardCopy, MessageSquare, Trash2, Volume2, Download } from 'lucide-react'
+import { Check, X as XIcon, RotateCw, ClipboardCopy, MessageSquare, Trash2, Volume2, Download, Pin } from 'lucide-react'
 import { useAudioDevices } from '../hooks/useAudioDevices'
 import { useDevice } from '../hooks/useDevice'
 import { playSound, playRecordChime } from '../utils/sound'
@@ -13,7 +13,7 @@ import { playVoicePreview } from '../utils/voicePreview'
 import { useAutoSchedule, fireBedtimeAlert } from '../hooks/useAutoSchedule'
 import { useRipple } from '../hooks/useRipple'
 import { useDebugLog, clearDebugLog, getDebugLog } from '../utils/debugLog'
-import { useMemory, type MemoryItem, type MemoryKind } from '../hooks/useMemory'
+import { useMemory, MEMORY_TOPICS, type MemoryItem, type MemoryKind, type MemoryTopic } from '../hooks/useMemory'
 import { useGuides } from '../hooks/useGuides'
 import { useImages } from '../hooks/useImages'
 import type { ParamsResponse } from '../hooks/useImages'
@@ -2137,7 +2137,7 @@ function ServerTab() {
               : dash.behind === 0 ? <span className="text-white/40"> · up to date with the last fetch</span> : ''}
           </p>
           <p className="text-white/25 text-xs leading-relaxed">
-            Pulls the repository, rebuilds the image and replaces this container. The screen goes dark for a few
+            Pulls the newest published image (or rebuilds it here if there is none) and replaces this container. The screen goes dark for a few
             minutes and comes back on its own.{dash.lastSelfUpdate ? ` Last done ${ago(dash.lastSelfUpdate)}.` : ''}
           </p>
         </>,
@@ -2325,31 +2325,86 @@ function ago(iso: string): string {
   return `${Math.round(hrs / 24)}d ago`
 }
 
-const SOURCE_LABEL: Record<string, string> = {
-  user:      'you',
-  assistant: 'saved in chat',
-  auto:      'auto-summary',
+
+const TOPIC_LABEL: Record<MemoryTopic, string> = {
+  people: 'People', food: 'Food & drink', home: 'Home', media: 'Films, shows & music', games: 'Games',
+  work: 'Work & study', schedule: 'Routine & schedule', health: 'Health', other: 'Other',
 }
 
-function MemoryRow({ item, onDelete }: { item: MemoryItem; onDelete: (id: string) => void }) {
+/**
+ * One remembered thing. Tap the text to correct it (the on-screen keyboard
+ * opens on the current wording), the pin to keep it above the cap, the topic
+ * chip to re-file it. Correcting from here rather than by saying "forget
+ * that, actually…" is the point: the memory that is wrong is the one you
+ * notice while reading the list.
+ */
+function MemoryRow({ item, onDelete, onUpdate }: {
+  item: MemoryItem
+  onDelete: (id: string) => void
+  onUpdate?: (id: string, patch: { content?: string; topic?: MemoryTopic; pinned?: boolean }) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(item.content)
+  const [picking, setPicking] = useState(false)
+  const save = () => {
+    setEditing(false)
+    if (onUpdate && draft.trim() && draft.trim() !== item.content) onUpdate(item.id, { content: draft.trim() })
+  }
   return (
-    <div className="flex items-start gap-3 py-3 border-b border-white/6 last:border-0">
-      <div className="flex-1 min-w-0">
-        <p className="text-white/80 text-sm leading-snug">{item.content}</p>
-        <p className="text-white/25 text-xs mt-1">
-          {ago(item.createdAt)}
-          {item.source ? ` · ${SOURCE_LABEL[item.source] ?? item.source}` : ''}
-          {item.expiresAt ? ' · expires in 24h' : ''}
-        </p>
+    <div className="py-3 border-b border-white/6 last:border-0">
+      <div className="flex items-start gap-3">
+        <div className="flex-1 min-w-0">
+          {editing ? (
+            <TouchInput value={draft} onChange={setDraft} multiline rows={2} ariaLabel="Correct this memory"
+              className="w-full bg-white/10 text-white rounded-xl px-3 py-2 text-sm border border-hairline" />
+          ) : (
+            <button type="button" onClick={() => { if (onUpdate) { setDraft(item.content); setEditing(true) } }}
+              className="text-left w-full">
+              <p className="text-white/80 text-sm leading-snug">{item.content}</p>
+            </button>
+          )}
+          <p className="text-white/25 text-xs mt-1 flex items-center gap-2 flex-wrap">
+            <span>{ago(item.createdAt)}</span>
+            {item.source === 'auto' && <span>· auto</span>}
+            {item.source === 'user' && <span>· typed in</span>}
+            {onUpdate && item.kind !== 'preference' && !item.expiresAt && (
+              <button type="button" onClick={() => setPicking(p => !p)}
+                className="px-2 py-0.5 rounded-md bg-white/8 text-white/45 active:bg-white/15">
+                {TOPIC_LABEL[item.topic ?? 'other']}
+              </button>
+            )}
+          </p>
+          {picking && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {MEMORY_TOPICS.map(t => (
+                <button key={t} type="button" onClick={() => { setPicking(false); onUpdate?.(item.id, { topic: t }) }}
+                  className={`px-2.5 h-8 rounded-full text-xs border ${
+                    (item.topic ?? 'other') === t ? 'bg-cyan-500/20 text-cyan-200 border-cyan-400/40' : 'bg-white/5 text-white/50 border-transparent'}`}>
+                  {TOPIC_LABEL[t]}
+                </button>
+              ))}
+            </div>
+          )}
+          {editing && (
+            <div className="flex gap-2 mt-2">
+              <button type="button" onClick={save} className="h-10 px-4 rounded-xl bg-cyan-500/80 text-white text-sm font-semibold active:scale-95">Save</button>
+              <button type="button" onClick={() => setEditing(false)} className="h-10 px-4 rounded-xl bg-white/10 text-white/60 text-sm active:scale-95">Cancel</button>
+            </div>
+          )}
+        </div>
+        {onUpdate && !item.expiresAt && (
+          <button type="button" onClick={() => onUpdate(item.id, { pinned: !item.pinned })}
+            aria-label={item.pinned ? 'Unpin' : 'Pin'} aria-pressed={!!item.pinned}
+            className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center active:scale-90 ${
+              item.pinned ? 'bg-amber-500/20 text-amber-300' : 'bg-white/5 text-white/30'}`}>
+            <Pin size={15} className={item.pinned ? 'fill-current' : ''} />
+          </button>
+        )}
+        <button type="button" onClick={() => onDelete(item.id)} aria-label="Forget this"
+          className="w-10 h-10 shrink-0 rounded-full bg-white/5 text-white/40 flex items-center justify-center active:bg-red-500/30 active:text-red-300 active:scale-90">
+          <Trash2 size={15} />
+        </button>
       </div>
-      <button
-        type="button"
-        onClick={() => onDelete(item.id)}
-        aria-label={`Forget: ${item.content.slice(0, 40)}`}
-        className="w-11 h-11 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white/40 active:scale-90 active:bg-red-500/25 active:text-red-300 transition-colors flex-shrink-0"
-      >
-        <Trash2 size={17} />
-      </button>
     </div>
   )
 }
@@ -2379,13 +2434,14 @@ function AddRow({ placeholder, onAdd }: { placeholder: string; onAdd: (v: string
 }
 
 function MemorySection({
-  title, hint, items, empty, onDelete, addPlaceholder, onAdd,
+  title, hint, items, empty, onDelete, onUpdate, addPlaceholder, onAdd,
 }: {
   title: string
   hint?: string
   items: MemoryItem[]
   empty: string
   onDelete: (id: string) => void
+  onUpdate?: (id: string, patch: { content?: string; topic?: MemoryTopic; pinned?: boolean }) => void
   addPlaceholder?: string
   onAdd?: (v: string, kind: MemoryKind) => void
 }) {
@@ -2398,7 +2454,7 @@ function MemorySection({
         {hint && <p className="text-white/30 text-xs pt-3 pb-1 leading-relaxed">{hint}</p>}
         {items.length === 0
           ? <p className="text-white/25 text-sm py-4">{empty}</p>
-          : items.map(m => <MemoryRow key={m.id} item={m} onDelete={onDelete} />)}
+          : items.map(m => <MemoryRow key={m.id} item={m} onDelete={onDelete} onUpdate={onUpdate} />)}
         {addPlaceholder && onAdd && (
           <div className="pb-4">
             <AddRow placeholder={addPlaceholder} onAdd={v => onAdd(v, 'fact')} />
@@ -2410,8 +2466,14 @@ function MemorySection({
 }
 
 function MemoryTab() {
-  const { facts, preferences, shortTerm, session, loading, error, add, remove, forgetSession } = useMemory()
+  const { facts, preferences, shortTerm, session, loading, error, add, update, remove, forgetSession } = useMemory()
   const [busy, setBusy] = useState<string | null>(null)
+  const edit = (id: string, patch: { content?: string; topic?: MemoryTopic; pinned?: boolean }) => void run(id, () => update(id, patch))
+  // Facts by topic, pinned first inside each, topics in the fixed order and
+  // empty ones skipped: a heading with nothing under it is noise.
+  const grouped = MEMORY_TOPICS
+    .map(t => ({ topic: t, items: facts.filter(f => (f.topic ?? 'other') === t).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned)) }))
+    .filter(g => g.items.length > 0)
 
   async function run(label: string, fn: () => Promise<void>) {
     setBusy(label)
@@ -2469,14 +2531,25 @@ function MemoryTab() {
         </div>
       </div>
 
-      <MemorySection
-        title="Facts"
-        items={facts}
-        empty="Nothing saved yet."
-        onDelete={del}
-        addPlaceholder="e.g. I'm allergic to peanuts"
-        onAdd={v => void run('add-fact', () => add(v, 'fact'))}
-      />
+      {/* Facts, by topic. Tap a line to correct it, the pin to keep it, the
+          topic chip to re-file it. */}
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          Facts {facts.length > 0 && <span className="text-white/25 normal-case">· {facts.length}</span>}
+        </span>
+        <div className="bg-white/5 rounded-2xl px-5 py-2 border border-white/8">
+          {grouped.length === 0 && <p className="text-white/25 text-sm py-4">Nothing saved yet.</p>}
+          {grouped.map(g => (
+            <div key={g.topic} className="pt-3">
+              <p className="text-[11px] uppercase tracking-widest text-cyan-200/60 font-semibold">{TOPIC_LABEL[g.topic]}</p>
+              {g.items.map(m => <MemoryRow key={m.id} item={m} onDelete={del} onUpdate={edit} />)}
+            </div>
+          ))}
+          <div className="pb-4">
+            <AddRow placeholder="e.g. I'm allergic to peanuts" onAdd={v => void run('add-fact', () => add(v, 'fact'))} />
+          </div>
+        </div>
+      </div>
 
       <div>
         <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
@@ -2489,7 +2562,7 @@ function MemoryTab() {
           </p>
           {preferences.length === 0
             ? <p className="text-white/25 text-sm py-4">Nothing learned yet.</p>
-            : preferences.map(m => <MemoryRow key={m.id} item={m} onDelete={del} />)}
+            : preferences.map(m => <MemoryRow key={m.id} item={m} onDelete={del} onUpdate={edit} />)}
           <div className="pb-4">
             <AddRow
               placeholder="When I ask about a game, show a video"
