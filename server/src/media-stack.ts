@@ -646,15 +646,26 @@ async function qbitLogin(): Promise<void> {
     timeout: HTTP_TIMEOUT_MS,
     validateStatus: () => true,
   })
-  if (res.status !== 200 || !/^Ok\.?$/i.test(String(res.data).trim())) {
+  // Two generations of qBittorrent answer this differently and both are in the
+  // wild: 4.x replies `200 "Ok."` (and `200 "Fails."` for a wrong password),
+  // 5.1+ replies `204 No Content` with the cookie and nothing else. The cookie
+  // moved too — `SID` became `QBT_SID_<port>` — so it is matched by shape
+  // rather than by name. The first version of this check accepted only the
+  // old pair, which read a *successful* login on a current build as
+  // "login failed (204)" and fell back to the *arr queue for good.
+  const reply = String(res.data ?? '').trim()
+  const ok = (res.status === 200 && /^Ok\.?$/i.test(reply)) || res.status === 204
+  if (!ok) {
     qbitLoginFailedAt = Date.now()
     qbitLoginError = res.status === 403
       ? 'qBittorrent refused the login (banned IP or wrong password)'
-      : `qBittorrent login failed (${res.status === 200 ? 'wrong password' : res.status})`
+      : `qBittorrent login failed (${res.status === 200 || res.status === 401 ? 'wrong password' : res.status})`
     throw new Error(qbitLoginError)
   }
   qbitLoginFailedAt = 0
-  const cookie = (res.headers['set-cookie'] ?? []).map((c: string) => c.split(';')[0]).find((c: string) => c.startsWith('SID='))
+  const cookie = (res.headers['set-cookie'] ?? [])
+    .map((c: string) => c.split(';')[0])
+    .find((c: string) => /^(QBT_)?SID(_\d+)?=/.test(c))
   if (!cookie) throw new Error('qBittorrent login returned no session cookie')
   qbitCookie = cookie
 }
