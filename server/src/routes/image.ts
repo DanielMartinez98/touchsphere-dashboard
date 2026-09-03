@@ -50,7 +50,10 @@ import {
 import {
   buildSystemPrompt,
   DEFAULT_TEMPLATE,
+  DEFAULT_VISION_TEMPLATE,
   readPrompter,
+  visionModel,
+  visionUserMessage,
   writePrompter,
 } from '../image-prompt'
 import {
@@ -424,20 +427,32 @@ router.get('/prompter', (_req: Request, res: Response) => {
       label:    styleLabel(style),
       guidance: stylePromptGuide(style),
     }),
+    // The look-at-the-picture half of a redraw: its template, the default
+    // for "reset", what it expands to for this style, the fixed user turn it
+    // is paired with, and which model actually sees the picture.
+    defaultVisionTemplate: DEFAULT_VISION_TEMPLATE,
+    visionPreview: buildSystemPrompt(settings.visionTemplate, {
+      label:    styleLabel(style),
+      guidance: stylePromptGuide(style),
+    }),
+    visionUserMessage: visionUserMessage('<what you typed>'),
+    visionModel: visionModel(),
   })
 })
 
 // POST /api/image/prompter — patch one or more of its settings.
 router.post('/prompter', (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown> | undefined
-  const patch: { enabled?: boolean; template?: string; model?: string } = {}
+  const patch: { enabled?: boolean; template?: string; model?: string; visionTemplate?: string } = {}
   if (typeof body?.['enabled']  === 'boolean') patch.enabled  = body['enabled']
   if (typeof body?.['template'] === 'string')  patch.template = body['template']
   if (typeof body?.['model']    === 'string')  patch.model    = body['model']
+  if (typeof body?.['visionTemplate'] === 'string') patch.visionTemplate = body['visionTemplate']
   const saved = writePrompter(patch)
   console.log(
     `[image] prompt improver ${saved.enabled ? 'on' : 'off'}` +
     `${patch.template !== undefined ? ', template edited' : ''}` +
+    `${patch.visionTemplate !== undefined ? ', redraw template edited' : ''}` +
     `${patch.model !== undefined ? `, model=${saved.model || '(default)'}` : ''}`,
   )
   res.json(saved)

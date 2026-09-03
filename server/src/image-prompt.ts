@@ -76,6 +76,28 @@ Rules:
 - Do not invent extra people, and do not ask for text, captions, watermarks or signatures.
 - Reply with the prompt itself and nothing else — no quotes, no preamble, no explanation, no markdown.`
 
+/**
+ * The system prompt for composeRedrawPrompt(): what the vision model is told
+ * before it is shown the picture and the change. Editable in Settings for the
+ * same reason the improver's template is — it is prompting taste, and the user
+ * standing at the kiosk can read the description it produced (the picture's
+ * details panel keeps both) and will have opinions about it. The same two
+ * placeholders are filled from the selected style, and the user message it is
+ * paired with is fixed: "Change wanted: <what they typed>" beside the image.
+ */
+export const DEFAULT_VISION_TEMPLATE = `You write prompts for an image model that REPAINTS an existing picture. You are shown the picture, and the user says what they want changed about it.
+
+The image model is {{style}}.
+How this model asks to be prompted:
+{{guidance}}
+
+Rules:
+- Describe the WHOLE picture as it should look AFTER the change: the subject, its appearance, pose, clothing, the setting, the lighting and the art style. The model does not see the original — your description is all it gets, so anything you leave out is lost.
+- Keep everything the user did not ask to change exactly as it is in the picture. Apply their change fully and literally.
+- If the user typed a complete description rather than a change, use it as the description and only add what you can see that it leaves out.
+- Do not invent extra people, and do not ask for text, captions, watermarks or signatures.
+- Reply with the prompt itself and nothing else — no quotes, no preamble, no explanation, no markdown.`
+
 export interface PrompterSettings {
   /** Whether the Draw panel's toggle starts on. The panel can still override per render. */
   enabled:  boolean
@@ -83,12 +105,18 @@ export interface PrompterSettings {
   template: string
   /** Overrides OLLAMA_IMAGE_MODEL. '' means "whatever the environment says". */
   model:    string
+  /**
+   * The system prompt for the redraw's look-at-the-picture step. Same
+   * placeholders, same "cleared means reset" rule as `template`.
+   */
+  visionTemplate: string
 }
 
 const DEFAULTS: PrompterSettings = {
   enabled:  false,
   template: DEFAULT_TEMPLATE,
   model:    '',
+  visionTemplate: DEFAULT_VISION_TEMPLATE,
 }
 
 function storePath(): string {
@@ -113,6 +141,9 @@ export function readPrompter(): PrompterSettings {
         ? raw.template.slice(0, 8000)
         : DEFAULTS.template,
       model:    typeof raw.model === 'string' ? raw.model.trim().slice(0, 120) : '',
+      visionTemplate: typeof raw.visionTemplate === 'string' && raw.visionTemplate.trim()
+        ? raw.visionTemplate.slice(0, 8000)
+        : DEFAULTS.visionTemplate,
     }
   } catch {
     return { ...DEFAULTS }
@@ -127,6 +158,9 @@ export function writePrompter(patch: Partial<PrompterSettings>): PrompterSetting
     next.template = patch.template.trim() ? patch.template.slice(0, 8000) : DEFAULTS.template
   }
   if (typeof patch.model === 'string') next.model = patch.model.trim().slice(0, 120)
+  if (typeof patch.visionTemplate === 'string') {
+    next.visionTemplate = patch.visionTemplate.trim() ? patch.visionTemplate.slice(0, 8000) : DEFAULTS.visionTemplate
+  }
 
   const p = storePath()
   const tmp = `${p}.tmp-${process.pid}`
@@ -287,6 +321,15 @@ export function visionModel(): string {
 }
 
 /**
+ * The user turn that rides beside the picture. Exported so the settings screen
+ * can show the whole conversation rather than just the system half — a
+ * template is judged against what follows it.
+ */
+export function visionUserMessage(change: string): string {
+  return `Change wanted: ${change}`
+}
+
+/**
  * Write the full prompt for an img2img redraw by LOOKING at the source picture.
  *
  * Plain img2img has a contract that nobody standing at a kiosk knows about: the
@@ -316,23 +359,9 @@ export async function composeRedrawPrompt(
     prompt: text, original: change, changed, model, ms: Date.now() - started, why,
   })
 
-  const system =
-    'You write prompts for an image model that REPAINTS an existing picture. You are shown ' +
-    'the picture, and the user says what they want changed about it.\n\n' +
-    `The image model is ${style.label}.\n` +
-    'How this model asks to be prompted:\n' +
-    `${style.guidance}\n\n` +
-    'Rules:\n' +
-    '- Describe the WHOLE picture as it should look AFTER the change: the subject, its ' +
-    'appearance, pose, clothing, the setting, the lighting and the art style. The model does ' +
-    'not see the original — your description is all it gets, so anything you leave out is lost.\n' +
-    '- Keep everything the user did not ask to change exactly as it is in the picture. Apply ' +
-    'their change fully and literally.\n' +
-    '- If the user typed a complete description rather than a change, use it as the description ' +
-    'and only add what you can see that it leaves out.\n' +
-    '- Do not invent extra people, and do not ask for text, captions, watermarks or signatures.\n' +
-    '- Reply with the prompt itself and nothing else — no quotes, no preamble, no explanation, ' +
-    'no markdown.'
+  // The user's own template (Settings → Drawing), read per call for the same
+  // reason the improver's is: an edit has to reach the NEXT redraw.
+  const system = buildSystemPrompt(readPrompter().visionTemplate, style)
 
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
@@ -351,7 +380,7 @@ export async function composeRedrawPrompt(
         messages: [
           { role: 'system', content: system },
           // Ollama's multimodal shape: base64 images ride beside the text.
-          { role: 'user', content: `Change wanted: ${change}`, images: [image.toString('base64')] },
+          { role: 'user', content: visionUserMessage(change), images: [image.toString('base64')] },
         ],
         // Cooler than the improver's 0.7: this is description, not invention,
         // and the whole point is fidelity to what is in the picture.

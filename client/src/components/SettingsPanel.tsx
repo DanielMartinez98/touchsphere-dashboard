@@ -1663,6 +1663,12 @@ function DrawingTab() {
   const [draft, setDraft] = useState<{ text: string; seeded: boolean }>({ text: '', seeded: false })
   if (!draft.seeded && prompter) setDraft({ text: prompter.template, seeded: true })
   const dirty = prompter !== null && draft.text !== prompter.template
+  // The redraw's own template, edited the same way. A second draft rather than
+  // one shared one because the two are saved separately and a half-typed edit
+  // in one must not be lost by saving the other.
+  const [visionDraft, setVisionDraft] = useState<{ text: string; seeded: boolean }>({ text: '', seeded: false })
+  if (!visionDraft.seeded && prompter) setVisionDraft({ text: prompter.visionTemplate, seeded: true })
+  const visionDirty = prompter !== null && visionDraft.text !== prompter.visionTemplate
 
   if (!prompter) {
     return (
@@ -1781,6 +1787,71 @@ function DrawingTab() {
                         text-white/60 bg-black/30 border border-hairline rounded-2xl p-3
                         max-h-72 overflow-y-auto">
           {prompter.preview}
+        </pre>
+      </div>
+
+      {/* The redraw's look-at-the-picture step. It is a different prompt for a
+          different job — describing a picture that exists rather than
+          embellishing words — and it runs whenever a picture is changed with
+          Improve on, or an uploaded one is redrawn at all, so it deserves to be
+          readable in the same place as the improver's rather than buried in
+          the server. Absent for an editing style (FLUX Kontext), which never
+          runs it: the instruction goes to the model verbatim. */}
+      <div className="border-t border-hairline pt-5">
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          Looking at the picture — before a redraw
+        </span>
+        <p className="text-[12px] text-white/45 leading-relaxed mb-2">
+          When you change a picture with a drawing style, the picture model never sees the
+          original: it only reads a prompt. So before the redraw, a model that can see is
+          shown the original and what you asked to change, and writes the description of the
+          whole result. This is what it is told. It runs whenever Improve is on, and always for
+          a picture of your own, since a photo has no prompt to start from. The same two
+          placeholders are filled in for you.
+        </p>
+        <TouchInput
+          value={visionDraft.text}
+          onChange={text => setVisionDraft({ text, seeded: true })}
+          multiline
+          rows={10}
+          ariaLabel="Instructions for the model that looks at the picture before a redraw"
+          className="w-full bg-white/10 text-white rounded-2xl px-4 py-3 text-[13px] leading-relaxed
+                     placeholder:text-white/30 border border-hairline font-mono"
+        />
+        <div className="flex gap-2 mt-2">
+          <button
+            type="button"
+            disabled={!visionDirty}
+            onClick={() => {
+              void setPrompter({ visionTemplate: visionDraft.text })
+              setVisionDraft({ text: visionDraft.text, seeded: true })
+            }}
+            className={`flex-1 h-12 rounded-xl text-sm font-semibold transition ${
+              visionDirty ? 'bg-violet-500/80 text-white active:scale-95' : 'bg-white/5 text-white/30'
+            }`}
+          >
+            {visionDirty ? 'Save' : 'Saved'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setVisionDraft({ text: prompter.defaultVisionTemplate, seeded: true })}
+            className="px-4 h-12 rounded-xl bg-white/10 text-white/70 text-sm font-semibold active:scale-95"
+          >
+            Reset
+          </button>
+        </div>
+        <p className="text-[12px] text-white/45 leading-relaxed mt-3 mb-2">
+          Right now, for {prompter.styleLabel || 'this style'}, the model{' '}
+          <code className="text-white/60">{prompter.visionModel}</code> is told this, then
+          shown the picture with the message{' '}
+          <code className="text-violet-300">{prompter.visionUserMessage}</code>. Set{' '}
+          <code className="text-white/60">OLLAMA_VISION_MODEL</code> on the server to use a
+          different model for this step; it has to be one that can see.
+        </p>
+        <pre className="selectable-text whitespace-pre-wrap break-words text-[11px] leading-relaxed
+                        text-white/60 bg-black/30 border border-hairline rounded-2xl p-3
+                        max-h-72 overflow-y-auto">
+          {prompter.visionPreview}
         </pre>
       </div>
 

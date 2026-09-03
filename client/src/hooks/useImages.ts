@@ -59,6 +59,17 @@ export interface PrompterSettings {
   /** The selected model's own published prompting guidance. */
   guidance:   string
   preview:    string
+  /**
+   * The redraw's look-at-the-picture step: the system prompt the vision model
+   * is given before it is shown the source and the change. Same placeholders
+   * as `template`, its own default and preview, plus the fixed user turn it
+   * is paired with and the model that will actually see the picture.
+   */
+  visionTemplate:        string
+  defaultVisionTemplate: string
+  visionPreview:         string
+  visionUserMessage:     string
+  visionModel:           string
 }
 
 export interface StoredImage {
