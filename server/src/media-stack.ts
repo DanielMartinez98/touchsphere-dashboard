@@ -832,6 +832,14 @@ export interface ArrQueueItem {
   downloadId: string
   /** The *arr's own queue row id — what DELETE /api/v3/queue/{id} takes. */
   queueId: number
+  /**
+   * What to search FOR. Sonarr searches by episode, Radarr by movie, and an
+   * interactive search needs one of these — without it the only offer is
+   * "delete and hope the automatic search does better".
+   */
+  episodeId?: number
+  seriesId?: number
+  movieId?: number
   title: string          // "Severance · S2E3 · Who Is Alive?" or the film's title
   kind: 'show' | 'movie'
   status?: string
@@ -891,6 +899,9 @@ export async function arrQueue(): Promise<Map<string, ArrQueueItem>> {
         const epTitle = str(ep?.['title']) ? ` · ${str(ep?.['title'])}` : ''
         out.set(id, {
           downloadId: id, queueId: num(r['id']) ?? 0, title: `${show}${se}${epTitle}`, kind: 'show',
+          ...(num(r['episodeId']) !== undefined ? { episodeId: num(r['episodeId']) } : {}),
+          ...(num(ep?.['id']) !== undefined ? { episodeId: num(ep?.['id']) } : {}),
+          ...(num(r['seriesId']) !== undefined ? { seriesId: num(r['seriesId']) } : {}),
           ...(str(r['status']) ? { status: str(r['status']) } : {}),
           ...(str(r['trackedDownloadState']) ? { trackedState: str(r['trackedDownloadState']) } : {}),
           ...(num(r['sizeleft']) !== undefined ? { sizeleft: num(r['sizeleft']) } : {}),
@@ -911,6 +922,7 @@ export async function arrQueue(): Promise<Map<string, ArrQueueItem>> {
         const year = num(movie?.['year'])
         out.set(id, {
           downloadId: id, queueId: num(r['id']) ?? 0, title: year ? `${title} (${year})` : title, kind: 'movie',
+          ...(num(r['movieId']) ?? num(movie?.['id'])) !== undefined ? { movieId: num(r['movieId']) ?? num(movie?.['id']) } : {},
           ...(str(r['status']) ? { status: str(r['status']) } : {}),
           ...(str(r['trackedDownloadState']) ? { trackedState: str(r['trackedDownloadState']) } : {}),
           ...(num(r['sizeleft']) !== undefined ? { sizeleft: num(r['sizeleft']) } : {}),
@@ -1303,6 +1315,109 @@ export async function arrRefreshImports(kind?: 'show' | 'movie'): Promise<string
     } catch (err) { console.warn(`[media] ${arr.name} refresh failed:`, err instanceof Error ? err.message : err) }
   }
   return done
+}
+
+/**
+ * One candidate release from an indexer, as Sonarr and Radarr's interactive
+ * search returns them. `rejections` is the interesting field: it is why the
+ * *arr would not have taken this automatically — "below quality cutoff",
+ * "already imported" — and it is exactly what someone doing a manual search
+ * needs to see before overriding it.
+ */
+export interface ArrRelease {
+  guid: string
+  indexerId: number
+  indexer: string
+  title: string
+  size: number
+  seeders: number | null
+  leechers: number | null
+  ageHours: number
+  quality: string
+  languages: string[]
+  protocol: string
+  /** True when the *arr would accept this release as-is. */
+  approved: boolean
+  rejections: string[]
+  publishDate: string
+}
+
+function toRelease(r: Raw): ArrRelease | null {
+  const guid = str(r['guid'])
+  const title = str(r['title'])
+  if (!guid || !title) return null
+  const q = r['quality'] as Raw | undefined
+  const qq = q?.['quality'] as Raw | undefined
+  const langs = Array.isArray(r['languages']) ? (r['languages'] as Raw[]).flatMap(l => (str(l['name']) ? [str(l['name'])!] : [])) : []
+  const rejections = Array.isArray(r['rejections'])
+    ? (r['rejections'] as unknown[]).map(x => (typeof x === 'string' ? x : str((x as Raw)?.['reason']) ?? '')).filter(Boolean)
+    : []
+  return {
+    guid,
+    indexerId: num(r['indexerId']) ?? 0,
+    indexer: str(r['indexer']) ?? 'unknown',
+    title,
+    size: num(r['size']) ?? 0,
+    seeders: num(r['seeders']) ?? null,
+    leechers: num(r['leechers']) ?? null,
+    ageHours: num(r['ageHours']) ?? (num(r['age']) ?? 0) * 24,
+    quality: str(qq?.['name']) ?? '',
+    languages: langs,
+    protocol: str(r['protocol']) ?? '',
+    approved: r['rejected'] !== true && rejections.length === 0,
+    rejections,
+    publishDate: str(r['publishDate']) ?? '',
+  }
+}
+
+/**
+ * Ask the indexers what they have, without grabbing anything — Sonarr and
+ * Radarr call this an interactive search. Slow by nature (every indexer is
+ * queried live), so the caller gives it room.
+ */
+export async function arrReleases(kind: 'show' | 'movie', ids: { episodeId?: number; seriesId?: number; seasonNumber?: number; movieId?: number }): Promise<ArrRelease[]> {
+  const arr = arrFor(kind)
+  if (!arr) return []
+  const params: Record<string, string | number> = {}
+  if (kind === 'show') {
+    if (ids.episodeId) params['episodeId'] = ids.episodeId
+    else if (ids.seriesId) { params['seriesId'] = ids.seriesId; params['seasonNumber'] = ids.seasonNumber ?? 1 }
+    else return []
+  } else {
+    if (!ids.movieId) return []
+    params['movieId'] = ids.movieId
+  }
+  const { data } = await axios.get<Raw[]>(`${arr.base}/api/v3/release`, {
+    headers: { 'X-Api-Key': arr.key, Accept: 'application/json' },
+    params,
+    // Every indexer is queried live; 30 s is not enough for a slow one.
+    timeout: 120_000,
+  })
+  if (!Array.isArray(data)) return []
+  return data.flatMap(r => { const x = toRelease(r); return x ? [x] : [] })
+}
+
+/**
+ * Grab one release by hand, overriding whatever the *arr would have chosen.
+ * Posting `{guid, indexerId}` is the documented minimum and is what the *arr's
+ * own UI sends.
+ */
+export async function arrGrab(kind: 'show' | 'movie', guid: string, indexerId: number): Promise<string> {
+  const arr = arrFor(kind)
+  if (!arr) throw new Error(`${kind === 'show' ? 'Sonarr' : 'Radarr'} is not configured`)
+  await arrSend(arr.base, arr.key, '/api/v3/release', 'post', {}, { guid, indexerId })
+  return arr.name
+}
+
+/** The ordinary automatic search: the *arr picks the release itself. */
+export async function arrAutoSearch(kind: 'show' | 'movie', ids: { episodeId?: number; seriesId?: number; movieId?: number }): Promise<string> {
+  const arr = arrFor(kind)
+  if (!arr) throw new Error(`${kind === 'show' ? 'Sonarr' : 'Radarr'} is not configured`)
+  const body = kind === 'show'
+    ? (ids.episodeId ? { name: 'EpisodeSearch', episodeIds: [ids.episodeId] } : { name: 'SeriesSearch', seriesId: ids.seriesId })
+    : { name: 'MoviesSearch', movieIds: [ids.movieId] }
+  await arrSend(arr.base, arr.key, '/api/v3/command', 'post', {}, body)
+  return arr.name
 }
 
 export interface TransferInfo { dlspeed: number; upspeed: number; connected: boolean }

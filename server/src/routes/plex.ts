@@ -43,8 +43,11 @@ import {
   seerrRequests,
   seerrSearch,
   stackHealth,
+  arrAutoSearch,
+  arrGrab,
   arrQueueRemove,
   arrRefreshImports,
+  arrReleases,
   stackDownloadHealth,
   torrentCommand,
   torrentControl,
@@ -558,6 +561,84 @@ router.get('/torrents', async (_req: Request, res: Response) => {
     })), transfer: null, health: null, stackAdvice: [] })
   } catch (err) {
     res.status(502).json({ error: qbitError ? `qBittorrent: ${qbitError}` : msg(err) })
+  }
+})
+
+// ── Manual search ────────────────────────────────────────────────────────────
+//
+// What Sonarr and Radarr call an interactive search: ask every indexer what it
+// has for this episode or film and show the lot, including the releases the
+// *arr would have refused and WHY. That last part is the point. An automatic
+// search that keeps grabbing a dead release, or refuses everything because of
+// a quality cutoff, is invisible until you can see the candidates it was
+// choosing between.
+//
+// Registered above /torrents/:hash for the same reason `bulk` is.
+
+/** The episode or film a stuck download is for. */
+async function subjectOf(hash: string) {
+  const item = (await arrQueue()).get(hash)
+  if (!item) return null
+  return item
+}
+
+router.get('/torrents/:hash/releases', async (req: Request, res: Response) => {
+  if (!plexEnabled()) return disabled(res)
+  const hash = String(req.params['hash'] ?? '').toLowerCase()
+  if (!/^[0-9a-f]{40}$/.test(hash)) return res.status(400).json({ error: 'bad hash' })
+  res.setHeader('Cache-Control', 'no-store')
+  try {
+    const item = await subjectOf(hash)
+    if (!item) return res.status(404).json({ error: 'No Sonarr or Radarr queue row matches this download, so there is nothing to search for.' })
+    const releases = await arrReleases(item.kind, {
+      ...(item.episodeId ? { episodeId: item.episodeId } : {}),
+      ...(item.seriesId ? { seriesId: item.seriesId } : {}),
+      ...(item.movieId ? { movieId: item.movieId } : {}),
+    })
+    // Best first: what the *arr would accept, then by seeders — a manual
+    // search is usually being done BECAUSE the automatic pick had none.
+    releases.sort((a, b) => Number(b.approved) - Number(a.approved) || (b.seeders ?? -1) - (a.seeders ?? -1))
+    res.json({ subject: { title: item.title, kind: item.kind }, releases })
+  } catch (err) {
+    res.status(502).json({ error: msg(err) })
+  }
+})
+
+/** Grab one by hand, overriding whatever the *arr would have chosen. */
+router.post('/torrents/:hash/grab', async (req: Request, res: Response) => {
+  if (!plexEnabled()) return disabled(res)
+  const hash = String(req.params['hash'] ?? '').toLowerCase()
+  if (!/^[0-9a-f]{40}$/.test(hash)) return res.status(400).json({ error: 'bad hash' })
+  const body = (req.body ?? {}) as Record<string, unknown>
+  const guid = typeof body['guid'] === 'string' ? body['guid'] : ''
+  const indexerId = typeof body['indexerId'] === 'number' ? body['indexerId'] : 0
+  if (!guid) return res.status(400).json({ error: 'guid is required' })
+  try {
+    const item = await subjectOf(hash)
+    if (!item) return res.status(404).json({ error: 'no *arr queue row for this download' })
+    const name = await arrGrab(item.kind, guid, indexerId)
+    res.json({ ok: true, detail: `${name} is downloading that release. The stuck one is still here — remove it when the new one lands.` })
+  } catch (err) {
+    res.status(502).json({ error: msg(err) })
+  }
+})
+
+/** The ordinary automatic search: let the *arr choose, but ask it to choose again. */
+router.post('/torrents/:hash/search-again', async (req: Request, res: Response) => {
+  if (!plexEnabled()) return disabled(res)
+  const hash = String(req.params['hash'] ?? '').toLowerCase()
+  if (!/^[0-9a-f]{40}$/.test(hash)) return res.status(400).json({ error: 'bad hash' })
+  try {
+    const item = await subjectOf(hash)
+    if (!item) return res.status(404).json({ error: 'no *arr queue row for this download' })
+    const name = await arrAutoSearch(item.kind, {
+      ...(item.episodeId ? { episodeId: item.episodeId } : {}),
+      ...(item.seriesId ? { seriesId: item.seriesId } : {}),
+      ...(item.movieId ? { movieId: item.movieId } : {}),
+    })
+    res.json({ ok: true, detail: `${name} is searching again for ${item.title}.` })
+  } catch (err) {
+    res.status(502).json({ error: msg(err) })
   }
 })
 

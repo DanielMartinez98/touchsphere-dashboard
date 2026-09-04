@@ -177,6 +177,24 @@ export interface ArrQueueRow {
   status?: string; trackedState?: string; sizeleft?: number; size?: number; note?: string
 }
 
+/** One candidate from an indexer, as an interactive search returns it. */
+export interface ArrRelease {
+  guid: string
+  indexerId: number
+  indexer: string
+  title: string
+  size: number
+  seeders: number | null
+  leechers: number | null
+  ageHours: number
+  quality: string
+  languages: string[]
+  protocol: string
+  approved: boolean
+  rejections: string[]
+  publishDate: string
+}
+
 export interface TorrentDetail {
   torrent: Torrent
   trackers: TorrentTracker[]
@@ -323,6 +341,13 @@ export const plexApi = {
   torrent:  (hash: string) => getJson<TorrentDetail>(`/api/plex/torrents/${hash}`),
   torrentAction: (hash: string, action: DownloadAction) =>
     postJson<{ ok: true; did?: string; detail?: string }>(`/api/plex/torrents/${hash}/${action}`, {}),
+  /** Ask every indexer what it has for this download's episode or film. Slow. */
+  releases:    (hash: string) => getJson<{ subject: { title: string; kind: 'show' | 'movie' }; releases: ArrRelease[] }>(`/api/plex/torrents/${hash}/releases`),
+  /** Grab one by hand, overriding what the *arr would have picked. */
+  grab:        (hash: string, guid: string, indexerId: number) =>
+    postJson<{ ok: true; detail: string }>(`/api/plex/torrents/${hash}/grab`, { guid, indexerId }),
+  /** Let the *arr choose again, automatically. */
+  searchAgain: (hash: string) => postJson<{ ok: true; detail: string }>(`/api/plex/torrents/${hash}/search-again`, {}),
   /** One action across a whole group. Runs in the background; follow `downloads-bulk`. */
   bulk: (action: BulkAction, hashes: string[], label: string) =>
     postJson<{ ok: true; state: BulkState }>('/api/plex/torrents/bulk', { action, hashes, label }),

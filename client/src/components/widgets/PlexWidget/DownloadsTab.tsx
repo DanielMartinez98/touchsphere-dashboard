@@ -17,11 +17,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   AlertTriangle, Check, ChevronDown, ChevronRight, Pause, Play, RefreshCw,
-  Search, Trash2, Wifi, HardDrive, Gauge, Activity, Layers,
+  Search, Trash2, Wifi, HardDrive, Gauge, Activity, Layers, ListFilter, Download,
 } from 'lucide-react'
 import {
   plexApi,
-  type BulkAction, type BulkState, type DownloadAction, type DownloadAdvice,
+  type ArrRelease, type BulkAction, type BulkState, type DownloadAction, type DownloadAdvice,
   type StackAdvice, type StackHealth, type Torrent, type TorrentDetail,
 } from '../../../hooks/usePlex'
 import { onServerEvent } from '../../../hooks/useServerEvents'
@@ -486,6 +486,10 @@ function Detail({ hash, fallback, canControl, onDone }: {
       )}
       {!canControl && <p className="text-white/30 text-[12px]">qBittorrent isn’t reachable, so nothing here can be changed.</p>}
 
+      {/* Search for a different release. Only when an *arr is tracking this —
+          without a queue row there is no episode or film to search FOR. */}
+      {d?.arr && <ReleaseSearch hash={hash} kind={d.arr.kind} onDone={onDone} />}
+
       {/* The numbers */}
       <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[12px]">
         <Fact k="Done" v={`${fmtBytes(t.downloaded)} of ${fmtBytes(t.size)}`} />
@@ -524,6 +528,127 @@ function Detail({ hash, fallback, canControl, onDone }: {
       {adv?.evidence?.length ? (
         <p className="text-[11px] text-white/25 leading-relaxed">Based on: {adv.evidence.join(' · ')}.</p>
       ) : null}
+    </div>
+  )
+}
+
+/**
+ * Sonarr and Radarr's interactive search, in the row for the download it is
+ * meant to replace.
+ *
+ * The automatic search is a black box: it picks something, and when what it
+ * picks is dead or refused you get a stuck row and no way to see what it was
+ * choosing between. This asks every indexer live and shows the lot — including
+ * the releases the *arr REFUSED and the reason, which is the half that
+ * explains an empty queue. Grabbing one overrides that judgement.
+ *
+ * Not fetched until asked for: it queries every indexer and routinely takes
+ * the better part of a minute.
+ */
+function ReleaseSearch({ hash, kind, onDone }: { hash: string; kind: 'show' | 'movie'; onDone: (m: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const [list, setList] = useState<ArrRelease[] | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [grabbing, setGrabbing] = useState<string | null>(null)
+  const [showRefused, setShowRefused] = useState(false)
+  const arrName = kind === 'show' ? 'Sonarr' : 'Radarr'
+
+  const search = async () => {
+    setOpen(true); setBusy(true); setErr(null)
+    try { setList((await plexApi.releases(hash)).releases) }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
+    finally { setBusy(false) }
+  }
+
+  const grab = async (r: ArrRelease) => {
+    setGrabbing(r.guid); setErr(null)
+    try { onDone((await plexApi.grab(hash, r.guid, r.indexerId)).detail) }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
+    finally { setGrabbing(null) }
+  }
+
+  const auto = async () => {
+    setBusy(true); setErr(null)
+    try { onDone((await plexApi.searchAgain(hash)).detail) }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
+    finally { setBusy(false) }
+  }
+
+  const approved = (list ?? []).filter(r => r.approved)
+  const refused = (list ?? []).filter(r => !r.approved)
+  const shown = showRefused ? [...approved, ...refused] : approved
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap gap-2">
+        <button type="button" disabled={busy} onClick={() => { void auto() }}
+          className="h-11 px-3 rounded-xl bg-white/10 text-white/80 text-[13px] font-semibold flex items-center gap-1.5 active:scale-95 disabled:opacity-40">
+          <RefreshCw size={14} className={busy && !open ? 'animate-spin' : ''} />Search again
+        </button>
+        <button type="button" disabled={busy} onClick={() => { if (open && list) setOpen(false); else void search() }}
+          className="h-11 px-3 rounded-xl bg-white/10 text-white/80 text-[13px] font-semibold flex items-center gap-1.5 active:scale-95 disabled:opacity-40">
+          <ListFilter size={14} />{open && list ? 'Hide releases' : 'Search manually'}
+        </button>
+      </div>
+
+      {err && <p className="text-amber-300 text-[12px] flex items-center gap-2"><AlertTriangle size={13} />{err}</p>}
+
+      {open && busy && (
+        <p className="text-white/45 text-[12px] flex items-center gap-2">
+          <RefreshCw size={13} className="animate-spin" />Asking every indexer — this takes a moment.
+        </p>
+      )}
+
+      {open && !busy && list && (
+        <div className="flex flex-col gap-1.5">
+          <p className="text-[11px] text-white/35">
+            {approved.length} {arrName} would take
+            {refused.length > 0 && <>, {refused.length} it refused{' '}
+              <button type="button" onClick={() => setShowRefused(v => !v)} className="underline active:opacity-70">
+                {showRefused ? 'hide them' : 'show them'}
+              </button></>}
+          </p>
+          {shown.length === 0 && (
+            <p className="text-white/40 text-[13px]">
+              Nothing came back{refused.length > 0 ? ` that ${arrName} would accept — the refused ones above say why.` : '. The indexers have nothing for this right now.'}
+            </p>
+          )}
+          {shown.slice(0, 25).map(r => (
+            <button key={r.guid} type="button" disabled={grabbing !== null} onClick={() => { void grab(r) }}
+              className={`text-left rounded-xl p-2.5 border active:scale-[0.99] disabled:opacity-50 ${
+                r.approved ? 'bg-white/5 border-hairline' : 'bg-amber-500/5 border-amber-400/20'}`}>
+              <div className="flex items-start gap-2">
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[12px] text-white/85 leading-snug line-clamp-2">{r.title}</span>
+                  <span className="block text-[11px] text-white/45 tabular-nums mt-0.5">
+                    {[
+                      r.quality,
+                      fmtBytes(r.size),
+                      r.seeders !== null ? `${r.seeders} seeders` : null,
+                      r.indexer,
+                      r.ageHours < 48 ? `${Math.round(r.ageHours)}h old` : `${Math.round(r.ageHours / 24)}d old`,
+                    ].filter(Boolean).join(' · ')}
+                  </span>
+                  {r.rejections.length > 0 && (
+                    <span className="block text-[11px] text-amber-200/70 leading-snug mt-0.5">
+                      {arrName} refused it: {r.rejections.slice(0, 2).join('; ')}
+                    </span>
+                  )}
+                </span>
+                <span className="shrink-0 text-white/40 mt-0.5">
+                  {grabbing === r.guid ? <RefreshCw size={15} className="animate-spin" /> : <Download size={15} />}
+                </span>
+              </div>
+            </button>
+          ))}
+          {shown.length > 25 && <p className="text-[11px] text-white/30">…and {shown.length - 25} more.</p>}
+          <p className="text-[11px] text-white/25 leading-relaxed">
+            Tapping one tells {arrName} to download it, overriding what it would have chosen. The stuck
+            download stays until you remove it.
+          </p>
+        </div>
+      )}
     </div>
   )
 }
