@@ -139,7 +139,9 @@ export function DownloadsTab({ canControl }: { canControl: boolean }) {
             <span className="flex items-center gap-1"><HardDrive size={13} className="text-white/40" />{data.health.freeSpaceGB.toFixed(0)} GB free</span>
           )}
           {data.health?.altSpeed && (
-            <span className="flex items-center gap-1 text-amber-300"><Gauge size={13} />slow limits on</span>
+            <span className="flex items-center gap-1 text-amber-300">
+              <Gauge size={13} />slow limits on{data.health.altDownKB > 0 ? ` (${data.health.altDownKB} kB/s)` : ''}
+            </span>
           )}
         </div>
       )}
@@ -353,8 +355,8 @@ function Detail({ hash, fallback, canControl, onDone }: {
       <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[12px]">
         <Fact k="Done" v={`${fmtBytes(t.downloaded)} of ${fmtBytes(t.size)}`} />
         <Fact k="Added" v={fmtAgo(t.addedOn)} />
-        <Fact k="Seeders" v={p ? `${p.seeds} of ${p.seedsTotal} known` : String(t.seeds)} />
-        <Fact k="Peers" v={p ? `${p.peers} of ${p.peersTotal} known` : String(t.peers)} />
+        <Fact k="Seeders" v={`${t.seeds} connected of ${t.swarmSeeds} in the swarm`} />
+        <Fact k="Peers" v={`${t.peers} connected of ${t.swarmPeers} in the swarm`} />
         <Fact k="Ratio" v={t.ratio.toFixed(2)} />
         {p && <Fact k="Connections" v={String(p.connections)} />}
         {p && <Fact k="Active for" v={fmtDuration(p.timeElapsedSec)} />}

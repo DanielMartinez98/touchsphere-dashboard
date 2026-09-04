@@ -949,8 +949,17 @@ export interface Torrent {
   dlspeed: number         // bytes/s
   upspeed: number
   eta: number             // seconds; 8640000 = ∞ in qBittorrent
+  /** Seeders and leechers CONNECTED to right now. */
   seeds: number
   peers: number
+  /**
+   * Seeders and leechers the tracker says EXIST in the swarm. The difference
+   * between these and the connected pair is the whole diagnosis: 40 seeders
+   * in the swarm and 0 connected is a connection problem, while 0 in the
+   * swarm is a dead torrent, and the two want opposite advice.
+   */
+  swarmSeeds: number
+  swarmPeers: number
   ratio: number
   addedOn: number         // unix seconds
   category?: string
@@ -1058,6 +1067,8 @@ export async function torrents(): Promise<Torrent[]> {
       eta: num(t['eta']) ?? 8640000,
       seeds: num(t['num_seeds']) ?? 0,
       peers: num(t['num_leechs']) ?? 0,
+      swarmSeeds: num(t['num_complete']) ?? 0,
+      swarmPeers: num(t['num_incomplete']) ?? 0,
       ratio: num(t['ratio']) ?? 0,
       addedOn: num(t['added_on']) ?? 0,
       ...(str(t['category']) ? { category: str(t['category']) } : {}),
@@ -1098,6 +1109,11 @@ export interface StackHealth {
   connection: 'connected' | 'firewalled' | 'disconnected' | 'unknown'
   dhtNodes: number
   altSpeed: boolean
+  /** The alternative limits, in kB/s. 0 means unlimited even when they are on. */
+  altDownKB: number
+  altUpKB: number
+  /** How many torrents can talk to how many peers at once. 0 = unlimited. */
+  maxConnections: number
   maxActiveDownloads: number
   queueing: boolean
   freeSpaceGB: number | null
@@ -1151,7 +1167,7 @@ export async function torrentProperties(hash: string): Promise<TorrentProps | nu
  */
 export async function stackDownloadHealth(): Promise<StackHealth> {
   const out: StackHealth = {
-    connection: 'unknown', dhtNodes: 0, altSpeed: false,
+    connection: 'unknown', dhtNodes: 0, altSpeed: false, altDownKB: 0, altUpKB: 0, maxConnections: 0,
     maxActiveDownloads: 0, queueing: false, freeSpaceGB: null, downloadPath: null,
   }
   await Promise.all([
@@ -1172,6 +1188,11 @@ export async function stackDownloadHealth(): Promise<StackHealth> {
         out.maxActiveDownloads = num(p['max_active_downloads']) ?? 0
         out.queueing = p['queueing_enabled'] === true
         out.downloadPath = str(p['save_path']) ?? null
+        // qBittorrent keeps these in bytes/s; 0 or -1 both mean unlimited.
+        const kb = (v: unknown) => { const n = num(v) ?? 0; return n > 0 ? Math.round(n / 1024) : 0 }
+        out.altDownKB = kb(p['alt_dl_limit'])
+        out.altUpKB = kb(p['alt_up_limit'])
+        out.maxConnections = num(p['max_connec']) ?? 0
       } catch { /* no */ }
     })(),
     (async () => {

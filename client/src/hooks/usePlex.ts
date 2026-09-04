@@ -132,6 +132,9 @@ export interface StackHealth {
   connection: 'connected' | 'firewalled' | 'disconnected' | 'unknown'
   dhtNodes: number
   altSpeed: boolean
+  altDownKB: number
+  altUpKB: number
+  maxConnections: number
   maxActiveDownloads: number
   queueing: boolean
   freeSpaceGB: number | null
@@ -180,6 +183,8 @@ export interface Torrent {
   eta: number
   seeds: number
   peers: number
+  swarmSeeds: number
+  swarmPeers: number
   ratio: number
   addedOn: number
   category?: string

@@ -198,7 +198,7 @@ export function diagnose(f: DownloadFacts): Advice {
       level: stuck ? 'warn' : 'working',
       headline: stuck ? 'Cannot fetch the torrent details' : 'Fetching the torrent details',
       detail: stuck
-        ? `This was added as a magnet link and, ${humanAge(age)} later, no peer has sent the metadata. Nobody is sharing it, or the client cannot reach the swarm at all. Ask the trackers again; if that does nothing, replace it.`
+        ? `This was added as a magnet link and, ${humanAge(age)} later, no peer has sent the metadata. Either nobody is sharing it or the client cannot reach the swarm at all — if several downloads are in this state at once it is the connection, not the releases. Ask the trackers again; if that does nothing and the rest of the queue is healthy, replace it.`
         : 'A magnet link asks the swarm what the torrent contains before anything downloads. This normally takes seconds.',
       actions: stuck ? ['reannounce', 'replace', 'remove'] : ['reannounce'],
       evidence: ev,
@@ -229,7 +229,18 @@ export function diagnose(f: DownloadFacts): Advice {
   }
 
   // ── Downloading, or claiming to be ───────────────────────────────────────
+  //
+  // `seeds` is how many seeders this client is CONNECTED to; `swarmSeeds` is
+  // how many the tracker says exist. Reading the first as "there are no
+  // seeders" is the mistake this file was written to stop: a swarm with forty
+  // seeders and nothing connected is a connection problem, and telling
+  // someone to blocklist forty perfectly good releases would be wrong and
+  // expensive. Where the swarm count is unknown (0 from a tracker that never
+  // answered) the connected count is all there is, and the wording stays
+  // hedged accordingly.
   const seeds = t.seeds
+  const swarm = t.swarmSeeds ?? 0
+  const reachable = swarm > 0 && seeds === 0
   const dead = trackers.length > 0 && trackers.every(x => x.status === 4)
 
   if (t.phase === 'stalled' || (t.phase === 'downloading' && t.dlspeed === 0)) {
@@ -251,13 +262,22 @@ export function diagnose(f: DownloadFacts): Advice {
         evidence: ev,
       }
     }
+    if (reachable) {
+      return {
+        level: 'error',
+        headline: 'Cannot reach the seeders',
+        detail: `The tracker says ${swarm} seeder${swarm === 1 ? '' : 's'} ${swarm === 1 ? 'has' : 'have'} this file, and none of them is connected. The release is fine — this box cannot open peer connections. Behind a VPN that is a missing forwarded port or a blocked peer port; it is not something replacing the torrent will fix.`,
+        actions: ['reannounce', 'pause'],
+        evidence: [...ev, `${swarm} seeders in the swarm, ${seeds} connected`],
+      }
+    }
     if (seeds === 0) {
       const hopeless = age > 24 * HOUR
       return {
         level: hopeless ? 'error' : 'warn',
         headline: 'No seeders',
         detail: hopeless
-          ? `Nobody has been sharing this for ${humanAge(age)} and it is ${pct(t.progress)} done. It is not going to finish. Replace it — the release is blocklisted so the *arr picks a different one.`
+          ? `Nobody has been sharing this for ${humanAge(age)} and it is ${pct(t.progress)} done, and the tracker lists none in the swarm either. It is not going to finish. Replace it — the release is blocklisted so the *arr picks a different one.`
           : `Nobody in the swarm has the rest of this file right now. It may recover on its own; asking the trackers again sometimes finds peers they had not reported. If it stays at ${pct(t.progress)} for a day, replace it.`,
         actions: hopeless ? ['replace', 'remove-data', 'reannounce'] : ['reannounce', 'replace'],
         evidence: ev,
@@ -356,10 +376,14 @@ export function diagnoseStack(h: StackHealth | undefined, torrents: Torrent[]): 
   }
 
   if (h.altSpeed) {
+    const down = h.altDownKB > 0 ? `${h.altDownKB} kB/s down` : 'no download cap'
+    const up = h.altUpKB > 0 ? `${h.altUpKB} kB/s up` : 'no upload cap'
     out.push({
-      level: 'warn',
-      headline: 'Alternative speed limits are on',
-      detail: 'Every torrent is capped at the slow rate, whether by a schedule or by the toggle being left on in qBittorrent.',
+      level: h.altDownKB > 0 && h.altDownKB < 500 ? 'error' : 'warn',
+      headline: `Alternative speed limits are on (${down}, ${up})`,
+      detail: h.altDownKB > 0 && h.altDownKB < 500
+        ? `Every torrent is throttled to ${h.altDownKB} kB/s between them, which is why nothing is finishing. Turn the alternative limits off in qBittorrent — the toggle at the bottom of its window, or a schedule that switched them on and never switched them back.`
+        : 'Every torrent is capped at the alternative rate, whether by a schedule or by the toggle being left on in qBittorrent.',
     })
   }
 
@@ -374,12 +398,24 @@ export function diagnoseStack(h: StackHealth | undefined, torrents: Torrent[]): 
     })
   }
 
-  const seedless = torrents.filter(t => (t.phase === 'stalled' || t.phase === 'downloading') && t.seeds === 0).length
+  // The distinction that matters: torrents whose swarm HAS seeders that this
+  // box has connected to none of. A handful is bad luck; dozens is one fault.
+  const live = torrents.filter(t => t.phase === 'stalled' || t.phase === 'downloading' || /metaDL/i.test(t.state))
+  const unreachable = live.filter(t => (t.swarmSeeds ?? 0) > 0 && t.seeds === 0).length
+  const seedless = live.filter(t => (t.swarmSeeds ?? 0) === 0 && t.seeds === 0).length
+
+  if (unreachable >= 3) {
+    out.push({
+      level: 'error',
+      headline: `${unreachable} downloads cannot reach their seeders`,
+      detail: 'The trackers list seeders for these and not one is connected, which is a single fault in this box rather than that many dead releases. Behind a VPN it is almost always the peer port: forward one in the VPN container and set qBittorrent to use it. Do not replace these — the releases are fine.',
+    })
+  }
   if (seedless >= 3) {
     out.push({
       level: 'warn',
-      headline: `${seedless} downloads have no seeders`,
-      detail: 'That many at once usually means the connection cannot reach peers rather than that every release is dead — check the VPN before replacing them all.',
+      headline: `${seedless} downloads have no seeders at all`,
+      detail: 'The trackers list nobody sharing these. If the rest of the queue is downloading normally they really are dead and want replacing; if nothing at all is moving, fix the connection first.',
     })
   }
   return out

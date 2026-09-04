@@ -553,7 +553,7 @@ router.get('/torrents', async (_req: Request, res: Response) => {
       phase: q.trackedState === 'importPending' || q.trackedState === 'importing' ? 'done' : 'downloading',
       progress: q.size && q.sizeleft !== undefined ? 1 - q.sizeleft / q.size : 0,
       size: q.size ?? 0, downloaded: (q.size ?? 0) - (q.sizeleft ?? 0),
-      dlspeed: 0, upspeed: 0, eta: 8640000, seeds: 0, peers: 0, ratio: 0, addedOn: 0,
+      dlspeed: 0, upspeed: 0, eta: 8640000, seeds: 0, peers: 0, swarmSeeds: 0, swarmPeers: 0, ratio: 0, addedOn: 0,
     })), transfer: null, health: null, stackAdvice: [] })
   } catch (err) {
     res.status(502).json({ error: qbitError ? `qBittorrent: ${qbitError}` : msg(err) })
