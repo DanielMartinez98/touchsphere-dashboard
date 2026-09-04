@@ -403,6 +403,17 @@ export function diagnoseStack(h: StackHealth | undefined, torrents: Torrent[]): 
     }
   }
 
+  // The system disk is not where downloads go, but a full one breaks Docker,
+  // the logs and every service on the box — worth its own line, and worth not
+  // being confused for the download volume.
+  if (h.systemFreeGB !== null && h.systemFreeGB < 12) {
+    out.push({
+      level: h.systemFreeGB < 5 ? 'error' : 'warn',
+      headline: `${h.systemFreeGB.toFixed(0)} GB left on the system disk`,
+      detail: "This is the machine's own filesystem, not the download volume, so it will not stop a torrent — but at this level Docker images, container logs and package updates start failing. `docker system prune` and a look at /var/log are the usual recovery.",
+    })
+  }
+
   if (h.freeSpaceGB !== null && h.freeSpaceGB < 20) {
     const need = torrents.filter(t => t.progress < 1).reduce((n, t) => n + (t.size - t.downloaded), 0) / 1e9
     out.push({

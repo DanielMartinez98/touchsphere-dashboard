@@ -138,6 +138,7 @@ export interface StackHealth {
   maxActiveDownloads: number
   queueing: boolean
   freeSpaceGB: number | null
+  systemFreeGB: number | null
   downloadPath: string | null
 }
 

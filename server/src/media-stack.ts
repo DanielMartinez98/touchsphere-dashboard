@@ -1116,7 +1116,10 @@ export interface StackHealth {
   maxConnections: number
   maxActiveDownloads: number
   queueing: boolean
+  /** Free space on the mount the downloads actually land on. */
   freeSpaceGB: number | null
+  /** Free space on the *arr's root filesystem — a different disk, and a different problem. */
+  systemFreeGB: number | null
   downloadPath: string | null
 }
 
@@ -1168,7 +1171,7 @@ export async function torrentProperties(hash: string): Promise<TorrentProps | nu
 export async function stackDownloadHealth(): Promise<StackHealth> {
   const out: StackHealth = {
     connection: 'unknown', dhtNodes: 0, altSpeed: false, altDownKB: 0, altUpKB: 0, maxConnections: 0,
-    maxActiveDownloads: 0, queueing: false, freeSpaceGB: null, downloadPath: null,
+    maxActiveDownloads: 0, queueing: false, freeSpaceGB: null, systemFreeGB: null, downloadPath: null,
   }
   await Promise.all([
     (async () => {
@@ -1204,15 +1207,22 @@ export async function stackDownloadHealth(): Promise<StackHealth> {
       try {
         const disks = await arrGet<Raw[]>(base, key, '/api/v3/diskspace')
         if (!Array.isArray(disks) || !disks.length) return
-        // The fullest mount is the one that will stop a download first.
-        let worst: number | null = null
-        for (const d of disks) {
-          const free = num(d['freeSpace'])
-          if (free === undefined) continue
-          const gb = free / 1e9
-          if (worst === null || gb < worst) worst = gb
-        }
-        out.freeSpaceGB = worst
+        // Which mount matters depends on the question. Reporting the FULLEST
+        // one was wrong and said so out loud: a 98 GB root filesystem at 8 GB
+        // free was announced as "8 GB left on the download disk" while the
+        // download volume had 237 GB. So the download figure comes from the
+        // mount the downloads land on, and the system disk is reported
+        // separately — it is a real problem, just a different one.
+        const gbOf = (d: Raw) => { const f = num(d['freeSpace']); return f === undefined ? null : f / 1e9 }
+        const dl = disks.find(d => str(d['path']) === '/downloads')
+          ?? disks.find(d => { const p = str(d['path']) ?? ''; return p !== '/' && /down|torrent|media|data/i.test(p) })
+        const root = disks.find(d => str(d['path']) === '/')
+        // Falling back to the fullest is still better than nothing when no
+        // path looks like a download folder.
+        out.freeSpaceGB = dl ? gbOf(dl) : disks.reduce<number | null>((w, d) => {
+          const gb = gbOf(d); return gb === null ? w : w === null || gb < w ? gb : w
+        }, null)
+        out.systemFreeGB = root ? gbOf(root) : null
       } catch { /* no */ }
     })(),
   ])
