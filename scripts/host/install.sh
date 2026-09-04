@@ -24,6 +24,25 @@ if [[ -z "$KEY" || "$KEY" != ssh-* ]]; then
   echo "usage: sudo bash $0 '<the public key shown in Settings → Server>'" >&2
   exit 64
 fi
+# Check it is a REAL key, not merely the shape of one. Starting with "ssh-"
+# was the whole test once, and a placeholder pasted straight out of a set of
+# instructions ("ssh-ed25519 ...the key from Settings...") sailed through it:
+# the installer reported success, and every task afterwards failed with "the
+# host refused the key", which points at the wrong thing entirely.
+# ssh-keygen is the authority on whether a string is a key, so ask it.
+KEYCHECK=$(mktemp)
+printf '%s\n' "$KEY" > "$KEYCHECK"
+if ! FINGERPRINT=$(ssh-keygen -l -f "$KEYCHECK" 2>/dev/null); then
+  rm -f "$KEYCHECK"
+  echo "That is not a valid SSH public key:" >&2
+  echo "  ${KEY:0:60}" >&2
+  echo >&2
+  echo "Copy the WHOLE line from Settings -> Server (the \"Copy the key\" button" >&2
+  echo "puts it on the clipboard), and quote it:" >&2
+  echo "  sudo bash $0 'ssh-ed25519 AAAA... touchsphere-host'" >&2
+  exit 64
+fi
+rm -f "$KEYCHECK"
 if [[ $EUID -ne 0 ]]; then
   echo "run with sudo" >&2
   exit 77
@@ -81,6 +100,7 @@ chmod 700 "$HOME_DIR/.ssh"
 chmod 600 "$AK"
 chown -R "$USER_NAME" "$HOME_DIR/.ssh"
 echo "added the key to $AK"
+echo "  $FINGERPRINT"
 
 GW=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || echo 172.17.0.1)
 # The app's own compose network is the one that matters, if it exists.
