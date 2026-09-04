@@ -17,13 +17,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   AlertTriangle, Check, ChevronDown, ChevronRight, Pause, Play, RefreshCw,
-  Search, Trash2, Wifi, HardDrive, Gauge, Activity,
+  Search, Trash2, Wifi, HardDrive, Gauge, Activity, Layers,
 } from 'lucide-react'
 import {
   plexApi,
-  type DownloadAction, type DownloadAdvice, type StackAdvice, type StackHealth,
-  type Torrent, type TorrentDetail,
+  type BulkAction, type BulkState, type DownloadAction, type DownloadAdvice,
+  type StackAdvice, type StackHealth, type Torrent, type TorrentDetail,
 } from '../../../hooks/usePlex'
+import { onServerEvent } from '../../../hooks/useServerEvents'
 
 // ── Formatting ───────────────────────────────────────────────────────────────
 
@@ -96,11 +97,36 @@ interface Data {
   stackAdvice: StackAdvice[]
 }
 
+/** What a bulk button says, and how the confirmation puts it. */
+const BULK: Record<BulkAction, { label: (n: number) => string; danger?: boolean; confirm?: (n: number) => string }> = {
+  reannounce:       { label: n => `Ask trackers again · ${n}` },
+  recheck:          { label: n => `Check the files · ${n}` },
+  'force-start':    { label: n => `Force start · ${n}` },
+  resume:           { label: n => `Resume all · ${n}` },
+  pause:            { label: n => `Pause all · ${n}` },
+  'refresh-import': { label: () => 'Try importing them all' },
+  replace:          { label: n => `Find another for all ${n}`, danger: true,
+                      confirm: n => `Blocklist ${n} release${n === 1 ? '' : 's'}, delete them with their files, and ask Sonarr and Radarr to search for replacements. Blocklisting cannot be undone from here.` },
+  remove:           { label: n => `Remove all ${n}, keep files`, danger: true,
+                      confirm: n => `Remove ${n} download${n === 1 ? '' : 's'} from qBittorrent and leave their files on disk?` },
+  'remove-data':    { label: n => `Remove all ${n} and delete`, danger: true,
+                      confirm: n => `Remove ${n} download${n === 1 ? '' : 's'} and delete everything they downloaded?` },
+}
+
+/** Bulk only makes sense for these; the rest are per-row decisions ('top'
+    means nothing when applied to everything at once). */
+const BULKABLE: BulkAction[] = ['reannounce', 'recheck', 'force-start', 'resume', 'pause', 'refresh-import', 'replace', 'remove', 'remove-data']
+
+const LEVEL_ORDER: Record<DownloadAdvice['level'], number> = { error: 0, warn: 1, working: 2, info: 3, ok: 4 }
+
 export function DownloadsTab({ canControl }: { canControl: boolean }) {
   const [data, setData] = useState<Data | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [open, setOpen] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
+  const [bulk, setBulk] = useState<BulkState | null>(null)
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [confirm, setConfirm] = useState<{ action: BulkAction; group: string; hashes: string[] } | null>(null)
 
   const load = useCallback(async () => {
     try { setData(await plexApi.torrents()); setError(null) }
@@ -113,14 +139,56 @@ export function DownloadsTab({ canControl }: { canControl: boolean }) {
     return () => { clearTimeout(t); clearInterval(poll) }
   }, [load])
 
+  // The bulk run: its state on open, then every frame it broadcasts. A run
+  // outlives this panel, so opening the tab mid-run has to catch up.
+  useEffect(() => {
+    const t = setTimeout(() => { plexApi.bulkState().then(setBulk).catch(() => {}) }, 0)
+    const off = onServerEvent('downloads-bulk', raw => {
+      if (raw && typeof raw === 'object') {
+        const s = raw as BulkState
+        setBulk(s)
+        // The list is stale the moment a run touches it.
+        if (!s.running) { void load() }
+      }
+    })
+    return () => { clearTimeout(t); off(); }
+  }, [load])
+
   const list = data?.torrents ?? []
-  // Ordered by what wants doing: the broken first, then the working, then the
-  // finished. Inside a group, newest first.
-  const rank = (t: Torrent) => (t.advice?.level === 'error' ? 0 : t.advice?.level === 'warn' ? 1 : 0)
-  const attention = list.filter(t => t.advice && (t.advice.level === 'error' || t.advice.level === 'warn'))
-    .sort((a, b) => rank(a) - rank(b) || b.addedOn - a.addedOn)
-  const active = list.filter(t => !attention.includes(t) && t.phase !== 'done' && t.phase !== 'seeding')
-  const finished = list.filter(t => !attention.includes(t) && (t.phase === 'done' || t.phase === 'seeding'))
+
+  // One group per verdict. This is the whole point of the verdicts: a queue of
+  // a hundred rows is really five or six situations, and each has one answer.
+  const groups = (() => {
+    const by = new Map<string, Torrent[]>()
+    for (const t of list) {
+      const k = t.advice?.headline ?? 'Unknown'
+      const g = by.get(k); if (g) g.push(t); else by.set(k, [t])
+    }
+    return [...by.entries()]
+      .map(([headline, items]) => {
+        const level = items[0]?.advice?.level ?? 'info'
+        // Only offer what applies to EVERY row in the group — a button that
+        // silently skips a third of what it names is worse than no button.
+        const shared = BULKABLE.filter(a => items.every(t => (t.advice?.actions as string[] | undefined)?.includes(a)))
+        return {
+          headline, items, level, shared,
+          bytes: items.reduce((n, t) => n + t.downloaded, 0),
+        }
+      })
+      .sort((a, b) => LEVEL_ORDER[a.level] - LEVEL_ORDER[b.level] || b.items.length - a.items.length)
+  })()
+
+  const startBulk = async (action: BulkAction, group: string, hashes: string[]) => {
+    setConfirm(null)
+    try {
+      const r = await plexApi.bulk(action, hashes, group)
+      setBulk(r.state)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const onDone = (m: string) => { setNote(m); void load(); setTimeout(() => setNote(null), 6000) }
 
   return (
     <div className="flex flex-col gap-4">
@@ -146,6 +214,35 @@ export function DownloadsTab({ canControl }: { canControl: boolean }) {
         </div>
       )}
 
+      {/* A bulk run, going or just finished. Above everything: while it runs
+          it is the most important thing on the screen. */}
+      {bulk && (bulk.running || bulk.summary) && (
+        <div className={`rounded-2xl border p-3 ${bulk.running ? 'bg-cyan-500/10 border-cyan-400/30' : bulk.failed ? 'bg-amber-500/10 border-amber-400/30' : 'bg-emerald-500/10 border-emerald-400/25'}`}>
+          <div className="flex items-center gap-2">
+            {bulk.running && <RefreshCw size={14} className="animate-spin text-cyan-300 shrink-0" />}
+            <p className="text-sm text-white/85 font-semibold flex-1 min-w-0">
+              {bulk.running ? `${bulk.label} — ${bulk.done} of ${bulk.total}` : bulk.summary}
+            </p>
+            {bulk.running && (
+              <button type="button" onClick={() => { void plexApi.bulkCancel().then(r => setBulk(r.state)) }}
+                className="h-9 px-3 rounded-lg bg-white/10 text-white/70 text-[12px] font-semibold active:scale-95">
+                Stop
+              </button>
+            )}
+          </div>
+          {bulk.running && (
+            <div className="mt-2 h-1.5 rounded-full bg-white/10 overflow-hidden">
+              <div className="h-full bg-cyan-400 transition-all" style={{ width: `${bulk.total ? (bulk.done / bulk.total) * 100 : 0}%` }} />
+            </div>
+          )}
+          {bulk.errors.length > 0 && (
+            <p className="text-[11px] text-amber-200/80 mt-2 leading-snug">
+              {bulk.errors.length} failed: {bulk.errors.slice(0, 3).map(e => `${e.name} (${e.error ?? '?'})`).join('; ')}
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Whole-stack problems: the ones that explain several stuck rows at once. */}
       {data?.stackAdvice.map((a, i) => (
         <div key={i} className={`rounded-2xl border p-3 ${a.level === 'error' ? 'bg-red-500/10 border-red-400/30' : 'bg-amber-500/10 border-amber-400/30'}`}>
@@ -160,40 +257,78 @@ export function DownloadsTab({ canControl }: { canControl: boolean }) {
       {!data && !error && <p className="text-ink-dim text-sm">Loading…</p>}
       {data && !list.length && <p className="text-ink-dim text-sm">Nothing is downloading.</p>}
 
-      {attention.length > 0 && (
-        <Section title={`Needs attention · ${attention.length}`}>
-          {attention.map(t => (
-            <Row key={t.hash} t={t} open={open === t.hash} onToggle={() => setOpen(open === t.hash ? null : t.hash)}
-              canControl={canControl && data?.source === 'qbit'} onDone={m => { setNote(m); void load(); setTimeout(() => setNote(null), 6000) }} />
-          ))}
-        </Section>
+      {/* The confirmation for a destructive bulk run, over everything. */}
+      {confirm && (
+        <div className="rounded-2xl bg-black/60 border border-red-400/30 p-3 flex flex-col gap-2">
+          <p className="text-sm text-white/85 font-semibold">{confirm.group}</p>
+          <p className="text-[13px] text-white/65 leading-snug">{BULK[confirm.action].confirm?.(confirm.hashes.length)}</p>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => setConfirm(null)}
+              className="flex-1 h-11 rounded-xl bg-white/10 text-white/60 text-sm font-medium">Cancel</button>
+            <button type="button" onClick={() => { void startBulk(confirm.action, confirm.group, confirm.hashes) }}
+              className="flex-1 h-11 rounded-xl bg-red-600 text-white text-sm font-bold active:scale-95">
+              Do it for all {confirm.hashes.length}
+            </button>
+          </div>
+        </div>
       )}
-      {active.length > 0 && (
-        <Section title="Coming">
-          {active.map(t => (
-            <Row key={t.hash} t={t} open={open === t.hash} onToggle={() => setOpen(open === t.hash ? null : t.hash)}
-              canControl={canControl && data?.source === 'qbit'} onDone={m => { setNote(m); void load(); setTimeout(() => setNote(null), 6000) }} />
-          ))}
-        </Section>
-      )}
-      {finished.length > 0 && (
-        <Section title={`Finished · ${finished.length}`}>
-          {finished.slice(0, 20).map(t => (
-            <Row key={t.hash} t={t} open={open === t.hash} onToggle={() => setOpen(open === t.hash ? null : t.hash)}
-              canControl={canControl && data?.source === 'qbit'} onDone={m => { setNote(m); void load(); setTimeout(() => setNote(null), 6000) }} />
-          ))}
-        </Section>
-      )}
-    </div>
-  )
-}
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section>
-      <h3 className="text-[11px] uppercase tracking-widest text-white/40 font-semibold mb-2">{title}</h3>
-      <div className="flex flex-col gap-2">{children}</div>
-    </section>
+      {groups.map(g => {
+        const isOpen = expanded[g.headline] ?? g.items.length <= 4
+        const tone = LEVEL_STYLE[g.level]
+        return (
+          <section key={g.headline}>
+            <div className="flex items-start gap-2 mb-2">
+              <button type="button" onClick={() => setExpanded(e => ({ ...e, [g.headline]: !isOpen }))}
+                className="flex items-center gap-2 min-w-0 flex-1 text-left active:opacity-70">
+                <span className={`w-2 h-2 rounded-full shrink-0 ${tone.dot}`} />
+                <span className={`text-[13px] font-semibold ${tone.text}`}>{g.headline}</span>
+                <span className="text-[12px] text-white/35 tabular-nums">
+                  · {g.items.length}{g.bytes > 1e8 ? ` · ${fmtBytes(g.bytes)}` : ''}
+                </span>
+                <span className="text-white/25 ml-auto shrink-0">{isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</span>
+              </button>
+            </div>
+
+            {/* One answer for the whole group. Only actions every row in the
+                group accepts, so the count on the button is honest. */}
+            {canControl && g.shared.length > 0 && !bulk?.running && (
+              <div className="flex flex-wrap gap-2 mb-2">
+                <span className="flex items-center gap-1 text-[11px] text-white/30 pr-1"><Layers size={12} />all {g.items.length}:</span>
+                {g.shared.map(a => {
+                  const meta = BULK[a]
+                  return (
+                    <button key={a} type="button"
+                      onClick={() => {
+                        const hashes = g.items.map(t => t.hash)
+                        if (meta.confirm) setConfirm({ action: a, group: g.headline, hashes })
+                        else void startBulk(a, g.headline, hashes)
+                      }}
+                      className={`h-10 px-3 rounded-xl text-[12px] font-semibold flex items-center gap-1.5 active:scale-95 ${
+                        meta.danger ? 'bg-red-500/15 text-red-200 border border-red-400/25' : 'bg-white/10 text-white/75'}`}>
+                      {a === 'replace' ? <Search size={13} /> : a === 'remove' || a === 'remove-data' ? <Trash2 size={13} /> : a === 'refresh-import' ? <RefreshCw size={13} /> : <Activity size={13} />}
+                      {meta.label(g.items.length)}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+
+            {isOpen && (
+              <div className="flex flex-col gap-2">
+                {g.items.slice(0, 40).map(t => (
+                  <Row key={t.hash} t={t} open={open === t.hash} onToggle={() => setOpen(open === t.hash ? null : t.hash)}
+                    canControl={canControl && data?.source === 'qbit'} onDone={onDone} />
+                ))}
+                {g.items.length > 40 && (
+                  <p className="text-[12px] text-white/30 px-1">…and {g.items.length - 40} more. The buttons above act on all {g.items.length}.</p>
+                )}
+              </div>
+            )}
+          </section>
+        )
+      })}
+    </div>
   )
 }
 

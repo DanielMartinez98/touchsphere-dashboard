@@ -9,6 +9,7 @@ import crypto from 'crypto'
 import { broadcast, kioskCount } from './system'
 import { nudgePlexWatch } from '../plex-watch'
 import { diagnose, diagnoseStack } from '../downloads'
+import { bulkState, cancelBulk, isBulkAction, startBulk, BULK_ACTIONS } from '../downloads-bulk'
 import {
   arrQueue,
   bazarrEnabled,
@@ -558,6 +559,33 @@ router.get('/torrents', async (_req: Request, res: Response) => {
   } catch (err) {
     res.status(502).json({ error: qbitError ? `qBittorrent: ${qbitError}` : msg(err) })
   }
+})
+
+// ── Bulk ─────────────────────────────────────────────────────────────────────
+// One answer applied to a whole group. Registered ABOVE /torrents/:hash so
+// Express does not read "bulk" as a torrent hash.
+
+router.get('/torrents/bulk', (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store')
+  res.json(bulkState())
+})
+
+router.post('/torrents/bulk', (req: Request, res: Response) => {
+  if (!qbitEnabled()) return disabled(res, 'qBittorrent')
+  const body = (req.body ?? {}) as Record<string, unknown>
+  const action = body['action']
+  if (!isBulkAction(action)) {
+    return res.status(400).json({ error: `action must be one of ${BULK_ACTIONS.join(', ')}` })
+  }
+  const hashes = Array.isArray(body['hashes']) ? (body['hashes'] as unknown[]).filter((h): h is string => typeof h === 'string') : []
+  const label = typeof body['label'] === 'string' ? body['label'].slice(0, 80) : `${hashes.length} downloads`
+  const refused = startBulk(action, hashes, label)
+  if (refused) return res.status(409).json({ error: refused, state: bulkState() })
+  res.status(202).json({ ok: true, state: bulkState() })
+})
+
+router.post('/torrents/bulk/cancel', (_req: Request, res: Response) => {
+  res.json({ ok: cancelBulk(), state: bulkState() })
 })
 
 /**

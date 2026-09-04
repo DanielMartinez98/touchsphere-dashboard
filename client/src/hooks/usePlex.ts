@@ -128,6 +128,26 @@ export interface DownloadAdvice {
 
 export interface StackAdvice { level: DownloadAdvice['level']; headline: string; detail: string }
 
+/** What can be done to a whole group of downloads at once. */
+export type BulkAction =
+  | 'reannounce' | 'recheck' | 'force-start' | 'resume' | 'pause'
+  | 'refresh-import' | 'replace' | 'remove' | 'remove-data'
+
+export interface BulkState {
+  running: boolean
+  action: BulkAction | null
+  label: string
+  total: number
+  done: number
+  ok: number
+  failed: number
+  current: string
+  startedAt: string | null
+  endedAt: string | null
+  errors: { hash: string; name: string; ok: boolean; error?: string }[]
+  summary: string
+}
+
 export interface StackHealth {
   connection: 'connected' | 'firewalled' | 'disconnected' | 'unknown'
   dhtNodes: number
@@ -303,6 +323,11 @@ export const plexApi = {
   torrent:  (hash: string) => getJson<TorrentDetail>(`/api/plex/torrents/${hash}`),
   torrentAction: (hash: string, action: DownloadAction) =>
     postJson<{ ok: true; did?: string; detail?: string }>(`/api/plex/torrents/${hash}/${action}`, {}),
+  /** One action across a whole group. Runs in the background; follow `downloads-bulk`. */
+  bulk: (action: BulkAction, hashes: string[], label: string) =>
+    postJson<{ ok: true; state: BulkState }>('/api/plex/torrents/bulk', { action, hashes, label }),
+  bulkState:  () => getJson<BulkState>('/api/plex/torrents/bulk'),
+  bulkCancel: () => postJson<{ ok: boolean; state: BulkState }>('/api/plex/torrents/bulk/cancel', {}),
   removeTorrent: (hash: string, opts: { files: boolean; blocklist: boolean; search: boolean }) => {
     const p = new URLSearchParams()
     if (opts.files) p.set('files', '1')
