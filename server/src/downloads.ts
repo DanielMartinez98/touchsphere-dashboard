@@ -378,13 +378,29 @@ export function diagnoseStack(h: StackHealth | undefined, torrents: Torrent[]): 
   if (h.altSpeed) {
     const down = h.altDownKB > 0 ? `${h.altDownKB} kB/s down` : 'no download cap'
     const up = h.altUpKB > 0 ? `${h.altUpKB} kB/s up` : 'no upload cap'
-    out.push({
-      level: h.altDownKB > 0 && h.altDownKB < 500 ? 'error' : 'warn',
-      headline: `Alternative speed limits are on (${down}, ${up})`,
-      detail: h.altDownKB > 0 && h.altDownKB < 500
-        ? `Every torrent is throttled to ${h.altDownKB} kB/s between them, which is why nothing is finishing. Turn the alternative limits off in qBittorrent — the toggle at the bottom of its window, or a schedule that switched them on and never switched them back.`
-        : 'Every torrent is capped at the alternative rate, whether by a schedule or by the toggle being left on in qBittorrent.',
-    })
+    // A crippled UPLOAD cap is the one people never suspect and the one that
+    // stops a whole queue. BitTorrent is tit-for-tat: peers choke a client
+    // that sends them nothing, so an upload limit near zero makes downloads
+    // dry up everywhere at once while every number still looks healthy.
+    if (h.altUpKB > 0 && h.altUpKB < 20) {
+      out.push({
+        level: 'error',
+        headline: `Uploads are capped at ${h.altUpKB} kB/s`,
+        detail: `The alternative speed limits are on and their upload cap is ${h.altUpKB} kB/s, which is effectively nothing. BitTorrent peers only send to clients that send back, so at this cap almost every swarm will choke this box and downloads stall no matter how many seeders exist. Turn the alternative limits off in qBittorrent, or raise that upload cap — this one setting can explain a whole stuck queue.`,
+      })
+    } else if (h.altDownKB > 0 && h.altDownKB < 500) {
+      out.push({
+        level: 'error',
+        headline: `Downloads are capped at ${h.altDownKB} kB/s`,
+        detail: `Every torrent is throttled to ${h.altDownKB} kB/s between them, which is why nothing is finishing. Turn the alternative limits off in qBittorrent — the toggle at the bottom of its window, or a schedule that switched them on and never switched them back.`,
+      })
+    } else {
+      out.push({
+        level: 'warn',
+        headline: `Alternative speed limits are on (${down}, ${up})`,
+        detail: 'Every torrent is capped at the alternative rate, whether by a schedule or by the toggle being left on in qBittorrent.',
+      })
+    }
   }
 
   if (h.freeSpaceGB !== null && h.freeSpaceGB < 20) {
@@ -408,7 +424,7 @@ export function diagnoseStack(h: StackHealth | undefined, torrents: Torrent[]): 
     out.push({
       level: 'error',
       headline: `${unreachable} downloads cannot reach their seeders`,
-      detail: 'The trackers list seeders for these and not one is connected, which is a single fault in this box rather than that many dead releases. Behind a VPN it is almost always the peer port: forward one in the VPN container and set qBittorrent to use it. Do not replace these — the releases are fine.',
+      detail: `The trackers list seeders for these and not one is connected, which is a single fault in this box rather than that many dead releases.${h.altSpeed && h.altUpKB > 0 && h.altUpKB < 20 ? ` The ${h.altUpKB} kB/s upload cap above is the first thing to undo — peers choke a client that sends nothing back.` : ' Behind a VPN it is almost always the peer port: forward one in the VPN container and set qBittorrent to use it.'} Do not replace these — the releases are fine.`,
     })
   }
   if (seedless >= 3) {
