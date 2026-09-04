@@ -13,7 +13,7 @@ import { onServerEvent } from './useServerEvents'
 
 export type HostTask =
   | 'apt-refresh' | 'apt-upgrade' | 'firmware-check' | 'firmware-update'
-  | 'tailscale-update' | 'containers' | 'self-update' | 'reboot'
+  | 'tailscale-update' | 'containers' | 'self-update' | 'disk-clean' | 'reboot'
 
 export interface HostInfo {
   enabled:   boolean

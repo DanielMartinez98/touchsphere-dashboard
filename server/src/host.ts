@@ -43,6 +43,7 @@ export const HOST_TASKS = {
   'tailscale-update': 'Update Tailscale',
   'containers':       'Update containers',
   'self-update':      'Update the dashboard',
+  'disk-clean':       'Free up disk space',
   'reboot':           'Reboot the server',
 } as const
 export type HostTask = keyof typeof HOST_TASKS

@@ -19,7 +19,7 @@
 set -u
 CONF=/etc/touchsphere-host.conf
 SELF=/usr/local/bin/touchsphere-host
-VERBS="status apt-refresh apt-upgrade firmware-check firmware-update tailscale-update containers self-update reboot"
+VERBS="status apt-refresh apt-upgrade firmware-check firmware-update tailscale-update containers self-update disk-clean reboot"
 
 verb="${1:-}"
 if [[ -z "$verb" ]]; then
@@ -261,6 +261,31 @@ case "$verb" in
     say "tailscale update"
     tailscale update --yes
     say "Now running $(tailscale version | head -1)"
+    ;;
+
+  disk-clean)
+    # The system disk fills with things nobody chose to keep: Docker's build
+    # cache (every rebuild of the dashboard adds layers), images no container
+    # references any more, the journal, and apt's download cache. None of it
+    # is data — the worst case of deleting all of it is a slower next build.
+    #
+    # Images still referenced by a container are never touched, and neither
+    # are volumes: `docker image prune` without -a keeps anything tagged and
+    # in use, and volumes hold the actual state.
+    before=$(df --output=avail -k / | tail -1)
+    say "Docker build cache"
+    docker builder prune -af 2>&1 | tail -1
+    say "Unreferenced images"
+    docker image prune -f 2>&1 | tail -1
+    say "Stopped containers"
+    docker container prune -f 2>&1 | tail -1
+    say "Journal, trimmed to 300 MB"
+    journalctl --vacuum-size=300M 2>&1 | tail -1
+    say "apt download cache"
+    apt-get clean
+    after=$(df --output=avail -k / | tail -1)
+    freed=$(( (after - before) / 1024 ))
+    say "Freed ${freed} MB. $(df -h / | tail -1 | awk '{print $4}') now free on the system disk."
     ;;
 
   containers)

@@ -2047,11 +2047,17 @@ function ServerTab() {
           </p>
           {statusError && <p className="text-amber-200/80 text-xs">{statusError}</p>}
         </>,
-        <button type="button" onClick={() => { void refreshStatus() }} disabled={statusBusy || busy}
-          className="h-11 px-4 rounded-xl bg-white/10 text-white/80 text-sm font-semibold flex items-center gap-2 active:scale-95">
-          <RotateCw size={14} className={statusBusy ? 'animate-spin' : ''} />
-          Refresh
-        </button>,
+        <>
+          <button type="button" onClick={() => { void refreshStatus() }} disabled={statusBusy || busy}
+            className="h-11 px-4 rounded-xl bg-white/10 text-white/80 text-sm font-semibold flex items-center gap-2 active:scale-95">
+            <RotateCw size={14} className={statusBusy ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+          {/* The system disk fills with Docker build cache, old images, the
+              journal and apt's cache — none of it data, all of it invisible
+              until it runs out. Offered beside the disk figure that shows it. */}
+          {taskButton('disk-clean', h.diskUsedPct >= 80 ? `Free up space · ${h.diskUsedPct}% full` : 'Free up space')}
+        </>,
       )}
 
       {status && rebootNeeded && (
