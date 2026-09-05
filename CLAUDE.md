@@ -145,7 +145,7 @@ React hooks → fetch /api/* → Express routes → External APIs
 - **Caddy** — reverse proxy on :443 with self-signed TLS (required for browser microphone/camera APIs in kiosk)
 - **Watchtower** — polls `ghcr.io` and auto-updates the running container
 - **CI/CD** — `.github/workflows/docker-publish.yml` builds `linux/amd64` + `linux/arm64` on every push to `main`
-- **Kiosk** — `scripts/kiosk.sh` launches TouchKio (Electron); `scripts/touchsphere-kiosk.service` is the systemd unit
+- **Kiosk** — the Pi is normally a *display only*: the dashboard runs on another box and the Pi opens it. `scripts/kiosk/install.sh <url>` sets that up — installs TouchKio (Electron, its own fullscreen Chromium, which is what gives the kiosk a microphone and therefore a voice loop, and why the URL must be **https**), writes the URL to `/etc/touchsphere-kiosk.conf`, and installs `touchsphere-kiosk` as a **user** systemd service with `loginctl enable-linger`. A user service rather than a system one because Bookworm runs Wayland and a system unit has to guess at `DISPLAY`/`WAYLAND_DISPLAY` and gets it wrong whenever the compositor changes; a user service starts inside the graphical session and inherits all of it. The runner **waits for the dashboard to answer** before opening the browser (up to 3 min) rather than showing TouchKio's own error page, and exits non-zero if it never does, so systemd retries — the usual cause is the server booting more slowly than the Pi. `scripts/kiosk.sh` + `scripts/touchsphere-kiosk.service` remain for the all-in-one case, where the container runs on the Pi too
 
 ## Key Constraints
 

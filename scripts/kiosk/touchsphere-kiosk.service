@@ -1,0 +1,25 @@
+# ~/.config/systemd/user/touchsphere-kiosk.service
+#
+# A USER service, not a system one. Raspberry Pi OS Bookworm runs Wayland, and
+# a system service has to guess at DISPLAY, XAUTHORITY or WAYLAND_DISPLAY and
+# gets it wrong whenever the compositor changes. A user service starts inside
+# the graphical session and inherits all of it. `loginctl enable-linger` is
+# what makes it come up at boot with nobody logged in — install.sh sets that.
+
+[Unit]
+Description=TouchSphere kiosk (TouchKio)
+After=graphical-session.target network-online.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/touchsphere-kiosk
+# Always: a crash, a manual kill, and the dashboard not being up yet all want
+# the same answer, which is to try again shortly.
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical-session.target

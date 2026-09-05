@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
-# kiosk.sh — not used. TouchKio is configured separately on the Pi.
-# The server stack (Caddy + app) is managed via docker-compose.yml.
+# kiosk.sh — the ALL-IN-ONE case: the app container and the screen on the same
+# Pi. Kept for that setup, and superseded by scripts/kiosk/ for the usual one.
+#
+# If the dashboard runs on another box and the Pi is only the display — which
+# is the common arrangement, and the one the deployment notes describe — use
+# scripts/kiosk/install.sh instead. This script starts a container here and
+# waits on https://localhost, so on a display-only Pi it waits sixty seconds
+# for a server that will never answer and then exits.
 
 
 COMPOSE_FILE="$(cd "$(dirname "$0")/.." && pwd)/docker-compose.yml"

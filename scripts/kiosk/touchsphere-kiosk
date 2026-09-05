@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# touchsphere-kiosk — put the dashboard on the Pi's screen and keep it there.
+#
+# The Pi is a DISPLAY, not the server. The dashboard runs on another box (see
+# CLAUDE.md's deployment notes) and this only has to open it full screen and
+# keep it open. The older scripts/kiosk.sh assumed the app container ran here
+# too, started it with docker, and pointed at https://localhost — which on a
+# display-only Pi means it waits sixty seconds for a server that will never
+# answer and then exits.
+#
+# So: no docker, no assumptions. One URL from /etc/touchsphere-kiosk.conf,
+# waited for rather than assumed, then TouchKio. TouchKio is an Electron shell
+# that provides its own fullscreen Chromium view; it is what gives the kiosk a
+# real browser (and therefore the microphone, which the voice loop needs and
+# which only works on a secure origin — hence https, not the :3001 port).
+#
+# Restarting is systemd's job, not a loop here: the unit is Restart=always, so
+# a crash, a killed process, or the screen coming back after a blank all end
+# the same way.
+
+set -u
+CONF=/etc/touchsphere-kiosk.conf
+
+URL="https://localhost"
+ZOOM="1.0"
+THEME="dark"
+WAIT_SECONDS=180
+# shellcheck disable=SC1090
+[[ -r "$CONF" ]] && . "$CONF"
+
+say() { echo "[kiosk] $*"; }
+
+say "target: $URL (zoom $ZOOM, theme $THEME)"
+
+# ── Wait for the dashboard ───────────────────────────────────────────────────
+#
+# The Pi and the server boot at the same time, and over Tailscale the server
+# can take a while to become reachable. Opening TouchKio first would show its
+# own error page and sit there; waiting means the first thing on screen is the
+# dashboard. -k because a self-signed Caddy certificate is a normal setup here;
+# a Tailscale hostname has a real one and does not need it.
+ready=0
+for i in $(seq 1 "$WAIT_SECONDS"); do
+  if curl -sfk --max-time 4 "$URL/api/system/version" -o /dev/null; then
+    say "the dashboard answered after ${i}s"
+    ready=1
+    break
+  fi
+  # Quietly for the first half minute — a boot is expected to take that long.
+  [[ $((i % 15)) -eq 0 ]] && say "still waiting for $URL (${i}s)"
+  sleep 1
+done
+
+if [[ $ready -eq 0 ]]; then
+  say "ERROR: $URL did not answer in ${WAIT_SECONDS}s."
+  say "  Is the dashboard up? From here: curl -k $URL/api/system/version"
+  # Exit non-zero so systemd retries rather than giving up: the usual cause is
+  # the server booting more slowly than the Pi, which fixes itself.
+  exit 1
+fi
+
+# Nothing left over from a previous run — two TouchKios fight over the screen.
+pkill -f touchkio 2>/dev/null || true
+sleep 1
+
+say "launching TouchKio"
+exec touchkio \
+  --web-url="$URL" \
+  --web-theme="$THEME" \
+  --web-zoom="$ZOOM"
