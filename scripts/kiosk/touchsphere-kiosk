@@ -19,14 +19,18 @@
 # the same way.
 
 set -u
-CONF=/etc/touchsphere-kiosk.conf
 
 URL="https://localhost"
 ZOOM="1.0"
 THEME="dark"
 WAIT_SECONDS=180
-# shellcheck disable=SC1090
-[[ -r "$CONF" ]] && . "$CONF"
+# The user's own settings win over a system-wide file: the installer needs no
+# root, so $HOME is where it writes, and /etc is only read for an older
+# install that put it there.
+for conf in "$HOME/.config/touchsphere-kiosk.conf" /etc/touchsphere-kiosk.conf; do
+  # shellcheck disable=SC1090
+  [[ -r "$conf" ]] && { . "$conf"; break; }
+done
 
 say() { echo "[kiosk] $*"; }
 
