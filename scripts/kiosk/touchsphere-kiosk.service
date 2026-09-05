@@ -8,8 +8,7 @@
 
 [Unit]
 Description=TouchSphere kiosk (TouchKio)
-After=graphical-session.target network-online.target
-PartOf=graphical-session.target
+After=default.target network-online.target
 
 [Service]
 Type=simple
@@ -22,4 +21,12 @@ StandardOutput=journal
 StandardError=journal
 
 [Install]
-WantedBy=graphical-session.target
+# default.target, NOT graphical-session.target. Raspberry Pi OS's labwc
+# session is not systemd-integrated: it exports WAYLAND_DISPLAY into the user
+# manager's environment but never activates graphical-session.target, which
+# therefore sits inactive forever — and a unit wanted by a target that never
+# activates simply never starts. Verified on a Pi 5 running trixie: the
+# compositor was up, the socket existed, the service was enabled, and it had
+# not run. default.target is always reached, and the runner waits for the
+# compositor itself rather than relying on ordering.
+WantedBy=default.target

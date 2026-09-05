@@ -30,6 +30,30 @@ WAIT_SECONDS=180
 
 say() { echo "[kiosk] $*"; }
 
+# ── Find the compositor ──────────────────────────────────────────────────────
+#
+# Started from default.target, this can run before the desktop session exists:
+# lingering brings the user manager up at boot, and labwc arrives a moment
+# later. Electron needs WAYLAND_DISPLAY to use the Wayland backend, and with
+# no socket at all it exits immediately. So wait for the socket and take the
+# name from it rather than assuming wayland-0.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+for i in $(seq 1 120); do
+  sock=$(ls "$XDG_RUNTIME_DIR" 2>/dev/null | grep -m1 '^wayland-[0-9]*$' || true)
+  if [[ -n "${sock:-}" ]]; then
+    export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-$sock}"
+    say "compositor is up (\$XDG_RUNTIME_DIR/$sock)"
+    break
+  fi
+  [[ $((i % 15)) -eq 0 ]] && say "waiting for the compositor (${i}s)"
+  sleep 1
+done
+if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
+  # An X session is the other possibility, and TouchKio copes with either.
+  [[ -n "${DISPLAY:-}" ]] || { say "ERROR: no Wayland socket and no DISPLAY — is the desktop running?"; exit 1; }
+  say "no Wayland socket; falling back to X on $DISPLAY"
+fi
+
 say "target: $URL (zoom $ZOOM, theme $THEME)"
 
 # ── Wait for the dashboard ───────────────────────────────────────────────────
