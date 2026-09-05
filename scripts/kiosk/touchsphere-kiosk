@@ -52,11 +52,23 @@ for i in $(seq 1 120); do
   [[ $((i % 15)) -eq 0 ]] && say "waiting for the compositor (${i}s)"
   sleep 1
 done
-if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
-  # An X session is the other possibility, and TouchKio copes with either.
-  [[ -n "${DISPLAY:-}" ]] || { say "ERROR: no Wayland socket and no DISPLAY — is the desktop running?"; exit 1; }
-  say "no Wayland socket; falling back to X on $DISPLAY"
+if [[ -z "${WAYLAND_DISPLAY:-}" && -z "${DISPLAY:-}" ]]; then
+  say "ERROR: no Wayland socket and no DISPLAY — is the desktop running?"
+  exit 1
 fi
+
+# TouchKio wants DISPLAY set even on Wayland — Electron checks it before it
+# ever looks at the Wayland backend, and refuses to start without it with
+# "are you connected via SSH?". Under labwc, Xwayland answers on :0.
+#
+# Setting both here rather than trusting the environment is the point. The
+# desktop session imports DISPLAY and WAYLAND_DISPLAY into the systemd user
+# manager once, at login, via an autostart file — so a manager that restarts
+# for any reason (or starts at boot before the session) has neither, and the
+# service then flaps: systemd calls it active, Electron exits immediately,
+# Restart=always tries again forever, and the screen stays black.
+export DISPLAY="${DISPLAY:-:0}"
+say "display: DISPLAY=$DISPLAY WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-none}"
 
 say "target: $URL (zoom $ZOOM, theme $THEME)"
 
