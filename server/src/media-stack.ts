@@ -1409,6 +1409,188 @@ export async function arrGrab(kind: 'show' | 'movie', guid: string, indexerId: n
   return arr.name
 }
 
+// ── What is missing ──────────────────────────────────────────────────────────
+//
+// The queue answers "what is coming". This answers the question underneath it:
+// what do I want that I do not have. Sonarr already knows — every series it
+// monitors carries a count of episodes against episodes-with-files — but that
+// figure lives on a page nobody opens, and the gap it describes is the reason
+// most of the queue exists.
+
+export interface MissingSeason {
+  season: number
+  monitored: boolean
+  episodes: number
+  onDisk: number
+  missing: number
+}
+
+export interface MissingSeries {
+  id: number
+  title: string
+  year: number
+  monitored: boolean
+  status: string
+  /** Episodes that have aired and are monitored, and how many are on disk. */
+  episodes: number
+  onDisk: number
+  missing: number
+  sizeOnDisk: number
+  seasons: MissingSeason[]
+  network: string
+}
+
+export interface MissingEpisode {
+  id: number
+  season: number
+  episode: number
+  title: string
+  airDate: string
+  hasFile: boolean
+  monitored: boolean
+  /** True once it has aired; an unaired episode is not "missing". */
+  aired: boolean
+  size: number
+  quality: string
+}
+
+/**
+ * Every monitored series with at least one gap, worst first.
+ *
+ * Counts come from Sonarr's own per-season statistics rather than being
+ * derived from the episode list, which would be a call per series. "Missing"
+ * means monitored, aired, and no file — an unaired episode is not missing and
+ * counting it would put every ongoing show permanently in the list.
+ */
+export async function arrMissingSeries(): Promise<MissingSeries[]> {
+  if (!sonarrEnabled()) return []
+  const list = await arrGet<Raw[]>(SONARR_URL, SONARR_KEY, '/api/v3/series')
+  if (!Array.isArray(list)) return []
+  const out: MissingSeries[] = []
+  for (const s of list) {
+    const stats = (s['statistics'] as Raw | undefined) ?? {}
+    const seasonsRaw = Array.isArray(s['seasons']) ? (s['seasons'] as Raw[]) : []
+    const seasons: MissingSeason[] = seasonsRaw.flatMap(sn => {
+      const n = num(sn['seasonNumber'])
+      if (n === undefined) return []
+      const st = (sn['statistics'] as Raw | undefined) ?? {}
+      const eps = num(st['episodeCount']) ?? 0          // aired + monitored
+      const files = num(st['episodeFileCount']) ?? 0
+      return [{
+        season: n,
+        monitored: sn['monitored'] === true,
+        episodes: eps,
+        onDisk: files,
+        missing: Math.max(0, eps - files),
+      }]
+    }).sort((a, b) => a.season - b.season)
+
+    const episodes = num(stats['episodeCount']) ?? 0
+    const onDisk = num(stats['episodeFileCount']) ?? 0
+    const missing = Math.max(0, episodes - onDisk)
+    if (missing === 0) continue
+    out.push({
+      id: num(s['id']) ?? 0,
+      title: str(s['title']) ?? '',
+      year: num(s['year']) ?? 0,
+      monitored: s['monitored'] === true,
+      status: str(s['status']) ?? '',
+      episodes, onDisk, missing,
+      sizeOnDisk: num(stats['sizeOnDisk']) ?? 0,
+      seasons,
+      network: str(s['network']) ?? '',
+    })
+  }
+  return out.sort((a, b) => b.missing - a.missing || a.title.localeCompare(b.title))
+}
+
+/** Every episode of one series, so a season can be shown file by file. */
+export async function arrSeriesEpisodes(seriesId: number): Promise<{ title: string; episodes: MissingEpisode[] }> {
+  if (!sonarrEnabled()) return { title: '', episodes: [] }
+  const [series, eps] = await Promise.all([
+    arrGet<Raw>(SONARR_URL, SONARR_KEY, `/api/v3/series/${seriesId}`),
+    arrGet<Raw[]>(SONARR_URL, SONARR_KEY, '/api/v3/episode', { seriesId }),
+  ])
+  const now = Date.now()
+  const episodes: MissingEpisode[] = (Array.isArray(eps) ? eps : []).flatMap(e => {
+    const id = num(e['id'])
+    const season = num(e['seasonNumber'])
+    const episode = num(e['episodeNumber'])
+    if (id === undefined || season === undefined || episode === undefined) return []
+    const air = str(e['airDateUtc']) ?? str(e['airDate']) ?? ''
+    const file = (e['episodeFile'] as Raw | undefined) ?? {}
+    const q = ((file['quality'] as Raw | undefined)?.['quality'] as Raw | undefined) ?? {}
+    return [{
+      id, season, episode,
+      title: str(e['title']) ?? '',
+      airDate: air,
+      hasFile: e['hasFile'] === true,
+      monitored: e['monitored'] === true,
+      aired: air ? new Date(air).getTime() <= now : false,
+      size: num(file['size']) ?? 0,
+      quality: str(q['name']) ?? '',
+    }]
+  }).sort((a, b) => a.season - b.season || a.episode - b.episode)
+  return { title: str(series?.['title']) ?? '', episodes }
+}
+
+export interface MissingMovie {
+  id: number
+  title: string
+  year: number
+  monitored: boolean
+  /** True once it has been released; an unreleased film is not missing. */
+  available: boolean
+  status: string
+}
+
+export async function arrMissingMovies(): Promise<MissingMovie[]> {
+  if (!radarrEnabled()) return []
+  const list = await arrGet<Raw[]>(RADARR_URL, RADARR_KEY, '/api/v3/movie')
+  if (!Array.isArray(list)) return []
+  return list.flatMap(m => {
+    if (m['hasFile'] === true || m['monitored'] !== true) return []
+    const status = str(m['status']) ?? ''
+    return [{
+      id: num(m['id']) ?? 0,
+      title: str(m['title']) ?? '',
+      year: num(m['year']) ?? 0,
+      monitored: true,
+      available: status === 'released' || status === 'inCinemas',
+      status,
+    }]
+  }).sort((a, b) => Number(b.available) - Number(a.available) || a.title.localeCompare(b.title))
+}
+
+/** Search a whole season, or one episode, on demand. */
+export async function arrSeasonSearch(seriesId: number, season: number): Promise<string> {
+  const arr = arrFor('show')
+  if (!arr) throw new Error('Sonarr is not configured')
+  await arrSend(arr.base, arr.key, '/api/v3/command', 'post', {}, { name: 'SeasonSearch', seriesId, seasonNumber: season })
+  return arr.name
+}
+
+export async function arrMovieSearch(movieId: number): Promise<string> {
+  const arr = arrFor('movie')
+  if (!arr) throw new Error('Radarr is not configured')
+  await arrSend(arr.base, arr.key, '/api/v3/command', 'post', {}, { name: 'MoviesSearch', movieIds: [movieId] })
+  return arr.name
+}
+
+/** The *arr's own cached poster, so the browser never needs the API key. */
+export async function arrPoster(kind: 'show' | 'movie', id: number): Promise<{ data: Buffer; type: string } | null> {
+  const arr = arrFor(kind)
+  if (!arr) return null
+  try {
+    const res = await axios.get<ArrayBuffer>(`${arr.base}/api/v3/mediacover/${id}/poster-250.jpg`, {
+      headers: { 'X-Api-Key': arr.key },
+      responseType: 'arraybuffer',
+      timeout: HTTP_TIMEOUT_MS,
+    })
+    return { data: Buffer.from(res.data), type: String(res.headers['content-type'] ?? 'image/jpeg') }
+  } catch { return null }
+}
+
 /** The ordinary automatic search: the *arr picks the release itself. */
 export async function arrAutoSearch(kind: 'show' | 'movie', ids: { episodeId?: number; seriesId?: number; movieId?: number }): Promise<string> {
   const arr = arrFor(kind)

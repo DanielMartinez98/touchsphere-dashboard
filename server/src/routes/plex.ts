@@ -47,7 +47,15 @@ import {
   arrGrab,
   arrQueueRemove,
   arrRefreshImports,
+  radarrEnabled,
+  sonarrEnabled,
+  arrMissingMovies,
+  arrMissingSeries,
+  arrMovieSearch,
+  arrPoster,
   arrReleases,
+  arrSeasonSearch,
+  arrSeriesEpisodes,
   stackDownloadHealth,
   torrentCommand,
   torrentControl,
@@ -562,6 +570,75 @@ router.get('/torrents', async (_req: Request, res: Response) => {
   } catch (err) {
     res.status(502).json({ error: qbitError ? `qBittorrent: ${qbitError}` : msg(err) })
   }
+})
+
+// ── What is missing ──────────────────────────────────────────────────────────
+//
+// The queue says what is coming; this says what is wanted and absent, which is
+// the reason most of the queue exists. Sonarr already counts it per season —
+// aired and monitored episodes against episodes with files — so this is a
+// join and a sort rather than a scan of the disk.
+
+router.get('/missing', async (_req: Request, res: Response) => {
+  if (!plexEnabled()) return disabled(res)
+  res.setHeader('Cache-Control', 'no-store')
+  try {
+    const [series, movies] = await Promise.all([
+      arrMissingSeries().catch(err => { console.warn('[plex] missing series:', msg(err)); return [] }),
+      arrMissingMovies().catch(err => { console.warn('[plex] missing movies:', msg(err)); return [] }),
+    ])
+    res.json({
+      series, movies,
+      episodesMissing: series.reduce((n, s) => n + s.missing, 0),
+      sonarr: sonarrEnabled(), radarr: radarrEnabled(),
+    })
+  } catch (err) {
+    res.status(502).json({ error: msg(err) })
+  }
+})
+
+/** One series, episode by episode, so a season's gaps are visible file by file. */
+router.get('/missing/series/:id', async (req: Request, res: Response) => {
+  if (!plexEnabled()) return disabled(res)
+  const id = Number(req.params['id'])
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'bad series id' })
+  res.setHeader('Cache-Control', 'no-store')
+  try { res.json(await arrSeriesEpisodes(id)) }
+  catch (err) { res.status(502).json({ error: msg(err) }) }
+})
+
+/** Search a whole season, or one film, on demand. */
+router.post('/missing/search', async (req: Request, res: Response) => {
+  if (!plexEnabled()) return disabled(res)
+  const body = (req.body ?? {}) as Record<string, unknown>
+  const seriesId = Number(body['seriesId'])
+  const season = Number(body['season'])
+  const movieId = Number(body['movieId'])
+  try {
+    if (Number.isInteger(movieId) && movieId > 0) {
+      const name = await arrMovieSearch(movieId)
+      return res.json({ ok: true, detail: `${name} is searching for it.` })
+    }
+    if (!Number.isInteger(seriesId) || seriesId <= 0 || !Number.isInteger(season)) {
+      return res.status(400).json({ error: 'give either movieId, or seriesId and season' })
+    }
+    const name = await arrSeasonSearch(seriesId, season)
+    res.json({ ok: true, detail: `${name} is searching for season ${season}. Anything it finds appears in the queue.` })
+  } catch (err) {
+    res.status(502).json({ error: msg(err) })
+  }
+})
+
+/** The *arr's poster, proxied so the API key never reaches the browser. */
+router.get('/arr/poster/:kind/:id', async (req: Request, res: Response) => {
+  const kind = req.params['kind'] === 'movie' ? 'movie' as const : 'show' as const
+  const id = Number(req.params['id'])
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).end()
+  const img = await arrPoster(kind, id)
+  if (!img) return res.status(404).end()
+  res.setHeader('Content-Type', img.type)
+  res.setHeader('Cache-Control', 'public, max-age=86400')
+  res.send(img.data)
 })
 
 // ── Manual search ────────────────────────────────────────────────────────────

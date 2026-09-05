@@ -25,6 +25,7 @@ import {
   type StackAdvice, type StackHealth, type Torrent, type TorrentDetail,
 } from '../../../hooks/usePlex'
 import { onServerEvent } from '../../../hooks/useServerEvents'
+import { MissingView } from './MissingView'
 
 // ── Formatting ───────────────────────────────────────────────────────────────
 
@@ -120,6 +121,10 @@ const BULKABLE: BulkAction[] = ['reannounce', 'recheck', 'force-start', 'resume'
 const LEVEL_ORDER: Record<DownloadAdvice['level'], number> = { error: 0, warn: 1, working: 2, info: 3, ok: 4 }
 
 export function DownloadsTab({ canControl }: { canControl: boolean }) {
+  // Two questions, one tab: what is coming, and what is wanted but absent.
+  // The second is why most of the first exists, so they belong together
+  // rather than in a corner of their own.
+  const [view, setView] = useState<'queue' | 'missing'>('queue')
   const [data, setData] = useState<Data | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [open, setOpen] = useState<string | null>(null)
@@ -192,6 +197,20 @@ export function DownloadsTab({ canControl }: { canControl: boolean }) {
 
   return (
     <div className="flex flex-col gap-4">
+      <div className="flex gap-2">
+        {([['queue', 'Coming'], ['missing', 'Missing']] as const).map(([id, label]) => (
+          <button key={id} type="button" onClick={() => setView(id)}
+            className={`flex-1 h-11 rounded-xl text-[13px] font-semibold transition active:scale-95 ${
+              view === id ? 'bg-white/20 text-white border border-white/25' : 'bg-white/5 text-white/50 border border-transparent'}`}>
+            {label}{id === 'queue' && list.length ? ` · ${list.length}` : ''}
+          </button>
+        ))}
+      </div>
+
+      {note && <p className="text-emerald-300/90 text-[13px] flex items-center gap-2"><Check size={14} />{note}</p>}
+
+      {view === 'missing' ? <MissingView onNote={onDone} /> : <>
+
       {/* Speeds and the connection, which is the first thing a slow queue
           raises and the last thing anyone thinks to check. */}
       {data?.transfer && (
@@ -253,7 +272,6 @@ export function DownloadsTab({ canControl }: { canControl: boolean }) {
 
       {error && <p className="text-amber-300 text-sm flex items-center gap-2"><AlertTriangle size={16} />{error}</p>}
       {data?.warning && <p className="text-amber-300/80 text-[13px] flex items-center gap-2"><AlertTriangle size={14} />{data.warning} — showing Sonarr/Radarr's queue instead.</p>}
-      {note && <p className="text-emerald-300/90 text-[13px] flex items-center gap-2"><Check size={14} />{note}</p>}
       {!data && !error && <p className="text-ink-dim text-sm">Loading…</p>}
       {data && !list.length && <p className="text-ink-dim text-sm">Nothing is downloading.</p>}
 
@@ -328,6 +346,7 @@ export function DownloadsTab({ canControl }: { canControl: boolean }) {
           </section>
         )
       })}
+      </>}
     </div>
   )
 }

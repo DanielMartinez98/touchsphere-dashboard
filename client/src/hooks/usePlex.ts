@@ -177,6 +177,18 @@ export interface ArrQueueRow {
   status?: string; trackedState?: string; sizeleft?: number; size?: number; note?: string
 }
 
+export interface MissingSeason { season: number; monitored: boolean; episodes: number; onDisk: number; missing: number }
+export interface MissingSeries {
+  id: number; title: string; year: number; monitored: boolean; status: string
+  episodes: number; onDisk: number; missing: number; sizeOnDisk: number
+  seasons: MissingSeason[]; network: string
+}
+export interface MissingEpisode {
+  id: number; season: number; episode: number; title: string; airDate: string
+  hasFile: boolean; monitored: boolean; aired: boolean; size: number; quality: string
+}
+export interface MissingMovie { id: number; title: string; year: number; monitored: boolean; available: boolean; status: string }
+
 /** One candidate from an indexer, as an interactive search returns it. */
 export interface ArrRelease {
   guid: string
@@ -341,6 +353,11 @@ export const plexApi = {
   torrent:  (hash: string) => getJson<TorrentDetail>(`/api/plex/torrents/${hash}`),
   torrentAction: (hash: string, action: DownloadAction) =>
     postJson<{ ok: true; did?: string; detail?: string }>(`/api/plex/torrents/${hash}/${action}`, {}),
+  /** Everything wanted and absent: series with gaps, and films never downloaded. */
+  missing:       () => getJson<{ series: MissingSeries[]; movies: MissingMovie[]; episodesMissing: number; sonarr: boolean; radarr: boolean }>('/api/plex/missing'),
+  missingSeries: (id: number) => getJson<{ title: string; episodes: MissingEpisode[] }>(`/api/plex/missing/series/${id}`),
+  missingSearch: (body: { seriesId?: number; season?: number; movieId?: number }) =>
+    postJson<{ ok: true; detail: string }>('/api/plex/missing/search', body),
   /** Ask every indexer what it has for this download's episode or film. Slow. */
   releases:    (hash: string) => getJson<{ subject: { title: string; kind: 'show' | 'movie' }; releases: ArrRelease[] }>(`/api/plex/torrents/${hash}/releases`),
   /** Grab one by hand, overriding what the *arr would have picked. */
