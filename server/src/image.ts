@@ -1485,14 +1485,14 @@ async function run(job: ImageJob): Promise<void> {
         `Looking for "${job.region}" in the picture. GroundingDINO finds it from the words and ` +
         'Segment Anything traces its outline; only that outline will be repainted.')
       const limit = maxCoverageFor(job.region)
-      let found = await findMask(sourceName, job.region)
+      let found = await findRegion(sourceName, job.region)
       if (found && found.coverage > limit) {
         // Too much of the picture for what was named: ask again, stricter.
         // The segmenter returns its best box even for a thing that is not
         // there, and a higher threshold is what makes it say "nothing".
         console.log(`[image] ${job.id} "${job.region}" matched ${(found.coverage * 100).toFixed(0)}% — retrying stricter`)
         push(job, 'finding the part', `"${job.region}" matched ${Math.round(found.coverage * 100)}% of the picture, which is too much for a part — looking again more strictly.`)
-        found = await findMask(sourceName, job.region, 0.5)
+        found = await findRegion(sourceName, job.region, 0.5)
       }
       if (!found || found.coverage < 0.002) {
         throw new Error(`could not find "${job.region}" in the picture — it may not be there yet; try naming it differently, or paint the part by hand`)
@@ -3205,8 +3205,112 @@ function decodeGrey(bytes: Buffer): { width: number; height: number; grey: Uint8
  * the picture (background, sky, wall, floor) is allowed to be.
  */
 export function maxCoverageFor(region: string): number {
-  return /\b(background|backdrop|sky|wall|walls|floor|ground|room|scene|surroundings|landscape|water|sea|ocean|field|grass|snow|everything)\b/i.test(region)
-    ? 0.92 : 0.45
+  if (/\b(background|backdrop|sky|wall|walls|floor|ground|room|scene|surroundings|landscape|water|sea|ocean|field|grass|snow|everything)\b/i.test(region)) return 0.92
+  // A whole person or animal fills half of most portraits; "the woman" at 51%
+  // was measured correct on a picture where "her upper body" at 51% was not.
+  if (/\b(woman|man|girl|boy|person|people|character|figure|body|lady|guy|child|kid|dog|cat|horse|animal)\b/i.test(region)) return 0.85
+  return 0.45
+}
+
+// ── Region algebra: "the woman - the face - the orange hair" ─────────────────
+//
+// The finder locates CONCRETE things — a striped top, a face, a woman — and
+// cannot locate an area ("her upper body" returned the hair, twice). But the
+// region a new garment needs IS an area: the body without the head. So a
+// region may be several finds combined: ` + ` unions, ` - ` subtracts, in
+// order, each a plain phrase for the finder. The combined mask is stored and
+// uploaded like any other, so nothing downstream knows the difference.
+
+function parseRegion(region: string): { what: string; op: 'add' | 'sub' }[] {
+  const out: { what: string; op: 'add' | 'sub' }[] = []
+  // Split on " + " / " - " (with the surrounding spaces, so a hyphenated word survives).
+  const parts = region.split(/\s+([+\-−–])\s+/)
+  let op: 'add' | 'sub' = 'add'
+  for (const p of parts) {
+    if (p === '+') { op = 'add'; continue }
+    if (p === '-' || p === '−' || p === '–') { op = 'sub'; continue }
+    const what = p.trim()
+    if (what) out.push({ what, op })
+  }
+  return out
+}
+
+/** Minimal PNG writer for an 8-bit greyscale mask — the inverse of decodeGrey, and as small. */
+function encodeGreyPng(width: number, height: number, grey: Uint8Array): Buffer {
+  const raw = Buffer.alloc((width + 1) * height)
+  for (let y = 0; y < height; y++) {
+    raw[y * (width + 1)] = 0
+    raw.set(grey.subarray(y * width, (y + 1) * width), y * (width + 1) + 1)
+  }
+  const crcTable = new Int32Array(256)
+  for (let n = 0; n < 256; n++) {
+    let c = n
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    crcTable[n] = c
+  }
+  const crc = (buf: Buffer) => {
+    let c = -1
+    for (let i = 0; i < buf.length; i++) c = crcTable[(c ^ buf[i]!) & 0xff]! ^ (c >>> 8)
+    return (c ^ -1) >>> 0
+  }
+  const chunk = (type: string, data: Buffer) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length)
+    const td = Buffer.concat([Buffer.from(type, 'ascii'), data])
+    const c = Buffer.alloc(4); c.writeUInt32BE(crc(td))
+    return Buffer.concat([len, td, c])
+  }
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4)
+  ihdr[8] = 8; ihdr[9] = 0; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(raw)),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
+}
+
+/**
+ * Find a region that may be several finds combined (see parseRegion). A single
+ * plain phrase goes straight to findMask; anything with ` + ` or ` - ` is
+ * resolved term by term and composed here.
+ */
+export async function findRegion(sourceRef: string, region: string, threshold = 0.3): Promise<FoundMask | null> {
+  const terms = parseRegion(region)
+  if (terms.length === 0) return null
+  if (terms.length === 1) return findMask(sourceRef, terms[0]!.what, threshold)
+  // Upload the source once for all the terms.
+  let ref = sourceRef
+  if (/^[a-f0-9]{32}$/.test(sourceRef)) {
+    const entry = listImages().find(e => e.id === sourceRef)
+    if (!entry) throw new Error('that picture is not in the gallery')
+    ref = await uploadInput(`touchsphere-src-${entry.id}.png`, fs.readFileSync(path.join(imagesDir(), entry.file)), 'source picture')
+  }
+  let acc: Uint8Array | null = null
+  let w = 0, h = 0
+  for (const t of terms) {
+    const m = await findMask(ref, t.what, threshold)
+    if (!m) {
+      if (t.op === 'add') console.log(`[image] region term "${t.what}" found nothing`)
+      continue
+    }
+    const full = maskPath(m.file)
+    const g = full ? decodeGrey(fs.readFileSync(full)) : null
+    if (!g) continue
+    if (!acc) { acc = new Uint8Array(g.width * g.height); w = g.width; h = g.height }
+    if (g.width !== w || g.height !== h) continue
+    for (let i = 0; i < acc.length; i++) {
+      if (g.grey[i]! > 127) acc[i] = t.op === 'add' ? 255 : 0
+    }
+    console.log(`[image] region ${t.op === 'add' ? '+' : '-'} "${t.what}" (${(m.coverage * 100).toFixed(1)}%)`)
+  }
+  if (!acc) return null
+  const bytes = encodeGreyPng(w, h, acc)
+  const stored = saveMask(bytes)
+  const measured = maskCoverage(bytes) ?? { coverage: 0, box: [0, 0, 0, 0] as [number, number, number, number] }
+  const uploaded = await uploadInput(`touchsphere-mask-${stored.id}.png`, bytes, 'mask')
+  console.log(`[image] region "${region}" → mask ${stored.id}, ${(measured.coverage * 100).toFixed(1)}% of the picture`)
+  return { ...stored, ...measured, uploaded }
 }
 
 export function measureMask(file: string): { coverage: number; box: [number, number, number, number] } | null {

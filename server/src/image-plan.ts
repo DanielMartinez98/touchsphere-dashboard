@@ -198,12 +198,15 @@ function plannerSystem(tools: PlanMode[], styles: DrawStyle[]): string {
   }
   if (tools.includes('part')) {
     lines.push(
-      '- "part": repaint ONE visible thing and keep everything else pixel for pixel. Needs "region": two ' +
-      'to four plain words naming something visible in the picture ("the hat", "the sky", "his shirt"), ' +
-      'and "prompt": what should be IN that region only ("a red woolly hat"), plus "strength": "light" ' +
-      '(keep its shape, change colour or material), "balanced", or "strong" (draw it anew). Best for ' +
-      'colour, material and texture changes to a thing that keeps its outline. Not for things that must ' +
-      'grow past the old outline.',
+      '- "part": repaint ONE region and keep everything else pixel for pixel. Needs "region" and ' +
+      '"prompt": what should be IN that region only ("a red woolly hat"), plus "strength": "light" ' +
+      '(keep its shape, change colour or material), "balanced", or "strong" (draw it anew).',
+      '  A region is found in the picture by a detector that locates CONCRETE, VISIBLE THINGS named as ' +
+      'they appear — "the striped top", "the orange hair", "the woman", "the red car" — and CANNOT locate ' +
+      'areas: "her upper body", "the torso", "the left side" fail. Regions may be COMBINED: " + " unions, ' +
+      '" - " subtracts, in order. "the woman - the face - the orange hair" is her body without the head, ' +
+      'which is the right region for new clothing. Always describe what you see (say "the orange hair", ' +
+      'not "the hair", when it is orange).',
     )
   }
   lines.push(
@@ -247,16 +250,17 @@ function plannerSystem(tools: PlanMode[], styles: DrawStyle[]): string {
     '- Background / setting, lighting / time of day, weather, and the subject\'s pose or expression are ' +
     'each their own step, never combined.',
     '- Removing something is its own "edit" step ("remove the hat"), before anything is added in its place.',
-    '- When ADDING clothing to a character with "part", the region must cover where the garment will BE — ' +
-    '"her upper body" or "her torso, shoulders and arms" — not only the old garment, or the sleeves have ' +
-    'nowhere to be drawn. When only recolouring an existing garment, the region is the garment itself.',
+    '- When ADDING clothing to a character with "part", the region must cover where the garment will BE: ' +
+    'the whole person minus the head — "the woman - the face - the orange hair" — not only the old ' +
+    'garment, or the sleeves have nowhere to be drawn. When only recolouring an existing garment, the ' +
+    'region is the garment itself.',
     '',
     'Examples:',
     '- "give her a pink jacket" (she wears a blue coat) → 1 ' + (tools.includes('part') ? 'part, region "the blue coat", prompt "a pink jacket", strength strong' : 'edit "change the blue coat into a pink jacket"') +
     '; 2 edit "make the jacket a clean pastel pink, fabric texture" (a precision pass).',
     '- "give her a pink jacket" (an anime still, she wears a striped top, no jacket) → ' +
     (tools.includes('part')
-      ? '1 part, region "her striped top and shoulders", style an anime one, prompt "pink jacket, open jacket, zipper, long sleeves, striped shirt underneath", strength strong.'
+      ? '1 part, region "the woman - the face - the orange hair", style an anime one, prompt "1girl, pink jacket, open jacket, zipper, long sleeves, striped shirt underneath, lying, from above", strength balanced.'
       : '1 edit "The woman now wears an open pink jacket over her striped top, sleeves on both arms. Keep her pose and face unchanged."') +
     '\n- "give him a pink jacket" (a photo, he wears a t-shirt) → 1 edit "The man now wears an open pink jacket over his t-shirt, sleeves on both arms. Keep his pose and face unchanged."; ' +
     '2 ' + (tools.includes('part') ? 'part, region "the jacket", prompt "a pastel pink cotton jacket", strength light' : 'edit "Make the jacket a clean pastel pink."') + '.',

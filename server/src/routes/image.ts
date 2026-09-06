@@ -12,7 +12,7 @@ import {
   activeJob,
   addUploadedImage,
   cancelJob,
-  findMask,
+  findRegion,
   inpaintAvailable,
   maskPath,
   measureMask,
@@ -549,7 +549,7 @@ router.post('/mask/find', async (req: Request, res: Response) => {
   const threshold = typeof body?.['threshold'] === 'number' ? Math.max(0.05, Math.min(0.9, body['threshold'])) : 0.3
   if (!source || !what) { res.status(400).json({ error: 'source (a gallery id) and what (the part, in words) are required' }); return }
   try {
-    const found = await findMask(source, what, threshold)
+    const found = await findRegion(source, what, threshold)
     if (!found) { res.status(502).json({ error: 'the GPU box returned no mask' }); return }
     res.json({ id: found.id, url: `/api/image/mask/${found.file}`, width: found.width, height: found.height, coverage: found.coverage, box: found.box })
   } catch (err) {
