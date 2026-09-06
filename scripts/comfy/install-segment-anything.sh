@@ -59,11 +59,12 @@ docker exec "$COMFY_CONTAINER" sh -c "
     echo '   already cloned'
   fi
   cd $PACK_DIR
-  python3 -m pip install -q -r requirements.txt
+  python3 -m pip install -q --root-user-action=ignore -r requirements.txt
 "
 
 say "Patching for transformers 5"
-docker exec "$COMFY_CONTAINER" python3 - <<'EOF'
+# -i: without it docker exec gives python an empty stdin and the patch is a silent no-op.
+docker exec -i "$COMFY_CONTAINER" python3 - <<'EOF'
 import io, sys
 p = "/root/ComfyUI/custom_nodes/comfyui_segment_anything/local_groundingdino/models/GroundingDINO/bertwarper.py"
 s = open(p, encoding="utf-8").read()
