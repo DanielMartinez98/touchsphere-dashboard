@@ -34,7 +34,8 @@ import { createPortal } from 'react-dom'
 import {
   X, AlertTriangle, RefreshCw, ChevronLeft, ChevronRight, Copy, Check, Wand2, Brush, Info, Lasso,
 } from 'lucide-react'
-import { closeImage, openImage, useImageJob, useImageTarget } from '../hooks/useImageOverlay'
+import { closeImage, openImage, useImageJob, useImageTarget, type ImageJobState } from '../hooks/useImageOverlay'
+import { usePlan, type EditPlan } from '../hooks/useEditPlan'
 import { redrawImage, reuseImagePrompt } from '../hooks/useImagePrompt'
 import { onServerEvent } from '../hooks/useServerEvents'
 import type { StoredImage } from '../hooks/useImages'
@@ -92,7 +93,14 @@ export function ImageOverlay() {
   // A re-shown picture arrives with its url already on the payload and needs no
   // job tracking at all — the job it came from may not even exist any more.
   const done = !!target?.url
-  const job = useImageJob(target?.jobId ?? null, done)
+  // Following an edit plan: the frame's job is whichever step is on the GPU,
+  // and while the plan is still being written there is no job at all — the
+  // frame shows the planning phase in the same slot a render's phase goes.
+  const plan = usePlan(target?.planId ?? null)
+  const jobId = plan ? (plan.currentJobId || null) : (target?.jobId || null)
+  const liveJob = useImageJob(jobId, done)
+  const job: ImageJobState | null = liveJob ?? (plan ? planAsJob(plan) : null)
+  const planStep = plan ? plan.steps.find(st => st.jobId === jobId) : undefined
 
   const url = target?.url ?? job?.url
   // Taken out of the queue before it started. Not an error — nothing went wrong
@@ -242,8 +250,18 @@ export function ImageOverlay() {
                 buttons below cover the whole string, which is the common case
                 and the only one the kiosk — where a long-press selection is
                 genuinely fiddly — can manage. */}
+            {plan && (
+              <p className="text-[11px] uppercase tracking-widest text-pink-300/80 font-semibold mb-0.5">
+                {plan.status === 'planning' ? 'Planning the edit'
+                  : plan.status === 'done' ? `Done · ${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'}`
+                  : plan.status === 'failed' ? 'Plan failed'
+                  : plan.status === 'cancelled' ? 'Plan cancelled'
+                  : planStep ? `Step ${planStep.n} of ${plan.steps.length} · ${planStep.mode === 'edit' ? 'instruction edit' : planStep.mode === 'part' ? `changing ${planStep.region ?? 'a part'}` : 'redraw'}`
+                  : 'Edit plan'}
+              </p>
+            )}
             <p className="selectable-text text-sm text-white/85 leading-snug line-clamp-3">
-              {target.prompt}
+              {planStep ? planStep.prompt : target.prompt}
             </p>
           </div>
           <CloseImageButton onClick={closeImage} />
@@ -840,4 +858,38 @@ function Failed({ message, detail, onRetry }: {
       </button>
     </div>
   )
+}
+
+/**
+ * A plan that has no render yet, or has finished, shown in the frame's job
+ * slot. The render phases and the planning phase are the same kind of
+ * sentence to the person watching the frame, so they go in the same place.
+ */
+function planAsJob(plan: EditPlan): ImageJobState | null {
+  const base = { elapsedMs: 0, etaMs: 0, etaBasis: '', waitMs: 0, plannedSteps: 0, warm: false }
+  if (plan.status === 'planning') {
+    return {
+      ...base, status: 'queued', phase: 'planning the edit',
+      detail: 'A model is looking at the picture and splitting the request into steps, choosing ' +
+              'an instruction edit, a repaint of one part, or a whole redraw for each. The first ' +
+              'render starts as soon as the plan exists.',
+    }
+  }
+  if (plan.status === 'ready') {
+    return {
+      ...base, status: 'queued', phase: 'plan ready',
+      detail: `${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'} planned. ` +
+              (plan.summary || 'Waiting to be run from the Draw panel.'),
+    }
+  }
+  if (plan.status === 'failed') {
+    return { ...base, status: 'failed', phase: 'failed', detail: plan.error, error: plan.error }
+  }
+  if (plan.status === 'cancelled') {
+    return { ...base, status: 'cancelled', phase: 'cancelled', detail: 'The plan was stopped.' }
+  }
+  if (plan.status === 'done') {
+    return { ...base, status: 'ready', phase: 'done', detail: plan.summary, ...(plan.resultUrl ? { url: plan.resultUrl } : {}) }
+  }
+  return null
 }

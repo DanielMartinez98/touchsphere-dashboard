@@ -14,16 +14,17 @@ import { useEffect, useRef, useState } from 'react'
 import {
   Sparkles, Trash2, AlertTriangle, Check, Layers, Gauge, X, Clock, Brush, Download,
   Wand2, ImagePlus, Loader2, LayoutGrid, Camera, History, ChevronDown, ChevronRight, Lightbulb,
-  Lasso, Search,
+  Lasso, Search, ListChecks, Play, Ban,
 } from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
 import { openImage } from '../../../hooks/useImageOverlay'
 import { setGalleryColumns, useGalleryColumns, usePinchColumns } from '../../../hooks/useGalleryColumns'
 import { ColumnSlider } from '../../ColumnSlider'
 import {
-  clearImageSource, clearMaskRequest, redrawImage, setImageMask, setImagePrompt,
-  useImageMask, useImagePrompt, useImageSource, useMaskRequest,
+  clearImageSource, clearMaskRequest, redrawImage, setImageMask, setImagePlanId, setImagePrompt,
+  useImageMask, useImagePlanId, useImagePrompt, useImageSource, useMaskRequest,
 } from '../../../hooks/useImagePrompt'
+import { cancelPlan, planEdit, runPlan, usePlan, type EditPlan, type PlanStep } from '../../../hooks/useEditPlan'
 import AdvancedPanel from './AdvancedPanel'
 import MaskEditor from './MaskEditor'
 import { STRENGTHS, styleUsable } from '../../../hooks/useImages'
@@ -41,8 +42,9 @@ const PART_STRENGTHS = [
   { id: 'strong',   label: 'Replace',  hint: 'draw it anew',    denoise: 1 },
 ]
 
-/** How the source is being changed. `instruct` is an editing style (Kontext) doing it from words. */
-type EditMode = 'whole' | 'part' | 'instruct'
+/** How the source is being changed. `instruct` is an editing style (Kontext) doing it from words;
+    `plan` hands the request to a model that splits it into steps and picks the tool for each. */
+type EditMode = 'whole' | 'part' | 'instruct' | 'plan'
 
 // Starters, not a menu. A blank box is the hardest thing to hand someone on a
 // touchscreen with no keyboard, and these show the SHAPE of a prompt that works
@@ -271,7 +273,13 @@ export default function ImageExpanded({
   const [maskEditor, setMaskEditor] = useState(false)
   // 'whole' or 'part' is the user's pick; an editing style overrides both,
   // since Kontext decides what to keep from the instruction and takes no mask.
-  const [pickedMode, setPickedMode] = useState<'whole' | 'part'>('whole')
+  const [pickedMode, setPickedMode] = useState<'whole' | 'part' | 'plan'>('whole')
+  // The plan for this source, when one has been asked for. Lives in the prompt
+  // store beside the source so it is dropped with it.
+  const planId = useImagePlanId()
+  const plan = usePlan(planId || null)
+  const [planning, setPlanning] = useState(false)
+  const [planError, setPlanError] = useState('')
   // The selected style, and whether it EDITS rather than draws. An editor
   // (FLUX Kontext) changes the meaning of nearly everything below: the prompt
   // is an instruction, there is no strength to choose, and with no source
@@ -288,7 +296,11 @@ export default function ImageExpanded({
   // row is a scroller a screen further down. Written only in the handler
   // that jumps, never during render.
   const lastDrawStyle = useRef('')
-  const mode: EditMode = editStyle ? 'instruct' : pickedMode === 'part' && capabilities.inpaint ? 'part' : 'whole'
+  // A plan is offered when there is more than one tool for it to choose from.
+  const canPlan = (capabilities.inpaint && capabilities.segmentation) || !!editor || editStyle
+  const mode: EditMode = pickedMode === 'plan' && canPlan ? 'plan'
+    : editStyle ? 'instruct'
+    : pickedMode === 'part' && capabilities.inpaint ? 'part' : 'whole'
   // Modes on offer. Only shown as a row when there is a choice: one option is
   // not a decision, and a row of one button is a permanent reminder that the
   // GPU box lacks something.
@@ -300,8 +312,12 @@ export default function ImageExpanded({
     ...(editor || editStyle
       ? [{ id: 'instruct' as EditMode, label: 'Tell it what to change', icon: <Wand2 size={15} />, hint: editor?.label ?? current?.label ?? '' }]
       : []),
+    ...(canPlan
+      ? [{ id: 'plan' as EditMode, label: 'Plan it for me', icon: <ListChecks size={15} />, hint: 'several steps, tool per step' }]
+      : []),
   ]
   const chooseMode = (m: EditMode) => {
+    if (m === 'plan') { setPickedMode('plan'); return }
     if (m === 'instruct') {
       if (current && !editStyle) lastDrawStyle.current = current.id
       if (editor) onModel(editor.id)
@@ -418,13 +434,45 @@ export default function ImageExpanded({
   const full = queue.length >= queueMax
   const canDraw = enabled !== false && prompt.trim().length > 0 && !full && !(editStyle && !source)
     && !(mode === 'part' && !mask)
+    && !(mode === 'plan' && (planning || (plan !== null && plan.status !== 'done' && plan.status !== 'failed' && plan.status !== 'cancelled')))
   // A distilled style carries its own step count; the draft/standard/high preset
   // does not reach it. Defaults to true so a server that predates the field —
   // Watchtower updates the two halves independently — keeps the row live.
   const qualityApplies = defaults?.qualityApplies !== false
 
+  async function makePlan() {
+    if (!source || !prompt.trim() || planning) return
+    setPlanning(true)
+    setPlanError('')
+    try {
+      const p = await planEdit(source.id, prompt.trim(), false)
+      setImagePlanId(p.id)
+    } catch (err) {
+      setPlanError(err instanceof Error ? err.message : 'could not plan that')
+    } finally {
+      setPlanning(false)
+    }
+  }
+  async function startPlan() {
+    if (!plan || plan.status !== 'ready') return
+    setPlanError('')
+    try {
+      await runPlan(plan.id)
+      // The frame follows the plan from here — same moment the Draw button
+      // opens a frame on a single render.
+      openImage('', plan.request, undefined, plan.id)
+    } catch (err) {
+      setPlanError(err instanceof Error ? err.message : 'could not start the plan')
+    }
+  }
+  function dropPlan() {
+    if (plan && (plan.status === 'running' || plan.status === 'planning')) void cancelPlan(plan.id).catch(() => { /* shown by the next frame */ })
+    setImagePlanId('')
+  }
+
   function draw() {
     if (!canDraw) return
+    if (mode === 'plan') { void makePlan(); return }
     const d = mode === 'part'
       ? (PART_STRENGTHS.find(x => x.id === partStrength)?.denoise ?? 1)
       : (STRENGTHS.find(x => x.id === strength)?.denoise ?? 0.65)
@@ -542,6 +590,25 @@ export default function ImageExpanded({
             </div>
           )}
 
+          {/* The plan, in plan mode: the steps a model wrote for this request,
+              each with the tool it chose and why, shown BEFORE anything renders
+              — five renders is minutes of GPU, and a plan that misread "the
+              hat" is cheaper to fix as a sentence than as three pictures. */}
+          {mode === 'plan' && plan && (
+            <PlanCard
+              plan={plan}
+              onRun={() => void startPlan()}
+              onDrop={dropPlan}
+              onOpenStep={st => {
+                if (st.imageId) openImage(st.imageId, st.prompt, `/api/image/file/${st.imageId}.png`)
+                else if (st.jobId) openImage(st.jobId, st.prompt)
+              }}
+            />
+          )}
+          {mode === 'plan' && planError && (
+            <span className="text-[12px] text-red-300 leading-snug">{planError}</span>
+          )}
+
           {/* The marked part, in part mode: the outline as a thumbnail, how
               much of the picture it is, and the two things to do with it. */}
           {mode === 'part' && (
@@ -621,7 +688,7 @@ export default function ImageExpanded({
               uses, so asking out loud and tapping land in the same place.
               Absent for an editor, which has no such dial: it keeps what the
               instruction doesn't mention, however much that is. */}
-          {mode !== 'instruct' && <div className="flex gap-2">
+          {mode !== 'instruct' && mode !== 'plan' && <div className="flex gap-2">
             {(mode === 'part' ? PART_STRENGTHS : STRENGTHS).map(st => (
               <button
                 key={st.id}
@@ -645,7 +712,11 @@ export default function ImageExpanded({
               prompt that only names the change draws the change; an editor is
               the reverse, and a whole description reads as "repaint it all". */}
           <span className="text-[11px] text-white/30 leading-snug">
-            {mode === 'instruct'
+            {mode === 'plan'
+              ? 'Say everything you want changed, in plain words — "red leather jacket, make it night, ' +
+                'add rain". A model looks at the picture, splits that into steps and picks the right ' +
+                'tool for each; you see the plan before it runs, and every step\'s picture lands in the gallery.'
+              : mode === 'instruct'
               ? 'Say what to change — "make it night", "put a hat on the cat" — and the rest ' +
                 'stays as it is. Name the subject rather than saying "it".'
               : mode === 'part'
@@ -1034,8 +1105,10 @@ export default function ImageExpanded({
           </>
         ) : source ? (
           <>
-            {mode === 'part' ? <Lasso size={20} /> : <Brush size={20} />}
-            {mode === 'instruct' ? 'Edit it' : mode === 'part' ? 'Change the part' : 'Redraw it'}
+            {mode === 'plan' ? (planning ? <Loader2 size={20} className="animate-spin" /> : <ListChecks size={20} />)
+              : mode === 'part' ? <Lasso size={20} /> : <Brush size={20} />}
+            {mode === 'plan' ? (planning ? 'Looking at the picture…' : 'Plan the edit')
+              : mode === 'instruct' ? 'Edit it' : mode === 'part' ? 'Change the part' : 'Redraw it'}
           </>
         ) : (
           <>
@@ -1173,6 +1246,116 @@ export default function ImageExpanded({
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+const MODE_LABEL: Record<PlanStep['mode'], string> = {
+  edit:  'Instruction edit',
+  part:  'Change a part',
+  whole: 'Redraw',
+}
+
+/**
+ * The plan as a list of steps, in the state each one is in.
+ *
+ * Ready: every step with its tool and reason, and Run / Discard. Running: the
+ * same list with a dot per step, tapping a step that has a picture opens it.
+ * Done: the result. The wording of each step is the planner's own — showing
+ * it is what makes a wrong plan arguable before a minute of GPU goes on it.
+ */
+function PlanCard({ plan, onRun, onDrop, onOpenStep }: {
+  plan: EditPlan
+  onRun: () => void
+  onDrop: () => void
+  onOpenStep: (st: PlanStep) => void
+}) {
+  const busy = plan.status === 'planning' || plan.status === 'running'
+  const dot = (st: PlanStep) =>
+    st.status === 'done' ? 'bg-emerald-400'
+    : st.status === 'running' ? 'bg-pink-400 animate-pulse'
+    : st.status === 'queued' ? 'bg-amber-300'
+    : st.status === 'failed' ? 'bg-red-400'
+    : st.status === 'skipped' ? 'bg-white/20'
+    : 'bg-white/30'
+  return (
+    <div className="flex flex-col gap-2 rounded-xl bg-black/30 border border-hairline p-3">
+      <div className="flex items-center gap-2">
+        <ListChecks size={14} className="text-pink-300 shrink-0" />
+        <span className="text-[13px] text-white font-semibold flex-1 min-w-0 truncate">
+          {plan.status === 'planning' ? 'Looking at the picture…'
+            : plan.status === 'ready' ? `${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'} planned`
+            : plan.status === 'running' ? 'Running the plan'
+            : plan.status === 'done' ? 'Done'
+            : plan.status === 'failed' ? 'Plan failed'
+            : 'Plan stopped'}
+        </span>
+        {plan.status === 'planning' && <Loader2 size={14} className="animate-spin text-white/50" />}
+        <button
+          type="button"
+          onClick={onDrop}
+          aria-label={busy ? 'Stop the plan' : 'Discard the plan'}
+          className="w-9 h-9 rounded-lg bg-white/5 border border-hairline flex items-center justify-center
+                     text-white/45 active:scale-90 active:bg-red-500/40"
+        >
+          {busy ? <Ban size={14} /> : <X size={14} />}
+        </button>
+      </div>
+      {plan.summary && plan.status !== 'planning' && (
+        <p className="text-[12px] text-white/50 leading-snug">{plan.summary}</p>
+      )}
+      {plan.error && (
+        <p className="text-[12px] text-red-300 leading-snug">{plan.error}</p>
+      )}
+      {plan.steps.length > 0 && (
+        <ol className="flex flex-col gap-1.5">
+          {plan.steps.map(st => (
+            <li key={st.n}>
+              <button
+                type="button"
+                disabled={!st.jobId && !st.imageId}
+                onClick={() => onOpenStep(st)}
+                className="w-full text-left flex items-start gap-2.5 rounded-lg px-2 py-1.5 bg-white/[0.04]
+                           active:bg-white/10 disabled:active:bg-white/[0.04]"
+              >
+                <span className={`mt-1.5 w-2.5 h-2.5 rounded-full shrink-0 ${dot(st)}`} />
+                <span className="min-w-0 flex-1">
+                  <span className="text-[12px] text-white/90 leading-snug block">
+                    <span className="text-white/45">{st.n}. {MODE_LABEL[st.mode]}{st.region ? ` · ${st.region}` : ''}{st.strength && st.mode !== 'edit' ? ` · ${st.strength}` : ''}</span>
+                    {' '}{st.prompt}
+                  </span>
+                  {st.why && st.status === 'pending' && (
+                    <span className="text-[11px] text-white/35 leading-snug block">{st.why}</span>
+                  )}
+                  {st.error && (
+                    <span className="text-[11px] text-red-300 leading-snug block">{st.error}</span>
+                  )}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ol>
+      )}
+      {plan.status === 'ready' && (
+        <button
+          type="button"
+          onClick={onRun}
+          className="h-12 rounded-xl bg-pink-500/25 border border-pink-400/40 text-white text-[14px] font-semibold
+                     flex items-center justify-center gap-2 active:scale-[0.98]"
+        >
+          <Play size={15} /> Run {plan.steps.length === 1 ? 'it' : `all ${plan.steps.length} steps`}
+        </button>
+      )}
+      {plan.status === 'done' && plan.resultId && (
+        <button
+          type="button"
+          onClick={() => openImage(plan.resultId, plan.request, plan.resultUrl)}
+          className="h-12 rounded-xl bg-white/10 border border-hairline text-white text-[14px] font-semibold
+                     flex items-center justify-center gap-2 active:scale-[0.98]"
+        >
+          Open the result
+        </button>
+      )}
     </div>
   )
 }

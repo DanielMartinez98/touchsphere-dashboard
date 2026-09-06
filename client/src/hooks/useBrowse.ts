@@ -63,14 +63,17 @@ export function openBrowseFromPayload(raw: unknown): void {
   // A generated picture is its own overlay too, and — unlike the others — it
   // usually arrives with NO url, because the render hasn't finished. It has to
   // be handled above the http(s) check below, which would drop it.
-  if (d['kind'] === 'image' && typeof d['jobId'] === 'string' && /^[a-f0-9]{32}$/.test(d['jobId'])) {
+  // An edit PLAN opens the same frame with no job yet: the frame follows the
+  // plan's current step as the plan reports it.
+  const planId = typeof d['planId'] === 'string' && /^[a-f0-9]{32}$/.test(d['planId']) ? d['planId'] : ''
+  if (d['kind'] === 'image' && typeof d['jobId'] === 'string' && (/^[a-f0-9]{32}$/.test(d['jobId']) || planId)) {
     closeBrowse()
     // The url, when present, is our own relative /api/image/file/<32 hex>.png.
     // Anything else on that field is not from us and is ignored rather than
     // rendered as an <img src>.
     const src = typeof d['url'] === 'string' && /^\/api\/image\/file\/[a-f0-9]{32}\.png$/.test(d['url'])
       ? d['url'] : undefined
-    openImage(d['jobId'], typeof d['prompt'] === 'string' ? d['prompt'] : '', src)
+    openImage(planId ? '' : d['jobId'], typeof d['prompt'] === 'string' ? d['prompt'] : '', src, planId || undefined)
     return
   }
   // The media stack: `play` starts a library item full screen (the player

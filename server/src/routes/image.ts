@@ -54,6 +54,7 @@ import {
   WORKFLOW_PREFIX,
   clearImages,
 } from '../image'
+import { cancelPlan, createPlan, getPlan, runPlan } from '../image-plan'
 import {
   buildSystemPrompt,
   DEFAULT_TEMPLATE,
@@ -329,6 +330,41 @@ router.get('/active', (_req: Request, res: Response) => {
 // carries what happens from now on, so a panel opened while four renders are
 // stacked up would show an empty list and a busy GPU. The client keeps its own
 // copy from `image` frames after this.
+// ── Edit plans: one request, several renders ─────────────────────────────
+
+// POST /api/image/plan { source, request, run? } — look at the picture and
+// split the request into steps. Answers at once with the plan in `planning`;
+// the steps arrive over the `image-plan` SSE event. With run:true the steps
+// start as soon as they exist; otherwise POST /plan/:id/run after reading it.
+router.post('/plan', (req: Request, res: Response) => {
+  if (!imagesEnabled()) { res.status(503).json({ error: 'COMFYUI_URL is not set' }); return }
+  const body = req.body as Record<string, unknown> | undefined
+  const source = typeof body?.['source'] === 'string' && /^[a-f0-9]{32}$/.test(body['source']) ? body['source'] : ''
+  const request = typeof body?.['request'] === 'string' ? body['request'].trim() : ''
+  if (!source || !request) { res.status(400).json({ error: 'source (a gallery id) and request (what to change) are required' }); return }
+  const plan = createPlan(source, request, body?.['run'] === true)
+  res.status(plan.status === 'failed' ? 400 : 202).json(plan)
+})
+
+router.get('/plan/:id', (req: Request, res: Response) => {
+  const plan = getPlan(String(req.params['id'] ?? ''))
+  if (!plan) { res.status(404).json({ error: 'no such plan' }); return }
+  res.setHeader('Cache-Control', 'no-store')
+  res.json(plan)
+})
+
+router.post('/plan/:id/run', async (req: Request, res: Response) => {
+  const plan = await runPlan(String(req.params['id'] ?? ''))
+  if (!plan) { res.status(404).json({ error: 'no such plan' }); return }
+  res.json(plan)
+})
+
+router.post('/plan/:id/cancel', (req: Request, res: Response) => {
+  const plan = cancelPlan(String(req.params['id'] ?? ''))
+  if (!plan) { res.status(404).json({ error: 'no such plan' }); return }
+  res.json(plan)
+})
+
 router.get('/queue', (_req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-store')
   res.json({ max: MAX_QUEUED, jobs: pendingJobs().map(jobWire) })

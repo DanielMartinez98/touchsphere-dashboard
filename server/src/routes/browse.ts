@@ -61,7 +61,7 @@ export type DisplayPayload =
   // A generated picture. `url` is absent while it's still being drawn — the
   // overlay opens on the job id and fills in from the `image` SSE event, so the
   // frame appears at the same moment as the spoken reply rather than 20s later.
-  | { kind: 'image'; jobId: string; prompt: string; url?: string }
+  | { kind: 'image'; jobId: string; prompt: string; url?: string; planId?: string }
   // The media stack. `play` starts a library item (ratingKey) full screen on the
   // kiosk — the client owns the transcode session, so nothing is started here;
   // `open` brings the Plex corner up on a tab, optionally on one item or search.

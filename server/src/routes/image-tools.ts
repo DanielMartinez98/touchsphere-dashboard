@@ -18,6 +18,7 @@ import {
   type ImageJob, type StoredImage,
 } from '../image'
 import type { BrowseToolResult, DisplayPayload } from './browse'
+import { createPlan } from '../image-plan'
 
 /**
  * How to write a prompt for the style selected RIGHT NOW.
@@ -178,6 +179,36 @@ export const IMAGE_TOOLS = !imagesEnabled() ? [] : [
           },
         },
         required: ['prompt'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'plan_image_edit',
+      description:
+        'Change an existing picture in SEVERAL ways at once, or in a way that needs more than one ' +
+        'kind of edit — "give him a red jacket, make it night and add rain", "make her older and ' +
+        'change the background to a beach". A model looks at the picture, splits the request into ' +
+        'steps, picks the right tool for each (an instruction edit, a repaint of one part, or a ' +
+        'whole redraw) and runs them in order, each on the previous result. For ONE simple change ' +
+        'use redraw_image instead — this takes several renders and a few minutes. The frame appears ' +
+        'on screen and follows the steps by itself.',
+      parameters: {
+        type: 'object',
+        properties: {
+          request: {
+            type: 'string',
+            description: 'Everything the user wants changed, in plain English, as they said it.',
+          },
+          about: {
+            type: 'string',
+            description:
+              'Which picture: a few words from its prompt, or "last" / "latest" for the most ' +
+              'recent one. Omit for the most recent.',
+          },
+        },
+        required: ['request'],
       },
     },
   },
@@ -382,6 +413,34 @@ function redraw(prompt: string, about: string, strength: string, region = ''): B
   }
 }
 
+function planEdit(request: string, about: string): BrowseToolResult {
+  if (!imagesEnabled()) {
+    return noDisplay('Image generation is not configured on this server (COMFYUI_URL is unset). Say so in one sentence.')
+  }
+  if (!request.trim()) return noDisplay('plan_image_edit error: pass `request` saying what should change.')
+  if (listImages().length === 0) {
+    return noDisplay('There are no pictures to change yet. Offer to draw one with generate_image instead.')
+  }
+  const source = findImage(about)
+  if (!source) return noMatch(about)
+
+  const plan = createPlan(source.id, request, true)
+  if (plan.status === 'failed') {
+    return noDisplay(`Could not plan that edit: ${plan.error}. Tell the user in one sentence.`)
+  }
+  const display: DisplayPayload = { kind: 'image', jobId: '', prompt: request.trim(), planId: plan.id }
+  console.log(`[chat:tool] plan_image_edit → ${plan.id} on ${source.id}`)
+  return {
+    text:
+      `Started planning the changes to the picture of "${source.prompt.slice(0, 60)}": "${request.trim()}". ` +
+      'A model is looking at the picture and splitting the request into steps; each step is a render ' +
+      'of a minute or two and the frame on screen follows them by itself. Say ONE short sentence that it ' +
+      'is being worked on in a few steps and will take a few minutes — do not describe the result, and do ' +
+      'not say it is done.',
+    display,
+  }
+}
+
 function showLast(about: string): BrowseToolResult {
   if (listImages().length === 0) {
     return noDisplay("You haven't drawn any pictures yet. Offer to make one with generate_image.")
@@ -411,6 +470,7 @@ export async function runImageTool(
   switch (name) {
     case 'generate_image':  return generate(str('prompt'), str('orientation'))
     case 'redraw_image':    return redraw(str('prompt'), str('about'), str('strength'), str('region'))
+    case 'plan_image_edit': return planEdit(str('request'), str('about'))
     case 'show_last_image': return showLast(str('about'))
     default: return null
   }

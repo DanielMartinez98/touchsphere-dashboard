@@ -41,6 +41,8 @@ export interface PromptMask {
 let draft  = ''
 let source: PromptSource | null = null
 let mask:   PromptMask | null = null
+/** The edit plan made for this source, if one has been asked for. */
+let planId = ''
 // "Change part of this" from the viewer: the panel should open the mask editor
 // the moment it comes up, rather than making the user find the button that
 // says the same thing again. Consumed once by the panel.
@@ -56,6 +58,17 @@ function emit() { listeners.forEach(cb => cb()) }
 function getDraft()  { return draft }
 function getSource() { return source }
 function getMask()   { return mask }
+function getPlanId() { return planId }
+
+/** The id of the plan for the current source, '' when none. */
+export function useImagePlanId() {
+  return useSyncExternalStore(subscribe, getPlanId, getPlanId)
+}
+export function setImagePlanId(next: string) {
+  if (next === planId) return
+  planId = next
+  emit()
+}
 function getPart()   { return partRequested }
 
 // A separate list from the draft's subscribers: this one fires on an EVENT, not
@@ -85,6 +98,7 @@ export function clearImageSource() {
   if (!source) return
   source = null
   mask = null
+  planId = ''
   partRequested = false
   emit()
 }
@@ -140,8 +154,9 @@ export function reuseImagePrompt(prompt: string) {
 export function redrawImage(src: PromptSource, opts: { part?: boolean } = {}) {
   draft = src.prompt
   source = src
-  // A mask belongs to ONE source; a new source starts with none.
+  // A mask belongs to ONE source; a new source starts with none. So does a plan.
   mask = null
+  planId = ''
   partRequested = opts.part === true
   emit()
   openListeners.forEach(cb => cb())

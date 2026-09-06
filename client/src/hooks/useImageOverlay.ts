@@ -20,6 +20,8 @@ export interface ImageTarget {
   url?:   string
   /** Bumped on every open, so asking for the same picture twice re-opens it. */
   seq:    number
+  /** An edit plan to FOLLOW: the frame re-targets itself to whichever step is on the GPU. */
+  planId?: string
 }
 
 let seq = 0
@@ -33,9 +35,9 @@ function subscribe(cb: () => void) {
 function getSnapshot() { return current }
 function emit() { listeners.forEach(cb => cb()) }
 
-export function openImage(jobId: string, prompt: string, url?: string) {
-  current = { jobId, prompt, ...(url ? { url } : {}), seq: ++seq }
-  console.log(`[image] open ${jobId}${url ? ' (already drawn)' : ' (drawing)'}`)
+export function openImage(jobId: string, prompt: string, url?: string, planId?: string) {
+  current = { jobId, prompt, ...(url ? { url } : {}), ...(planId ? { planId } : {}), seq: ++seq }
+  console.log(`[image] open ${jobId || '(plan ' + planId + ')'}${url ? ' (already drawn)' : ' (drawing)'}`)
   emit()
 }
 
