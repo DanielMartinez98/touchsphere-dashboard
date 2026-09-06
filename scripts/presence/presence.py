@@ -13,8 +13,10 @@ WIRING (HC-SR04, a 5 V module — the ECHO pin MUST be divided down to 3.3 V):
 
     sensor  header pin  what
     ------  ----------  ------------------------------------------------
-    VCC     2           5 V. The module will not fire reliably on 3.3 V.
-    GND     6           ground
+    VCC     4           5 V. The module will not fire reliably on 3.3 V.
+                        (Pin 2 is the other 5 V pin; the official 7" screen's
+                        power lead takes pins 2 and 6, so use 4 and 9.)
+    GND     9           ground
     TRIG    16          GPIO 23. The Pi's 3.3 V is enough to trigger it.
     ECHO    18          GPIO 24, THROUGH A DIVIDER — see below.
 
