@@ -42,7 +42,7 @@ const OLLAMA_API_KEY = process.env['OLLAMA_API_KEY'] ?? ''
 const PLAN_TIMEOUT_MS = Number(process.env['OLLAMA_IMAGE_TIMEOUT_MS'] ?? 45_000) * 2
 /** Per step. A cold FLUX render with segmentation in front of it is ~2 min; this is a wedge guard. */
 const STEP_TIMEOUT_MS = 20 * 60_000
-const MAX_STEPS = 5
+const MAX_STEPS = 8
 const MAX_PLANS = 30
 
 export type PlanMode = 'edit' | 'part' | 'whole'
@@ -120,8 +120,11 @@ function plannerSystem(tools: PlanMode[]): string {
   const lines: string[] = []
   lines.push(
     'You plan edits to a picture for an image pipeline. You are shown the picture and told what the ' +
-    'user wants changed. Split the request into the FEWEST steps that give the best result. Each step ' +
-    'is done by ONE tool, and each step works on the previous step\'s result.',
+    'user wants changed. Split the request into ONE STEP PER DISTINCT CHANGE — a different object, a ' +
+    'different property (colour, material, lighting, weather, background, pose), or a different tool ' +
+    'each get their own step. More, smaller, precise steps give a better result than one broad step: ' +
+    'a tool asked for three things at once does one of them well. Each step is done by ONE tool and ' +
+    'works on the previous step\'s result.',
     '',
     'Tools available on this machine:',
   )
@@ -149,7 +152,8 @@ function plannerSystem(tools: PlanMode[]): string {
     'Rarely the best choice; use it only for a global restyle when "edit" is not available.',
     '',
     'Rules:',
-    `- 1 to ${MAX_STEPS} steps. If one tool can do the whole request well in one step, use one step.`,
+    `- Up to ${MAX_STEPS} steps. Never merge two changes into one step; "a red jacket and a hat" is two steps.`,
+    '- A "part" step covers exactly one region. An "edit" step carries exactly one instruction.',
     '- Do "part" steps BEFORE "edit" steps when a plan has both, since an edit reconstructs pixels.',
     '- Only change what was asked for. Do not add improvements of your own.',
     '- Name things as they actually appear in THIS picture (say "the man\'s jacket" only if there is one).',
@@ -223,6 +227,36 @@ async function askPlanner(image: Buffer, request: string, tools: PlanMode[], mod
 }
 
 /**
+ * How many separate changes the request names, roughly — clauses split on
+ * commas, "and", "then", semicolons. Only used to notice a plan that is
+ * coarser than the request and ask once more; the model still decides.
+ */
+function clauseCount(request: string): number {
+  return request
+    .split(/,|;|\band\b|\bthen\b|\bplus\b|\balso\b|\n/i)
+    .map(x => x.trim())
+    .filter(x => x.length > 2).length
+}
+
+async function planWithRetry(image: Buffer, request: string, tools: PlanMode[], model: string) {
+  const first = await askPlanner(image, request, tools, model)
+  const wanted = clauseCount(request)
+  if (wanted < 2 || first.steps.length >= Math.min(wanted, 2)) return first
+  // One broad step for a request that names several changes: say so and ask
+  // again. The model that collapsed it will usually split it when told to.
+  console.log(`[image-plan] ${first.steps.length} step(s) for ~${wanted} changes — asking for a finer plan`)
+  const nudged =
+    `${request}\n\n(This request names about ${wanted} separate changes. Write ONE STEP PER CHANGE — ` +
+    `at least ${Math.min(wanted, MAX_STEPS)} steps — do not merge them.)`
+  try {
+    const second = await askPlanner(image, nudged, tools, model)
+    return second.steps.length > first.steps.length ? second : first
+  } catch {
+    return first
+  }
+}
+
+/**
  * Start a plan: look at the picture, write the steps, and — when `run` — go.
  * Returns at once with the plan in `planning`; the rest arrives over the
  * `image-plan` SSE event, the same way a render reports.
@@ -253,7 +287,7 @@ export function createPlan(source: string, request: string, run: boolean): EditP
       const { tools, editor } = await availableTools()
       plan.tools = tools
       const bytes = fs.readFileSync(path.join(process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache', 'images', entry.file))
-      const { summary, steps } = await askPlanner(bytes, plan.request, tools, plan.model)
+      const { summary, steps } = await planWithRetry(bytes, plan.request, tools, plan.model)
       plan.summary = summary
       plan.steps = steps
       plan.status = 'ready'
