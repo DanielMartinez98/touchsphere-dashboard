@@ -288,10 +288,27 @@ export function setParamsFor(style: string, patch: unknown): ImageParams {
 /** Forget one style's knobs entirely — the Reset button. */
 export function clearParamsFor(style: string): ImageParams {
   const store = readStore()
-  delete store[style]
+  // The NUMBERS go back to Auto; the four text overrides stay. They live in
+  // the same per-style record, but they are edited in a different place
+  // (Settings → Drawing, each with its own "Use the model's own"), and the
+  // Advanced panel's Reset used to delete the whole record — which is how a
+  // negative prompt someone had typed went missing after nudging cfg and
+  // resetting it. A reset that silently takes out something it never showed
+  // is the same silent-override failure this store exists to prevent.
+  const cur = store[style]
+  const kept: ImageParams = {
+    ...DEFAULT_PARAMS,
+    ...(cur ? {
+      prefix: cur.prefix, optimizations: cur.optimizations,
+      negative: cur.negative, negativePrefix: cur.negativePrefix,
+    } : {}),
+  }
+  const hasText = [kept.prefix, kept.optimizations, kept.negative, kept.negativePrefix].some(v => v !== null)
+  if (hasText) store[style] = kept
+  else delete store[style]
   writeStore(store)
-  console.log(`[image] params for ${style || '(workflow default)'} reset to the style's own defaults`)
-  return { ...DEFAULT_PARAMS }
+  console.log(`[image] params for ${style || '(workflow default)'} reset to the style's own defaults${hasText ? ' (text overrides kept)' : ''}`)
+  return kept
 }
 
 /**
