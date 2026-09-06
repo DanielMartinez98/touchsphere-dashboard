@@ -3199,8 +3199,16 @@ export async function findMask(sourceRef: string, what: string, threshold = 0.3)
     const h = hist[promptId]
     if (!h) continue
     if (h.status?.status_str === 'error') {
-      const msg = JSON.stringify(h.status.messages ?? []).slice(0, 300)
-      throw new Error(`the GPU box could not segment the picture: ${msg}`)
+      // The useful sentence is buried in the execution_error message; the
+      // rest is timestamps. Name the node too, since "which model broke" is
+      // the first question.
+      const errs = (h.status.messages ?? []).filter((m): m is [string, Record<string, unknown>] =>
+        Array.isArray(m) && m[0] === 'execution_error' && typeof m[1] === 'object' && m[1] !== null)
+      const e = errs[0]?.[1]
+      const msg = e
+        ? `${String(e['node_type'] ?? e['node_id'] ?? 'a node')}: ${String(e['exception_message'] ?? '').split(/\r?\n/)[0]}`
+        : JSON.stringify(h.status.messages ?? []).slice(0, 300)
+      throw new Error(`the GPU box could not segment the picture — ${msg}`)
     }
     const imgs = h.outputs?.['save']?.images
     if (imgs?.length) { out = imgs[0]!; break }
