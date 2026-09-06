@@ -81,6 +81,8 @@ interface Props {
   styles:   ImageStyle[]
   /** What the GPU box can do to part of a picture — decides which edit modes are offered. */
   capabilities: ImageCapabilities
+  /** Whether "keep the pose" is on by default (Settings → Drawing). null while unknown. */
+  keepPoseDefault: boolean | null
   /** The one in effect. '' = whatever the workflow specifies. */
   model:    string
   /** Sampling-quality preset: more steps, slower, better. */
@@ -248,7 +250,7 @@ const QUALITIES: { id: string; label: string; hint: string }[] = [
 
 export default function ImageExpanded({
   images, enabled, busy, queue, queueMax, drawError,
-  styles, capabilities, model, quality,
+  styles, capabilities, keepPoseDefault, model, quality,
   params, defaults, loras, autoLora,
   onModel, onQuality, onParams, onResetParams, onGenerate, onDelete, onClear, onCancel,
   improveDefault, onImproveChange, onUpload,
@@ -269,7 +271,13 @@ export default function ImageExpanded({
   const [partStrength, setPartStrength] = useState('strong')
   // Hold the pose with a ControlNet. On by default: "change the jacket" means
   // the jacket, not where her arm is. Off is for a change that IS the pose.
-  const [keepPose, setKeepPose] = useState(true)
+  // Seeded from the setting once it is known, the pattern the improve switch
+  // uses: a toggle that flips itself a second after the panel opens reads as
+  // the panel having changed the setting.
+  const [keepPoseState, setKeepPoseState] = useState<{ on: boolean; seeded: boolean }>({ on: true, seeded: false })
+  if (!keepPoseState.seeded && keepPoseDefault !== null) setKeepPoseState({ on: keepPoseDefault, seeded: true })
+  const keepPose = keepPoseState.on
+  const setKeepPose = (f: (v: boolean) => boolean) => setKeepPoseState(s => ({ on: f(s.on), seeded: true }))
   // Which part of the source may change, when only part of it should. In the
   // same store as the source, for the same reason: it is a piece of the request.
   const mask = useImageMask()

@@ -83,7 +83,7 @@ function App() {
     cancel: cancelImage,
     drawingEtaMs: imageEtaMs, drawingElapsedMs: imageElapsedMs,
     prompter: imagePrompter, setPrompter: setImagePrompter, upload: uploadImage,
-    capabilities: imageCapabilities,
+    capabilities: imageCapabilities, structure: imageStructure,
   } = useImages()
 
   // Drawing from the widget opens the same full-screen frame the assistant's
@@ -403,6 +403,7 @@ function App() {
             drawError={imageDrawError}
             styles={imageStyles}
             capabilities={imageCapabilities}
+            keepPoseDefault={imageStructure ? imageStructure.enabled : null}
             model={imageModel}
             quality={imageQuality}
             params={imageParams}

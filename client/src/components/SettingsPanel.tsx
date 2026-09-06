@@ -15,7 +15,7 @@ import { useRipple } from '../hooks/useRipple'
 import { useDebugLog, clearDebugLog, getDebugLog } from '../utils/debugLog'
 import { useMemory, MEMORY_TOPICS, type MemoryItem, type MemoryKind, type MemoryTopic } from '../hooks/useMemory'
 import { useGuides } from '../hooks/useGuides'
-import { useImages } from '../hooks/useImages'
+import { useImages, type StructureSettings } from '../hooks/useImages'
 import type { ParamsResponse } from '../hooks/useImages'
 import { useGuideActivity, type ActivityLevel } from '../hooks/useGuideActivity'
 import { useHost, useHostEnabled, type HostTask } from '../hooks/useHost'
@@ -1677,7 +1677,7 @@ function OverrideField({
 }
 
 function DrawingTab() {
-  const { prompter, setPrompter, styles } = useImages()
+  const { prompter, setPrompter, styles, structure, setStructure, capabilities } = useImages()
   // Edited locally and saved explicitly. A template is a paragraph typed on an
   // on-screen keyboard, and saving per keystroke would write the store forty
   // times and re-fetch the preview on each one.
@@ -1810,6 +1810,28 @@ function DrawingTab() {
                         max-h-72 overflow-y-auto">
           {prompter.preview}
         </pre>
+      </div>
+
+      {/* Keeping the pose: the ControlNet every redraw is conditioned on, and
+          the knobs that decide what it holds and how hard. Here rather than in
+          the Draw panel because they are a policy, not a per-picture choice —
+          the panel keeps the on/off toggle only. */}
+      <div className="border-t border-hairline pt-5">
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          Keeping the pose — when a picture is changed
+        </span>
+        <p className="text-[12px] text-white/45 leading-relaxed mb-3">
+          When part or all of a picture is redrawn, a ControlNet holds the original's structure
+          in place while the surfaces change, so "a pink jacket" doesn't move her arm. What it
+          holds is the choice that matters: <span className="text-white/70">lines</span> keep every
+          contour, garments included — right for recolours; <span className="text-white/70">body</span> keeps
+          the body's depth and lets the old clothes' lines go — right for swapping a shirt for a
+          bikini; <span className="text-white/70">pose</span> keeps only the skeleton.
+          {!capabilities.structure && ' No ControlNet is installed on the image server yet, so none of this applies until one is (an SDXL union ControlNet in ComfyUI/models/controlnet).'}
+        </p>
+        {structure && (
+          <PoseHoldCard structure={structure} onChange={setStructure} modes={capabilities.holdModes} available={capabilities.structure} />
+        )}
       </div>
 
       {/* The redraw's look-at-the-picture step. It is a different prompt for a
@@ -2333,6 +2355,99 @@ function ReadingsStrip({ recent, threshold }: { recent: { t: number; cm: number 
           fill={r.cm === null ? 'rgba(248,113,113,0.7)' : r.present ? 'rgba(52,211,153,0.65)' : 'rgba(251,191,36,0.55)'} />
       ))}
     </svg>
+  )
+}
+
+function PoseHoldCard({ structure, onChange, modes, available }: {
+  structure: StructureSettings
+  onChange: (patch: Partial<StructureSettings>) => void | Promise<void>
+  modes: { lines: boolean; body: boolean; pose: boolean }
+  available: boolean
+}) {
+  const chip = (on: boolean, disabled = false) =>
+    `flex-1 h-11 rounded-xl text-[13px] font-semibold active:scale-95 border ${
+      disabled ? 'bg-white/[0.03] text-white/25 border-transparent line-through'
+      : on ? 'bg-cyan-500/25 text-cyan-100 border-cyan-400/40' : 'bg-white/5 text-white/50 border-transparent'}`
+  const step = (key: 'strength' | 'end', delta: number, lo: number, hi: number) =>
+    onChange({ [key]: Math.round(Math.min(hi, Math.max(lo, structure[key] + delta)) * 100) / 100 } as Partial<StructureSettings>)
+  const row = (label: string, value: string, key: 'strength' | 'end', d: number, lo: number, hi: number, hint: string) => (
+    <div className="flex items-center gap-2">
+      <div className="flex-1 min-w-0">
+        <div className="text-[13px] text-white/80">{label}</div>
+        <div className="text-[11px] text-white/35 leading-snug">{hint}</div>
+      </div>
+      <button type="button" onClick={() => void step(key, -d, lo, hi)} aria-label={`less ${label}`}
+        className="w-11 h-11 rounded-xl bg-white/5 border border-hairline text-white/70 text-lg active:scale-90">−</button>
+      <span className="w-14 text-center tabular-nums text-white text-[15px] font-semibold">{value}</span>
+      <button type="button" onClick={() => void step(key, d, lo, hi)} aria-label={`more ${label}`}
+        className="w-11 h-11 rounded-xl bg-white/5 border border-hairline text-white/70 text-lg active:scale-90">+</button>
+    </div>
+  )
+  return (
+    <div className={`bg-white/5 rounded-2xl px-4 py-4 border border-white/8 space-y-4 ${available ? '' : 'opacity-60'}`}>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={structure.enabled}
+        onClick={() => void onChange({ enabled: !structure.enabled })}
+        className={`w-full flex items-center gap-3 rounded-xl px-3 py-2.5 border text-left active:scale-[0.99] ${
+          structure.enabled ? 'bg-cyan-500/15 border-cyan-400/40' : 'bg-white/5 border-hairline'}`}
+      >
+        <span className={`w-11 h-6 shrink-0 rounded-full p-0.5 flex transition-colors ${
+          structure.enabled ? 'bg-cyan-400/80 justify-end' : 'bg-white/15 justify-start'}`}>
+          <span className="w-5 h-5 rounded-full bg-white shadow" />
+        </span>
+        <span className="text-[13px] font-semibold text-white/85">
+          {structure.enabled ? 'Held by default on every redraw' : 'Off by default — the Draw panel can still switch it on'}
+        </span>
+      </button>
+
+      <div>
+        <div className="text-[11px] uppercase tracking-widest text-white/35 font-semibold mb-1.5">What is held</div>
+        <div className="flex gap-2">
+          {(['lines', 'body', 'pose'] as const).map(m => (
+            <button key={m} type="button" disabled={!modes[m]} onClick={() => modes[m] && void onChange({ mode: m })}
+              className={chip(structure.mode === m, !modes[m])}
+              title={modes[m] ? undefined : 'Needs the comfyui_controlnet_aux node pack on the image server'}>
+              {m === 'lines' ? 'Lines' : m === 'body' ? 'Body' : 'Pose'}
+            </button>
+          ))}
+        </div>
+        {(!modes.body || !modes.pose) && (
+          <p className="text-[11px] text-white/35 leading-snug mt-1.5">
+            Body and pose need the comfyui_controlnet_aux node pack on the image server (depth and DWPose
+            preprocessors). Until it is installed they are greyed and a plan that asks for them falls back to lines.
+          </p>
+        )}
+      </div>
+
+      {row('Strength', `${Math.round(structure.strength * 100)}%`, 'strength', 0.05, 0.1, 1,
+        'How firmly the structure is imposed. Lower lets the model reinterpret more.')}
+      {row('Hold until', `${Math.round(structure.end * 100)}%`, 'end', 0.1, 0.2, 1,
+        'How much of the render it applies to. The layout is settled early; releasing it lets detail form freely.')}
+
+      {structure.mode === 'lines' && (
+        <div>
+          <div className="text-[11px] uppercase tracking-widest text-white/35 font-semibold mb-1.5">Line detail</div>
+          <div className="flex gap-2">
+            {(['fine', 'normal', 'coarse'] as const).map(d => (
+              <button key={d} type="button" onClick={() => void onChange({ detail: d })} className={chip(structure.detail === d)}>
+                {d === 'fine' ? 'Fine' : d === 'normal' ? 'Normal' : 'Coarse'}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-white/35 leading-snug mt-1.5">
+            How many of the original's edges count. Coarse keeps only the strong outlines, which frees
+            small things like folds and patterns to change; fine holds nearly everything.
+          </p>
+        </div>
+      )}
+      <p className="text-[11px] text-white/30 leading-snug">
+        Also worth knowing for swimwear or bare skin: the anime styles' prompt prefixes carry the
+        booru rating tag "safe", which pushes those models away from it. That text is yours to edit
+        per style in the prefix boxes below.
+      </p>
+    </div>
   )
 }
 

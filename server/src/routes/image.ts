@@ -19,6 +19,7 @@ import {
   saveMask,
   segmentationAvailable,
   structureAvailable,
+  holdModes,
   comfyStats,
   comfyUrl,
   forgetImage,
@@ -56,6 +57,7 @@ import {
   clearImages,
 } from '../image'
 import { cancelPlan, createPlan, getPlan, runPlan } from '../image-plan'
+import { readStructure, writeStructure, DEFAULT_STRUCTURE } from '../image-structure'
 import {
   buildSystemPrompt,
   DEFAULT_TEMPLATE,
@@ -166,7 +168,7 @@ router.get('/models', async (_req: Request, res: Response) => {
     // "find it by name" only where the Segment Anything pack is installed —
     // a button for a node that isn't there fails a minute later with a bare
     // "node not found", which is the failure this whole file argues against.
-    const [inpaint, segmentation, structure] = await Promise.all([inpaintAvailable(), segmentationAvailable(), structureAvailable()])
+    const [inpaint, segmentation, structure, modes] = await Promise.all([inpaintAvailable(), segmentationAvailable(), structureAvailable(), holdModes()])
     res.setHeader('Cache-Control', 'no-store')
     res.json({
       // `models` kept for older clients that predate workflow styles.
@@ -175,7 +177,10 @@ router.get('/models', async (_req: Request, res: Response) => {
       selected: selectedModel(),
       quality: selectedQuality(),
       qualities: Object.keys(QUALITY_STEPS),
-      capabilities: { inpaint, segmentation, structure },
+      capabilities: { inpaint, segmentation, structure, holdModes: modes },
+      // The pose-hold settings ride along so the Draw panel's toggle can
+      // start on the user's default without a second request.
+      structureSettings: readStructure(),
     })
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
@@ -457,6 +462,7 @@ router.post('/generate', (req: Request, res: Response) => {
     ...(typeof body?.['region'] === 'string' && body['region'].trim() ? { region: body['region'].trim() } : {}),
     // Keep the pose through a ControlNet. Omitted means yes for a redraw.
     ...(typeof body?.['structure'] === 'boolean' ? { structure: body['structure'] } : {}),
+    ...(body?.['hold'] === 'lines' || body?.['hold'] === 'body' || body?.['hold'] === 'pose' ? { hold: body['hold'] } : {}),
     // Omitted rather than defaulted when the panel doesn't say: undefined means
     // "use the saved default", which is resolved in startImage() at queue time.
     ...(typeof body?.['improve'] === 'boolean' ? { improve: body['improve'] } : {}),
@@ -496,6 +502,24 @@ router.get('/prompter', (_req: Request, res: Response) => {
     visionUserMessage: visionUserMessage('<what you typed>'),
     visionModel: visionModel(),
   })
+})
+
+// ── Keeping the pose ─────────────────────────────────────────────────────────
+
+// GET /api/image/structure — the settings, their defaults, and which hold
+// modes this box can actually run (body and pose need comfyui_controlnet_aux).
+router.get('/structure', async (_req: Request, res: Response) => {
+  const [available, modes] = await Promise.all([structureAvailable(), holdModes()])
+  res.setHeader('Cache-Control', 'no-store')
+  res.json({ ...readStructure(), defaults: DEFAULT_STRUCTURE, available, modes })
+})
+
+// POST /api/image/structure — patch any of enabled / mode / strength / end / detail.
+router.post('/structure', (req: Request, res: Response) => {
+  const body = req.body as Record<string, unknown> | undefined
+  const patch: Record<string, unknown> = {}
+  for (const k of ['enabled', 'mode', 'strength', 'end', 'detail']) if (body && k in body) patch[k] = body[k]
+  res.json(writeStructure(patch))
 })
 
 // POST /api/image/prompter — patch one or more of its settings.

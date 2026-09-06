@@ -24,6 +24,7 @@
 import crypto from 'crypto'
 import fs from 'fs'
 import zlib from 'zlib'
+import { readStructure, CANNY, type HoldMode } from './image-structure'
 import path from 'path'
 import { broadcast } from './routes/system'
 import { advanceSeed, paramsFor, type ImageParams } from './image-params'
@@ -264,6 +265,26 @@ export function pickControlNet(installed: string[]): string {
     idx(n => n.includes('canny') || n.includes('lineart')),
   ].find(x => x >= 0)
   return i === undefined ? '' : installed[i]!
+}
+
+/** The preprocessor node each hold mode needs. `lines` is core ComfyUI; the other two come with comfyui_controlnet_aux. */
+export const HOLD_NODES: Record<HoldMode, string> = {
+  lines: 'Canny',
+  body:  'DepthAnythingV2Preprocessor',
+  pose:  'DWPreprocessor',
+}
+
+let holdModesCache: { at: number; modes: Record<HoldMode, boolean> } | null = null
+/** Which hold modes this box can run. Cached a minute. */
+export async function holdModes(): Promise<Record<HoldMode, boolean>> {
+  if (!COMFY_URL) return { lines: false, body: false, pose: false }
+  if (holdModesCache && Date.now() - holdModesCache.at < 60_000) return holdModesCache.modes
+  const has = async (n: string) => comfyFetch(`/object_info/${n}`, undefined, 8000)
+    .then(async r => r.ok && Object.keys(await r.json() as object).length > 0).catch(() => false)
+  const [lines, body, pose] = await Promise.all([has(HOLD_NODES.lines), has(HOLD_NODES.body), has(HOLD_NODES.pose)])
+  const modes = { lines, body, pose }
+  holdModesCache = { at: Date.now(), modes }
+  return modes
 }
 
 let structureCache: { at: number; ok: boolean } | null = null
@@ -699,6 +720,16 @@ export interface ImageJob {
    */
   structure:  boolean
   controlnet: string
+  /** How it is held, resolved from the settings (or the request) at queue time. */
+  hold:         HoldMode
+  holdStrength: number
+  holdEnd:      number
+  cannyLow:     number
+  cannyHigh:    number
+  /** Names the preprocessor nodes need, resolved in run() from what the box lists. */
+  depthCkpt:    string
+  poseDetector: string
+  poseEstimator: string
   status:   JobStatus
   /** Short label for a chip or a narrow row — "drawing", "loading the model". */
   phase:    string
@@ -1071,8 +1102,10 @@ export interface ImageRequest {
    */
   mask?:     string
   region?:   string
-  /** Keep the source's pose and shapes through a ControlNet. Default true for a redraw. */
+  /** Keep the source's pose and shapes through a ControlNet. Default: the setting (on). */
   structure?: boolean
+  /** What to hold: lines (edges), body (depth) or pose (skeleton). Default: the setting. */
+  hold?:      HoldMode
 }
 
 // The middle chip in the Draw panel, and what the assistant gets when it asks
@@ -1169,6 +1202,9 @@ export function startImage(req: ImageRequest): ImageJob {
   const maskFile = maskId && /^[a-f0-9]{32}$/.test(maskId) && fs.existsSync(path.join(masksDir(), `${maskId}.png`))
     ? `${maskId}.png` : ''
   const region = source && !styleEdits(style) && !maskFile ? (req.region ?? '').trim().slice(0, 120) : ''
+  // The pose-hold settings, read now so a change reaches the next picture and
+  // a picture already waiting keeps the settings it was queued with.
+  const hold = readStructure()
 
   const asked = {
     width:  clampDim(req.width  ?? DEFAULT_W, DEFAULT_W),
@@ -1273,8 +1309,14 @@ export function startImage(req: ImageRequest): ImageJob {
     mask:     maskFile ? maskId : '',
     maskFile,
     region,
-    structure: !!source && !edits && req.structure !== false,
+    structure: !!source && !edits && (req.structure ?? hold.enabled),
     controlnet: '',
+    hold:         req.hold === 'body' || req.hold === 'pose' || req.hold === 'lines' ? req.hold : hold.mode,
+    holdStrength: hold.strength,
+    holdEnd:      hold.end,
+    cannyLow:     CANNY[hold.detail].low,
+    cannyHigh:    CANNY[hold.detail].high,
+    depthCkpt: '', poseDetector: '', poseEstimator: '',
     // Clamped above so the number the UI shows and the number the sampler gets
     // are the same one. Without a source it stays 1 — a full render — which is
     // also exactly what the sampler wants for txt2img.
@@ -1513,6 +1555,24 @@ async function run(job: ImageJob): Promise<void> {
       job.controlnet = pickControlNet(await listControlNets())
       if (!job.controlnet) {
         improveNote += ' No ControlNet is installed on the image server, so the pose is not held in place — put an SDXL union ControlNet in ComfyUI/models/controlnet to enable it.'
+      } else {
+        // The depth and pose preprocessors are a node pack, and their model
+        // files are combo inputs whose valid names only the box knows. Ask,
+        // take the first, and fall back to lines — with a sentence — when
+        // the pack isn't there, rather than failing the render over a
+        // setting that has a working alternative.
+        const modes = await holdModes()
+        if (job.hold === 'body') {
+          job.depthCkpt = modes.body ? ((await loaderOptions(HOLD_NODES.body, 'ckpt_name').catch(() => []))[0] ?? '') : ''
+          if (!job.depthCkpt) { job.hold = 'lines'; improveNote += ' The depth preprocessor is not installed on the image server, so the lines are held instead of the body.' }
+        } else if (job.hold === 'pose') {
+          const [det, est] = modes.pose
+            ? await Promise.all([loaderOptions(HOLD_NODES.pose, 'bbox_detector').catch(() => []), loaderOptions(HOLD_NODES.pose, 'pose_estimator').catch(() => [])])
+            : [[], []]
+          job.poseDetector = det[0] ?? ''; job.poseEstimator = est[0] ?? ''
+          if (!job.poseDetector || !job.poseEstimator) { job.hold = 'lines'; improveNote += ' The pose preprocessor is not installed on the image server, so the lines are held instead of the skeleton.' }
+        }
+        improveNote += ` Holding the ${job.hold === 'lines' ? 'lines' : job.hold === 'body' ? "body's depth" : 'skeleton'} with a ControlNet at ${Math.round(job.holdStrength * 100)}% for the first ${Math.round(job.holdEnd * 100)}% of the render.`
       }
     }
 
@@ -2905,9 +2965,31 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
     if (job.controlnet && findNode(graph, ['CheckpointLoaderSimple', 'CheckpointLoader'])) {
       const pos = sampler.inputs['positive'], neg = sampler.inputs['negative']
       if (Array.isArray(pos) && Array.isArray(neg)) {
-        graph['touchsphere_edges'] = {
-          class_type: 'Canny',
-          inputs: { image: pixels, low_threshold: 0.3, high_threshold: 0.7 },
+        // The control image: what the ControlNet is asked to hold.
+        //   lines — the source's edges (core Canny). Holds everything,
+        //           garments included; right for recolours and materials.
+        //   body  — its depth map. Holds the volume and the pose while the
+        //           surfaces are free; right for swapping or removing clothes.
+        //   pose  — its skeleton. Holds only where the limbs are.
+        if (job.hold === 'body' && job.depthCkpt) {
+          graph['touchsphere_edges'] = {
+            class_type: HOLD_NODES.body,
+            inputs: { image: pixels, ckpt_name: job.depthCkpt, resolution: 1024 },
+          }
+        } else if (job.hold === 'pose' && job.poseDetector && job.poseEstimator) {
+          graph['touchsphere_edges'] = {
+            class_type: HOLD_NODES.pose,
+            inputs: {
+              image: pixels, detect_hand: 'enable', detect_body: 'enable', detect_face: 'enable',
+              resolution: 1024, bbox_detector: job.poseDetector, pose_estimator: job.poseEstimator,
+            },
+          }
+        } else {
+          job.hold = 'lines'
+          graph['touchsphere_edges'] = {
+            class_type: 'Canny',
+            inputs: { image: pixels, low_threshold: job.cannyLow, high_threshold: job.cannyHigh },
+          }
         }
         graph['touchsphere_controlnet'] = {
           class_type: 'ControlNetLoader',
@@ -2916,7 +2998,10 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
         // A union model has to be told which of its heads to use.
         graph['touchsphere_controlnet_type'] = {
           class_type: 'SetUnionControlNetType',
-          inputs: { control_net: ['touchsphere_controlnet', 0], type: 'canny/lineart/anime_lineart/mlsd' },
+          inputs: {
+            control_net: ['touchsphere_controlnet', 0],
+            type: job.hold === 'body' ? 'depth' : job.hold === 'pose' ? 'openpose' : 'canny/lineart/anime_lineart/mlsd',
+          },
         }
         graph['touchsphere_controlnet_apply'] = {
           class_type: 'ControlNetApplyAdvanced',
@@ -2924,9 +3009,10 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
             positive: pos, negative: neg,
             control_net: ['touchsphere_controlnet_type', 0],
             image: ['touchsphere_edges', 0],
-            // Firm early, released for the last third: the lines decide the
+            // Firm early, released for the rest: the structure decides the
             // layout, the model decides the surfaces and the fine detail.
-            strength: 0.65, start_percent: 0, end_percent: 0.7,
+            // Both numbers are the user's (Settings → Drawing).
+            strength: job.holdStrength, start_percent: 0, end_percent: job.holdEnd,
             vae,
           },
         }
@@ -3034,7 +3120,7 @@ function renderedWith(job: ImageJob, graph: ComfyGraph): ImageSettings {
     ...(job.lora ? { lora: job.lora, loraStrength: job.loraStrength } : {}),
     ...(job.source ? { source: job.source, denoise: job.denoise } : {}),
     ...(job.maskFile ? { mask: true, ...(job.region ? { region: job.region } : {}) } : {}),
-    ...(job.controlnet ? { controlnet: job.controlnet } : {}),
+    ...(job.controlnet ? { controlnet: `${job.controlnet} · ${job.hold} ${Math.round(job.holdStrength * 100)}% to ${Math.round(job.holdEnd * 100)}%` } : {}),
     tookMs:     Math.max(0, (job.endedAt ?? Date.now()) - job.startedAt),
   }
 }

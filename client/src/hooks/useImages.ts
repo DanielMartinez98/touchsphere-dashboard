@@ -163,6 +163,7 @@ interface StylesResponse {
   selected?: string
   quality?:  string
   capabilities?: Partial<ImageCapabilities>
+  structureSettings?: Partial<StructureSettings>
 }
 
 /**
@@ -179,7 +180,20 @@ export interface ImageCapabilities {
   segmentation: boolean
   /** A ControlNet is installed, so a redraw can hold the source's pose. */
   structure:    boolean
+  /** Which hold modes the box can run: lines is core, body and pose need the preprocessor pack. */
+  holdModes:    { lines: boolean; body: boolean; pose: boolean }
 }
+
+export type HoldMode = 'lines' | 'body' | 'pose'
+/** Settings → Drawing → Keeping the pose. Mirrors server/src/image-structure.ts. */
+export interface StructureSettings {
+  enabled:  boolean
+  mode:     HoldMode
+  strength: number
+  end:      number
+  detail:   'fine' | 'normal' | 'coarse'
+}
+const DEFAULT_STRUCTURE_SETTINGS: StructureSettings = { enabled: true, mode: 'lines', strength: 0.65, end: 0.7, detail: 'normal' }
 
 /** A stored mask, as the server describes it. */
 export interface MaskResult {
@@ -385,7 +399,19 @@ export function useImages() {
   // like Anima that is three files behind three loader nodes and has no
   // ckpt_name to swap. The picker shouldn't care which is which.
   const [styles,  setStyles]     = useState<ImageStyle[]>([])
-  const [capabilities, setCapabilities] = useState<ImageCapabilities>({ inpaint: false, segmentation: false, structure: false })
+  const [capabilities, setCapabilities] = useState<ImageCapabilities>({ inpaint: false, segmentation: false, structure: false, holdModes: { lines: false, body: false, pose: false } })
+  const [structure, setStructureState] = useState<StructureSettings | null>(null)
+  const readCaps = (j: StylesResponse): ImageCapabilities => ({
+    inpaint: j.capabilities?.inpaint === true, segmentation: j.capabilities?.segmentation === true,
+    structure: j.capabilities?.structure === true,
+    holdModes: {
+      lines: j.capabilities?.holdModes?.lines === true,
+      body:  j.capabilities?.holdModes?.body === true,
+      pose:  j.capabilities?.holdModes?.pose === true,
+    },
+  })
+  const readStructureSettings = (j: StylesResponse): StructureSettings | null =>
+    j.structureSettings ? { ...DEFAULT_STRUCTURE_SETTINGS, ...j.structureSettings } : null
   const [model,   setModelState] = useState('')
   const [quality, setQualityState] = useState('standard')
   // The advanced knobs for the style currently selected, what that style's own
@@ -437,7 +463,8 @@ export function useImages() {
       const res = await fetch('/api/image/models')
       const j = await res.json() as StylesResponse
       setStyles(stylesOf(j))
-      setCapabilities({ inpaint: j.capabilities?.inpaint === true, segmentation: j.capabilities?.segmentation === true, structure: j.capabilities?.structure === true })
+      setCapabilities(readCaps(j))
+      const st = readStructureSettings(j); if (st) setStructureState(st)
       setModelState(j.selected ?? '')
       setQualityState(j.quality ?? 'standard')
     } catch (err) {
@@ -454,7 +481,8 @@ export function useImages() {
       .then((j: StylesResponse) => {
         if (cancelled) return
         setStyles(stylesOf(j))
-        setCapabilities({ inpaint: j.capabilities?.inpaint === true, segmentation: j.capabilities?.segmentation === true, structure: j.capabilities?.structure === true })
+        setCapabilities(readCaps(j))
+        const st = readStructureSettings(j); if (st) setStructureState(st)
         setModelState(j.selected ?? '')
         setQualityState(j.quality ?? 'standard')
       })
@@ -824,6 +852,17 @@ export function useImages() {
    * 12-megapixel photo is a pointless base for an img2img latent and would eat
    * the upload limit for nothing.
    */
+  /** Patch the pose-hold settings; the answer is the whole saved record. */
+  const setStructure = useCallback(async (patch: Partial<StructureSettings>) => {
+    setStructureState(prev => ({ ...(prev ?? DEFAULT_STRUCTURE_SETTINGS), ...patch }))
+    try {
+      const res = await fetch('/api/image/structure', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+      })
+      if (res.ok) setStructureState(await res.json() as StructureSettings)
+    } catch { /* the next models fetch restores the truth */ }
+  }, [])
+
   const upload = useCallback(async (file: File): Promise<StoredImage | null> => {
     setDrawError('')
     try {
@@ -884,7 +923,7 @@ export function useImages() {
     drawingEtaMs: drawing?.status === 'running' ? drawing.etaMs : 0,
     drawingElapsedMs: drawing?.elapsedMs ?? 0,
     queue, queueMax, queueFull: queue.length >= queueMax, drawError, cancel,
-    styles, model, setModel, capabilities,
+    styles, model, setModel, capabilities, structure, setStructure,
     quality, setQuality,
     params, defaults, loras, autoLora, setParams, resetParams,
     generate, remove, clear, refresh,
