@@ -32,6 +32,9 @@ export interface ImageSettings {
   loraStrength?: number
   source?:  string
   denoise?: number
+  /** Only part of the source was repainted; `region` is what was named, if it was found by name. */
+  mask?:    boolean
+  region?:  string
   tookMs:   number
   /** Set only when the prompt improver rewrote the prompt — see image-prompt.ts. */
   promptOriginal?: string
@@ -157,6 +160,56 @@ interface StylesResponse {
   styles?:  ImageStyle[]
   selected?: string
   quality?:  string
+  capabilities?: Partial<ImageCapabilities>
+}
+
+/**
+ * What the GPU box can do to PART of a picture, asked of ComfyUI itself.
+ *
+ * `inpaint` — the mask nodes exist, so a painted part can be repainted on any
+ * drawing style. `segmentation` — the Segment Anything pack is installed, so a
+ * part can be found from words. The panel offers each only when it is true:
+ * a button for a node that isn't there fails a minute later with a bare
+ * "node not found".
+ */
+export interface ImageCapabilities {
+  inpaint:      boolean
+  segmentation: boolean
+}
+
+/** A stored mask, as the server describes it. */
+export interface MaskResult {
+  id:       string
+  url:      string
+  width:    number
+  height:   number
+  /** Share of the picture that is marked, 0-1; null if the server couldn't measure it. */
+  coverage: number | null
+  /** What was searched for, when the outline came from words. */
+  what?:    string
+}
+
+/**
+ * Send a painted mask (white = change, black = keep) and get its id back.
+ * Throws with the server's sentence on refusal; the editor shows it.
+ */
+export async function uploadMask(blob: Blob): Promise<MaskResult> {
+  const res = await fetch('/api/image/mask', { method: 'POST', headers: { 'Content-Type': 'image/png' }, body: blob })
+  const j = await res.json().catch(() => ({})) as Partial<MaskResult> & { error?: string }
+  if (!res.ok || !j.id || !j.url) throw new Error(j.error ?? `HTTP ${res.status}`)
+  return { id: j.id, url: j.url, width: j.width ?? 0, height: j.height ?? 0, coverage: typeof j.coverage === 'number' ? j.coverage : null }
+}
+
+/** Have the GPU box find the part named in words and return it as a mask. */
+export async function findMask(source: string, what: string): Promise<MaskResult> {
+  const res = await fetch('/api/image/mask/find', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source, what }),
+  })
+  const j = await res.json().catch(() => ({})) as Partial<MaskResult> & { error?: string }
+  if (!res.ok || !j.id || !j.url) throw new Error(j.error ?? `HTTP ${res.status}`)
+  return { id: j.id, url: j.url, width: j.width ?? 0, height: j.height ?? 0, coverage: typeof j.coverage === 'number' ? j.coverage : null, what }
 }
 
 export type SeedMode = 'random' | 'fixed' | 'increment'
@@ -328,6 +381,7 @@ export function useImages() {
   // like Anima that is three files behind three loader nodes and has no
   // ckpt_name to swap. The picker shouldn't care which is which.
   const [styles,  setStyles]     = useState<ImageStyle[]>([])
+  const [capabilities, setCapabilities] = useState<ImageCapabilities>({ inpaint: false, segmentation: false })
   const [model,   setModelState] = useState('')
   const [quality, setQualityState] = useState('standard')
   // The advanced knobs for the style currently selected, what that style's own
@@ -379,6 +433,7 @@ export function useImages() {
       const res = await fetch('/api/image/models')
       const j = await res.json() as StylesResponse
       setStyles(stylesOf(j))
+      setCapabilities({ inpaint: j.capabilities?.inpaint === true, segmentation: j.capabilities?.segmentation === true })
       setModelState(j.selected ?? '')
       setQualityState(j.quality ?? 'standard')
     } catch (err) {
@@ -395,6 +450,7 @@ export function useImages() {
       .then((j: StylesResponse) => {
         if (cancelled) return
         setStyles(stylesOf(j))
+        setCapabilities({ inpaint: j.capabilities?.inpaint === true, segmentation: j.capabilities?.segmentation === true })
         setModelState(j.selected ?? '')
         setQualityState(j.quality ?? 'standard')
       })
@@ -623,6 +679,10 @@ export function useImages() {
      * out and get the user's setting.
      */
     improve?: boolean,
+    /** Change only this part: a stored mask id (see uploadMask). '' = the whole picture. */
+    mask = '',
+    /** …or the part in words, found on the GPU box during the render. */
+    region = '',
   ): Promise<string | null> => {
     const size = SIZES[orientation]
     setDrawError('')
@@ -636,6 +696,8 @@ export function useImages() {
         body: JSON.stringify({
           prompt, width: size.width, height: size.height,
           ...(source ? { source, denoise } : {}),
+          ...(source && mask ? { mask } : {}),
+          ...(source && region && !mask ? { region } : {}),
           ...(typeof improve === 'boolean' ? { improve } : {}),
         }),
       })
@@ -815,7 +877,7 @@ export function useImages() {
     drawingEtaMs: drawing?.status === 'running' ? drawing.etaMs : 0,
     drawingElapsedMs: drawing?.elapsedMs ?? 0,
     queue, queueMax, queueFull: queue.length >= queueMax, drawError, cancel,
-    styles, model, setModel,
+    styles, model, setModel, capabilities,
     quality, setQuality,
     params, defaults, loras, autoLora, setParams, resetParams,
     generate, remove, clear, refresh,

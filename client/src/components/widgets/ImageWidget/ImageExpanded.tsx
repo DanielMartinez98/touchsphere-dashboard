@@ -10,23 +10,39 @@
 // Tapping a thumbnail opens the existing full-screen ImageOverlay rather than a
 // second viewer, so a picture looks the same however it was asked for.
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Sparkles, Trash2, AlertTriangle, Check, Layers, Gauge, X, Clock, Brush, Download,
   Wand2, ImagePlus, Loader2, LayoutGrid, Camera, History, ChevronDown, ChevronRight, Lightbulb,
+  Lasso, Search,
 } from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
 import { openImage } from '../../../hooks/useImageOverlay'
 import { setGalleryColumns, useGalleryColumns, usePinchColumns } from '../../../hooks/useGalleryColumns'
 import { ColumnSlider } from '../../ColumnSlider'
 import {
-  clearImageSource, redrawImage, setImagePrompt, useImagePrompt, useImageSource,
+  clearImageSource, clearMaskRequest, redrawImage, setImageMask, setImagePrompt,
+  useImageMask, useImagePrompt, useImageSource, useMaskRequest,
 } from '../../../hooks/useImagePrompt'
 import AdvancedPanel from './AdvancedPanel'
+import MaskEditor from './MaskEditor'
 import { STRENGTHS, styleUsable } from '../../../hooks/useImages'
 import type {
-  ImageParams, ImageStyle, Orientation, QueuedJob, StoredImage, StyleDefaults,
+  ImageCapabilities, ImageParams, ImageStyle, Orientation, QueuedJob, StoredImage, StyleDefaults,
 } from '../../../hooks/useImages'
+
+// How much of the MARKED part to throw away. A different ladder from
+// STRENGTHS, because the question is different: outside the mask nothing
+// changes whatever this says, so "light" here means "keep the shape of what
+// was there and restyle it" and "replace" means exactly that.
+const PART_STRENGTHS = [
+  { id: 'light',    label: 'Restyle',  hint: 'keep its shape',  denoise: 0.6 },
+  { id: 'balanced', label: 'Rework',   hint: 'loosely based',   denoise: 0.85 },
+  { id: 'strong',   label: 'Replace',  hint: 'draw it anew',    denoise: 1 },
+]
+
+/** How the source is being changed. `instruct` is an editing style (Kontext) doing it from words. */
+type EditMode = 'whole' | 'part' | 'instruct'
 
 // Starters, not a menu. A blank box is the hardest thing to hand someone on a
 // touchscreen with no keyboard, and these show the SHAPE of a prompt that works
@@ -61,6 +77,8 @@ interface Props {
   onCancel: (id: string) => void
   /** Styles available — checkpoints and whole-workflow styles alike. */
   styles:   ImageStyle[]
+  /** What the GPU box can do to part of a picture — decides which edit modes are offered. */
+  capabilities: ImageCapabilities
   /** The one in effect. '' = whatever the workflow specifies. */
   model:    string
   /** Sampling-quality preset: more steps, slower, better. */
@@ -75,9 +93,11 @@ interface Props {
   onQuality:  (quality: string) => void
   onParams:   (patch: Partial<ImageParams>) => void
   onResetParams: () => void
-  /** `source`/`denoise` are set only for a redraw; '' / 0 means draw from scratch. */
+  /** `source`/`denoise` are set only for a redraw; '' / 0 means draw from scratch.
+      `mask` (a stored mask id) or `region` (the part in words) narrow it to part of the source. */
   onGenerate: (
     prompt: string, orientation: Orientation, source: string, denoise: number, improve: boolean,
+    mask?: string, region?: string,
   ) => void
   onDelete:   (id: string) => void
   /** Empty the whole gallery — every render and upload. */
@@ -226,7 +246,7 @@ const QUALITIES: { id: string; label: string; hint: string }[] = [
 
 export default function ImageExpanded({
   images, enabled, busy, queue, queueMax, drawError,
-  styles, model, quality,
+  styles, capabilities, model, quality,
   params, defaults, loras, autoLora,
   onModel, onQuality, onParams, onResetParams, onGenerate, onDelete, onClear, onCancel,
   improveDefault, onImproveChange, onUpload,
@@ -244,6 +264,14 @@ export default function ImageExpanded({
   // the request being composed, and both are set from the full-screen viewer.
   const source = useImageSource()
   const [strength, setStrength] = useState('balanced')
+  const [partStrength, setPartStrength] = useState('strong')
+  // Which part of the source may change, when only part of it should. In the
+  // same store as the source, for the same reason: it is a piece of the request.
+  const mask = useImageMask()
+  const [maskEditor, setMaskEditor] = useState(false)
+  // 'whole' or 'part' is the user's pick; an editing style overrides both,
+  // since Kontext decides what to keep from the instruction and takes no mask.
+  const [pickedMode, setPickedMode] = useState<'whole' | 'part'>('whole')
   // The selected style, and whether it EDITS rather than draws. An editor
   // (FLUX Kontext) changes the meaning of nearly everything below: the prompt
   // is an instruction, there is no strength to choose, and with no source
@@ -254,6 +282,51 @@ export default function ImageExpanded({
   // offered when it is usable and not already selected — a dead chip on a
   // touchscreen is a tap that looks broken.
   const editor = styles.find(st => st.edits && styleUsable(st))
+  // The style to go back to when leaving the editor for "whole" or "part":
+  // the one that was selected when the jump was made here, else the first
+  // usable non-editing style. Remembered rather than asked, because the style
+  // row is a scroller a screen further down. Written only in the handler
+  // that jumps, never during render.
+  const lastDrawStyle = useRef('')
+  const mode: EditMode = editStyle ? 'instruct' : pickedMode === 'part' && capabilities.inpaint ? 'part' : 'whole'
+  // Modes on offer. Only shown as a row when there is a choice: one option is
+  // not a decision, and a row of one button is a permanent reminder that the
+  // GPU box lacks something.
+  const modes: { id: EditMode; label: string; icon: React.ReactNode; hint: string }[] = [
+    { id: 'whole', label: 'Whole picture', icon: <Brush size={15} />, hint: 'repaint it all from your words' },
+    ...(capabilities.inpaint
+      ? [{ id: 'part' as EditMode, label: 'Just a part', icon: <Lasso size={15} />, hint: 'mark it, the rest is kept' }]
+      : []),
+    ...(editor || editStyle
+      ? [{ id: 'instruct' as EditMode, label: 'Tell it what to change', icon: <Wand2 size={15} />, hint: editor?.label ?? current?.label ?? '' }]
+      : []),
+  ]
+  const chooseMode = (m: EditMode) => {
+    if (m === 'instruct') {
+      if (current && !editStyle) lastDrawStyle.current = current.id
+      if (editor) onModel(editor.id)
+      return
+    }
+    if (editStyle) {
+      const back = lastDrawStyle.current || styles.find(st => !st.edits && styleUsable(st))?.id
+      if (back) onModel(back)
+    }
+    setPickedMode(m)
+    if (m === 'part' && !mask) setMaskEditor(true)
+  }
+  // The viewer's "Change part of this": open the editor as the panel comes up.
+  // Deferred a tick — setting state in an effect trips the lint rule, and the
+  // panel has to have mounted for the editor to portal over it anyway.
+  const partRequested = useMaskRequest()
+  useEffect(() => {
+    if (!partRequested || !source || !capabilities.inpaint) return
+    const t = setTimeout(() => {
+      clearMaskRequest()
+      setPickedMode('part')
+      setMaskEditor(true)
+    }, 0)
+    return () => clearTimeout(t)
+  }, [partRequested, source, capabilities.inpaint])
   // "Change this" seeds the field with the original's own prompt, which is the
   // right start for img2img (the edit is then two words) and the wrong one for
   // an editor, where the original's description reads as "repaint all of this".
@@ -344,6 +417,7 @@ export default function ImageExpanded({
   // missing. The only thing that closes the button is a full queue.
   const full = queue.length >= queueMax
   const canDraw = enabled !== false && prompt.trim().length > 0 && !full && !(editStyle && !source)
+    && !(mode === 'part' && !mask)
   // A distilled style carries its own step count; the draft/standard/high preset
   // does not reach it. Defaults to true so a server that predates the field —
   // Watchtower updates the two halves independently — keeps the row live.
@@ -351,10 +425,15 @@ export default function ImageExpanded({
 
   function draw() {
     if (!canDraw) return
-    const d = STRENGTHS.find(x => x.id === strength)?.denoise ?? 0.65
+    const d = mode === 'part'
+      ? (PART_STRENGTHS.find(x => x.id === partStrength)?.denoise ?? 1)
+      : (STRENGTHS.find(x => x.id === strength)?.denoise ?? 0.65)
     // An editor takes no strength: it runs the whole schedule over the source
     // and keeps what the instruction doesn't touch. 1 says so on the wire.
-    onGenerate(prompt.trim(), orientation, source?.id ?? '', source ? (editStyle ? 1 : d) : 0, improve.on)
+    onGenerate(
+      prompt.trim(), orientation, source?.id ?? '', source ? (editStyle ? 1 : d) : 0, improve.on,
+      mode === 'part' && mask ? mask.id : '',
+    )
     // The prompt is deliberately KEPT, not cleared: the common next action is
     // another go at the same idea with a word changed, and re-typing it on an
     // on-screen keyboard is the most expensive thing in this panel.
@@ -432,19 +511,108 @@ export default function ImageExpanded({
             </button>
           </div>
 
-          {/* The shortcut to the editor, when one is installed and this isn't
-              it. "Change this" is the moment someone wants Kontext, and the
-              style row is a scroller a screen further down. */}
-          {editor && !editStyle && (
-            <button
-              type="button"
-              onClick={() => onModel(editor.id)}
-              className="h-11 rounded-xl px-3 flex items-center justify-center gap-2 text-[13px] font-semibold
-                         bg-white/5 text-white/70 border border-hairline active:scale-[0.98] active:bg-white/15"
-            >
-              <Wand2 size={15} className="text-pink-300" />
-              Edit it with {editor.label} instead
-            </button>
+          {/* HOW to change it. Three answers to one question, each behind
+              something the GPU box has to have: any drawing style can repaint
+              the whole picture; the inpaint nodes let a marked part be
+              repainted with the rest kept pixel for pixel; an editing style
+              (Kontext) works the change out from the words alone. Hidden when
+              there is only the first — one option is not a decision. */}
+          {modes.length > 1 && (
+            <div className="flex flex-col gap-1.5">
+              <div className="flex gap-1.5">
+                {modes.map(m => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => chooseMode(m.id)}
+                    className={`flex-1 min-w-0 h-14 rounded-xl px-2 flex flex-col items-center justify-center gap-0.5
+                                leading-tight active:scale-95 transition-colors ${
+                      mode === m.id
+                        ? 'bg-white/20 text-white border border-white/25'
+                        : 'bg-white/5 text-white/45 border border-transparent'}`}
+                  >
+                    <span className="flex items-center gap-1.5 text-[12px] font-semibold">
+                      {m.icon}
+                      <span className="truncate">{m.label}</span>
+                    </span>
+                    <span className="text-[10px] text-white/35 truncate max-w-full">{m.hint}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* The marked part, in part mode: the outline as a thumbnail, how
+              much of the picture it is, and the two things to do with it. */}
+          {mode === 'part' && (
+            mask ? (
+              <div className="flex items-center gap-3 rounded-xl bg-black/30 border border-hairline p-2">
+                <button
+                  type="button"
+                  onClick={() => setMaskEditor(true)}
+                  aria-label="Edit the marked part"
+                  className="relative w-14 h-14 shrink-0 rounded-lg overflow-hidden border border-hairline active:scale-95"
+                >
+                  <img src={source.url} alt="" className="absolute inset-0 w-full h-full object-cover opacity-60" />
+                  <div
+                    aria-hidden
+                    className="absolute inset-0"
+                    style={{
+                      backgroundColor: 'rgba(244,114,182,0.75)',
+                      WebkitMaskImage: `url(${mask.url})`, maskImage: `url(${mask.url})`,
+                      WebkitMaskSize: '100% 100%', maskSize: '100% 100%',
+                    }}
+                  />
+                </button>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] text-white font-semibold flex items-center gap-1.5">
+                    <Lasso size={13} className="text-pink-300" />
+                    {mask.what ? `Found "${mask.what}"` : 'Part marked by hand'}
+                  </div>
+                  <div className="text-[12px] text-white/45">
+                    {mask.coverage !== null ? `${Math.max(1, Math.round(mask.coverage * 100))}% of the picture · ` : ''}
+                    the rest is kept exactly
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMaskEditor(true)}
+                  className="h-11 px-3 rounded-xl bg-white/5 border border-hairline text-[12px] font-semibold text-white/70 active:scale-95"
+                >
+                  Adjust
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setImageMask(null)}
+                  aria-label="Unmark"
+                  className="w-11 h-11 shrink-0 rounded-xl bg-white/5 border border-hairline flex items-center justify-center
+                             text-white/45 active:scale-90 active:bg-red-500/40"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            ) : (
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setMaskEditor(true)}
+                  className="flex-1 h-12 rounded-xl flex items-center justify-center gap-2 text-[13px] font-semibold
+                             bg-pink-500/20 text-white border border-pink-400/35 active:scale-[0.98]"
+                >
+                  <Brush size={15} /> Paint the part
+                </button>
+                {capabilities.segmentation && (
+                  <button
+                    type="button"
+                    onClick={() => setMaskEditor(true)}
+                    className="flex-1 h-12 rounded-xl flex items-center justify-center gap-2 text-[13px] font-semibold
+                               bg-white/5 text-white/70 border border-hairline active:scale-[0.98]"
+                  >
+                    <Search size={15} /> Find it by name
+                  </button>
+                )}
+              </div>
+            )
           )}
 
           {/* How far to go. Three words, not a slider: nobody standing at a
@@ -453,15 +621,15 @@ export default function ImageExpanded({
               uses, so asking out loud and tapping land in the same place.
               Absent for an editor, which has no such dial: it keeps what the
               instruction doesn't mention, however much that is. */}
-          {!editStyle && <div className="flex gap-2">
-            {STRENGTHS.map(st => (
+          {mode !== 'instruct' && <div className="flex gap-2">
+            {(mode === 'part' ? PART_STRENGTHS : STRENGTHS).map(st => (
               <button
                 key={st.id}
                 type="button"
-                onClick={() => setStrength(st.id)}
+                onClick={() => (mode === 'part' ? setPartStrength(st.id) : setStrength(st.id))}
                 className={`flex-1 h-14 rounded-xl flex flex-col items-center justify-center leading-tight
                             transition-colors active:scale-95 ${
-                  strength === st.id
+                  (mode === 'part' ? partStrength : strength) === st.id
                     ? 'bg-white/20 text-white border border-white/25'
                     : 'bg-white/5 text-white/45 border border-transparent'
                 }`}
@@ -477,9 +645,13 @@ export default function ImageExpanded({
               prompt that only names the change draws the change; an editor is
               the reverse, and a whole description reads as "repaint it all". */}
           <span className="text-[11px] text-white/30 leading-snug">
-            {editStyle
+            {mode === 'instruct'
               ? 'Say what to change — "make it night", "put a hat on the cat" — and the rest ' +
                 'stays as it is. Name the subject rather than saying "it".'
+              : mode === 'part'
+              ? 'Describe what should be IN the marked part — "a red woolly hat", "a stormy sky" — ' +
+                'not the whole picture. Everything outside the mark is kept pixel for pixel, and ' +
+                'the prompt is used exactly as written.'
               : 'Describe the whole picture you want out, not just the change: this style ' +
                 'repaints from your words and the original\'s layout. With Improve on, the ' +
                 'original is looked at and the description written for you.'}
@@ -487,6 +659,16 @@ export default function ImageExpanded({
             comes from the original, so the orientation buttons don't apply.
           </span>
         </div>
+      )}
+
+      {maskEditor && source && (
+        <MaskEditor
+          source={source}
+          initial={mask}
+          canFind={capabilities.segmentation}
+          onDone={m => { setImageMask({ id: m.id, url: m.url, coverage: m.coverage, ...(m.what ? { what: m.what } : {}) }); setMaskEditor(false) }}
+          onClose={() => setMaskEditor(false)}
+        />
       )}
 
       {/* An editor with nothing to edit. Said here, above the field, rather
@@ -852,8 +1034,8 @@ export default function ImageExpanded({
           </>
         ) : source ? (
           <>
-            <Brush size={20} />
-            {editStyle ? 'Edit it' : 'Redraw it'}
+            {mode === 'part' ? <Lasso size={20} /> : <Brush size={20} />}
+            {mode === 'instruct' ? 'Edit it' : mode === 'part' ? 'Change the part' : 'Redraw it'}
           </>
         ) : (
           <>

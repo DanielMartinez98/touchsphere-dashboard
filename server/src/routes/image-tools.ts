@@ -14,6 +14,7 @@
 
 import {
   imagesEnabled, listImages, pendingJobs, selectedModel, startImage, styleEdits, stylePromptStyle,
+  segmentationCached,
   type ImageJob, type StoredImage,
 } from '../image'
 import type { BrowseToolResult, DisplayPayload } from './browse'
@@ -36,6 +37,24 @@ import type { BrowseToolResult, DisplayPayload } from './browse'
  * between one drawing and the next.
  */
 export function imagePromptGuidance(): string {
+  return baseImagePromptGuidance() + regionGuidance()
+}
+
+/**
+ * Whether "change only the hat" is possible is a fact about the GPU box, so
+ * it is said per request rather than baked into the tool schema. Uses the
+ * last cached answer, since a system prompt cannot await.
+ */
+function regionGuidance(): string {
+  if (!imagesEnabled() || !segmentationCached()) return ''
+  return (
+    ' When the user wants ONE PART of an existing picture changed and the rest kept' +
+    ' ("make the hat red", "change the sky"), call redraw_image with `region` naming the part' +
+    ' in a few plain words and `prompt` describing what goes in that part only.'
+  )
+}
+
+function baseImagePromptGuidance(): string {
   if (!imagesEnabled()) return ''
   // An editing style turns the two tools around: redraw_image is the one that
   // works, generate_image cannot (there is nothing to edit), and the prompt is
@@ -138,6 +157,15 @@ export const IMAGE_TOOLS = !imagesEnabled() ? [] : [
             description:
               'Words from what the ORIGINAL picture was of, to pick it out of the recent ones. ' +
               'Omit for the most recent picture, which is usually what "it" means.',
+          },
+          region: {
+            type: 'string',
+            description:
+              'ONLY when the user wants ONE PART of the picture changed and the rest kept exactly — ' +
+              '"make the hat red", "change the sky to sunset", "give the cat blue eyes". Name the part ' +
+              'in two or three plain words ("the hat", "the sky", "the cat\'s eyes"); it is found in the ' +
+              'picture and only that part is repainted. Then `prompt` describes what should be IN that ' +
+              'part ("a red hat"), not the whole picture. Omit to repaint the whole picture.',
           },
           strength: {
             type: 'string',
@@ -294,7 +322,7 @@ function noMatch(about: string): BrowseToolResult {
   )
 }
 
-function redraw(prompt: string, about: string, strength: string): BrowseToolResult {
+function redraw(prompt: string, about: string, strength: string, region = ''): BrowseToolResult {
   if (!imagesEnabled()) {
     return noDisplay(
       'Image generation is not configured on this server (COMFYUI_URL is unset). ' +
@@ -316,10 +344,13 @@ function redraw(prompt: string, about: string, strength: string): BrowseToolResu
   if (!source) return noMatch(about)
 
   const ahead = pendingJobs().length
+  const part = region.trim()
   const job: ImageJob = startImage({
     prompt:  prompt.trim(),
     source:  source.id,
-    denoise: STRENGTH[strength] ?? STRENGTH['balanced']!,
+    // A named part is repainted fully by default; a whole-picture redraw keeps
+    // the strength word. See startImage on why the two default differently.
+    ...(part ? { region: part } : { denoise: STRENGTH[strength] ?? STRENGTH['balanced']! }),
     // Same reasoning as generate_image above.
     improve: false,
   })
@@ -336,7 +367,9 @@ function redraw(prompt: string, about: string, strength: string): BrowseToolResu
 
   return {
     text:
-      `Started redrawing the picture of "${source.prompt.slice(0, 60)}" as "${job.prompt}". ` +
+      (part
+        ? `Started changing just "${part}" in the picture of "${source.prompt.slice(0, 60)}" to "${job.prompt}"; the rest is kept as it is. `
+        : `Started redrawing the picture of "${source.prompt.slice(0, 60)}" as "${job.prompt}". `) +
       `A frame is already on the user's screen and the new picture will appear in it by itself, ` +
       `usually in a few seconds. The original is untouched and still in the gallery. ` +
       (ahead > 0
@@ -377,7 +410,7 @@ export async function runImageTool(
   const str = (k: string) => (typeof args[k] === 'string' ? (args[k] as string) : '')
   switch (name) {
     case 'generate_image':  return generate(str('prompt'), str('orientation'))
-    case 'redraw_image':    return redraw(str('prompt'), str('about'), str('strength'))
+    case 'redraw_image':    return redraw(str('prompt'), str('about'), str('strength'), str('region'))
     case 'show_last_image': return showLast(str('about'))
     default: return null
   }

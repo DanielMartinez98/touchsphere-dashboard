@@ -32,7 +32,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  X, AlertTriangle, RefreshCw, ChevronLeft, ChevronRight, Copy, Check, Wand2, Brush, Info,
+  X, AlertTriangle, RefreshCw, ChevronLeft, ChevronRight, Copy, Check, Wand2, Brush, Info, Lasso,
 } from 'lucide-react'
 import { closeImage, openImage, useImageJob, useImageTarget } from '../hooks/useImageOverlay'
 import { redrawImage, reuseImagePrompt } from '../hooks/useImagePrompt'
@@ -409,6 +409,22 @@ function PromptActions({
           Change this
         </button>
       )}
+      {/* The same, narrowed to a part: opens the Draw panel with the mask
+          editor already up. The panel hides the part mode when the GPU box
+          can't do it, so this lands on the whole-picture flow there instead
+          of on a dead button. */}
+      {source && (
+        <button
+          type="button"
+          onClick={() => { redrawImage(source, { part: true }); closeImage() }}
+          className="h-11 px-4 rounded-full bg-white/10 border border-hairline text-white/70
+                     text-[13px] font-semibold flex items-center gap-2
+                     active:scale-95 active:bg-white/20 transition"
+        >
+          <Lasso size={16} />
+          Change a part
+        </button>
+      )}
 
       <button
         type="button"
@@ -520,7 +536,12 @@ function ImageDetails({
   if (st?.source) {
     // As a percentage, because that is what "how much of the original survived"
     // means to anyone who didn't pick the number: 0.65 denoise is 65% redrawn.
-    rows.push({ label: 'Redrawn from', value: `an earlier picture · ${Math.round((st.denoise ?? 0) * 100)}% changed` })
+    rows.push({
+      label: st.mask ? 'Changed part of' : 'Redrawn from',
+      value: st.mask
+        ? `an earlier picture · ${st.region ? `"${st.region}"` : 'a marked part'} · ${Math.round((st.denoise ?? 0) * 100)}% redrawn inside it`
+        : `an earlier picture · ${Math.round((st.denoise ?? 0) * 100)}% changed`,
+    })
   }
   // The prompt improver, when it ran. Named rather than implied: two models
   // write very different prompts, and "why does this look nothing like what I

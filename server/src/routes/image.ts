@@ -12,6 +12,12 @@ import {
   activeJob,
   addUploadedImage,
   cancelJob,
+  findMask,
+  inpaintAvailable,
+  maskPath,
+  measureMask,
+  saveMask,
+  segmentationAvailable,
   comfyStats,
   comfyUrl,
   forgetImage,
@@ -153,6 +159,12 @@ router.get('/models', async (_req: Request, res: Response) => {
         ...(styleEdits(w.id) ? { edits: true } : {}),
       })),
     ]
+    // What the GPU box can do to PART of a picture. Asked of ComfyUI itself, so
+    // the panel offers "paint the part" only where the inpaint nodes exist and
+    // "find it by name" only where the Segment Anything pack is installed —
+    // a button for a node that isn't there fails a minute later with a bare
+    // "node not found", which is the failure this whole file argues against.
+    const [inpaint, segmentation] = await Promise.all([inpaintAvailable(), segmentationAvailable()])
     res.setHeader('Cache-Control', 'no-store')
     res.json({
       // `models` kept for older clients that predate workflow styles.
@@ -161,6 +173,7 @@ router.get('/models', async (_req: Request, res: Response) => {
       selected: selectedModel(),
       quality: selectedQuality(),
       qualities: Object.keys(QUALITY_STEPS),
+      capabilities: { inpaint, segmentation },
     })
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
@@ -400,6 +413,9 @@ router.post('/generate', (req: Request, res: Response) => {
     // for. The shape check is here because an id is a filename stem.
     ...(source ? { source } : {}),
     ...(num('denoise') !== undefined ? { denoise: num('denoise')! } : {}),
+    // Change only part of it: a painted mask's id, or the part in words.
+    ...(typeof body?.['mask'] === 'string' && /^[a-f0-9]{32}$/.test(body['mask']) ? { mask: body['mask'] } : {}),
+    ...(typeof body?.['region'] === 'string' && body['region'].trim() ? { region: body['region'].trim() } : {}),
     // Omitted rather than defaulted when the panel doesn't say: undefined means
     // "use the saved default", which is resolved in startImage() at queue time.
     ...(typeof body?.['improve'] === 'boolean' ? { improve: body['improve'] } : {}),
@@ -457,6 +473,61 @@ router.post('/prompter', (req: Request, res: Response) => {
     `${patch.model !== undefined ? `, model=${saved.model || '(default)'}` : ''}`,
   )
   res.json(saved)
+})
+
+// ── Masks: which part of a picture may change ────────────────────────────────
+
+// POST /api/image/mask — a mask the user painted, as raw PNG bytes (white =
+// change). Stored beside the gallery, not in it; the id goes on the next
+// generate as `mask`.
+router.post(
+  '/mask',
+  raw({ type: ['image/png'], limit: MAX_UPLOAD_BYTES }),
+  (req: Request, res: Response) => {
+    const bytes = req.body as unknown
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
+      res.status(400).json({ error: 'send the mask PNG as the request body with Content-Type: image/png' })
+      return
+    }
+    try {
+      const m = saveMask(bytes)
+      const measured = measureMask(m.file)
+      res.status(201).json({ ...m, url: `/api/image/mask/${m.file}`, coverage: measured?.coverage ?? null })
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+    }
+  },
+)
+
+// POST /api/image/mask/find { source, what, threshold? } — have the GPU box
+// find the part named in words and return it as a mask, WITH how much of the
+// picture it covers, so the panel can show the outline and the user can say
+// "no, not that" before a render is spent on it.
+router.post('/mask/find', async (req: Request, res: Response) => {
+  if (!imagesEnabled()) { res.status(503).json({ error: 'COMFYUI_URL is not set' }); return }
+  const body = req.body as Record<string, unknown> | undefined
+  const source = typeof body?.['source'] === 'string' && /^[a-f0-9]{32}$/.test(body['source']) ? body['source'] : ''
+  const what = typeof body?.['what'] === 'string' ? body['what'].trim().slice(0, 120) : ''
+  const threshold = typeof body?.['threshold'] === 'number' ? Math.max(0.05, Math.min(0.9, body['threshold'])) : 0.3
+  if (!source || !what) { res.status(400).json({ error: 'source (a gallery id) and what (the part, in words) are required' }); return }
+  try {
+    const found = await findMask(source, what, threshold)
+    if (!found) { res.status(502).json({ error: 'the GPU box returned no mask' }); return }
+    res.json({ id: found.id, url: `/api/image/mask/${found.file}`, width: found.width, height: found.height, coverage: found.coverage, box: found.box })
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+// GET /api/image/mask/:file — the mask PNG, for the panel's preview overlay.
+router.get('/mask/:file', (req: Request, res: Response) => {
+  const file = String(req.params['file'] ?? '')
+  if (!/^[a-f0-9]{32}\.png$/.test(file)) { res.status(400).json({ error: 'invalid mask name' }); return }
+  const full = maskPath(file)
+  if (!full) { res.status(404).json({ error: 'mask not found' }); return }
+  res.setHeader('Content-Type', 'image/png')
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+  fs.createReadStream(full).pipe(res)
 })
 
 // POST /api/image/upload — add a picture of the user's own to the gallery.

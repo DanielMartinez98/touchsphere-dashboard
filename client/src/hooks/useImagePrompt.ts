@@ -29,8 +29,22 @@ export interface PromptSource {
   prompt: string
 }
 
+/** The part of the source that may change, when only part of it should. */
+export interface PromptMask {
+  id:       string
+  url:      string
+  coverage: number | null
+  /** The words it was found from, when it was; absent for a painted one. */
+  what?:    string
+}
+
 let draft  = ''
 let source: PromptSource | null = null
+let mask:   PromptMask | null = null
+// "Change part of this" from the viewer: the panel should open the mask editor
+// the moment it comes up, rather than making the user find the button that
+// says the same thing again. Consumed once by the panel.
+let partRequested = false
 
 const listeners = new Set<() => void>()
 function subscribe(cb: () => void) {
@@ -41,6 +55,8 @@ function emit() { listeners.forEach(cb => cb()) }
 
 function getDraft()  { return draft }
 function getSource() { return source }
+function getMask()   { return mask }
+function getPart()   { return partRequested }
 
 // A separate list from the draft's subscribers: this one fires on an EVENT, not
 // on a value, and App.tsx must open the corner when the picture viewer asks and
@@ -68,6 +84,29 @@ export function useImageSource() {
 export function clearImageSource() {
   if (!source) return
   source = null
+  mask = null
+  partRequested = false
+  emit()
+}
+
+/** The mask over the source, or null for the whole picture. */
+export function useImageMask() {
+  return useSyncExternalStore(subscribe, getMask, getMask)
+}
+
+/** Mark which part of the source may change; null goes back to the whole picture. */
+export function setImageMask(next: PromptMask | null) {
+  mask = next
+  emit()
+}
+
+/** Whether the viewer asked for a PART to be changed; the panel clears it once acted on. */
+export function useMaskRequest() {
+  return useSyncExternalStore(subscribe, getPart, getPart)
+}
+export function clearMaskRequest() {
+  if (!partRequested) return
+  partRequested = false
   emit()
 }
 
@@ -84,6 +123,8 @@ export function reuseImagePrompt(prompt: string) {
   // two different buttons on the same picture, and inheriting a source from a
   // previous tap on the other one would silently turn one into the other.
   source = null
+  mask = null
+  partRequested = false
   emit()
   openListeners.forEach(cb => cb())
 }
@@ -96,9 +137,12 @@ export function reuseImagePrompt(prompt: string) {
  * the picture you want OUT, not the change — so the original's own words are
  * always the right first draft, and the edit is usually two of them.
  */
-export function redrawImage(src: PromptSource) {
+export function redrawImage(src: PromptSource, opts: { part?: boolean } = {}) {
   draft = src.prompt
   source = src
+  // A mask belongs to ONE source; a new source starts with none.
+  mask = null
+  partRequested = opts.part === true
   emit()
   openListeners.forEach(cb => cb())
 }

@@ -23,6 +23,7 @@
 
 import crypto from 'crypto'
 import fs from 'fs'
+import zlib from 'zlib'
 import path from 'path'
 import { broadcast } from './routes/system'
 import { advanceSeed, paramsFor, type ImageParams } from './image-params'
@@ -365,6 +366,12 @@ export interface ImageSettings {
   /** Redraw: the gallery id it started from, and how much of it was thrown away. */
   source?:  string
   denoise?: number
+  /**
+   * Only PART of the source was repainted. `region` is what the user named,
+   * when the mask came from a description ("the hat") rather than a brush.
+   */
+  mask?:    boolean
+  region?:  string
   /** Wall-clock render time, so "which settings" can be weighed against "how long". */
   tookMs:   number
   /**
@@ -629,6 +636,16 @@ export interface ImageJob {
   sourceUpload: boolean
   /** How much of the source to throw away, 0.05-1. Meaningless without a source. */
   denoise:  number
+  /**
+   * CHANGE ONLY PART OF IT. `mask` is the id of a stored mask (white where the
+   * picture may change, black where it must not), painted on the touchscreen
+   * or produced by findMask() from `region` — a description of the part, "the
+   * hat", "the sky", which run() turns into a mask on the GPU box before the
+   * render. Either is '' when the whole picture is being redrawn.
+   */
+  mask:     string
+  maskFile: string
+  region:   string
   status:   JobStatus
   /** Short label for a chip or a narrow row — "drawing", "loading the model". */
   phase:    string
@@ -993,6 +1010,14 @@ export interface ImageRequest {
   source?:   string
   /** How much of the source to throw away, 0.05-1. Ignored without a source. */
   denoise?:  number
+  /**
+   * Repaint only the marked part of the source. `mask` is a stored mask id
+   * (see saveMask); `region` is a description the GPU box turns into one
+   * ("the cat's hat"). One or the other; both means the mask wins. Ignored
+   * for an editing style, which decides what to keep from the words instead.
+   */
+  mask?:     string
+  region?:   string
 }
 
 // The middle chip in the Draw panel, and what the assistant gets when it asks
@@ -1082,6 +1107,13 @@ export function startImage(req: ImageRequest): ImageJob {
   // button they pressed, and so the job carries the file it will need.
   const sourceId = (req.source ?? '').trim()
   const source = sourceId ? listImages().find(e => e.id === sourceId) : undefined
+  // A mask only means anything over a source, and an editor takes none — it
+  // decides what to keep from the instruction. A described region is kept as
+  // words here and turned into a mask in run(), where the GPU is.
+  const maskId = source && !styleEdits(style) ? (req.mask ?? '').trim() : ''
+  const maskFile = maskId && /^[a-f0-9]{32}$/.test(maskId) && fs.existsSync(path.join(masksDir(), `${maskId}.png`))
+    ? `${maskId}.png` : ''
+  const region = source && !styleEdits(style) && !maskFile ? (req.region ?? '').trim().slice(0, 120) : ''
 
   const asked = {
     width:  clampDim(req.width  ?? DEFAULT_W, DEFAULT_W),
@@ -1117,8 +1149,12 @@ export function startImage(req: ImageRequest): ImageJob {
   // How much of the source is thrown away. An editor takes none of this: it
   // runs at denoise 1 over the encoded source and decides what to keep from the
   // instruction, so the three strength words simply do not apply to it.
+  // A masked edit defaults to a FULL repaint of the marked part rather than the
+  // redraw's 0.65: the unmarked pixels are pasted back over the result anyway,
+  // so there is nothing outside the mask for a lower strength to protect, and
+  // inside it "put a hat there" wants a hat, not a ghost of what was there.
   const denoise = source && !edits
-    ? clampDenoise(Number.isFinite(req.denoise) ? Number(req.denoise) : DEFAULT_DENOISE)
+    ? clampDenoise(Number.isFinite(req.denoise) ? Number(req.denoise) : (maskFile || region ? 1 : DEFAULT_DENOISE))
     : 1
   const baseSteps = Number.isFinite(req.steps) && Number(req.steps) > 0
     ? Math.max(1, Math.min(150, Math.round(Number(req.steps))))
@@ -1179,6 +1215,9 @@ export function startImage(req: ImageRequest): ImageJob {
     sourceWidth:  source?.width ?? 0,
     sourceHeight: source?.height ?? 0,
     sourceUpload: source?.origin === 'upload',
+    mask:     maskFile ? maskId : '',
+    maskFile,
+    region,
     // Clamped above so the number the UI shows and the number the sampler gets
     // are the same one. Without a source it stays 1 — a full render — which is
     // also exactly what the sampler wants for txt2img.
@@ -1327,7 +1366,15 @@ async function run(job: ImageJob): Promise<void> {
   // Never for an edit style: Kontext wants the instruction verbatim, and a
   // model that helpfully expands "make it night" into a paragraph describing
   // the scene turns an edit into a repaint — the exact thing it exists to avoid.
-  if (job.source && !edits && (job.improve || job.sourceUpload)) {
+  const partial = !!(job.maskFile || job.region)
+  if (partial) {
+    // The prompt for a masked edit describes what goes IN the marked part, and
+    // that is exactly the words the user typed. Neither rewriter applies: the
+    // improver would embellish a whole scene, and the vision composer would
+    // describe the whole picture — both are ways of telling the sampler to
+    // repaint more than was asked for.
+    if (job.improve) improveNote = ' The prompt is used as written: it describes what goes in the marked part.'
+  } else if (job.source && !edits && (job.improve || job.sourceUpload)) {
     push(job, 'looking at the picture',
       `Showing the original to ${visionModel()} so it can describe the whole picture with ` +
       'your change applied. The picture model repaints from words alone and never sees ' +
@@ -1421,13 +1468,38 @@ async function run(job: ImageJob): Promise<void> {
     let sourceName = ''
     if (job.source) {
       push(job, 'sending the picture over',
-        `Uploading the picture this one is ${edits ? 'editing' : 'redrawing'} to the GPU box. There is no ` +
+        `Uploading the picture this one is ${edits ? 'editing' : job.maskFile || job.region ? 'changing part of' : 'redrawing'} to the GPU box. There is no ` +
         'shared disk between the two machines, so the bytes have to travel before ' +
         'ComfyUI can load them.')
       sourceName = await uploadSource(job)
     }
 
-    const graph = buildGraph(job, sourceName)
+    // A region named in words becomes a mask HERE, on the GPU box, where the
+    // segmentation models are. Done inside the job rather than up front so the
+    // frame on screen says what is happening, and so a description nothing in
+    // the picture matches fails the job with a sentence instead of quietly
+    // repainting everything.
+    let maskName = ''
+    if (job.source && job.region && !job.maskFile) {
+      push(job, 'finding the part',
+        `Looking for "${job.region}" in the picture. GroundingDINO finds it from the words and ` +
+        'Segment Anything traces its outline; only that outline will be repainted.')
+      const found = await findMask(sourceName, job.region)
+      if (!found || found.coverage < 0.002) {
+        throw new Error(`could not find "${job.region}" in the picture — try naming it differently, or paint the part by hand`)
+      }
+      if (found.coverage > 0.92) {
+        throw new Error(`"${job.region}" turned out to be almost the whole picture (${Math.round(found.coverage * 100)}%) — describe a smaller part, or redraw the whole thing instead`)
+      }
+      job.mask = found.id
+      job.maskFile = found.file
+      maskName = found.uploaded
+      console.log(`[image] ${job.id} region "${job.region}" → mask ${found.id} covering ${(found.coverage * 100).toFixed(1)}%`)
+    } else if (job.maskFile) {
+      maskName = await uploadMask(job)
+    }
+
+    const graph = buildGraph(job, sourceName, maskName)
     // The graph is where the real step count finally lives — until now it was
     // the style's default, read out of the same graph but before the job's own
     // overrides were patched into it. Re-estimating against it costs nothing and
@@ -2512,7 +2584,7 @@ function conditioningText(graph: ComfyGraph, startId: string | null): string | n
  * sampler's own `positive`/`negative` links, which is the only place that
  * distinction actually exists.
  */
-function buildGraph(job: ImageJob, sourceName = ''): ComfyGraph {
+function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
   // A `wf:` style brings its own whole graph (Anima, or one the user dropped in);
   // anything else is a checkpoint name patched into the default txt2img graph.
   const isWorkflow = job.model.startsWith(WORKFLOW_PREFIX)
@@ -2647,6 +2719,70 @@ function buildGraph(job: ImageJob, sourceName = ''): ComfyGraph {
     graph[encId]  = { class_type: 'VAEEncode', inputs: { pixels, vae } }
     sampler.inputs['latent_image'] = [encId, 0]
 
+    // ── Change only the marked part ──
+    //
+    // Inpainting, on any model this app can select, by three additions to the
+    // img2img graph above rather than a separate one:
+    //
+    //   1. SetLatentNoiseMask tells the sampler which latent cells it may
+    //      change; the rest are held to the source at every step. The mask is
+    //      grown a few pixels with tapered corners so the seam is blended
+    //      rather than cut.
+    //   2. DifferentialDiffusion is patched onto the model so a soft mask edge
+    //      means a soft handover, not a hard one. It is a model patch, so the
+    //      turbo LoRA splice further down wraps it correctly.
+    //   3. ImageCompositeMasked pastes the decoded result back over the ORIGINAL
+    //      pixels through the same mask, so everything outside it is not
+    //      "barely changed" but byte-identical. The VAE round-trip alone would
+    //      shift every unmasked pixel slightly, which reads as the whole picture
+    //      having been touched.
+    //
+    // The mask arrives as a PNG the size of the SOURCE (white = change), so it
+    // is scaled to the render size with the same crop the source got, and read
+    // through ImageToMask on the red channel.
+    if (maskName) {
+      const mLoadId = 'touchsphere_mask_image'
+      graph[mLoadId] = { class_type: 'LoadImage', inputs: { image: maskName } }
+      let maskImg: [string, number] = [mLoadId, 0]
+      if (job.sourceWidth > 0 && (job.width !== job.sourceWidth || job.height !== job.sourceHeight)) {
+        graph['touchsphere_mask_scale'] = {
+          class_type: 'ImageScale',
+          inputs: { image: maskImg, upscale_method: 'nearest-exact', width: job.width, height: job.height, crop: 'center' },
+        }
+        maskImg = ['touchsphere_mask_scale', 0]
+      }
+      graph['touchsphere_mask'] = { class_type: 'ImageToMask', inputs: { image: maskImg, channel: 'red' } }
+      graph['touchsphere_mask_soft'] = {
+        class_type: 'GrowMask',
+        inputs: { mask: ['touchsphere_mask', 0], expand: 6, tapered_corners: true },
+      }
+      const modelLink = sampler.inputs['model']
+      if (Array.isArray(modelLink)) {
+        graph['touchsphere_diff'] = { class_type: 'DifferentialDiffusion', inputs: { model: modelLink } }
+        sampler.inputs['model'] = ['touchsphere_diff', 0]
+      }
+      graph['touchsphere_masked_latent'] = {
+        class_type: 'SetLatentNoiseMask',
+        inputs: { samples: [encId, 0], mask: ['touchsphere_mask_soft', 0] },
+      }
+      sampler.inputs['latent_image'] = ['touchsphere_masked_latent', 0]
+
+      // Whatever the graph saves, save the composite instead.
+      const saveId = findNode(graph, ['SaveImage', 'PreviewImage'])
+      if (saveId && Array.isArray(graph[saveId]!.inputs['images'])) {
+        graph['touchsphere_composite'] = {
+          class_type: 'ImageCompositeMasked',
+          inputs: {
+            destination: pixels,
+            source: graph[saveId]!.inputs['images'],
+            x: 0, y: 0, resize_source: false,
+            mask: ['touchsphere_mask_soft', 0],
+          },
+        }
+        graph[saveId]!.inputs['images'] = ['touchsphere_composite', 0]
+      }
+    }
+
     // KSamplerAdvanced has no denoise input — it expresses the same idea as
     // start_at_step over a step count, which is a different conversation. Say so
     // rather than letting the render come back as an untouched copy.
@@ -2754,6 +2890,7 @@ function renderedWith(job: ImageJob, graph: ComfyGraph): ImageSettings {
     ...(job.optimizations ? { optimizations: job.optimizations } : {}),
     ...(job.lora ? { lora: job.lora, loraStrength: job.loraStrength } : {}),
     ...(job.source ? { source: job.source, denoise: job.denoise } : {}),
+    ...(job.maskFile ? { mask: true, ...(job.region ? { region: job.region } : {}) } : {}),
     tookMs:     Math.max(0, (job.endedAt ?? Date.now()) - job.startedAt),
   }
 }
@@ -2840,6 +2977,242 @@ async function comfyFetch(pathname: string, init?: RequestInit, timeoutMs = HTTP
   } finally {
     clearTimeout(timer)
   }
+}
+
+// ── Masks: which part of a picture may change ────────────────────────────────
+//
+// A mask is a PNG the size of its source — white where the picture may be
+// repainted, black where it must not — kept beside the gallery but NOT in it:
+// it is not a picture anyone wants to see in a grid, and it is only meaningful
+// against the one source it was drawn over. Two ways one comes to exist: the
+// user paints it on the touchscreen (POST /api/image/mask), or names the part
+// in words and findMask() has the GPU box find it. Both end up here, both go
+// up to ComfyUI the same way the source does, and buildGraph() treats them
+// identically.
+
+function masksDir(): string {
+  const dir = path.join(imagesDir(), 'masks')
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+/** Keep the newest few dozen; a mask is a one-shot thing and this is a small disk. */
+const MAX_MASKS = 60
+
+export interface StoredMask { id: string; file: string; width: number; height: number }
+
+/** Store a mask PNG the client painted. Validated the way uploads are. */
+export function saveMask(bytes: Buffer): StoredMask {
+  const size = pngSize(bytes)
+  if (!size) throw new Error('that mask could not be read as a PNG')
+  const id = crypto.randomBytes(16).toString('hex')
+  const file = `${id}.png`
+  const dest = path.join(masksDir(), file)
+  const tmp = `${dest}.tmp-${process.pid}`
+  fs.writeFileSync(tmp, bytes)
+  fs.renameSync(tmp, dest)
+  // Oldest-first pruning by mtime, same idea as the gallery's cap.
+  try {
+    const all = fs.readdirSync(masksDir()).filter(f => /^[a-f0-9]{32}\.png$/.test(f))
+      .map(f => ({ f, t: fs.statSync(path.join(masksDir(), f)).mtimeMs }))
+      .sort((a, b) => b.t - a.t)
+    for (const old of all.slice(MAX_MASKS)) { try { fs.unlinkSync(path.join(masksDir(), old.f)) } catch { /* gone */ } }
+  } catch { /* pruning is best-effort */ }
+  return { id, file, width: size.width, height: size.height }
+}
+
+export function maskPath(file: string): string | null {
+  const full = path.join(masksDir(), file)
+  return fs.existsSync(full) ? full : null
+}
+
+/**
+ * Decode a PNG far enough to measure it: how much of it is white, and where.
+ *
+ * Only what a MASK needs — 8-bit, non-interlaced, grey or RGB with or without
+ * alpha — which is exactly what MaskToImage and a canvas both emit. Anything
+ * else returns null and the caller treats the mask as unmeasured rather than
+ * wrong. Written here rather than pulling in an image library because the
+ * server image is built for linux/arm64 and every native dependency is a
+ * cross-build to keep working.
+ */
+function maskCoverage(bytes: Buffer): { coverage: number; box: [number, number, number, number] } | null {
+  const size = pngSize(bytes)
+  if (!size) return null
+  const depth = bytes[24], colour = bytes[25], interlace = bytes[28]
+  if (depth !== 8 || interlace !== 0) return null
+  const channels = colour === 0 ? 1 : colour === 2 ? 3 : colour === 4 ? 2 : colour === 6 ? 4 : 0
+  if (!channels) return null
+  // Concatenate IDAT chunks.
+  const idat: Buffer[] = []
+  let off = 8
+  while (off + 8 <= bytes.length) {
+    const len = bytes.readUInt32BE(off); const type = bytes.toString('ascii', off + 4, off + 8)
+    if (type === 'IDAT') idat.push(bytes.subarray(off + 8, off + 8 + len))
+    if (type === 'IEND') break
+    off += 12 + len
+  }
+  let raw: Buffer
+  try { raw = zlib.inflateSync(Buffer.concat(idat)) } catch { return null }
+  const { width: w, height: h } = size
+  const stride = w * channels
+  if (raw.length < (stride + 1) * h) return null
+  const prev = Buffer.alloc(stride), cur = Buffer.alloc(stride)
+  let white = 0, minX = w, minY = h, maxX = -1, maxY = -1
+  for (let y = 0; y < h; y++) {
+    const filter = raw[y * (stride + 1)]!
+    const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1))
+    for (let i = 0; i < stride; i++) {
+      const a = i >= channels ? cur[i - channels]! : 0
+      const b = prev[i]!
+      const c = i >= channels ? prev[i - channels]! : 0
+      let v = line[i]!
+      if (filter === 1) v += a
+      else if (filter === 2) v += b
+      else if (filter === 3) v += (a + b) >> 1
+      else if (filter === 4) { const p = a + b - c; const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c); v += pa <= pb && pa <= pc ? a : pb <= pc ? b : c }
+      cur[i] = v & 255
+    }
+    for (let x = 0; x < w; x++) {
+      if (cur[x * channels]! > 127) {
+        white++
+        if (x < minX) minX = x; if (x > maxX) maxX = x
+        if (y < minY) minY = y; if (y > maxY) maxY = y
+      }
+    }
+    prev.set(cur)
+  }
+  return { coverage: white / (w * h), box: maxX < 0 ? [0, 0, 0, 0] : [minX, minY, maxX - minX + 1, maxY - minY + 1] }
+}
+
+export function measureMask(file: string): { coverage: number; box: [number, number, number, number] } | null {
+  const full = maskPath(file)
+  if (!full) return null
+  try { return maskCoverage(fs.readFileSync(full)) } catch { return null }
+}
+
+/** One multipart upload into ComfyUI's input directory; the name ComfyUI kept comes back. */
+async function uploadInput(name: string, bytes: Buffer, what: string): Promise<string> {
+  const form = new FormData()
+  form.append('image', new Blob([new Uint8Array(bytes)], { type: 'image/png' }), name)
+  form.append('type', 'input')
+  form.append('overwrite', 'true')
+  const res = await comfyFetch('/upload/image', { method: 'POST', body: form }, 60_000)
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`ComfyUI would not accept the ${what} (${res.status}): ${body.slice(0, 200)}`)
+  }
+  const j = await res.json().catch(() => ({})) as { name?: string; subfolder?: string }
+  const saved = j.name ?? name
+  return j.subfolder ? `${j.subfolder}/${saved}` : saved
+}
+
+async function uploadMask(job: ImageJob): Promise<string> {
+  const full = maskPath(job.maskFile)
+  if (!full) throw new Error('the mask for this edit is missing from this server')
+  const ref = await uploadInput(`touchsphere-mask-${job.mask}.png`, fs.readFileSync(full), 'mask')
+  console.log(`[image] ${job.id} uploaded mask as ${ref}`)
+  return ref
+}
+
+// The exact class names comfyui_segment_anything registers. Checked against
+// /object_info rather than assumed, so a box without the pack simply does not
+// offer "find it by name" instead of failing every attempt with a bare
+// "node not found".
+const SEG_LOADER_DINO = 'GroundingDinoModelLoader (segment anything)'
+const SEG_LOADER_SAM  = 'SAMModelLoader (segment anything)'
+const SEG_SEGMENT     = 'GroundingDinoSAMSegment (segment anything)'
+
+let segCache: { at: number; ok: boolean } | null = null
+/** The last answer, synchronously — for the per-request system prompt line, which cannot await. */
+export function segmentationCached(): boolean { return segCache?.ok ?? false }
+/** Whether the GPU box can turn a description into a mask. Cached for a minute. */
+export async function segmentationAvailable(): Promise<boolean> {
+  if (!COMFY_URL) return false
+  if (segCache && Date.now() - segCache.at < 60_000) return segCache.ok
+  let ok = false
+  try {
+    const res = await comfyFetch(`/object_info/${encodeURIComponent(SEG_SEGMENT)}`, undefined, 8000)
+    ok = res.ok && Object.keys(await res.json() as object).length > 0
+  } catch { ok = false }
+  segCache = { at: Date.now(), ok }
+  return ok
+}
+
+let inpaintCache: { at: number; ok: boolean } | null = null
+/** Whether the graph nodes a masked edit needs exist. Core ComfyUI has them; an old build might not. */
+export async function inpaintAvailable(): Promise<boolean> {
+  if (!COMFY_URL) return false
+  if (inpaintCache && Date.now() - inpaintCache.at < 300_000) return inpaintCache.ok
+  let ok = false
+  try {
+    const r = await Promise.all(['SetLatentNoiseMask', 'ImageCompositeMasked', 'ImageToMask', 'GrowMask']
+      .map(n => comfyFetch(`/object_info/${n}`, undefined, 8000).then(x => x.ok).catch(() => false)))
+    ok = r.every(Boolean)
+  } catch { ok = false }
+  inpaintCache = { at: Date.now(), ok }
+  return ok
+}
+
+export interface FoundMask extends StoredMask { coverage: number; box: [number, number, number, number]; uploaded: string }
+
+/**
+ * Turn words into a mask on the GPU box: GroundingDINO finds the thing the
+ * words name and Segment Anything traces it. The result comes back as a
+ * white-on-black PNG, is stored like a painted mask, and is ALSO left in
+ * ComfyUI's input directory under `uploaded` so a render that follows can
+ * name it without a second round trip.
+ *
+ * `sourceRef` is the source as already uploaded to ComfyUI (a LoadImage name);
+ * a gallery id is accepted too and uploaded here. Coverage is measured on the
+ * way back so a description that matched nothing, or everything, can be said
+ * out loud instead of quietly repainting the wrong amount.
+ */
+export async function findMask(sourceRef: string, what: string, threshold = 0.3): Promise<FoundMask | null> {
+  if (!(await segmentationAvailable())) throw new Error('this GPU box cannot find parts by name — the Segment Anything node pack is not installed')
+  let ref = sourceRef
+  if (/^[a-f0-9]{32}$/.test(sourceRef)) {
+    const entry = listImages().find(e => e.id === sourceRef)
+    if (!entry) throw new Error('that picture is not in the gallery')
+    ref = await uploadInput(`touchsphere-src-${entry.id}.png`, fs.readFileSync(path.join(imagesDir(), entry.file)), 'source picture')
+  }
+  const graph: ComfyGraph = {
+    src:  { class_type: 'LoadImage', inputs: { image: ref } },
+    dino: { class_type: SEG_LOADER_DINO, inputs: { model_name: 'GroundingDINO_SwinT_OGC (694MB)' } },
+    sam:  { class_type: SEG_LOADER_SAM,  inputs: { model_name: 'sam_vit_b (375MB)' } },
+    seg:  { class_type: SEG_SEGMENT, inputs: { sam_model: ['sam', 0], grounding_dino_model: ['dino', 0], image: ['src', 0], prompt: what.trim(), threshold } },
+    m2i:  { class_type: 'MaskToImage', inputs: { mask: ['seg', 1] } },
+    save: { class_type: 'SaveImage', inputs: { images: ['m2i', 0], filename_prefix: 'touchsphere-mask' } },
+  }
+  const promptId = await queuePrompt(graph)
+  // A small poll of our own: awaitOutput() narrates into a render job, and this
+  // is a side step with no frame of its own. Segmentation is seconds once the
+  // two models are loaded; the first run downloads and loads them, so three
+  // minutes is generous rather than tight.
+  const deadline = Date.now() + 180_000
+  let out: OutputRef | null = null
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 1500))
+    const res = await comfyFetch(`/history/${promptId}`, undefined, 10_000)
+    if (!res.ok) continue
+    const hist = await res.json() as Record<string, { status?: { status_str?: string; messages?: unknown[] }; outputs?: Record<string, { images?: OutputRef[] }> }>
+    const h = hist[promptId]
+    if (!h) continue
+    if (h.status?.status_str === 'error') {
+      const msg = JSON.stringify(h.status.messages ?? []).slice(0, 300)
+      throw new Error(`the GPU box could not segment the picture: ${msg}`)
+    }
+    const imgs = h.outputs?.['save']?.images
+    if (imgs?.length) { out = imgs[0]!; break }
+  }
+  if (!out) throw new Error('finding the part took too long on the GPU box')
+  const bytes = await downloadOutput(out)
+  const stored = saveMask(bytes)
+  const m = maskCoverage(bytes) ?? { coverage: 0, box: [0, 0, 0, 0] as [number, number, number, number] }
+  // Left in ComfyUI's input dir under a stable name so the render can use it.
+  const uploaded = await uploadInput(`touchsphere-mask-${stored.id}.png`, bytes, 'mask')
+  console.log(`[image] found "${what}" → mask ${stored.id}, ${(m.coverage * 100).toFixed(1)}% of the picture`)
+  return { ...stored, ...m, uploaded }
 }
 
 /**
