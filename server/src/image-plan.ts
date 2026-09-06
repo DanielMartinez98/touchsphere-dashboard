@@ -67,6 +67,12 @@ export interface PlanStep {
    */
   style?:      string
   styleLabel?: string
+  /**
+   * Hold the source's lines with a ControlNet while repainting. Default true
+   * for part/whole steps; the planner turns it off only for a change that IS
+   * a change of pose or shape, where holding the lines would defeat it.
+   */
+  keepPose?:   boolean
   /** The planner's one-line reason — shown so a wrong plan can be argued with. */
   why:      string
   status:   'pending' | 'queued' | 'running' | 'done' | 'failed' | 'skipped'
@@ -273,6 +279,10 @@ function plannerSystem(tools: PlanMode[], styles: DrawStyle[]): string {
     `- Up to ${MAX_STEPS} steps. Never merge two changes into one step; "a red jacket and a hat" is two steps.`,
     '- A "part" step covers exactly one region. An "edit" step carries exactly one instruction.',
     '- A one-step plan is only right for a request that truly implies one atomic change.',
+    '- "part" and "whole" steps HOLD THE POSE by default: a ControlNet keeps every contour of the source ' +
+    '(shoulders, arms, hands, the fold of a sleeve) where it is while the surfaces change. Set "keepPose": ' +
+    'false ONLY for a step whose purpose is to change a pose or a shape (raise an arm, turn the head, ' +
+    'a bigger hat).',
     '- Do "part" steps BEFORE "edit" steps when a plan has both, since an edit reconstructs pixels.',
     '- Only change what was asked for. Do not add improvements of your own.',
     '- Name things as they actually appear in THIS picture (say "the man\'s jacket" only if there is one).',
@@ -281,7 +291,7 @@ function plannerSystem(tools: PlanMode[], styles: DrawStyle[]): string {
     'Answer with ONLY this JSON, no prose. List the atomic changes FIRST, then the steps:',
     '{"changes":["one atomic change","another"],"summary":"one sentence of what you will do",' +
     '"steps":[{"mode":"edit|part|whole","prompt":"...","region":"only for part",' +
-    '"strength":"light|balanced|strong","style":"a drawing style id, part/whole only","why":"one short reason"}]}',
+    '"strength":"light|balanced|strong","style":"a drawing style id, part/whole only","keepPose":true,"why":"one short reason"}]}',
   )
   return lines.join('\n')
 }
@@ -347,6 +357,7 @@ async function askPlanner(image: Buffer, request: string, tools: PlanMode[], sty
         ...(use === 'part' ? { region } : {}),
         ...(use !== 'edit' ? { strength: strength ?? (use === 'part' ? 'strong' : 'balanced') } : {}),
         ...(style ? { style: style.id, styleLabel: style.label } : {}),
+        ...(use !== 'edit' ? { keepPose: s['keepPose'] !== false } : {}),
         why: String(s['why'] ?? '').trim().slice(0, 200),
         status: 'pending',
       })
@@ -515,8 +526,8 @@ async function execute(plan: EditPlan, editor: string): Promise<void> {
       ...(step.mode === 'edit'
         ? { model: editor, denoise: 1 }
         : step.mode === 'part'
-          ? { model: step.style ?? '', region: step.region ?? '', denoise: PART_STRENGTH[step.strength ?? 'strong'] }
-          : { model: step.style ?? '', denoise: STRENGTH[step.strength ?? 'balanced'] }),
+          ? { model: step.style ?? '', region: step.region ?? '', denoise: PART_STRENGTH[step.strength ?? 'strong'], structure: step.keepPose !== false }
+          : { model: step.style ?? '', denoise: STRENGTH[step.strength ?? 'balanced'], structure: step.keepPose !== false }),
     }
     let done: ImageJob | null = null
     step.attempts = 0

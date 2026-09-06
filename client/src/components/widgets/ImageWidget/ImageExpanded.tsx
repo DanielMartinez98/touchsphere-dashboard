@@ -99,7 +99,7 @@ interface Props {
       `mask` (a stored mask id) or `region` (the part in words) narrow it to part of the source. */
   onGenerate: (
     prompt: string, orientation: Orientation, source: string, denoise: number, improve: boolean,
-    mask?: string, region?: string,
+    mask?: string, region?: string, structure?: boolean,
   ) => void
   onDelete:   (id: string) => void
   /** Empty the whole gallery — every render and upload. */
@@ -267,6 +267,9 @@ export default function ImageExpanded({
   const source = useImageSource()
   const [strength, setStrength] = useState('balanced')
   const [partStrength, setPartStrength] = useState('strong')
+  // Hold the pose with a ControlNet. On by default: "change the jacket" means
+  // the jacket, not where her arm is. Off is for a change that IS the pose.
+  const [keepPose, setKeepPose] = useState(true)
   // Which part of the source may change, when only part of it should. In the
   // same store as the source, for the same reason: it is a piece of the request.
   const mask = useImageMask()
@@ -481,6 +484,8 @@ export default function ImageExpanded({
     onGenerate(
       prompt.trim(), orientation, source?.id ?? '', source ? (editStyle ? 1 : d) : 0, improve.on,
       mode === 'part' && mask ? mask.id : '',
+      '',
+      capabilities.structure && mode !== 'instruct' ? keepPose : undefined,
     )
     // The prompt is deliberately KEPT, not cleared: the common next action is
     // another go at the same idea with a word changed, and re-typing it on an
@@ -709,6 +714,26 @@ export default function ImageExpanded({
               </button>
             ))}
           </div>}
+
+          {/* Hold the pose. A ControlNet on the source's own edges keeps
+              shoulders, arms and hands where they are while the surfaces
+              change — the difference between "a pink jacket on her" and "a
+              different woman in a pink jacket". Offered only when the GPU box
+              has a ControlNet, and not for an editor, which holds its own. */}
+          {capabilities.structure && mode !== 'instruct' && mode !== 'plan' && (
+            <button
+              type="button"
+              onClick={() => setKeepPose(v => !v)}
+              className={`h-11 rounded-xl px-3 flex items-center justify-between gap-2 text-[13px] font-semibold
+                          border active:scale-[0.98] ${
+                keepPose ? 'bg-white/15 text-white border-white/25' : 'bg-white/5 text-white/50 border-transparent'}`}
+            >
+              <span>Keep the pose and shapes</span>
+              <span className={`text-[11px] uppercase tracking-widest ${keepPose ? 'text-emerald-300/80' : 'text-white/35'}`}>
+                {keepPose ? 'on' : 'off'}
+              </span>
+            </button>
+          )}
 
           {/* What to type differs by KIND of style, and it is the thing most
               likely to go wrong: img2img repaints from the words alone, so a

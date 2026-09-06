@@ -243,6 +243,47 @@ export async function listLoras(): Promise<string[]> {
   return loaderOptions('LoraLoaderModelOnly', 'lora_name')
 }
 
+/** ControlNet files on the box. Empty when none, or when the box is down. */
+export async function listControlNets(): Promise<string[]> {
+  return loaderOptions('ControlNetLoader', 'control_net_name').catch(() => [])
+}
+
+/**
+ * The ControlNet to hold a redraw's lines: an SDXL "union" model if there is
+ * one (it takes canny, lineart, depth and pose in one file), else anything
+ * whose name says canny or lineart. Nothing at all rather than a guess — a
+ * ControlNet for the wrong model family fails the render with a shape error.
+ */
+export function pickControlNet(installed: string[]): string {
+  const lower = installed.map(n => n.toLowerCase())
+  const idx = (pred: (n: string) => boolean) => lower.findIndex(pred)
+  const i = [
+    idx(n => n.includes('union') && (n.includes('promax') || n.includes('sdxl'))),
+    idx(n => n.includes('union')),
+    idx(n => (n.includes('canny') || n.includes('lineart')) && n.includes('xl')),
+    idx(n => n.includes('canny') || n.includes('lineart')),
+  ].find(x => x >= 0)
+  return i === undefined ? '' : installed[i]!
+}
+
+let structureCache: { at: number; ok: boolean } | null = null
+/** Whether "keep the pose" can be offered: the nodes exist and a usable ControlNet is installed. Cached a minute. */
+export async function structureAvailable(): Promise<boolean> {
+  if (!COMFY_URL) return false
+  if (structureCache && Date.now() - structureCache.at < 60_000) return structureCache.ok
+  let ok = false
+  try {
+    const [nodes, files] = await Promise.all([
+      Promise.all(['Canny', 'ControlNetLoader', 'ControlNetApplyAdvanced', 'SetUnionControlNetType']
+        .map(n => comfyFetch(`/object_info/${n}`, undefined, 8000).then(r => r.ok).catch(() => false))),
+      listControlNets(),
+    ])
+    ok = nodes.every(Boolean) && pickControlNet(files) !== ''
+  } catch { ok = false }
+  structureCache = { at: Date.now(), ok }
+  return ok
+}
+
 // Which loader input answers for each folder named in a style's `needs`.
 // `needs` is written as `<folder>/<filename>` because that is where the user has
 // to physically put the file; this maps that back to the node that reports it.
@@ -372,6 +413,8 @@ export interface ImageSettings {
    */
   mask?:    boolean
   region?:  string
+  /** The ControlNet that held the source's lines in place during a redraw, if one did. */
+  controlnet?: string
   /** Wall-clock render time, so "which settings" can be weighed against "how long". */
   tookMs:   number
   /**
@@ -646,6 +689,16 @@ export interface ImageJob {
   mask:     string
   maskFile: string
   region:   string
+  /**
+   * KEEP THE POSE. A redraw — whole or part — conditions the sampler on the
+   * source's own edges through a ControlNet, so shoulders, arms and hands
+   * stay where they are while what is painted over them changes. Wanted by
+   * default for any redraw that isn't an instruction edit; `controlnet` is
+   * the file run() resolved for it, '' when none is installed or the style's
+   * graph is not the SDXL family the installed one fits.
+   */
+  structure:  boolean
+  controlnet: string
   status:   JobStatus
   /** Short label for a chip or a narrow row — "drawing", "loading the model". */
   phase:    string
@@ -1018,6 +1071,8 @@ export interface ImageRequest {
    */
   mask?:     string
   region?:   string
+  /** Keep the source's pose and shapes through a ControlNet. Default true for a redraw. */
+  structure?: boolean
 }
 
 // The middle chip in the Draw panel, and what the assistant gets when it asks
@@ -1218,6 +1273,8 @@ export function startImage(req: ImageRequest): ImageJob {
     mask:     maskFile ? maskId : '',
     maskFile,
     region,
+    structure: !!source && !edits && req.structure !== false,
+    controlnet: '',
     // Clamped above so the number the UI shows and the number the sampler gets
     // are the same one. Without a source it stays 1 — a full render — which is
     // also exactly what the sampler wants for txt2img.
@@ -1447,6 +1504,18 @@ async function run(job: ImageJob): Promise<void> {
     // file is written against. On a box with no LoRAs installed at all, the old
     // behaviour meant the Turbo switch did nothing, said nothing, and produced
     // a normal picture; saying which file is missing is the only honest answer.
+    // Keep-the-pose: name the ControlNet now, for the same reason the LoRA is
+    // named here — it is a file on the GPU box's disk. A miss does NOT fail
+    // the render: unlike the LoRA, this is a default nobody switched on, and
+    // a box with no ControlNet should still redraw, just without the lines
+    // held — said in the detail, so "why did the pose drift" has an answer.
+    if (job.structure && job.source) {
+      job.controlnet = pickControlNet(await listControlNets())
+      if (!job.controlnet) {
+        improveNote += ' No ControlNet is installed on the image server, so the pose is not held in place — put an SDXL union ControlNet in ComfyUI/models/controlnet to enable it.'
+      }
+    }
+
     if (job.turbo && !job.lora) {
       const installed = await listLoras()      // a dead box throws, and should
       job.lora = pickLora(installed, turboHints(job.model))
@@ -2816,6 +2885,57 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
         `this workflow's ${sampler.class_type} has no denoise setting, so it cannot redraw a picture`,
       )
     }
+
+    // ── Keep the pose: a ControlNet on the source's own edges ──
+    //
+    // The sampler is otherwise free to reinvent whatever is inside the mask,
+    // and at any useful strength it does — a "pink jacket" over a lying
+    // figure came back with the arm, the hand and the shoulder moved. Canny
+    // edges of the source, fed through a ControlNet, hold every contour
+    // where it is while the model decides what the surfaces are. Canny is a
+    // core node, so no preprocessor pack is needed; on anime line art the
+    // edge map IS the line art, which is the best case for it.
+    //
+    // Spliced by rewiring, like the LoRA: whatever fed the sampler's positive
+    // and negative goes through ControlNetApplyAdvanced first. Only for a
+    // graph with a CheckpointLoaderSimple — the SDXL family the installed
+    // union model fits; Anima, Lumina and FLUX have their own architectures
+    // and a mismatched ControlNet fails with a shape error, so they get the
+    // redraw without it and the detail says so.
+    if (job.controlnet && findNode(graph, ['CheckpointLoaderSimple', 'CheckpointLoader'])) {
+      const pos = sampler.inputs['positive'], neg = sampler.inputs['negative']
+      if (Array.isArray(pos) && Array.isArray(neg)) {
+        graph['touchsphere_edges'] = {
+          class_type: 'Canny',
+          inputs: { image: pixels, low_threshold: 0.3, high_threshold: 0.7 },
+        }
+        graph['touchsphere_controlnet'] = {
+          class_type: 'ControlNetLoader',
+          inputs: { control_net_name: job.controlnet },
+        }
+        // A union model has to be told which of its heads to use.
+        graph['touchsphere_controlnet_type'] = {
+          class_type: 'SetUnionControlNetType',
+          inputs: { control_net: ['touchsphere_controlnet', 0], type: 'canny/lineart/anime_lineart/mlsd' },
+        }
+        graph['touchsphere_controlnet_apply'] = {
+          class_type: 'ControlNetApplyAdvanced',
+          inputs: {
+            positive: pos, negative: neg,
+            control_net: ['touchsphere_controlnet_type', 0],
+            image: ['touchsphere_edges', 0],
+            // Firm early, released for the last third: the lines decide the
+            // layout, the model decides the surfaces and the fine detail.
+            strength: 0.65, start_percent: 0, end_percent: 0.7,
+            vae,
+          },
+        }
+        sampler.inputs['positive'] = ['touchsphere_controlnet_apply', 0]
+        sampler.inputs['negative'] = ['touchsphere_controlnet_apply', 1]
+      }
+    } else if (job.controlnet) {
+      job.controlnet = ''
+    }
   }
 
   // Only a checkpoint style names a ckpt_name; a workflow style already has its
@@ -2914,6 +3034,7 @@ function renderedWith(job: ImageJob, graph: ComfyGraph): ImageSettings {
     ...(job.lora ? { lora: job.lora, loraStrength: job.loraStrength } : {}),
     ...(job.source ? { source: job.source, denoise: job.denoise } : {}),
     ...(job.maskFile ? { mask: true, ...(job.region ? { region: job.region } : {}) } : {}),
+    ...(job.controlnet ? { controlnet: job.controlnet } : {}),
     tookMs:     Math.max(0, (job.endedAt ?? Date.now()) - job.startedAt),
   }
 }

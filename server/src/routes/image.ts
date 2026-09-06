@@ -18,6 +18,7 @@ import {
   measureMask,
   saveMask,
   segmentationAvailable,
+  structureAvailable,
   comfyStats,
   comfyUrl,
   forgetImage,
@@ -165,7 +166,7 @@ router.get('/models', async (_req: Request, res: Response) => {
     // "find it by name" only where the Segment Anything pack is installed —
     // a button for a node that isn't there fails a minute later with a bare
     // "node not found", which is the failure this whole file argues against.
-    const [inpaint, segmentation] = await Promise.all([inpaintAvailable(), segmentationAvailable()])
+    const [inpaint, segmentation, structure] = await Promise.all([inpaintAvailable(), segmentationAvailable(), structureAvailable()])
     res.setHeader('Cache-Control', 'no-store')
     res.json({
       // `models` kept for older clients that predate workflow styles.
@@ -174,7 +175,7 @@ router.get('/models', async (_req: Request, res: Response) => {
       selected: selectedModel(),
       quality: selectedQuality(),
       qualities: Object.keys(QUALITY_STEPS),
-      capabilities: { inpaint, segmentation },
+      capabilities: { inpaint, segmentation, structure },
     })
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
@@ -454,6 +455,8 @@ router.post('/generate', (req: Request, res: Response) => {
     // Change only part of it: a painted mask's id, or the part in words.
     ...(typeof body?.['mask'] === 'string' && /^[a-f0-9]{32}$/.test(body['mask']) ? { mask: body['mask'] } : {}),
     ...(typeof body?.['region'] === 'string' && body['region'].trim() ? { region: body['region'].trim() } : {}),
+    // Keep the pose through a ControlNet. Omitted means yes for a redraw.
+    ...(typeof body?.['structure'] === 'boolean' ? { structure: body['structure'] } : {}),
     // Omitted rather than defaulted when the panel doesn't say: undefined means
     // "use the saved default", which is resolved in startImage() at queue time.
     ...(typeof body?.['improve'] === 'boolean' ? { improve: body['improve'] } : {}),

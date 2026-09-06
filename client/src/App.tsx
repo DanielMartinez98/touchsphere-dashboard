@@ -92,9 +92,9 @@ function App() {
   // exactly when someone needs to see that something is happening.
   const drawImage = useCallback(async (
     prompt: string, orientation: Orientation, source: string, denoise: number, improve: boolean,
-    mask = '', region = '',
+    mask = '', region = '', structure?: boolean,
   ) => {
-    const id = await generateImage(prompt, orientation, source, denoise, improve, mask, region)
+    const id = await generateImage(prompt, orientation, source, denoise, improve, mask, region, structure)
     // The prompt handed to the frame is the one the user typed. When the
     // improver is on, the server replaces it a second later and the frame picks
     // the new one up off the job's own SSE frames — so what is on screen while

@@ -561,6 +561,9 @@ function ImageDetails({
         : `an earlier picture · ${Math.round((st.denoise ?? 0) * 100)}% changed`,
     })
   }
+  if (st?.controlnet) {
+    rows.push({ label: 'Pose held by', value: `ControlNet · ${st.controlnet}` })
+  }
   // The prompt improver, when it ran. Named rather than implied: two models
   // write very different prompts, and "why does this look nothing like what I
   // typed" has exactly one answer and it is this row.

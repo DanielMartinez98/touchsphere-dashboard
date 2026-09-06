@@ -35,6 +35,8 @@ export interface ImageSettings {
   /** Only part of the source was repainted; `region` is what was named, if it was found by name. */
   mask?:    boolean
   region?:  string
+  /** The ControlNet that held the pose during a redraw, when one did. */
+  controlnet?: string
   tookMs:   number
   /** Set only when the prompt improver rewrote the prompt — see image-prompt.ts. */
   promptOriginal?: string
@@ -175,6 +177,8 @@ interface StylesResponse {
 export interface ImageCapabilities {
   inpaint:      boolean
   segmentation: boolean
+  /** A ControlNet is installed, so a redraw can hold the source's pose. */
+  structure:    boolean
 }
 
 /** A stored mask, as the server describes it. */
@@ -381,7 +385,7 @@ export function useImages() {
   // like Anima that is three files behind three loader nodes and has no
   // ckpt_name to swap. The picker shouldn't care which is which.
   const [styles,  setStyles]     = useState<ImageStyle[]>([])
-  const [capabilities, setCapabilities] = useState<ImageCapabilities>({ inpaint: false, segmentation: false })
+  const [capabilities, setCapabilities] = useState<ImageCapabilities>({ inpaint: false, segmentation: false, structure: false })
   const [model,   setModelState] = useState('')
   const [quality, setQualityState] = useState('standard')
   // The advanced knobs for the style currently selected, what that style's own
@@ -433,7 +437,7 @@ export function useImages() {
       const res = await fetch('/api/image/models')
       const j = await res.json() as StylesResponse
       setStyles(stylesOf(j))
-      setCapabilities({ inpaint: j.capabilities?.inpaint === true, segmentation: j.capabilities?.segmentation === true })
+      setCapabilities({ inpaint: j.capabilities?.inpaint === true, segmentation: j.capabilities?.segmentation === true, structure: j.capabilities?.structure === true })
       setModelState(j.selected ?? '')
       setQualityState(j.quality ?? 'standard')
     } catch (err) {
@@ -450,7 +454,7 @@ export function useImages() {
       .then((j: StylesResponse) => {
         if (cancelled) return
         setStyles(stylesOf(j))
-        setCapabilities({ inpaint: j.capabilities?.inpaint === true, segmentation: j.capabilities?.segmentation === true })
+        setCapabilities({ inpaint: j.capabilities?.inpaint === true, segmentation: j.capabilities?.segmentation === true, structure: j.capabilities?.structure === true })
         setModelState(j.selected ?? '')
         setQualityState(j.quality ?? 'standard')
       })
@@ -683,6 +687,8 @@ export function useImages() {
     mask = '',
     /** …or the part in words, found on the GPU box during the render. */
     region = '',
+    /** Hold the source's pose with a ControlNet. Omitted = the server's default (yes for a redraw). */
+    structure?: boolean,
   ): Promise<string | null> => {
     const size = SIZES[orientation]
     setDrawError('')
@@ -698,6 +704,7 @@ export function useImages() {
           ...(source ? { source, denoise } : {}),
           ...(source && mask ? { mask } : {}),
           ...(source && region && !mask ? { region } : {}),
+          ...(source && typeof structure === 'boolean' ? { structure } : {}),
           ...(typeof improve === 'boolean' ? { improve } : {}),
         }),
       })
