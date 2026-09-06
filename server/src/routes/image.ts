@@ -20,6 +20,8 @@ import {
   segmentationAvailable,
   structureAvailable,
   holdModes,
+  safeTagsOn,
+  setSafeTags,
   comfyStats,
   comfyUrl,
   forgetImage,
@@ -181,6 +183,8 @@ router.get('/models', async (_req: Request, res: Response) => {
       // The pose-hold settings ride along so the Draw panel's toggle can
       // start on the user's default without a second request.
       structureSettings: readStructure(),
+      // Whether the built-in `safe` / `nsfw` tags are added (Settings → Drawing).
+      safeTags: safeTagsOn(),
     })
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
@@ -502,6 +506,21 @@ router.get('/prompter', (_req: Request, res: Response) => {
     visionUserMessage: visionUserMessage('<what you typed>'),
     visionModel: visionModel(),
   })
+})
+
+// ── Safety tags ──────────────────────────────────────────────────────────────
+
+// GET/POST /api/image/safety { safeTags } — whether the built-in `safe` prefix
+// tag and `nsfw` negative tag are added for every style.
+router.get('/safety', (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store')
+  res.json({ safeTags: safeTagsOn() })
+})
+router.post('/safety', (req: Request, res: Response) => {
+  const body = req.body as { safeTags?: unknown } | undefined
+  if (typeof body?.safeTags !== 'boolean') { res.status(400).json({ error: 'safeTags must be a boolean' }); return }
+  setSafeTags(body.safeTags)
+  res.json({ safeTags: safeTagsOn() })
 })
 
 // ── Keeping the pose ─────────────────────────────────────────────────────────

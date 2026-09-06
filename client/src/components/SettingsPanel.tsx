@@ -1677,7 +1677,7 @@ function OverrideField({
 }
 
 function DrawingTab() {
-  const { prompter, setPrompter, styles, structure, setStructure, capabilities } = useImages()
+  const { prompter, setPrompter, styles, structure, setStructure, capabilities, safeTags, setSafeTags } = useImages()
   // Edited locally and saved explicitly. A template is a paragraph typed on an
   // on-screen keyboard, and saving per keystroke would write the store forty
   // times and re-fetch the preview on each one.
@@ -1728,6 +1728,43 @@ function DrawingTab() {
           </span>
           <span className="text-[13px] font-semibold text-white/85">
             {prompter.enabled ? 'On by default' : 'Off by default'}
+          </span>
+        </button>
+      </div>
+
+      {/* The built-in safety tags. One switch for every style, because the
+          alternative — retyping each style's whole prefix minus one word — is
+          the kind of chore that gets the tag left in and the picture blamed. */}
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          Safety tags in prompts
+        </span>
+        <p className="text-[12px] text-white/45 leading-relaxed mb-3">
+          Several models' built-in prefixes carry the booru rating tag{' '}
+          <code className="text-white/60">safe</code> and their negatives lead with{' '}
+          <code className="text-white/60">nsfw</code>, because the assistant draws on this
+          screen unprompted. They also push those models away from swimwear or bare skin.
+          Off strips both from every style's built-in text; anything you typed yourself in the
+          per-model boxes below is left exactly as it is.
+        </p>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={safeTags !== false}
+          disabled={safeTags === null}
+          onClick={() => { if (safeTags !== null) void setSafeTags(!safeTags) }}
+          className={`w-full flex items-center gap-3 rounded-2xl px-3 py-3 border text-left
+                      transition-colors active:scale-[0.99] disabled:opacity-50 ${
+            safeTags !== false ? 'bg-violet-500/15 border-violet-400/40' : 'bg-white/5 border-hairline'
+          }`}
+        >
+          <span className={`w-11 h-6 shrink-0 rounded-full p-0.5 flex transition-colors ${
+            safeTags !== false ? 'bg-violet-400/80 justify-end' : 'bg-white/15 justify-start'
+          }`}>
+            <span className="w-5 h-5 rounded-full bg-white shadow" />
+          </span>
+          <span className="text-[13px] font-semibold text-white/85">
+            {safeTags === null ? 'Loading…' : safeTags ? 'Added — safe in front, nsfw in the negative' : 'Not added'}
           </span>
         </button>
       </div>
@@ -2444,8 +2481,8 @@ function PoseHoldCard({ structure, onChange, modes, available }: {
       )}
       <p className="text-[11px] text-white/30 leading-snug">
         Also worth knowing for swimwear or bare skin: the anime styles' prompt prefixes carry the
-        booru rating tag "safe", which pushes those models away from it. That text is yours to edit
-        per style in the prefix boxes below.
+        booru rating tag "safe", which pushes those models away from it. The "Safety tags in
+        prompts" switch above removes it from every style at once.
       </p>
     </div>
   )

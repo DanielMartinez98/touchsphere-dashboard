@@ -164,6 +164,7 @@ interface StylesResponse {
   quality?:  string
   capabilities?: Partial<ImageCapabilities>
   structureSettings?: Partial<StructureSettings>
+  safeTags?: boolean
 }
 
 /**
@@ -401,6 +402,8 @@ export function useImages() {
   const [styles,  setStyles]     = useState<ImageStyle[]>([])
   const [capabilities, setCapabilities] = useState<ImageCapabilities>({ inpaint: false, segmentation: false, structure: false, holdModes: { lines: false, body: false, pose: false } })
   const [structure, setStructureState] = useState<StructureSettings | null>(null)
+  // Whether the built-in safe/nsfw tags are added. null until the server says.
+  const [safeTags, setSafeTagsState] = useState<boolean | null>(null)
   const readCaps = (j: StylesResponse): ImageCapabilities => ({
     inpaint: j.capabilities?.inpaint === true, segmentation: j.capabilities?.segmentation === true,
     structure: j.capabilities?.structure === true,
@@ -465,6 +468,7 @@ export function useImages() {
       setStyles(stylesOf(j))
       setCapabilities(readCaps(j))
       const st = readStructureSettings(j); if (st) setStructureState(st)
+      if (typeof j.safeTags === 'boolean') setSafeTagsState(j.safeTags)
       setModelState(j.selected ?? '')
       setQualityState(j.quality ?? 'standard')
     } catch (err) {
@@ -483,6 +487,7 @@ export function useImages() {
         setStyles(stylesOf(j))
         setCapabilities(readCaps(j))
         const st = readStructureSettings(j); if (st) setStructureState(st)
+        if (typeof j.safeTags === 'boolean') setSafeTagsState(j.safeTags)
         setModelState(j.selected ?? '')
         setQualityState(j.quality ?? 'standard')
       })
@@ -852,6 +857,17 @@ export function useImages() {
    * 12-megapixel photo is a pointless base for an img2img latent and would eat
    * the upload limit for nothing.
    */
+  /** Switch the built-in safety tags on or off, for every style. */
+  const setSafeTags = useCallback(async (on: boolean) => {
+    setSafeTagsState(on)
+    try {
+      const res = await fetch('/api/image/safety', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ safeTags: on }),
+      })
+      if (res.ok) setSafeTagsState((await res.json() as { safeTags: boolean }).safeTags)
+    } catch { /* the next models fetch restores the truth */ }
+  }, [])
+
   /** Patch the pose-hold settings; the answer is the whole saved record. */
   const setStructure = useCallback(async (patch: Partial<StructureSettings>) => {
     setStructureState(prev => ({ ...(prev ?? DEFAULT_STRUCTURE_SETTINGS), ...patch }))
@@ -923,7 +939,7 @@ export function useImages() {
     drawingEtaMs: drawing?.status === 'running' ? drawing.etaMs : 0,
     drawingElapsedMs: drawing?.elapsedMs ?? 0,
     queue, queueMax, queueFull: queue.length >= queueMax, drawError, cancel,
-    styles, model, setModel, capabilities, structure, setStructure,
+    styles, model, setModel, capabilities, structure, setStructure, safeTags, setSafeTags,
     quality, setQuality,
     params, defaults, loras, autoLora, setParams, resetParams,
     generate, remove, clear, refresh,

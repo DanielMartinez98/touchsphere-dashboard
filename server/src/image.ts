@@ -2407,7 +2407,67 @@ function stylePrefixes(style: string): { positive: string; negative: string } {
 /** The negative a style wants by default, or '' to fall back to DEFAULT_NEGATIVE. */
 function styleNegative(style: string): string {
   if (!style.startsWith(WORKFLOW_PREFIX)) return ''
-  return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.negative ?? ''
+  return withSafety(BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.negative ?? '')
+}
+
+// ── Safety tags ──────────────────────────────────────────────────────────────
+//
+// Several built-in prefixes carry the booru rating tag `safe` and several
+// built-in negatives lead with `nsfw`. They are there because the assistant
+// draws on a kiosk unprompted (see the NoobAI and Anima entries). They are
+// also why "swap the shirt for a bikini" fights the model: on the booru scale
+// swimwear is `sensitive`, so `safe` in the prefix pushes against it. This is
+// the user's call, so it is one switch — off strips those tags from every
+// style's BUILT-IN text; a prefix or negative the user typed is theirs and is
+// never touched. Read per call like the quality preset, so flipping it
+// reaches the next picture.
+
+const SAFETY_TAGS = new Set(['safe', 'nsfw', 'sfw', 'rating:safe', 'rating:general', 'rating:s', 'rating:g'])
+
+function safetyFile(): string {
+  return path.join(process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache', 'image-safety.json')
+}
+
+/** Whether the built-in safety tags are added. Default on. */
+export function safeTagsOn(): boolean {
+  try {
+    const v = (JSON.parse(fs.readFileSync(safetyFile(), 'utf8')) as { safeTags?: unknown }).safeTags
+    return v !== false
+  } catch {
+    return true
+  }
+}
+
+export function setSafeTags(on: boolean): void {
+  const dir = path.dirname(safetyFile())
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  const p = safetyFile()
+  const tmp = `${p}.tmp-${process.pid}`
+  try {
+    fs.writeFileSync(tmp, JSON.stringify({ safeTags: on }, null, 2), 'utf8')
+    fs.renameSync(tmp, p)
+    console.log(`[image] built-in safety tags ${on ? 'on' : 'OFF'}`)
+  } catch (err) {
+    try { fs.unlinkSync(tmp) } catch { /* nothing */ }
+    console.error('[image] failed to save the safety-tag switch:', err)
+  }
+}
+
+/**
+ * Strip the safety tags out of a comma-separated built-in string, keeping
+ * its shape: a prefix that ended in ", " still does, so joinPrefix() sees
+ * what it always saw.
+ */
+export function stripSafetyTags(text: string): string {
+  if (!text) return text
+  const trailing = /,\s*$/.test(text) ? ', ' : ''
+  const items = text.split(',').map(x => x.trim()).filter(x => x.length > 0 && !SAFETY_TAGS.has(x.toLowerCase()))
+  return items.length ? items.join(', ') + trailing : ''
+}
+
+/** A built-in string as the switch says it should be. */
+function withSafety(text: string): string {
+  return safeTagsOn() ? text : stripSafetyTags(text)
 }
 
 /**
@@ -2514,12 +2574,12 @@ export function styleUsesNegative(style: string): boolean {
 
 /** The lead-in a style's card puts IN FRONT of every prompt. '' for most. */
 export function stylePrefixFor(style: string): string {
-  return stylePrefixes(style).positive
+  return withSafety(stylePrefixes(style).positive)
 }
 
 /** The lead-in in front of the NEGATIVE. Only instruction-tuned models ship one. */
 export function styleNegativePrefixFor(style: string): string {
-  return stylePrefixes(style).negative
+  return withSafety(stylePrefixes(style).negative)
 }
 
 export function styleOptimizations(style: string): string {
