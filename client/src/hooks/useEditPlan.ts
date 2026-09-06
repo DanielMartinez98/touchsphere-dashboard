@@ -25,6 +25,8 @@ export interface PlanStep {
   jobId?:   string
   imageId?: string
   error?:   string
+  attempts?: number
+  change?:  number
 }
 
 export interface EditPlan {

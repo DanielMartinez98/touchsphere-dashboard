@@ -1332,6 +1332,9 @@ function PlanCard({ plan, onRun, onDrop, onOpenStep, onMore }: {
                   {st.why && st.status === 'pending' && (
                     <span className="text-[11px] text-white/35 leading-snug block">{st.why}</span>
                   )}
+                  {(st.attempts ?? 0) > 1 && st.status !== 'failed' && (
+                    <span className="text-[11px] text-amber-200/70 leading-snug block">first try came back unchanged — retried harder</span>
+                  )}
                   {st.error && (
                     <span className="text-[11px] text-red-300 leading-snug block">{st.error}</span>
                   )}

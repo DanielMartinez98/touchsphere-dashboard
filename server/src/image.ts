@@ -1484,12 +1484,21 @@ async function run(job: ImageJob): Promise<void> {
       push(job, 'finding the part',
         `Looking for "${job.region}" in the picture. GroundingDINO finds it from the words and ` +
         'Segment Anything traces its outline; only that outline will be repainted.')
-      const found = await findMask(sourceName, job.region)
-      if (!found || found.coverage < 0.002) {
-        throw new Error(`could not find "${job.region}" in the picture — try naming it differently, or paint the part by hand`)
+      const limit = maxCoverageFor(job.region)
+      let found = await findMask(sourceName, job.region)
+      if (found && found.coverage > limit) {
+        // Too much of the picture for what was named: ask again, stricter.
+        // The segmenter returns its best box even for a thing that is not
+        // there, and a higher threshold is what makes it say "nothing".
+        console.log(`[image] ${job.id} "${job.region}" matched ${(found.coverage * 100).toFixed(0)}% — retrying stricter`)
+        push(job, 'finding the part', `"${job.region}" matched ${Math.round(found.coverage * 100)}% of the picture, which is too much for a part — looking again more strictly.`)
+        found = await findMask(sourceName, job.region, 0.5)
       }
-      if (found.coverage > 0.92) {
-        throw new Error(`"${job.region}" turned out to be almost the whole picture (${Math.round(found.coverage * 100)}%) — describe a smaller part, or redraw the whole thing instead`)
+      if (!found || found.coverage < 0.002) {
+        throw new Error(`could not find "${job.region}" in the picture — it may not be there yet; try naming it differently, or paint the part by hand`)
+      }
+      if (found.coverage > limit) {
+        throw new Error(`"${job.region}" matched ${Math.round(found.coverage * 100)}% of the picture, too much for a part — it is probably not in the picture; name something that is, or paint the part by hand`)
       }
       job.mask = found.id
       job.maskFile = found.file
@@ -3037,6 +3046,59 @@ export function maskPath(file: string): string | null {
  * cross-build to keep working.
  */
 function maskCoverage(bytes: Buffer): { coverage: number; box: [number, number, number, number] } | null {
+  const g = decodeGrey(bytes)
+  if (!g) return null
+  const { width: w, height: h, grey } = g
+  let white = 0, minX = w, minY = h, maxX = -1, maxY = -1
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (grey[y * w + x]! > 127) {
+        white++
+        if (x < minX) minX = x; if (x > maxX) maxX = x
+        if (y < minY) minY = y; if (y > maxY) maxY = y
+      }
+    }
+  }
+  return { coverage: white / (w * h), box: maxX < 0 ? [0, 0, 0, 0] : [minX, minY, maxX - minX + 1, maxY - minY + 1] }
+}
+
+/**
+ * How different two pictures are, 0 (identical) to 1, on a coarse grey grid.
+ *
+ * Both are sampled onto the same 96-wide grid by relative position, so a
+ * source and its Kontext output (a different pixel size) compare directly.
+ * Exists for one question: did an edit step actually change anything? An
+ * editor told to keep everything keeps everything, and a plan must notice
+ * that rather than hand the untouched picture to the next step.
+ */
+export function imageDifference(fileA: string, fileB: string): number | null {
+  let a: ReturnType<typeof decodeGrey>, b: ReturnType<typeof decodeGrey>
+  try {
+    a = decodeGrey(fs.readFileSync(path.join(imagesDir(), fileA)))
+    b = decodeGrey(fs.readFileSync(path.join(imagesDir(), fileB)))
+  } catch { return null }
+  if (!a || !b) return null
+  const GW = 96, GH = Math.max(8, Math.round(GW * a.height / a.width))
+  let sum = 0
+  for (let gy = 0; gy < GH; gy++) {
+    for (let gx = 0; gx < GW; gx++) {
+      const fx = (gx + 0.5) / GW, fy = (gy + 0.5) / GH
+      const va = a.grey[Math.floor(fy * a.height) * a.width + Math.floor(fx * a.width)]!
+      const vb = b.grey[Math.floor(fy * b.height) * b.width + Math.floor(fx * b.width)]!
+      sum += Math.abs(va - vb)
+    }
+  }
+  return sum / (GW * GH) / 255
+}
+
+/**
+ * Decode an 8-bit non-interlaced PNG (grey, RGB, with or without alpha) to
+ * one grey byte per pixel. Written here rather than pulling in an image
+ * library because the server image is built for linux/arm64 and every native
+ * dependency is a cross-build to keep working. Returns null for anything
+ * fancier, and callers treat that as "unmeasured", never as an error.
+ */
+function decodeGrey(bytes: Buffer): { width: number; height: number; grey: Uint8Array } | null {
   const size = pngSize(bytes)
   if (!size) return null
   const depth = bytes[24], colour = bytes[25], interlace = bytes[28]
@@ -3058,7 +3120,7 @@ function maskCoverage(bytes: Buffer): { coverage: number; box: [number, number, 
   const stride = w * channels
   if (raw.length < (stride + 1) * h) return null
   const prev = Buffer.alloc(stride), cur = Buffer.alloc(stride)
-  let white = 0, minX = w, minY = h, maxX = -1, maxY = -1
+  const grey = new Uint8Array(w * h)
   for (let y = 0; y < h; y++) {
     const filter = raw[y * (stride + 1)]!
     const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1))
@@ -3074,15 +3136,27 @@ function maskCoverage(bytes: Buffer): { coverage: number; box: [number, number, 
       cur[i] = v & 255
     }
     for (let x = 0; x < w; x++) {
-      if (cur[x * channels]! > 127) {
-        white++
-        if (x < minX) minX = x; if (x > maxX) maxX = x
-        if (y < minY) minY = y; if (y > maxY) maxY = y
-      }
+      const i = x * channels
+      grey[y * w + x] = channels >= 3
+        ? (cur[i]! * 299 + cur[i + 1]! * 587 + cur[i + 2]! * 114) / 1000
+        : cur[i]!
     }
     prev.set(cur)
   }
-  return { coverage: white / (w * h), box: maxX < 0 ? [0, 0, 0, 0] : [minX, minY, maxX - minX + 1, maxY - minY + 1] }
+  return { width: w, height: h, grey }
+}
+
+/**
+ * How much of the picture a named part may plausibly be.
+ *
+ * "The jacket" matching 59% of the picture is not a jacket, it is the
+ * segmenter returning its best box for a thing that is not there — which is
+ * how a plan repainted a woman's hair pink. A part that is by nature most of
+ * the picture (background, sky, wall, floor) is allowed to be.
+ */
+export function maxCoverageFor(region: string): number {
+  return /\b(background|backdrop|sky|wall|walls|floor|ground|room|scene|surroundings|landscape|water|sea|ocean|field|grass|snow|everything)\b/i.test(region)
+    ? 0.92 : 0.45
 }
 
 export function measureMask(file: string): { coverage: number; box: [number, number, number, number] } | null {

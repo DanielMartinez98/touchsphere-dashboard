@@ -28,7 +28,7 @@
 
 import { broadcast } from './routes/system'
 import {
-  cancelJob, getJob, listImages, listModels, listWorkflowStyles, missingFiles, selectedModel, startImage,
+  cancelJob, getJob, imageDifference, listImages, listModels, listWorkflowStyles, missingFiles, selectedModel, startImage,
   styleEdits, styleLabel, styleNeeds, stylePromptStyle, supersededCheckpoints,
   segmentationAvailable, inpaintAvailable,
   type ImageJob,
@@ -74,7 +74,14 @@ export interface PlanStep {
   /** The gallery id of this step's result, which is also the next step's source. */
   imageId?: string
   error?:   string
+  /** Renders this step took; 2 when the first came back unchanged and was retried. */
+  attempts?: number
+  /** How much the step changed the picture, 0-1, when it could be measured. */
+  change?:  number
 }
+
+/** Below this an "edit" step is judged to have done nothing. ~1.5% mean grey difference. */
+const NO_CHANGE = 0.015
 
 export type PlanStatus = 'planning' | 'ready' | 'running' | 'done' | 'failed' | 'cancelled'
 
@@ -214,11 +221,15 @@ function plannerSystem(tools: PlanMode[], styles: DrawStyle[]): string {
   lines.push(
     'How to write "edit" prompts (these go to Kontext verbatim, so this decides the result):',
     '- Name the subject explicitly — "the woman with orange hair", never "her" or "it".',
-    '- Describe the new thing concretely: type, colour, material, and HOW it is worn or placed — ' +
-    '"an open pink zip-up jacket worn over her striped top, with sleeves on both arms".',
-    '- End with what must stay: "while keeping her face, hair, expression, pose, the position of her arms ' +
-    'and hands, and the background exactly the same, in the same art style".',
+    '- State the RESULT, concretely: "The woman with orange hair now wears an open pink zip-up jacket over ' +
+    'her striped top, sleeves on both arms." Type, colour, material, how it is worn or placed.',
+    '- Then ONE short clause naming only what is at risk: "Keep her pose and face unchanged." NEVER a list ' +
+    'of everything to keep — an editor told to keep everything changes nothing, and the picture comes ' +
+    'back untouched.',
     '- One instruction per step. Vague verbs ("put", "make it nice") produce vague results.',
+    '- Kontext is weak at adding clothing to a drawn character in a foreshortened pose. On an anime or ' +
+    'illustrated picture, prefer a "part" step with an anime style for garments: region = the area the ' +
+    'garment will cover (e.g. "her striped top and shoulders"), prompt = the garment over what is there.',
     '',
     'How to decompose (this is the important part):',
     '- Something NEW that is not in the picture (a garment, an object, a sign, a background) is CREATED ' +
@@ -237,8 +248,12 @@ function plannerSystem(tools: PlanMode[], styles: DrawStyle[]): string {
     'Examples:',
     '- "give her a pink jacket" (she wears a blue coat) → 1 ' + (tools.includes('part') ? 'part, region "the blue coat", prompt "a pink jacket", strength strong' : 'edit "change the blue coat into a pink jacket"') +
     '; 2 edit "make the jacket a clean pastel pink, fabric texture" (a precision pass).',
-    '- "give her a pink jacket" (she wears a t-shirt, no jacket) → 1 edit "put a jacket on the woman over her t-shirt"; ' +
-    '2 ' + (tools.includes('part') ? 'part, region "the jacket", prompt "a pink jacket", strength light' : 'edit "make the jacket pink"') + '.',
+    '- "give her a pink jacket" (an anime still, she wears a striped top, no jacket) → ' +
+    (tools.includes('part')
+      ? '1 part, region "her striped top and shoulders", style an anime one, prompt "pink jacket, open jacket, zipper, long sleeves, striped shirt underneath", strength strong.'
+      : '1 edit "The woman now wears an open pink jacket over her striped top, sleeves on both arms. Keep her pose and face unchanged."') +
+    '\n- "give him a pink jacket" (a photo, he wears a t-shirt) → 1 edit "The man now wears an open pink jacket over his t-shirt, sleeves on both arms. Keep his pose and face unchanged."; ' +
+    '2 ' + (tools.includes('part') ? 'part, region "the jacket", prompt "a pastel pink cotton jacket", strength light' : 'edit "Make the jacket a clean pastel pink."') + '.',
     '- "put him in jail with a sign that says MATRIX above the cell" → 1 edit "change the background to a prison cell with bars, keep the man as he is"; ' +
     '2 edit "add a blank rectangular sign above the cell bars"; 3 edit "write MATRIX on the sign in bold capital letters".',
     '',
@@ -442,6 +457,19 @@ export function cancelPlan(id: string): EditPlan | undefined {
   return plan
 }
 
+/**
+ * The second try at an edit that did nothing: drop any "keep … the same"
+ * tail, which is the usual reason, and say plainly that a visible change is
+ * wanted.
+ */
+function pushHarder(prompt: string): string {
+  const stripped = prompt
+    .replace(/,?\s*(while\s+)?keep(ing)?\s+[^.]*?(the\s+same|unchanged)[^.]*\.?/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return `Make a clear, visible change: ${stripped || prompt}`
+}
+
 function waitForJob(id: string): Promise<ImageJob> {
   const deadline = Date.now() + STEP_TIMEOUT_MS
   return new Promise((resolve, reject) => {
@@ -478,27 +506,53 @@ async function execute(plan: EditPlan, editor: string): Promise<void> {
           ? { model: step.style ?? '', region: step.region ?? '', denoise: PART_STRENGTH[step.strength ?? 'strong'] }
           : { model: step.style ?? '', denoise: STRENGTH[step.strength ?? 'balanced'] }),
     }
-    const job = startImage(req)
-    step.jobId = job.id
-    plan.currentJobId = job.id
-    push(plan)
-    if (job.status === 'failed') {
-      step.status = 'failed'; step.error = job.error ?? 'could not start'
-      plan.status = 'failed'; plan.error = `step ${step.n} could not start: ${step.error}`
+    let done: ImageJob | null = null
+    step.attempts = 0
+    // An edit step that comes back unchanged is retried ONCE with the
+    // instruction pushed harder — the usual cause is a preservation clause
+    // the editor read as "change nothing" — and fails the plan if it still
+    // does nothing, rather than handing the untouched picture to the next
+    // step, which then goes looking for a jacket that was never drawn.
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      step.attempts = attempt
+      const prompt = attempt === 1 ? step.prompt : pushHarder(step.prompt)
+      const job = startImage({ ...req, prompt })
+      step.jobId = job.id
+      plan.currentJobId = job.id
+      if (attempt === 2) step.prompt = prompt
       push(plan)
-      return
-    }
-    step.status = 'running'
-    push(plan)
-    let done: ImageJob
-    try {
-      done = await waitForJob(job.id)
-    } catch (err) {
-      step.status = 'failed'; step.error = err instanceof Error ? err.message : String(err)
-      plan.status = 'failed'; plan.error = `step ${step.n}: ${step.error}`
+      if (job.status === 'failed') {
+        step.status = 'failed'; step.error = job.error ?? 'could not start'
+        plan.status = 'failed'; plan.error = `step ${step.n} could not start: ${step.error}`
+        push(plan)
+        return
+      }
+      step.status = 'running'
       push(plan)
-      return
+      try {
+        done = await waitForJob(job.id)
+      } catch (err) {
+        step.status = 'failed'; step.error = err instanceof Error ? err.message : String(err)
+        plan.status = 'failed'; plan.error = `step ${step.n}: ${step.error}`
+        push(plan)
+        return
+      }
+      if (step.mode !== 'edit' || done.status !== 'ready') break
+      const srcEntry = listImages().find(e => e.id === source)
+      const outEntry = listImages().find(e => e.id === done!.id)
+      const diff = srcEntry && outEntry ? imageDifference(srcEntry.file, outEntry.file) : null
+      if (diff !== null) step.change = diff
+      if (diff === null || diff >= NO_CHANGE) break
+      console.log(`[image-plan] ${plan.id} step ${step.n} changed ${(diff * 100).toFixed(1)}% of the picture — ${attempt === 1 ? 'retrying harder' : 'giving up'}`)
+      if (attempt === 2) {
+        step.status = 'failed'
+        step.error = 'the editor returned the picture unchanged twice — say the change differently, or use "Just a part"'
+        plan.status = 'failed'; plan.error = `step ${step.n}: ${step.error}`
+        push(plan)
+        return
+      }
     }
+    if (!done) return
     if ((plan.status as PlanStatus) === 'cancelled') { step.status = done.status === 'ready' ? 'done' : 'skipped'; push(plan); return }
     if (done.status !== 'ready') {
       step.status = 'failed'; step.error = done.error ?? (done.status === 'cancelled' ? 'cancelled' : 'failed')
