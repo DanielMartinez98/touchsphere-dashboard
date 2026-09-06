@@ -3072,23 +3072,73 @@ function maskCoverage(bytes: Buffer): { coverage: number; box: [number, number, 
  * that rather than hand the untouched picture to the next step.
  */
 export function imageDifference(fileA: string, fileB: string): number | null {
+  return imageChange(fileA, fileB)?.peak ?? null
+}
+
+/**
+ * Mean cell difference AND the peak: the mean of the top 2% of cells.
+ *
+ * The peak is the number that answers "did anything happen". An editor's
+ * untouched output still differs faintly everywhere (its own resize and VAE
+ * round trip), while a real edit — even a small one, a recoloured fringe —
+ * is a cluster of cells that changed a lot. Measured on real renders: an
+ * untouched Kontext output has a mean of ~1.8% and a recoloured 1%-of-the-
+ * picture fringe a mean of 0.3%, so the mean cannot tell them apart; the
+ * peaks can.
+ */
+export function imageChange(fileA: string, fileB: string): { mean: number; peak: number } | null {
   let a: ReturnType<typeof decodeGrey>, b: ReturnType<typeof decodeGrey>
   try {
     a = decodeGrey(fs.readFileSync(path.join(imagesDir(), fileA)))
     b = decodeGrey(fs.readFileSync(path.join(imagesDir(), fileB)))
   } catch { return null }
   if (!a || !b) return null
-  const GW = 96, GH = Math.max(8, Math.round(GW * a.height / a.width))
-  let sum = 0
-  for (let gy = 0; gy < GH; gy++) {
-    for (let gx = 0; gx < GW; gx++) {
-      const fx = (gx + 0.5) / GW, fy = (gy + 0.5) / GH
-      const va = a.grey[Math.floor(fy * a.height) * a.width + Math.floor(fx * a.width)]!
-      const vb = b.grey[Math.floor(fy * b.height) * b.width + Math.floor(fx * b.width)]!
-      sum += Math.abs(va - vb)
-    }
+  // Each cell is the AVERAGE of every pixel in it, not one sampled pixel:
+  // a source and its output are different sizes, and nearest sampling reads
+  // the resampling itself as ~4% difference, which is the size of a real
+  // small edit. Averaged, an untouched picture measures well under 1%.
+  // The two pictures may not be the same shape: an editor snaps its output to
+  // one of its own resolutions, and whether it got there by stretching or by
+  // a centre crop is not written anywhere. Both alignments are tried and the
+  // one that makes the pictures agree MORE is used — an untouched output then
+  // measures near zero under the right alignment, while a real edit stays a
+  // real edit under either.
+  const GW = 64, GH = Math.max(8, Math.round(GW * a.height / a.width))
+  type Img = NonNullable<typeof a>
+  // A window onto an image: the region of it the grid maps over.
+  const cellOf = (img: Img, win: { x: number; y: number; w: number; h: number }, gx: number, gy: number): number => {
+    const x0 = Math.floor(win.x + gx / GW * win.w), x1 = Math.max(x0 + 1, Math.floor(win.x + (gx + 1) / GW * win.w))
+    const y0 = Math.floor(win.y + gy / GH * win.h), y1 = Math.max(y0 + 1, Math.floor(win.y + (gy + 1) / GH * win.h))
+    let t = 0
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) t += img.grey[y * img.width + x]!
+    return t / ((x1 - x0) * (y1 - y0))
   }
-  return sum / (GW * GH) / 255
+  const full = (img: Img) => ({ x: 0, y: 0, w: img.width, h: img.height })
+  // The centre crop of `img` that has `aspect`'s shape.
+  const cropTo = (img: Img, aspect: number) => {
+    const own = img.width / img.height
+    if (Math.abs(own - aspect) < 1e-3) return full(img)
+    if (own > aspect) { const w = Math.round(img.height * aspect); return { x: Math.round((img.width - w) / 2), y: 0, w, h: img.height } }
+    const h = Math.round(img.width / aspect); return { x: 0, y: Math.round((img.height - h) / 2), w: img.width, h }
+  }
+  const candidates = [
+    { wa: full(a), wb: full(b) },                                  // stretched to fit
+    { wa: cropTo(a, b.width / b.height), wb: full(b) },            // A centre-cropped to B's shape
+    { wa: full(a), wb: cropTo(b, a.width / a.height) },            // B centre-cropped to A's shape
+  ]
+  let best: { mean: number; peak: number } | null = null
+  for (const { wa, wb } of candidates) {
+    const diffs: number[] = []
+    for (let gy = 0; gy < GH; gy++) {
+      for (let gx = 0; gx < GW; gx++) diffs.push(Math.abs(cellOf(a, wa, gx, gy) - cellOf(b, wb, gx, gy)) / 255)
+    }
+    diffs.sort((x, y) => y - x)
+    const top = Math.max(1, Math.round(diffs.length * 0.02))
+    const peak = diffs.slice(0, top).reduce((t, v) => t + v, 0) / top
+    const mean = diffs.reduce((t, v) => t + v, 0) / diffs.length
+    if (!best || mean < best.mean) best = { mean, peak }
+  }
+  return best
 }
 
 /**

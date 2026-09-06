@@ -80,8 +80,14 @@ export interface PlanStep {
   change?:  number
 }
 
-/** Below this an "edit" step is judged to have done nothing. ~1.5% mean grey difference. */
-const NO_CHANGE = 0.015
+/**
+ * Below this PEAK difference (imageDifference: the mean of the top 2% of grid
+ * cells, under the better of stretch / centre-crop alignment) an "edit" step
+ * is judged to have done nothing. Measured on real renders: an untouched
+ * Kontext output peaks at 1.7%, the smallest real edit so far (a recoloured
+ * fringe, 1% of the picture) at 14%, a background swap at 31%.
+ */
+const NO_CHANGE = 0.05
 
 export type PlanStatus = 'planning' | 'ready' | 'running' | 'done' | 'failed' | 'cancelled'
 
