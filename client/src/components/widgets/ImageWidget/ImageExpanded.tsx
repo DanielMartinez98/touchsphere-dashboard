@@ -1326,7 +1326,7 @@ function PlanCard({ plan, onRun, onDrop, onOpenStep, onMore }: {
                 <span className={`mt-1.5 w-2.5 h-2.5 rounded-full shrink-0 ${dot(st)}`} />
                 <span className="min-w-0 flex-1">
                   <span className="text-[12px] text-white/90 leading-snug block">
-                    <span className="text-white/45">{st.n}. {MODE_LABEL[st.mode]}{st.region ? ` · ${st.region}` : ''}{st.strength && st.mode !== 'edit' ? ` · ${st.strength}` : ''}</span>
+                    <span className="text-white/45">{st.n}. {MODE_LABEL[st.mode]}{st.region ? ` · ${st.region}` : ''}{st.strength && st.mode !== 'edit' ? ` · ${st.strength}` : ''}{st.styleLabel ? ` · ${st.styleLabel}` : ''}</span>
                     {' '}{st.prompt}
                   </span>
                   {st.why && st.status === 'pending' && (

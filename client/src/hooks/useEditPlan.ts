@@ -18,6 +18,8 @@ export interface PlanStep {
   prompt:   string
   region?:  string
   strength?: 'light' | 'balanced' | 'strong'
+  style?:      string
+  styleLabel?: string
   why:      string
   status:   'pending' | 'queued' | 'running' | 'done' | 'failed' | 'skipped'
   jobId?:   string

@@ -18,7 +18,7 @@ import {
   type ImageJob, type StoredImage,
 } from '../image'
 import type { BrowseToolResult, DisplayPayload } from './browse'
-import { createPlan } from '../image-plan'
+import { createPlan, pickDrawStyle } from '../image-plan'
 
 /**
  * How to write a prompt for the style selected RIGHT NOW.
@@ -353,7 +353,7 @@ function noMatch(about: string): BrowseToolResult {
   )
 }
 
-function redraw(prompt: string, about: string, strength: string, region = ''): BrowseToolResult {
+async function redraw(prompt: string, about: string, strength: string, region = ''): Promise<BrowseToolResult> {
   if (!imagesEnabled()) {
     return noDisplay(
       'Image generation is not configured on this server (COMFYUI_URL is unset). ' +
@@ -376,9 +376,14 @@ function redraw(prompt: string, about: string, strength: string, region = ''): B
 
   const ahead = pendingJobs().length
   const part = region.trim()
+  // A part is repainted by a DRAWING style. With the editor selected in the
+  // panel, startImage would drop the region (an editor takes no mask) and
+  // quietly turn "make the hat red" into a Kontext edit of "a red hat".
+  const drawStyle = part && styleEdits(selectedModel()) ? await pickDrawStyle() : ''
   const job: ImageJob = startImage({
     prompt:  prompt.trim(),
     source:  source.id,
+    ...(drawStyle ? { model: drawStyle } : {}),
     // A named part is repainted fully by default; a whole-picture redraw keeps
     // the strength word. See startImage on why the two default differently.
     ...(part ? { region: part } : { denoise: STRENGTH[strength] ?? STRENGTH['balanced']! }),

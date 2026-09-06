@@ -28,8 +28,9 @@
 
 import { broadcast } from './routes/system'
 import {
-  cancelJob, getJob, listImages, listWorkflowStyles, missingFiles, startImage,
-  styleEdits, styleNeeds, segmentationAvailable, inpaintAvailable,
+  cancelJob, getJob, listImages, listModels, listWorkflowStyles, missingFiles, selectedModel, startImage,
+  styleEdits, styleLabel, styleNeeds, stylePromptStyle, supersededCheckpoints,
+  segmentationAvailable, inpaintAvailable,
   type ImageJob,
 } from './image'
 import { visionModel } from './image-prompt'
@@ -56,6 +57,16 @@ export interface PlanStep {
   prompt:   string
   region?:  string
   strength?: Strength
+  /**
+   * The DRAWING style a part/whole step renders with, chosen by the planner
+   * to match the picture — an anime still gets an anime model, a photo a
+   * photoreal one. Absent for an edit step, which is always the editor. This
+   * matters more than it looks: with Kontext selected in the panel, a part
+   * step that inherited the selection would have had its mask silently
+   * dropped, because an editing style takes none.
+   */
+  style?:      string
+  styleLabel?: string
   /** The planner's one-line reason — shown so a wrong plan can be argued with. */
   why:      string
   status:   'pending' | 'queued' | 'running' | 'done' | 'failed' | 'skipped'
@@ -102,10 +113,45 @@ function prune(): void {
   for (const old of finished.slice(MAX_PLANS)) plans.delete(old.id)
 }
 
-/** Which of the three tools this box can run right now, and the editor style's id. */
-async function availableTools(): Promise<{ tools: PlanMode[]; editor: string }> {
+/** A style a part/whole step can render with, and the register its prompt wants. */
+export interface DrawStyle { id: string; label: string; register: 'tags' | 'prose' }
+
+/**
+ * Every installed style that DRAWS (not the editor): workflow styles whose
+ * files are present, plus bare checkpoints not wrapped by one. The same list
+ * the picker shows, minus the editor.
+ */
+export async function usableDrawStyles(): Promise<DrawStyle[]> {
+  const workflows = listWorkflowStyles().filter(w => !styleEdits(w.id))
+  const allNeeds = [...new Set(workflows.flatMap(w => styleNeeds(w.id)))]
+  const absent = new Set(await missingFiles(allNeeds).catch(() => allNeeds))
+  const wrapped = supersededCheckpoints()
+  const checkpoints = await listModels().catch(() => [] as string[])
+  return [
+    ...workflows
+      .filter(w => styleNeeds(w.id).every(n => !absent.has(n)))
+      .map(w => ({ id: w.id, label: w.label, register: stylePromptStyle(w.id) })),
+    ...checkpoints
+      .filter(n => !wrapped.has(n))
+      .map(n => ({ id: n, label: n, register: stylePromptStyle(n) })),
+  ]
+}
+
+/**
+ * The drawing style to fall back on when the selected one is the editor: the
+ * selection itself when it draws, else the first installed drawing style.
+ */
+export async function pickDrawStyle(): Promise<string> {
+  const sel = selectedModel()
+  if (sel && !styleEdits(sel)) return sel
+  const styles = await usableDrawStyles()
+  return styles[0]?.id ?? ''
+}
+
+/** Which of the three tools this box can run right now, the editor's id, and the drawing styles. */
+async function availableTools(): Promise<{ tools: PlanMode[]; editor: string; styles: DrawStyle[] }> {
   const tools: PlanMode[] = ['whole']
-  const [seg, inpaint] = await Promise.all([segmentationAvailable(), inpaintAvailable()])
+  const [seg, inpaint, styles] = await Promise.all([segmentationAvailable(), inpaintAvailable(), usableDrawStyles()])
   if (seg && inpaint) tools.unshift('part')
   let editor = ''
   const candidate = listWorkflowStyles().find(w => styleEdits(w.id))
@@ -113,10 +159,10 @@ async function availableTools(): Promise<{ tools: PlanMode[]; editor: string }> 
     const absent = await missingFiles(styleNeeds(candidate.id)).catch(() => ['?'])
     if (absent.length === 0) { editor = candidate.id; tools.unshift('edit') }
   }
-  return { tools, editor }
+  return { tools, editor, styles }
 }
 
-function plannerSystem(tools: PlanMode[]): string {
+function plannerSystem(tools: PlanMode[], styles: DrawStyle[]): string {
   const lines: string[] = []
   lines.push(
     'You plan edits to a picture for an image pipeline. You are shown the picture and told what the ' +
@@ -151,6 +197,29 @@ function plannerSystem(tools: PlanMode[]): string {
     '- "whole": repaint the entire picture from a full description of the result, at a "strength". ' +
     'Rarely the best choice; use it only for a global restyle when "edit" is not available.',
     '',
+  )
+  if (styles.length > 0 && (tools.includes('part') || tools.includes('whole'))) {
+    lines.push(
+      'Drawing styles for "part" and "whole" steps — set "style" to one id per such step, MATCHING THE ' +
+      'PICTURE: an anime or illustrated picture gets an anime style, a photograph or realistic render a ' +
+      'photoreal one. Write that step\'s prompt in the register the style wants:',
+      ...styles.map(st =>
+        `- ${st.id} — "${st.label}": ` + (st.register === 'tags'
+          ? 'anime / illustration model; prompt as comma-separated booru tags describing what is IN the ' +
+            'region ("pink jacket, open jacket, zipper, long sleeves, striped shirt underneath").'
+          : 'photoreal / general model; prompt as a plain-English description of what is in the region.')),
+      '',
+    )
+  }
+  lines.push(
+    'How to write "edit" prompts (these go to Kontext verbatim, so this decides the result):',
+    '- Name the subject explicitly — "the woman with orange hair", never "her" or "it".',
+    '- Describe the new thing concretely: type, colour, material, and HOW it is worn or placed — ' +
+    '"an open pink zip-up jacket worn over her striped top, with sleeves on both arms".',
+    '- End with what must stay: "while keeping her face, hair, expression, pose, the position of her arms ' +
+    'and hands, and the background exactly the same, in the same art style".',
+    '- One instruction per step. Vague verbs ("put", "make it nice") produce vague results.',
+    '',
     'How to decompose (this is the important part):',
     '- Something NEW that is not in the picture (a garment, an object, a sign, a background) is CREATED ' +
     'first with "edit" in its plainest form, and its exact colour / material / pattern is set in a ' +
@@ -161,6 +230,9 @@ function plannerSystem(tools: PlanMode[]): string {
     '- Background / setting, lighting / time of day, weather, and the subject\'s pose or expression are ' +
     'each their own step, never combined.',
     '- Removing something is its own "edit" step ("remove the hat"), before anything is added in its place.',
+    '- When ADDING clothing to a character with "part", the region must cover where the garment will BE — ' +
+    '"her upper body" or "her torso, shoulders and arms" — not only the old garment, or the sleeves have ' +
+    'nowhere to be drawn. When only recolouring an existing garment, the region is the garment itself.',
     '',
     'Examples:',
     '- "give her a pink jacket" (she wears a blue coat) → 1 ' + (tools.includes('part') ? 'part, region "the blue coat", prompt "a pink jacket", strength strong' : 'edit "change the blue coat into a pink jacket"') +
@@ -182,7 +254,7 @@ function plannerSystem(tools: PlanMode[]): string {
     'Answer with ONLY this JSON, no prose. List the atomic changes FIRST, then the steps:',
     '{"changes":["one atomic change","another"],"summary":"one sentence of what you will do",' +
     '"steps":[{"mode":"edit|part|whole","prompt":"...","region":"only for part",' +
-    '"strength":"light|balanced|strong","why":"one short reason"}]}',
+    '"strength":"light|balanced|strong","style":"a drawing style id, part/whole only","why":"one short reason"}]}',
   )
   return lines.join('\n')
 }
@@ -194,7 +266,7 @@ function unwrapJson(raw: string): string {
   return start >= 0 && end > start ? text.slice(start, end + 1) : text
 }
 
-async function askPlanner(image: Buffer, request: string, tools: PlanMode[], model: string, minSteps = 0): Promise<{ summary: string; steps: PlanStep[]; changes: string[] }> {
+async function askPlanner(image: Buffer, request: string, tools: PlanMode[], styles: DrawStyle[], model: string, minSteps = 0): Promise<{ summary: string; steps: PlanStep[]; changes: string[] }> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), PLAN_TIMEOUT_MS)
   try {
@@ -205,7 +277,7 @@ async function askPlanner(image: Buffer, request: string, tools: PlanMode[], mod
       body: JSON.stringify({
         model, stream: false, think: false, format: 'json',
         messages: [
-          { role: 'system', content: plannerSystem(tools) },
+          { role: 'system', content: plannerSystem(tools, styles) },
           {
             role: 'user',
             content: `Change wanted: ${request}` + (minSteps > 1 ? `\n\n(Write AT LEAST ${minSteps} steps: split the work finer, one precise change per step.)` : ''),
@@ -239,10 +311,15 @@ async function askPlanner(image: Buffer, request: string, tools: PlanMode[], mod
       // A "part" step with no region is a whole-picture repaint in disguise;
       // an editor does it better when there is one.
       if (use === 'part' && !region) use = tools.includes('edit') ? 'edit' : 'whole'
+      // The drawing style, validated against what is installed; a made-up id
+      // falls through to the fallback in execute().
+      const styleRaw = String(s['style'] ?? '').trim()
+      const style = use !== 'edit' ? styles.find(x => x.id === styleRaw) : undefined
       steps.push({
         n: steps.length + 1, mode: use, prompt,
         ...(use === 'part' ? { region } : {}),
         ...(use !== 'edit' ? { strength: strength ?? (use === 'part' ? 'strong' : 'balanced') } : {}),
+        ...(style ? { style: style.id, styleLabel: style.label } : {}),
         why: String(s['why'] ?? '').trim().slice(0, 200),
         status: 'pending',
       })
@@ -266,8 +343,8 @@ function clauseCount(request: string): number {
     .filter(x => x.length > 2).length
 }
 
-async function planWithRetry(image: Buffer, request: string, tools: PlanMode[], model: string, minSteps = 0) {
-  const first = await askPlanner(image, request, tools, model, minSteps)
+async function planWithRetry(image: Buffer, request: string, tools: PlanMode[], styles: DrawStyle[], model: string, minSteps = 0) {
+  const first = await askPlanner(image, request, tools, styles, model, minSteps)
   // How many changes the request implies: the model's own list, the clause
   // count as a floor, and whatever the user asked for with "More steps".
   const wanted = Math.min(MAX_STEPS, Math.max(minSteps, first.changes.length, Math.min(clauseCount(request), 3)))
@@ -279,7 +356,7 @@ async function planWithRetry(image: Buffer, request: string, tools: PlanMode[], 
     `${request}\n\n(The changes are: ${first.changes.join('; ') || 'as listed'}. Write ONE OR MORE STEPS PER CHANGE — ` +
     `at least ${wanted} steps — do not merge them.)`
   try {
-    const second = await askPlanner(image, nudged, tools, model, wanted)
+    const second = await askPlanner(image, nudged, tools, styles, model, wanted)
     return second.steps.length > first.steps.length ? second : first
   } catch {
     return first
@@ -314,10 +391,17 @@ export function createPlan(source: string, request: string, run: boolean, minSte
   push(plan)
   void (async () => {
     try {
-      const { tools, editor } = await availableTools()
+      const { tools, editor, styles } = await availableTools()
       plan.tools = tools
       const bytes = fs.readFileSync(path.join(process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache', 'images', entry.file))
-      const { summary, steps } = await planWithRetry(bytes, plan.request, tools, plan.model, Math.max(0, Math.min(MAX_STEPS, Math.round(minSteps))))
+      const { summary, steps } = await planWithRetry(bytes, plan.request, tools, styles, plan.model, Math.max(0, Math.min(MAX_STEPS, Math.round(minSteps))))
+      // Every drawing step needs a drawing style. One the planner didn't pick
+      // gets the fallback here, so execute() never inherits the panel's
+      // selection — which may be the editor, which would drop the mask.
+      const fallback = await pickDrawStyle()
+      for (const st of steps) {
+        if (st.mode !== 'edit' && !st.style && fallback) { st.style = fallback; st.styleLabel = styleLabel(fallback) }
+      }
       plan.summary = summary
       plan.steps = steps
       plan.status = 'ready'
@@ -380,15 +464,19 @@ async function execute(plan: EditPlan, editor: string): Promise<void> {
   for (const step of plan.steps) {
     if ((plan.status as PlanStatus) === 'cancelled') return
     step.status = 'queued'
+    // A part step's prompt is used verbatim (it describes what goes in the
+    // region, in the style's own register). A whole step turns the improver
+    // ON: img2img needs a description of the entire resulting picture, and
+    // the vision composer writes exactly that from the picture plus the change.
     const req = {
       prompt: step.prompt,
       source,
-      improve: false,
+      improve: step.mode === 'whole',
       ...(step.mode === 'edit'
         ? { model: editor, denoise: 1 }
         : step.mode === 'part'
-          ? { region: step.region ?? '', denoise: PART_STRENGTH[step.strength ?? 'strong'] }
-          : { denoise: STRENGTH[step.strength ?? 'balanced'] }),
+          ? { model: step.style ?? '', region: step.region ?? '', denoise: PART_STRENGTH[step.strength ?? 'strong'] }
+          : { model: step.style ?? '', denoise: STRENGTH[step.strength ?? 'balanced'] }),
     }
     const job = startImage(req)
     step.jobId = job.id
