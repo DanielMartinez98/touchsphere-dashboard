@@ -52,21 +52,34 @@ export interface PresenceSample { t: number; cm: number | null; present: boolean
 
 const state: PresenceState = { present: null, distanceCm: null, thresholdCm: null, since: null, updatedAt: null }
 let lastStats: PresenceStats | null = null
+// LIVE readings: the sensor card is open and wants every reading rather than
+// one per heartbeat. The server cannot reach the Pi, so the reader is told in
+// the answer to each of its POSTs; the card renews this every few seconds
+// while it is open and the window closes by itself when it isn't.
+let liveUntil = 0
+const LIVE_WINDOW_MS = 30_000
+
+export function requestLive(): void { liveUntil = Date.now() + LIVE_WINDOW_MS }
+export function liveWanted(): boolean { return Date.now() < liveUntil }
 let reports = 0
 let firstReportAt: string | null = null
-// ~2 hours of heartbeats at 30 s. In memory, like the rest of this.
-const RECENT_MAX = 240
+// ~2 hours of heartbeats at 30 s, or a few minutes of live readings at 2 Hz.
+const RECENT_MAX = 600
 const recent: PresenceSample[] = []
 
 export function presenceState(): PresenceState & {
   stale: boolean; sensor: boolean; stats: PresenceStats | null; reports: number
-  firstReportAt: string | null; recent: PresenceSample[]
+  firstReportAt: string | null; recent: PresenceSample[]; live: boolean
 } {
   const stale = !state.updatedAt || Date.now() - new Date(state.updatedAt).getTime() > STALE_MS
-  return { ...state, stale, sensor: state.updatedAt !== null, stats: lastStats, reports, firstReportAt, recent }
+  return { ...state, stale, sensor: state.updatedAt !== null, stats: lastStats, reports, firstReportAt, recent, live: liveWanted() && readerLive }
 }
 
-export function reportPresence(present: boolean, distanceCm?: number, thresholdCm?: number, stats?: PresenceStats | null): void {
+/** Whether the reader's last report said it is in live mode. */
+let readerLive = false
+
+export function reportPresence(present: boolean, distanceCm?: number, thresholdCm?: number, stats?: PresenceStats | null, live = false): void {
+  readerLive = live
   const now = new Date().toISOString()
   const flipped = state.present !== present
   state.present = present

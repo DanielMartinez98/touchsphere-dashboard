@@ -23,13 +23,30 @@ export interface Presence {
   firstReportAt: string | null
   /** The last couple of hours of reports, oldest first. */
   recent: { t: number; cm: number | null; present: boolean }[]
+  /** The reader is currently sending every reading (a sensor card is open). */
+  live: boolean
 }
 
 export interface PresenceSettings { dimAfterMin: number }
 
 const EMPTY: Presence = {
   present: null, distanceCm: null, thresholdCm: null, since: null, updatedAt: null, stale: true, sensor: false,
-  stats: null, reports: 0, firstReportAt: null, recent: [],
+  stats: null, reports: 0, firstReportAt: null, recent: [], live: false,
+}
+
+/**
+ * Keep the reader in live mode while the calling component is mounted: one
+ * request now and one every 10 s, against a 30 s window on the server, so a
+ * closed card stops the stream within half a minute on its own.
+ */
+export function useLiveReadings(on: boolean) {
+  useEffect(() => {
+    if (!on) return
+    const ask = () => { fetch('/api/presence/live', { method: 'POST' }).catch(() => { /* next tick retries */ }) }
+    ask()
+    const t = setInterval(ask, 10_000)
+    return () => clearInterval(t)
+  }, [on])
 }
 
 export function usePresence() {

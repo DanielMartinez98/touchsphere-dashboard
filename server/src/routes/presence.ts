@@ -1,7 +1,10 @@
 // /api/presence — the desk sensor's reports, and what the screen does with them.
 
 import { Router, type Request, type Response } from 'express'
-import { presenceState, reportPresence, readPresenceSettings, writePresenceSettings, type PresenceStats } from '../presence'
+import {
+  presenceState, reportPresence, readPresenceSettings, writePresenceSettings, requestLive, liveWanted,
+  type PresenceStats,
+} from '../presence'
 
 const router = Router()
 
@@ -41,8 +44,18 @@ router.post('/', (req: Request, res: Response) => {
     typeof body['distanceCm'] === 'number' ? body['distanceCm'] : undefined,
     typeof body['thresholdCm'] === 'number' ? body['thresholdCm'] : undefined,
     stats,
+    body['live'] === true,
   )
-  res.json({ ok: true })
+  // The one channel back to the Pi: whether a sensor card is open and wants
+  // every reading. The reader flips its own mode on this alone.
+  res.json({ ok: true, live: liveWanted() })
+})
+
+// POST /api/presence/live — the sensor card is open: ask the reader for every
+// reading for the next 30 s. The card calls this every 10 s while open.
+router.post('/live', (_req: Request, res: Response) => {
+  requestLive()
+  res.json({ ok: true, live: true })
 })
 
 // POST /api/presence/settings { dimAfterMin }

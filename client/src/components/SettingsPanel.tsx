@@ -19,7 +19,7 @@ import { useImages } from '../hooks/useImages'
 import type { ParamsResponse } from '../hooks/useImages'
 import { useGuideActivity, type ActivityLevel } from '../hooks/useGuideActivity'
 import { useHost, useHostEnabled, type HostTask } from '../hooks/useHost'
-import { usePresence } from '../hooks/usePresence'
+import { usePresence, useLiveReadings } from '../hooks/usePresence'
 import { TouchInput } from './TouchInput'
 
 type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'system' | 'server' | 'debug'
@@ -2215,6 +2215,9 @@ function DeskSensorCard() {
   // climbing past 60 is the earliest sign that it has died.
   const [tick, setTick] = useState(() => Date.now())
   useEffect(() => { const t = setInterval(() => setTick(Date.now()), 1000); return () => clearInterval(t) }, [])
+  // While this card is on screen the reader sends every reading, so the
+  // number and the strip move with a hand in front of the sensor.
+  useLiveReadings(presence.sensor)
   const ageS = presence.updatedAt ? Math.max(0, Math.round((tick - new Date(presence.updatedAt).getTime()) / 1000)) : null
   const status = !presence.sensor
     ? 'No sensor has reported yet.'
@@ -2241,9 +2244,17 @@ function DeskSensorCard() {
             !live ? 'bg-white/20' : presence.present ? 'bg-emerald-400' : 'bg-amber-400'}`} />
           <p className="text-white/80 text-sm flex-1">{status}</p>
           {live && presence.distanceCm !== null && (
-            <span className="text-white/40 text-xs tabular-nums">{Math.round(presence.distanceCm)} cm{presence.thresholdCm ? ` / ${Math.round(presence.thresholdCm)}` : ''}</span>
+            <span className="flex items-baseline gap-1.5">
+              {presence.live && <span className="text-[10px] uppercase tracking-widest text-emerald-300/80 font-semibold">live</span>}
+              <span className={`tabular-nums font-semibold ${presence.live ? 'text-white text-2xl' : 'text-white/40 text-xs'}`}>
+                {Math.round(presence.distanceCm)}<span className="text-white/40 text-xs font-normal"> cm{presence.thresholdCm ? ` / ${Math.round(presence.thresholdCm)}` : ''}</span>
+              </span>
+            </span>
           )}
         </div>
+        {presence.sensor && !presence.stale && !presence.live && (
+          <p className="text-white/30 text-xs">Waiting for the reader to switch to live readings (within 30 s)…</p>
+        )}
         {presence.sensor && (
           <div className="space-y-2">
             <div className="flex items-center gap-3 text-xs">

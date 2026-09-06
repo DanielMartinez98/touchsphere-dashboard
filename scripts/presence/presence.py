@@ -106,7 +106,12 @@ def post(url, token, body):
         method='POST',
     )
     with urllib.request.urlopen(req, timeout=8) as r:
-        return r.status
+        # The answer carries whether the dashboard wants LIVE readings — it
+        # cannot reach the Pi, so this is the one channel it has to ask.
+        try:
+            return json.loads(r.read().decode() or '{}')
+        except ValueError:
+            return {}
 
 
 def measure(lg, h, trig, echo, max_cm, timeout_s):
@@ -320,6 +325,10 @@ def main():
     last_sent = 0.0
     never_echoed = 0
     accepted_once = False
+    # Live mode: the dashboard's sensor card is open and wants every reading,
+    # not one every 30 s. Asked for in each POST's answer, and dropped again
+    # the moment an answer stops asking, so a closed card costs nothing.
+    live = False
     # Since the last report: for the heartbeat line and the dashboard's card.
     period = {'readings': 0, 'noEcho': 0, 'min': None, 'max': None}
     NEAR_NEEDED = 3      # ~1.5 s of "near" to count as arriving
@@ -363,28 +372,39 @@ def main():
                 new = near
 
             now = time.time()
-            if new is not None and (new != present or now - last_sent >= heartbeat):
+            due = new != present or now - last_sent >= heartbeat
+            # In live mode every reading goes up — the raw one, not the median,
+            # because what the person at the screen wants to see is the number
+            # moving as their hand does.
+            if new is not None and (due or live):
                 stats = {
                     'readings': period['readings'],
                     'noEcho': period['noEcho'],
                     'minCm': round(period['min'], 1) if period['min'] is not None else None,
                     'maxCm': round(period['max'], 1) if period['max'] is not None else None,
                 }
-                body = {'present': bool(new), 'distanceCm': round(med, 1), 'thresholdCm': threshold, 'stats': stats}
+                body = {'present': bool(new), 'distanceCm': round(d if live and not due else med, 1),
+                        'thresholdCm': threshold, 'live': live,
+                        **({'stats': stats} if due else {})}
                 try:
-                    post(cfg['SERVER_URL'], cfg['TOKEN'], body)
+                    answer = post(cfg['SERVER_URL'], cfg['TOKEN'], body)
+                    want_live = bool(answer.get('live')) if isinstance(answer, dict) else False
+                    if want_live != live:
+                        log('live readings ' + ('on — the dashboard\'s sensor card is open' if want_live else 'off'))
+                        live = want_live
                     if not accepted_once:
                         accepted_once = True
                         log(f'first report accepted by {cfg["SERVER_URL"]}')
                     if new != present:
                         log(f'{"at the desk" if new else "away"} ({med:.0f} cm)')
-                    else:
+                    elif due:
                         rng = (f'{stats["minCm"]:.0f}–{stats["maxCm"]:.0f} cm' if stats['minCm'] is not None else 'no echo')
                         log(f'heartbeat: {"at the desk" if new else "away"}, {med:.0f} cm, {stats["readings"]} readings '
                             f'({rng}), {stats["noEcho"]} without echo')
-                    last_sent = now
+                    if due:
+                        last_sent = now
+                        period = {'readings': 0, 'noEcho': 0, 'min': None, 'max': None}
                     present = new
-                    period = {'readings': 0, 'noEcho': 0, 'min': None, 'max': None}
                 except (urllib.error.URLError, OSError) as e:
                     log(f'could not reach the dashboard: {e}', err=True)
                     # Retry in a few seconds rather than a whole heartbeat.
