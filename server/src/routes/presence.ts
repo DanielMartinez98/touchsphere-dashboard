@@ -1,7 +1,7 @@
 // /api/presence — the desk sensor's reports, and what the screen does with them.
 
 import { Router, type Request, type Response } from 'express'
-import { presenceState, reportPresence, readPresenceSettings, writePresenceSettings } from '../presence'
+import { presenceState, reportPresence, readPresenceSettings, writePresenceSettings, type PresenceStats } from '../presence'
 
 const router = Router()
 
@@ -29,10 +29,18 @@ router.post('/', (req: Request, res: Response) => {
     res.status(400).json({ error: 'present must be a boolean' })
     return
   }
+  // What the reader saw since its last report, when it says. Numbers only;
+  // anything else on the field is dropped rather than stored.
+  const raw = body['stats'] as Record<string, unknown> | undefined
+  const num = (k: string) => (typeof raw?.[k] === 'number' && Number.isFinite(raw[k]) ? raw[k] as number : null)
+  const stats: PresenceStats | null = raw && typeof raw === 'object'
+    ? { readings: num('readings') ?? 0, noEcho: num('noEcho') ?? 0, minCm: num('minCm'), maxCm: num('maxCm') }
+    : null
   reportPresence(
     body['present'],
     typeof body['distanceCm'] === 'number' ? body['distanceCm'] : undefined,
     typeof body['thresholdCm'] === 'number' ? body['thresholdCm'] : undefined,
+    stats,
   )
   res.json({ ok: true })
 })

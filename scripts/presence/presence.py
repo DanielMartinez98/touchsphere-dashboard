@@ -38,6 +38,19 @@ it needs root — and the measurement is twenty lines. Reading the pin from
 Python gives tens of microseconds of jitter, which is millimetres: irrelevant
 against a threshold most of a metre away.
 
+Commands (the service runs with no arguments):
+
+    touchsphere-presence test [seconds]   live readings + a verdict on the wiring,
+                                          then what the dashboard believes. Stops
+                                          the service for the duration and starts
+                                          it again after.
+    touchsphere-presence log              the last lines of the reader's own log
+    touchsphere-presence status           service, log tail and the dashboard's view
+
+The reader keeps its own log at ~/.local/state/touchsphere-presence/presence.log
+(the user journal on Raspberry Pi OS is often unreadable or volatile), with one
+line per heartbeat, so "is it alive" is answered by the last line's timestamp.
+
 Config, first of these that exists:
     ~/.config/touchsphere-presence.conf
     /etc/touchsphere-presence.conf
@@ -123,16 +136,168 @@ def measure(lg, h, trig, echo, max_cm, timeout_s):
     return cm if 1 < cm <= max_cm else None
 
 
+LOG_DIR = os.path.expanduser('~/.local/state/touchsphere-presence')
+LOG_PATH = os.path.join(LOG_DIR, 'presence.log')
+LOG_MAX = 256 * 1024
+
+
+def log(msg, err=False):
+    """stdout (the journal, when it works) AND our own file, with a timestamp."""
+    line = f'{time.strftime("%Y-%m-%d %H:%M:%S")} presence: {msg}'
+    print(line, file=sys.stderr if err else sys.stdout, flush=True)
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        try:
+            if os.path.getsize(LOG_PATH) > LOG_MAX:
+                os.replace(LOG_PATH, LOG_PATH + '.1')
+        except OSError:
+            pass
+        with open(LOG_PATH, 'a') as f:
+            f.write(line + '\n')
+    except OSError:
+        pass
+
+
+def claim(lgpio, cfg):
+    chip = int(cfg['CHIP'])
+    trig, echo = int(cfg['TRIG']), int(cfg['ECHO'])
+    h = lgpio.gpiochip_open(chip)
+    lgpio.gpio_claim_output(h, trig, 0)
+    lgpio.gpio_claim_input(h, echo)
+    return h, trig, echo
+
+
+def server_view(cfg):
+    """What the dashboard believes right now, or an error string."""
+    try:
+        req = urllib.request.Request(cfg['SERVER_URL'].rstrip('/') + '/api/presence')
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return json.loads(r.read().decode())
+    except Exception as e:  # noqa: BLE001
+        return {'error': str(e)}
+
+
+def describe_server(view):
+    if 'error' in view:
+        return f'dashboard NOT reachable: {view["error"]}'
+    if not view.get('sensor'):
+        return 'dashboard reachable, but it has never received a report (is the service running? right SERVER_URL?)'
+    age = ''
+    try:
+        from datetime import datetime, timezone
+        t = datetime.fromisoformat(view['updatedAt'].replace('Z', '+00:00'))
+        age = f'{(datetime.now(timezone.utc) - t).total_seconds():.0f} s ago'
+    except Exception:  # noqa: BLE001
+        age = 'unknown age'
+    who = 'at the desk' if view.get('present') else 'away'
+    stale = ' — STALE, the reader has gone quiet' if view.get('stale') else ''
+    return f'dashboard says: {who}, {view.get("distanceCm")} cm, last report {age}{stale}'
+
+
+def cmd_test(cfg, seconds):
+    try:
+        import lgpio
+    except ImportError:
+        print('python3-lgpio is missing (sudo apt install python3-lgpio)', file=sys.stderr)
+        return 78
+    import subprocess
+    trig, echo = int(cfg['TRIG']), int(cfg['ECHO'])
+    max_cm = float(cfg['MAX_CM'])
+    threshold = float(cfg['THRESHOLD_CM'])
+    timeout_s = (max_cm * 2 / 34300) * 1.5 + 0.005
+    print(f'config: TRIG=GPIO{trig} (pin 16)  ECHO=GPIO{echo} (pin 18)  threshold {threshold:.0f} cm  '
+          f'max {max_cm:.0f} cm  server {cfg["SERVER_URL"]}')
+
+    # The service holds the pins; borrow them for the test and give them back.
+    was_active = subprocess.run(['systemctl', '--user', 'is-active', '--quiet', 'touchsphere-presence']).returncode == 0
+    if was_active:
+        print('stopping the touchsphere-presence service for the test (it is started again after)…')
+        subprocess.run(['systemctl', '--user', 'stop', 'touchsphere-presence'])
+        time.sleep(0.5)
+    h = None
+    try:
+        try:
+            h, trig, echo = claim(lgpio, cfg)
+        except Exception as e:  # noqa: BLE001
+            print(f'could not claim GPIO {trig}/{echo}: {e}')
+            print('→ is the user in the "gpio" group? is another program using those pins?')
+            return 77
+        print(f'reading for {seconds:.0f} s — wave a hand in front of the sensor:')
+        readings, none_count = [], 0
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            d = measure(lgpio, h, trig, echo, max_cm, timeout_s)
+            if d is None:
+                none_count += 1
+                print('  no echo')
+            else:
+                readings.append(d)
+                bar = '#' * max(1, min(60, int(d / max_cm * 60)))
+                print(f'  {d:6.1f} cm  {bar}{"  <- at the desk" if d < threshold else ""}')
+            time.sleep(0.25)
+    finally:
+        if h is not None:
+            try:
+                lgpio.gpiochip_close(h)
+            except Exception:  # noqa: BLE001
+                pass
+        if was_active:
+            subprocess.run(['systemctl', '--user', 'start', 'touchsphere-presence'])
+            print('service started again.')
+
+    total = len(readings) + none_count
+    print()
+    if total and not readings:
+        print('VERDICT: NO ECHO — the sensor never answered.')
+        print('  Check: VCC on pin 4 (5 V), GND on pin 9, TRIG on pin 16, ECHO on pin 18 through the divider.')
+        print('  TRIG and ECHO swapped looks exactly like this. So does a module fed 3.3 V instead of 5 V.')
+        return 1
+    if readings and min(readings) > max_cm * 0.9:
+        print(f'VERDICT: the sensor answers but sees nothing nearer than {max_cm:.0f} cm.')
+        print('  Is it pointing at where you sit? Anything within about 2 m should show up.')
+        return 1
+    if readings:
+        med = statistics.median(readings)
+        lo, hi = min(readings), max(readings)
+        miss = f', {none_count} of {total} readings had no echo' if none_count else ''
+        print(f'VERDICT: WORKING — median {med:.0f} cm (range {lo:.0f}–{hi:.0f}){miss}.')
+        print(f'  With the threshold at {threshold:.0f} cm you count as {"AT THE DESK" if med < threshold else "AWAY"} right now.')
+        if none_count > total / 4:
+            print('  Many missed echoes: a soft or angled surface, or a loose ECHO wire.')
+    print(describe_server(server_view(cfg)))
+    return 0
+
+
+def cmd_log(n=40):
+    try:
+        with open(LOG_PATH) as f:
+            lines = f.readlines()
+    except OSError:
+        print(f'no log yet at {LOG_PATH} — has the service ever run?')
+        return 1
+    sys.stdout.write(''.join(lines[-n:]))
+    return 0
+
+
+def cmd_status(cfg):
+    import subprocess
+    r = subprocess.run(['systemctl', '--user', 'is-active', 'touchsphere-presence'], capture_output=True, text=True)
+    print(f'service: {r.stdout.strip() or r.stderr.strip()}')
+    print(f'log ({LOG_PATH}):')
+    cmd_log(8)
+    print(describe_server(server_view(cfg)))
+    return 0
+
+
 def main():
     cfg = read_conf()
     try:
         import lgpio
     except ImportError:
-        print('presence: python3-lgpio is missing (sudo apt install python3-lgpio)', file=sys.stderr)
+        log('python3-lgpio is missing (sudo apt install python3-lgpio)', err=True)
         sys.exit(78)
 
     chip = int(cfg['CHIP'])
-    trig, echo = int(cfg['TRIG']), int(cfg['ECHO'])
     threshold = float(cfg['THRESHOLD_CM'])
     interval = float(cfg['INTERVAL_S'])
     heartbeat = float(cfg['HEARTBEAT_S'])
@@ -140,39 +305,45 @@ def main():
     timeout_s = (max_cm * 2 / 34300) * 1.5 + 0.005
 
     try:
-        h = lgpio.gpiochip_open(chip)
-        lgpio.gpio_claim_output(h, trig, 0)
-        lgpio.gpio_claim_input(h, echo)
-    except Exception as e:
-        print(f'presence: could not claim GPIO {trig}/{echo} on chip {chip}: {e}', file=sys.stderr)
-        print('presence: is the user in the "gpio" group, and are those pins free?', file=sys.stderr)
+        h, trig, echo = claim(lgpio, cfg)
+    except Exception as e:  # noqa: BLE001
+        log(f'could not claim GPIO {cfg["TRIG"]}/{cfg["ECHO"]} on chip {chip}: {e}', err=True)
+        log('is the user in the "gpio" group, and are those pins free? (touchsphere-presence test)', err=True)
         sys.exit(77)
 
-    print(f'presence: HC-SR04 on TRIG=GPIO{trig} ECHO=GPIO{echo} (chip {chip}); '
-          f'at the desk under {threshold:.0f} cm; reporting to {cfg["SERVER_URL"]}', flush=True)
+    log(f'HC-SR04 on TRIG=GPIO{trig} ECHO=GPIO{echo} (chip {chip}); '
+        f'at the desk under {threshold:.0f} cm; reporting to {cfg["SERVER_URL"]}')
 
     window = []
     present = None
     near_streak = far_streak = 0
     last_sent = 0.0
     never_echoed = 0
+    accepted_once = False
+    # Since the last report: for the heartbeat line and the dashboard's card.
+    period = {'readings': 0, 'noEcho': 0, 'min': None, 'max': None}
     NEAR_NEEDED = 3      # ~1.5 s of "near" to count as arriving
     FAR_NEEDED = 40      # ~20 s of "far" to count as leaving
 
     try:
         while True:
             d = measure(lgpio, h, trig, echo, max_cm, timeout_s)
+            period['readings'] += 1
             if d is None:
                 never_echoed += 1
+                period['noEcho'] += 1
                 d = max_cm            # out of range reads as "nobody there"
             else:
                 never_echoed = 0
+                period['min'] = d if period['min'] is None else min(period['min'], d)
+                period['max'] = d if period['max'] is None else max(period['max'], d)
             # A sensor that has NEVER answered is almost certainly not wired
             # yet. Say so once a minute rather than reporting a confident
             # "away" that happens to be right for the wrong reason.
             if never_echoed and never_echoed % 120 == 0:
-                print(f'presence: no echo for {never_echoed} readings — check the wiring '
-                      f'(TRIG=GPIO{trig}, ECHO=GPIO{echo} through a divider)', file=sys.stderr, flush=True)
+                log(f'no echo for {never_echoed} readings — check the wiring '
+                    f'(TRIG=GPIO{trig} pin 16, ECHO=GPIO{echo} pin 18 through a divider); '
+                    f'run: touchsphere-presence test', err=True)
 
             window.append(d)
             if len(window) > 5:
@@ -193,24 +364,49 @@ def main():
 
             now = time.time()
             if new is not None and (new != present or now - last_sent >= heartbeat):
-                body = {'present': bool(new), 'distanceCm': round(med, 1), 'thresholdCm': threshold}
+                stats = {
+                    'readings': period['readings'],
+                    'noEcho': period['noEcho'],
+                    'minCm': round(period['min'], 1) if period['min'] is not None else None,
+                    'maxCm': round(period['max'], 1) if period['max'] is not None else None,
+                }
+                body = {'present': bool(new), 'distanceCm': round(med, 1), 'thresholdCm': threshold, 'stats': stats}
                 try:
                     post(cfg['SERVER_URL'], cfg['TOKEN'], body)
+                    if not accepted_once:
+                        accepted_once = True
+                        log(f'first report accepted by {cfg["SERVER_URL"]}')
                     if new != present:
-                        print(f'presence: {"at the desk" if new else "away"} ({med:.0f} cm)', flush=True)
+                        log(f'{"at the desk" if new else "away"} ({med:.0f} cm)')
+                    else:
+                        rng = (f'{stats["minCm"]:.0f}–{stats["maxCm"]:.0f} cm' if stats['minCm'] is not None else 'no echo')
+                        log(f'heartbeat: {"at the desk" if new else "away"}, {med:.0f} cm, {stats["readings"]} readings '
+                            f'({rng}), {stats["noEcho"]} without echo')
                     last_sent = now
                     present = new
+                    period = {'readings': 0, 'noEcho': 0, 'min': None, 'max': None}
                 except (urllib.error.URLError, OSError) as e:
-                    print(f'presence: could not reach the dashboard: {e}', file=sys.stderr, flush=True)
+                    log(f'could not reach the dashboard: {e}', err=True)
                     # Retry in a few seconds rather than a whole heartbeat.
                     last_sent = now - heartbeat + 5
             time.sleep(interval)
     finally:
         try:
             lgpio.gpiochip_close(h)
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
 
 if __name__ == '__main__':
+    args = sys.argv[1:]
+    if args and args[0] == 'test':
+        secs = float(args[1]) if len(args) > 1 else 8.0
+        sys.exit(cmd_test(read_conf(), secs))
+    elif args and args[0] == 'log':
+        sys.exit(cmd_log(int(args[1]) if len(args) > 1 else 40))
+    elif args and args[0] == 'status':
+        sys.exit(cmd_status(read_conf()))
+    elif args:
+        print('usage: touchsphere-presence [test [seconds] | log [lines] | status]', file=sys.stderr)
+        sys.exit(64)
     main()

@@ -34,14 +34,39 @@ export interface PresenceSettings {
   dimAfterMin: number
 }
 
-const state: PresenceState = { present: null, distanceCm: null, thresholdCm: null, since: null, updatedAt: null }
-
-export function presenceState(): PresenceState & { stale: boolean; sensor: boolean } {
-  const stale = !state.updatedAt || Date.now() - new Date(state.updatedAt).getTime() > STALE_MS
-  return { ...state, stale, sensor: state.updatedAt !== null }
+/**
+ * What the reader saw between two reports — the debugging half. A card that
+ * says "36 cm" answers "is someone there"; one that says "60 readings in the
+ * last 30 s, none without an echo, 34–38 cm" answers "is the sensor working",
+ * which is the question when the first one looks wrong.
+ */
+export interface PresenceStats {
+  readings: number
+  noEcho:   number
+  minCm:    number | null
+  maxCm:    number | null
 }
 
-export function reportPresence(present: boolean, distanceCm?: number, thresholdCm?: number): void {
+/** One report, kept for the card's recent-readings strip. */
+export interface PresenceSample { t: number; cm: number | null; present: boolean }
+
+const state: PresenceState = { present: null, distanceCm: null, thresholdCm: null, since: null, updatedAt: null }
+let lastStats: PresenceStats | null = null
+let reports = 0
+let firstReportAt: string | null = null
+// ~2 hours of heartbeats at 30 s. In memory, like the rest of this.
+const RECENT_MAX = 240
+const recent: PresenceSample[] = []
+
+export function presenceState(): PresenceState & {
+  stale: boolean; sensor: boolean; stats: PresenceStats | null; reports: number
+  firstReportAt: string | null; recent: PresenceSample[]
+} {
+  const stale = !state.updatedAt || Date.now() - new Date(state.updatedAt).getTime() > STALE_MS
+  return { ...state, stale, sensor: state.updatedAt !== null, stats: lastStats, reports, firstReportAt, recent }
+}
+
+export function reportPresence(present: boolean, distanceCm?: number, thresholdCm?: number, stats?: PresenceStats | null): void {
   const now = new Date().toISOString()
   const flipped = state.present !== present
   state.present = present
@@ -49,6 +74,11 @@ export function reportPresence(present: boolean, distanceCm?: number, thresholdC
   state.thresholdCm = typeof thresholdCm === 'number' && Number.isFinite(thresholdCm) ? thresholdCm : state.thresholdCm
   if (flipped || !state.since) state.since = now
   state.updatedAt = now
+  if (!firstReportAt) firstReportAt = now
+  reports++
+  if (stats) lastStats = stats
+  recent.push({ t: Date.now(), cm: typeof distanceCm === 'number' && Number.isFinite(distanceCm) ? distanceCm : null, present })
+  if (recent.length > RECENT_MAX) recent.splice(0, recent.length - RECENT_MAX)
   if (flipped) console.log(`[presence] ${present ? 'at the desk' : 'away'}${state.distanceCm !== null ? ` (${state.distanceCm} cm)` : ''}`)
   broadcast('presence', presenceState())
 }

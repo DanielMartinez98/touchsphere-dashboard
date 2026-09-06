@@ -89,3 +89,8 @@ echo
 echo "Wave a hand in front of the sensor; Settings → Hardware shows the reading."
 echo "  logs:     journalctl --user -u touchsphere-presence -f"
 echo "  settings: $CONF"
+
+echo "== try it"
+echo "   touchsphere-presence test      # live readings and a verdict on the wiring"
+echo "   touchsphere-presence status    # service, its log, and what the dashboard believes"
+echo "   The dashboard's Settings → Hardware → Desk sensor card shows the same live."

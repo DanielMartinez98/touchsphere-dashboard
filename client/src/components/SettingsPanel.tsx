@@ -2210,11 +2210,28 @@ const DIM_CHOICES = [0, 2, 5, 10, 30]
 
 function DeskSensorCard() {
   const { presence, settings, setDimAfter, live, awayForMin } = usePresence()
+  // Seconds since the last report, ticking: "36 cm" is reassuring for exactly
+  // as long as it is fresh, and the reader heartbeats every 30 s, so a number
+  // climbing past 60 is the earliest sign that it has died.
+  const [tick, setTick] = useState(() => Date.now())
+  useEffect(() => { const t = setInterval(() => setTick(Date.now()), 1000); return () => clearInterval(t) }, [])
+  const ageS = presence.updatedAt ? Math.max(0, Math.round((tick - new Date(presence.updatedAt).getTime()) / 1000)) : null
   const status = !presence.sensor
     ? 'No sensor has reported yet.'
     : presence.stale ? 'The reader on the Pi has gone quiet.'
     : presence.present ? 'Someone is at the desk.'
     : `Nobody at the desk for ${Math.round(awayForMin)} min.`
+  const st = presence.stats
+  // The verdict, in the reader's own terms — the same three the `test`
+  // command prints, from the same numbers.
+  const verdict = !presence.sensor ? null
+    : presence.stale ? 'No report for over two minutes. On the Pi: touchsphere-presence status'
+    : st && st.readings > 0 && st.noEcho >= st.readings
+      ? 'The sensor is not answering: every reading came back without an echo. Check the wiring (5 V on pin 4, GND pin 9, TRIG pin 16, ECHO pin 18 through the divider).'
+    : st && st.noEcho > st.readings / 4
+      ? `Working, but ${st.noEcho} of ${st.readings} readings had no echo — a soft or angled surface, or a loose ECHO wire.`
+    : st ? 'Working.' : 'Reporting, but with an older reader that sends no readings; re-run install.sh on the Pi.'
+  const [showTest, setShowTest] = useState(false)
   return (
     <div>
       <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Desk sensor</span>
@@ -2227,11 +2244,39 @@ function DeskSensorCard() {
             <span className="text-white/40 text-xs tabular-nums">{Math.round(presence.distanceCm)} cm{presence.thresholdCm ? ` / ${Math.round(presence.thresholdCm)}` : ''}</span>
           )}
         </div>
+        {presence.sensor && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-3 text-xs">
+              <span className={`tabular-nums ${ageS === null ? 'text-white/30' : ageS < 45 ? 'text-emerald-300/80' : ageS < 120 ? 'text-amber-300/80' : 'text-red-300/80'}`}>
+                last report {ageS === null ? '—' : `${ageS} s ago`}
+              </span>
+              {st && (
+                <span className="text-white/40 tabular-nums">
+                  {st.readings} readings{st.noEcho ? `, ${st.noEcho} no echo` : ''}{st.minCm !== null && st.maxCm !== null ? ` · ${Math.round(st.minCm)}–${Math.round(st.maxCm)} cm` : ''}
+                </span>
+              )}
+              <span className="text-white/25 tabular-nums ml-auto">{presence.reports} reports</span>
+            </div>
+            <ReadingsStrip recent={presence.recent} threshold={presence.thresholdCm} />
+            <p className={`text-xs leading-relaxed ${verdict && verdict.startsWith('Working') ? 'text-white/40' : 'text-amber-200/80'}`}>{verdict}</p>
+          </div>
+        )}
         {!presence.sensor && (
           <p className="text-white/30 text-xs leading-relaxed">
             An HC-SR04 ultrasonic module on the Pi, read by scripts/presence/presence.py. Run
             scripts/presence/install.sh on the Pi to set it up; the wiring is in the script's header.
           </p>
+        )}
+        <button type="button" onClick={() => setShowTest(v => !v)}
+          className="text-xs text-cyan-200/70 underline-offset-2 underline active:text-cyan-100">
+          {showTest ? 'Hide' : 'How to test it on the Pi'}
+        </button>
+        {showTest && (
+          <div className="text-xs text-white/45 leading-relaxed space-y-1.5 font-mono bg-black/30 rounded-xl p-3">
+            <p><span className="text-white/80">touchsphere-presence test</span> — 8 s of live readings and a verdict (no echo / nothing in range / working), then what this dashboard believes. Stops and restarts the service by itself.</p>
+            <p><span className="text-white/80">touchsphere-presence status</span> — service state, the reader's own log, the dashboard's view.</p>
+            <p><span className="text-white/80">touchsphere-presence log</span> — the log: one line per heartbeat, so the last timestamp says whether it is alive.</p>
+          </div>
         )}
         <div>
           <p className="text-white/40 text-xs mb-2">Dim the kiosk when the desk has been empty for</p>
@@ -2251,6 +2296,32 @@ function DeskSensorCard() {
         </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * The last couple of hours of reports as a strip: one bar per report, height
+ * by distance (nearer = taller), green when it counted as "at the desk". A
+ * dashed line marks the threshold. Sixty seconds of "is the number moving?"
+ * is the whole test of a distance sensor, and this is that test at a glance.
+ */
+function ReadingsStrip({ recent, threshold }: { recent: { t: number; cm: number | null; present: boolean }[]; threshold: number | null }) {
+  if (recent.length < 2) return null
+  const W = 300, H = 36
+  const maxCm = Math.max(120, threshold ?? 0, ...recent.map(r => r.cm ?? 0))
+  const last = recent.slice(-120)
+  const bw = W / last.length
+  const y = (cm: number) => H - Math.max(2, (1 - Math.min(cm, maxCm) / maxCm) * H)
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-9 block" preserveAspectRatio="none" aria-label="recent readings">
+      {threshold !== null && (
+        <line x1="0" x2={W} y1={y(threshold)} y2={y(threshold)} stroke="rgba(255,255,255,0.25)" strokeDasharray="3 3" strokeWidth="1" />
+      )}
+      {last.map((r, i) => (
+        <rect key={r.t + '-' + i} x={i * bw + 0.5} width={Math.max(1, bw - 1)} y={r.cm === null ? H - 2 : y(r.cm)} height={r.cm === null ? 2 : H - y(r.cm)}
+          fill={r.cm === null ? 'rgba(248,113,113,0.7)' : r.present ? 'rgba(52,211,153,0.65)' : 'rgba(251,191,36,0.55)'} />
+      ))}
+    </svg>
   )
 }
 

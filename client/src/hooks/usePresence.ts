@@ -16,11 +16,21 @@ export interface Presence {
   stale: boolean
   /** A reader has reported at least once since the server started. */
   sensor: boolean
+  /** What the reader saw between its last two reports; null from an older reader. */
+  stats: { readings: number; noEcho: number; minCm: number | null; maxCm: number | null } | null
+  /** Reports received since the server started, and when the first came. */
+  reports: number
+  firstReportAt: string | null
+  /** The last couple of hours of reports, oldest first. */
+  recent: { t: number; cm: number | null; present: boolean }[]
 }
 
 export interface PresenceSettings { dimAfterMin: number }
 
-const EMPTY: Presence = { present: null, distanceCm: null, thresholdCm: null, since: null, updatedAt: null, stale: true, sensor: false }
+const EMPTY: Presence = {
+  present: null, distanceCm: null, thresholdCm: null, since: null, updatedAt: null, stale: true, sensor: false,
+  stats: null, reports: 0, firstReportAt: null, recent: [],
+}
 
 export function usePresence() {
   const [presence, setPresence] = useState<Presence>(EMPTY)
@@ -36,10 +46,12 @@ export function usePresence() {
       .then((j: Presence & { settings: PresenceSettings }) => {
         if (cancelled) return
         const { settings: s, ...p } = j
-        setPresence(p); setSettings(s)
+        setPresence({ ...EMPTY, ...p }); setSettings(s)
       })
       .catch(() => {})
-    const offP = onServerEvent('presence', raw => { if (raw && typeof raw === 'object') setPresence(raw as Presence) })
+    const offP = onServerEvent('presence', raw => {
+      if (raw && typeof raw === 'object') setPresence({ ...EMPTY, ...(raw as Partial<Presence>) })
+    })
     const offS = onServerEvent('presence-settings', raw => { if (raw && typeof raw === 'object') setSettings(raw as PresenceSettings) })
     const t = setInterval(() => setNow(Date.now()), 60_000)
     return () => { cancelled = true; offP(); offS(); clearInterval(t) }
