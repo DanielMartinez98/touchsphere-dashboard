@@ -28,7 +28,7 @@ import path from 'path'
 import { broadcast } from './routes/system'
 import { advanceSeed, paramsFor, type ImageParams } from './image-params'
 import { estimateRender, humanMs, recordRender } from './image-timing'
-import { composeRedrawPrompt, visionModel, improvePrompt, prompterModel, readPrompter } from './image-prompt'
+import { composeRedrawPrompt, visionModel, improvePrompt, prompterModel, readPrompter, locateBox } from './image-prompt'
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -1485,14 +1485,14 @@ async function run(job: ImageJob): Promise<void> {
         `Looking for "${job.region}" in the picture. GroundingDINO finds it from the words and ` +
         'Segment Anything traces its outline; only that outline will be repainted.')
       const limit = maxCoverageFor(job.region)
-      let found = await findRegion(sourceName, job.region)
+      let found = await findRegion(sourceName, job.region, 0.3, job.sourceFile)
       if (found && found.coverage > limit) {
         // Too much of the picture for what was named: ask again, stricter.
         // The segmenter returns its best box even for a thing that is not
         // there, and a higher threshold is what makes it say "nothing".
         console.log(`[image] ${job.id} "${job.region}" matched ${(found.coverage * 100).toFixed(0)}% — retrying stricter`)
         push(job, 'finding the part', `"${job.region}" matched ${Math.round(found.coverage * 100)}% of the picture, which is too much for a part — looking again more strictly.`)
-        found = await findRegion(sourceName, job.region, 0.5)
+        found = await findRegion(sourceName, job.region, 0.5, job.sourceFile)
       }
       if (!found || found.coverage < 0.002) {
         throw new Error(`could not find "${job.region}" in the picture — it may not be there yet; try naming it differently, or paint the part by hand`)
@@ -2756,15 +2756,29 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
       if (job.sourceWidth > 0 && (job.width !== job.sourceWidth || job.height !== job.sourceHeight)) {
         graph['touchsphere_mask_scale'] = {
           class_type: 'ImageScale',
-          inputs: { image: maskImg, upscale_method: 'nearest-exact', width: job.width, height: job.height, crop: 'center' },
+          // Bilinear, not nearest: a segmenter's outline scaled nearest-exact
+          // arrives as a staircase, and the staircase is what the seam shows.
+          inputs: { image: maskImg, upscale_method: 'bilinear', width: job.width, height: job.height, crop: 'center' },
         }
         maskImg = ['touchsphere_mask_scale', 0]
       }
       graph['touchsphere_mask'] = { class_type: 'ImageToMask', inputs: { image: maskImg, channel: 'red' } }
+      // Two masks from one outline. The GROWN one (a few pixels out, rounded)
+      // is what the sampler may paint — a little past the found edge, so a
+      // new garment can reach its own outline. The FEATHERED one (the grown
+      // mask blurred) is what the paste-back uses, so the handover from new
+      // pixels to original is a gradient rather than a cut; a hard edge here
+      // read as a jagged seam around the neck on the first anime test.
       graph['touchsphere_mask_soft'] = {
         class_type: 'GrowMask',
-        inputs: { mask: ['touchsphere_mask', 0], expand: 6, tapered_corners: true },
+        inputs: { mask: ['touchsphere_mask', 0], expand: 10, tapered_corners: true },
       }
+      graph['touchsphere_mask_soft_img'] = { class_type: 'MaskToImage', inputs: { mask: ['touchsphere_mask_soft', 0] } }
+      graph['touchsphere_mask_blur'] = {
+        class_type: 'ImageBlur',
+        inputs: { image: ['touchsphere_mask_soft_img', 0], blur_radius: 9, sigma: 4.5 },
+      }
+      graph['touchsphere_mask_feather'] = { class_type: 'ImageToMask', inputs: { image: ['touchsphere_mask_blur', 0], channel: 'red' } }
       const modelLink = sampler.inputs['model']
       if (Array.isArray(modelLink)) {
         graph['touchsphere_diff'] = { class_type: 'DifferentialDiffusion', inputs: { model: modelLink } }
@@ -2785,7 +2799,7 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
             destination: pixels,
             source: graph[saveId]!.inputs['images'],
             x: 0, y: 0, resize_source: false,
-            mask: ['touchsphere_mask_soft', 0],
+            mask: ['touchsphere_mask_feather', 0],
           },
         }
         graph[saveId]!.inputs['images'] = ['touchsphere_composite', 0]
@@ -3205,6 +3219,8 @@ function decodeGrey(bytes: Buffer): { width: number; height: number; grey: Uint8
  * the picture (background, sky, wall, floor) is allowed to be.
  */
 export function maxCoverageFor(region: string): number {
+  // A box is asked for precisely when the thing is big: a person, an area.
+  if (/(^|[+\-−–]\s*)(box|area)\s*:/i.test(region)) return 0.85
   if (/\b(background|backdrop|sky|wall|walls|floor|ground|room|scene|surroundings|landscape|water|sea|ocean|field|grass|snow|everything)\b/i.test(region)) return 0.92
   // A whole person or animal fills half of most portraits; "the woman" at 51%
   // was measured correct on a picture where "her upper body" at 51% was not.
@@ -3221,16 +3237,19 @@ export function maxCoverageFor(region: string): number {
 // order, each a plain phrase for the finder. The combined mask is stored and
 // uploaded like any other, so nothing downstream knows the difference.
 
-function parseRegion(region: string): { what: string; op: 'add' | 'sub' }[] {
-  const out: { what: string; op: 'add' | 'sub' }[] = []
+function parseRegion(region: string): { what: string; op: 'add' | 'sub'; box: boolean }[] {
+  const out: { what: string; op: 'add' | 'sub'; box: boolean }[] = []
   // Split on " + " / " - " (with the surrounding spaces, so a hyphenated word survives).
   const parts = region.split(/\s+([+\-−–])\s+/)
   let op: 'add' | 'sub' = 'add'
   for (const p of parts) {
     if (p === '+') { op = 'add'; continue }
     if (p === '-' || p === '−' || p === '–') { op = 'sub'; continue }
-    const what = p.trim()
-    if (what) out.push({ what, op })
+    // "box: her torso and arms" — located as a rectangle by the vision model
+    // rather than traced by the segmenter. For areas and whole people.
+    const m = /^(box|area)\s*:\s*(.+)$/i.exec(p.trim())
+    const what = (m ? m[2]! : p).trim()
+    if (what) out.push({ what, op, box: !!m })
   }
   return out
 }
@@ -3275,20 +3294,39 @@ function encodeGreyPng(width: number, height: number, grey: Uint8Array): Buffer 
  * plain phrase goes straight to findMask; anything with ` + ` or ` - ` is
  * resolved term by term and composed here.
  */
-export async function findRegion(sourceRef: string, region: string, threshold = 0.3): Promise<FoundMask | null> {
+export async function findRegion(sourceRef: string, region: string, threshold = 0.3, sourceFile = ''): Promise<FoundMask | null> {
   const terms = parseRegion(region)
   if (terms.length === 0) return null
-  if (terms.length === 1) return findMask(sourceRef, terms[0]!.what, threshold)
-  // Upload the source once for all the terms.
+  if (terms.length === 1 && !terms[0]!.box) return findMask(sourceRef, terms[0]!.what, threshold)
+  // The picture itself: for the vision model's boxes, and for the mask size.
+  const entry = /^[a-f0-9]{32}$/.test(sourceRef) ? listImages().find(e => e.id === sourceRef) : undefined
+  if (/^[a-f0-9]{32}$/.test(sourceRef) && !entry) throw new Error('that picture is not in the gallery')
+  const file = sourceFile || entry?.file || ''
+  const srcBytes = file ? fs.readFileSync(path.join(imagesDir(), file)) : null
+  const size = srcBytes ? pngSize(srcBytes) : null
+  // Upload the source once for all the segmenter terms; only when one is needed.
   let ref = sourceRef
-  if (/^[a-f0-9]{32}$/.test(sourceRef)) {
-    const entry = listImages().find(e => e.id === sourceRef)
-    if (!entry) throw new Error('that picture is not in the gallery')
-    ref = await uploadInput(`touchsphere-src-${entry.id}.png`, fs.readFileSync(path.join(imagesDir(), entry.file)), 'source picture')
+  if (entry && terms.some(t => !t.box)) {
+    ref = await uploadInput(`touchsphere-src-${entry.id}.png`, srcBytes!, 'source picture')
   }
   let acc: Uint8Array | null = null
   let w = 0, h = 0
+  const ensure = (gw: number, gh: number) => {
+    if (!acc) { acc = new Uint8Array(gw * gh); w = gw; h = gh }
+    return gw === w && gh === h
+  }
   for (const t of terms) {
+    if (t.box) {
+      if (!srcBytes || !size) { console.log(`[image] region box "${t.what}" skipped: no source bytes`); continue }
+      const box = await locateBox(srcBytes, t.what)
+      if (!box) { if (t.op === 'add') console.log(`[image] region box "${t.what}" not located`); continue }
+      if (!ensure(size.width, size.height)) continue
+      const x0 = Math.floor(box.left * w), x1 = Math.ceil(box.right * w)
+      const y0 = Math.floor(box.top * h), y1 = Math.ceil(box.bottom * h)
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) acc![y * w + x] = t.op === 'add' ? 255 : 0
+      console.log(`[image] region ${t.op === 'add' ? '+' : '-'} box "${t.what}" (${(((x1 - x0) * (y1 - y0)) / (w * h) * 100).toFixed(1)}%)`)
+      continue
+    }
     const m = await findMask(ref, t.what, threshold)
     if (!m) {
       if (t.op === 'add') console.log(`[image] region term "${t.what}" found nothing`)
@@ -3297,10 +3335,9 @@ export async function findRegion(sourceRef: string, region: string, threshold = 
     const full = maskPath(m.file)
     const g = full ? decodeGrey(fs.readFileSync(full)) : null
     if (!g) continue
-    if (!acc) { acc = new Uint8Array(g.width * g.height); w = g.width; h = g.height }
-    if (g.width !== w || g.height !== h) continue
-    for (let i = 0; i < acc.length; i++) {
-      if (g.grey[i]! > 127) acc[i] = t.op === 'add' ? 255 : 0
+    if (!ensure(g.width, g.height)) continue
+    for (let i = 0; i < acc!.length; i++) {
+      if (g.grey[i]! > 127) acc![i] = t.op === 'add' ? 255 : 0
     }
     console.log(`[image] region ${t.op === 'add' ? '+' : '-'} "${t.what}" (${(m.coverage * 100).toFixed(1)}%)`)
   }

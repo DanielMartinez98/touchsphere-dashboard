@@ -413,3 +413,72 @@ export async function composeRedrawPrompt(
     clearTimeout(timer)
   }
 }
+
+/** A rectangle in fractions of the picture, 0-1, from the top-left. */
+export interface Box { left: number; top: number; right: number; bottom: number }
+
+/**
+ * Where a thing is, as a box, by LOOKING — the vision model rather than the
+ * segmenter. The segmenter (GroundingDINO + SAM) traces concrete objects to
+ * their outline and is the right tool for "the hat"; it cannot locate an
+ * AREA ("her torso and arms") or, on drawn pictures, a whole person — asked
+ * for "the woman" on an anime still it returned the hair plus wallpaper
+ * speckle. A vision model can name that area to within a rectangle, which
+ * is exactly enough for "repaint this region": the inpainting model decides
+ * what goes inside, and the feathered paste-back hides the rectangle's edge.
+ *
+ * Asked with NAMED keys in thousandths, because a bare [a,b,c,d] is ambiguous
+ * between models — Gemma answers [top, left, bottom, right] where others
+ * answer x-first — and named keys were confirmed to be honoured. Never
+ * throws; null means "could not locate", and the caller says so.
+ */
+export async function locateBox(image: Buffer, what: string): Promise<Box | null> {
+  const model = visionModel()
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
+  try {
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
+    const res = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
+      method: 'POST', headers, signal: ctrl.signal,
+      body: JSON.stringify({
+        model, stream: false, think: false, format: 'json',
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You locate things in a picture. Answer ONLY JSON with these keys: ' +
+              '{"found":true|false,"left":0-1000,"top":0-1000,"right":0-1000,"bottom":0-1000} where left/right ' +
+              'are horizontal positions as thousandths of the image WIDTH from the left edge, and top/bottom are ' +
+              'vertical positions as thousandths of the image HEIGHT from the top edge, tightly around the thing. ' +
+              'If the thing is not in the picture, answer {"found":false}.',
+          },
+          { role: 'user', content: `Locate: ${what}`, images: [image.toString('base64')] },
+        ],
+        options: { temperature: 0, num_predict: 120 },
+      }),
+    })
+    if (!res.ok) { console.warn(`[image-prompt] locate ${res.status}`); return null }
+    const json = (await res.json()) as { message?: { content?: string }; response?: string }
+    const text = unwrap(json.message?.content ?? json.response ?? '')
+    const start = text.indexOf('{'), end = text.lastIndexOf('}')
+    if (start < 0 || end <= start) return null
+    const j = JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>
+    if (j['found'] === false) return null
+    const n = (k: string) => {
+      const v = Number(j[k])
+      if (!Number.isFinite(v)) return NaN
+      return v > 1 ? v / 1000 : v
+    }
+    const box = { left: n('left'), top: n('top'), right: n('right'), bottom: n('bottom') }
+    if ([box.left, box.top, box.right, box.bottom].some(v => !Number.isFinite(v) || v < 0 || v > 1)) return null
+    if (box.right - box.left < 0.02 || box.bottom - box.top < 0.02) return null
+    console.log(`[image-prompt] "${what}" → box l${(box.left * 100).toFixed(0)} t${(box.top * 100).toFixed(0)} r${(box.right * 100).toFixed(0)} b${(box.bottom * 100).toFixed(0)}% (${model})`)
+    return box
+  } catch (err) {
+    console.warn(`[image-prompt] locate failed: ${err instanceof Error ? err.message : String(err)}`)
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}

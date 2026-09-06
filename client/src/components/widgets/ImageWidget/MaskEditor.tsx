@@ -306,7 +306,7 @@ export default function MaskEditor({ source, initial, canFind, onDone, onClose }
             <TouchInput
               value={what}
               onChange={setWhat}
-              placeholder='Find it — "the hat", or "the woman - the face"'
+              placeholder='"the hat", or "box: her torso - the face"'
               ariaLabel="What to find"
               className="flex-1 h-12 rounded-xl bg-white/10 border border-hairline px-3 text-[15px]"
             />

@@ -201,12 +201,14 @@ function plannerSystem(tools: PlanMode[], styles: DrawStyle[]): string {
       '- "part": repaint ONE region and keep everything else pixel for pixel. Needs "region" and ' +
       '"prompt": what should be IN that region only ("a red woolly hat"), plus "strength": "light" ' +
       '(keep its shape, change colour or material), "balanced", or "strong" (draw it anew).',
-      '  A region is found in the picture by a detector that locates CONCRETE, VISIBLE THINGS named as ' +
-      'they appear — "the striped top", "the orange hair", "the woman", "the red car" — and CANNOT locate ' +
-      'areas: "her upper body", "the torso", "the left side" fail. Regions may be COMBINED: " + " unions, ' +
-      '" - " subtracts, in order. "the woman - the face - the orange hair" is her body without the head, ' +
-      'which is the right region for new clothing. Always describe what you see (say "the orange hair", ' +
-      'not "the hair", when it is orange).',
+      '  A region has two kinds of term. A plain phrase names a CONCRETE, VISIBLE, SMALLISH THING as it ' +
+      'appears — "the striped top", "the orange hair", "the red car", "the hat" — and is traced to its ' +
+      'exact outline. "box: …" names an AREA or a WHOLE PERSON — "box: her torso, shoulders and arms", ' +
+      '"box: the whole man", "box: the left half of the sky" — and is located as a rectangle. Use box: ' +
+      'for anything that is not one clear object; plain phrases for people or areas FAIL. Terms may be ' +
+      'COMBINED: " + " unions, " - " subtracts, in order: "box: her torso, shoulders and arms - the face ' +
+      '- the orange hair" is the body area for new clothing with the head kept. Describe what you see ' +
+      '(say "the orange hair", not "the hair", when it is orange).',
     )
   }
   lines.push(
@@ -251,16 +253,16 @@ function plannerSystem(tools: PlanMode[], styles: DrawStyle[]): string {
     'each their own step, never combined.',
     '- Removing something is its own "edit" step ("remove the hat"), before anything is added in its place.',
     '- When ADDING clothing to a character with "part", the region must cover where the garment will BE: ' +
-    'the whole person minus the head — "the woman - the face - the orange hair" — not only the old ' +
-    'garment, or the sleeves have nowhere to be drawn. When only recolouring an existing garment, the ' +
-    'region is the garment itself.',
+    'a box over the body minus the head — "box: her torso, shoulders and arms - the face - the orange ' +
+    'hair" — not only the old garment, or the sleeves have nowhere to be drawn. When only recolouring an ' +
+    'existing garment, the region is the garment itself as a plain phrase.',
     '',
     'Examples:',
     '- "give her a pink jacket" (she wears a blue coat) → 1 ' + (tools.includes('part') ? 'part, region "the blue coat", prompt "a pink jacket", strength strong' : 'edit "change the blue coat into a pink jacket"') +
     '; 2 edit "make the jacket a clean pastel pink, fabric texture" (a precision pass).',
     '- "give her a pink jacket" (an anime still, she wears a striped top, no jacket) → ' +
     (tools.includes('part')
-      ? '1 part, region "the woman - the face - the orange hair", style an anime one, prompt "1girl, pink jacket, open jacket, zipper, long sleeves, striped shirt underneath, lying, from above", strength balanced.'
+      ? '1 part, region "box: her torso, shoulders and arms - the face - the orange hair", style an anime one, prompt "1girl, pink jacket, open jacket, zipper, long sleeves, striped shirt underneath, lying, from above", strength balanced.'
       : '1 edit "The woman now wears an open pink jacket over her striped top, sleeves on both arms. Keep her pose and face unchanged."') +
     '\n- "give him a pink jacket" (a photo, he wears a t-shirt) → 1 edit "The man now wears an open pink jacket over his t-shirt, sleeves on both arms. Keep his pose and face unchanged."; ' +
     '2 ' + (tools.includes('part') ? 'part, region "the jacket", prompt "a pastel pink cotton jacket", strength light' : 'edit "Make the jacket a clean pastel pink."') + '.',
