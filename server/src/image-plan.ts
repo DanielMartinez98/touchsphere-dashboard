@@ -120,11 +120,11 @@ function plannerSystem(tools: PlanMode[]): string {
   const lines: string[] = []
   lines.push(
     'You plan edits to a picture for an image pipeline. You are shown the picture and told what the ' +
-    'user wants changed. Split the request into ONE STEP PER DISTINCT CHANGE — a different object, a ' +
-    'different property (colour, material, lighting, weather, background, pose), or a different tool ' +
-    'each get their own step. More, smaller, precise steps give a better result than one broad step: ' +
-    'a tool asked for three things at once does one of them well. Each step is done by ONE tool and ' +
-    'works on the previous step\'s result.',
+    'user wants changed. Your job is the BEST RESULT, and that comes from small, precise steps: a ' +
+    'tool asked for one thing does it well, a tool asked for three does one of them. So first list ' +
+    'the atomic changes the request implies — even a single sentence usually implies several — then ' +
+    'write one or more steps per change. Each step is done by ONE tool and works on the previous ' +
+    'step\'s result.',
     '',
     'Tools available on this machine:',
   )
@@ -151,17 +151,38 @@ function plannerSystem(tools: PlanMode[]): string {
     '- "whole": repaint the entire picture from a full description of the result, at a "strength". ' +
     'Rarely the best choice; use it only for a global restyle when "edit" is not available.',
     '',
+    'How to decompose (this is the important part):',
+    '- Something NEW that is not in the picture (a garment, an object, a sign, a background) is CREATED ' +
+    'first with "edit" in its plainest form, and its exact colour / material / pattern is set in a ' +
+    'SEPARATE step afterwards' + (tools.includes('part') ? ' with "part" on the thing just created' : ' with a second "edit"') + '.',
+    '- Something that EXISTS and keeps its outline (recolour the jacket, change the sky) is one ' +
+    (tools.includes('part') ? '"part"' : '"edit"') + ' step; if the request also changes its shape or style, that is another step.',
+    '- Text on a sign or a label is always its own "edit" step, after the sign itself exists.',
+    '- Background / setting, lighting / time of day, weather, and the subject\'s pose or expression are ' +
+    'each their own step, never combined.',
+    '- Removing something is its own "edit" step ("remove the hat"), before anything is added in its place.',
+    '',
+    'Examples:',
+    '- "give her a pink jacket" (she wears a blue coat) → 1 ' + (tools.includes('part') ? 'part, region "the blue coat", prompt "a pink jacket", strength strong' : 'edit "change the blue coat into a pink jacket"') +
+    '; 2 edit "make the jacket a clean pastel pink, fabric texture" (a precision pass).',
+    '- "give her a pink jacket" (she wears a t-shirt, no jacket) → 1 edit "put a jacket on the woman over her t-shirt"; ' +
+    '2 ' + (tools.includes('part') ? 'part, region "the jacket", prompt "a pink jacket", strength light' : 'edit "make the jacket pink"') + '.',
+    '- "put him in jail with a sign that says MATRIX above the cell" → 1 edit "change the background to a prison cell with bars, keep the man as he is"; ' +
+    '2 edit "add a blank rectangular sign above the cell bars"; 3 edit "write MATRIX on the sign in bold capital letters".',
+    '',
     'Rules:',
     `- Up to ${MAX_STEPS} steps. Never merge two changes into one step; "a red jacket and a hat" is two steps.`,
     '- A "part" step covers exactly one region. An "edit" step carries exactly one instruction.',
+    '- A one-step plan is only right for a request that truly implies one atomic change.',
     '- Do "part" steps BEFORE "edit" steps when a plan has both, since an edit reconstructs pixels.',
     '- Only change what was asked for. Do not add improvements of your own.',
     '- Name things as they actually appear in THIS picture (say "the man\'s jacket" only if there is one).',
     '- Prompts are in English, short and concrete.',
     '',
-    'Answer with ONLY this JSON, no prose:',
-    '{"summary":"one sentence of what you will do","steps":[{"mode":"edit|part|whole","prompt":"...",' +
-    '"region":"only for part","strength":"light|balanced|strong","why":"one short reason"}]}',
+    'Answer with ONLY this JSON, no prose. List the atomic changes FIRST, then the steps:',
+    '{"changes":["one atomic change","another"],"summary":"one sentence of what you will do",' +
+    '"steps":[{"mode":"edit|part|whole","prompt":"...","region":"only for part",' +
+    '"strength":"light|balanced|strong","why":"one short reason"}]}',
   )
   return lines.join('\n')
 }
@@ -173,7 +194,7 @@ function unwrapJson(raw: string): string {
   return start >= 0 && end > start ? text.slice(start, end + 1) : text
 }
 
-async function askPlanner(image: Buffer, request: string, tools: PlanMode[], model: string): Promise<{ summary: string; steps: PlanStep[] }> {
+async function askPlanner(image: Buffer, request: string, tools: PlanMode[], model: string, minSteps = 0): Promise<{ summary: string; steps: PlanStep[]; changes: string[] }> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), PLAN_TIMEOUT_MS)
   try {
@@ -185,7 +206,11 @@ async function askPlanner(image: Buffer, request: string, tools: PlanMode[], mod
         model, stream: false, think: false, format: 'json',
         messages: [
           { role: 'system', content: plannerSystem(tools) },
-          { role: 'user', content: `Change wanted: ${request}`, images: [image.toString('base64')] },
+          {
+            role: 'user',
+            content: `Change wanted: ${request}` + (minSteps > 1 ? `\n\n(Write AT LEAST ${minSteps} steps: split the work finer, one precise change per step.)` : ''),
+            images: [image.toString('base64')],
+          },
         ],
         options: { temperature: 0.3, num_predict: 900 },
       }),
@@ -196,8 +221,11 @@ async function askPlanner(image: Buffer, request: string, tools: PlanMode[], mod
     }
     const json = await res.json() as { message?: { content?: string }; response?: string }
     const text = unwrapJson(json.message?.content ?? json.response ?? '')
-    let parsed: { summary?: unknown; steps?: unknown }
+    let parsed: { summary?: unknown; steps?: unknown; changes?: unknown }
     try { parsed = JSON.parse(text) as typeof parsed } catch { throw new Error('the planning model did not answer with a plan') }
+    const changes = Array.isArray(parsed.changes)
+      ? (parsed.changes as unknown[]).filter((c): c is string => typeof c === 'string' && c.trim().length > 0).map(c => c.trim().slice(0, 160))
+      : []
     const raw = Array.isArray(parsed.steps) ? parsed.steps as Record<string, unknown>[] : []
     const steps: PlanStep[] = []
     for (const s of raw.slice(0, MAX_STEPS)) {
@@ -220,7 +248,7 @@ async function askPlanner(image: Buffer, request: string, tools: PlanMode[], mod
       })
     }
     if (steps.length === 0) throw new Error('the planning model returned no steps')
-    return { summary: String(parsed.summary ?? '').trim().slice(0, 300), steps }
+    return { summary: String(parsed.summary ?? '').trim().slice(0, 300), steps, changes }
   } finally {
     clearTimeout(timer)
   }
@@ -238,18 +266,20 @@ function clauseCount(request: string): number {
     .filter(x => x.length > 2).length
 }
 
-async function planWithRetry(image: Buffer, request: string, tools: PlanMode[], model: string) {
-  const first = await askPlanner(image, request, tools, model)
-  const wanted = clauseCount(request)
-  if (wanted < 2 || first.steps.length >= Math.min(wanted, 2)) return first
-  // One broad step for a request that names several changes: say so and ask
-  // again. The model that collapsed it will usually split it when told to.
-  console.log(`[image-plan] ${first.steps.length} step(s) for ~${wanted} changes — asking for a finer plan`)
+async function planWithRetry(image: Buffer, request: string, tools: PlanMode[], model: string, minSteps = 0) {
+  const first = await askPlanner(image, request, tools, model, minSteps)
+  // How many changes the request implies: the model's own list, the clause
+  // count as a floor, and whatever the user asked for with "More steps".
+  const wanted = Math.min(MAX_STEPS, Math.max(minSteps, first.changes.length, Math.min(clauseCount(request), 3)))
+  if (first.steps.length >= wanted) return first
+  // Fewer steps than changes: say so and ask again. The model that collapsed
+  // them will usually split them when told the number.
+  console.log(`[image-plan] ${first.steps.length} step(s) for ${wanted} changes (${first.changes.join(' / ') || 'unlisted'}) — asking for a finer plan`)
   const nudged =
-    `${request}\n\n(This request names about ${wanted} separate changes. Write ONE STEP PER CHANGE — ` +
-    `at least ${Math.min(wanted, MAX_STEPS)} steps — do not merge them.)`
+    `${request}\n\n(The changes are: ${first.changes.join('; ') || 'as listed'}. Write ONE OR MORE STEPS PER CHANGE — ` +
+    `at least ${wanted} steps — do not merge them.)`
   try {
-    const second = await askPlanner(image, nudged, tools, model)
+    const second = await askPlanner(image, nudged, tools, model, wanted)
     return second.steps.length > first.steps.length ? second : first
   } catch {
     return first
@@ -261,7 +291,7 @@ async function planWithRetry(image: Buffer, request: string, tools: PlanMode[], 
  * Returns at once with the plan in `planning`; the rest arrives over the
  * `image-plan` SSE event, the same way a render reports.
  */
-export function createPlan(source: string, request: string, run: boolean): EditPlan {
+export function createPlan(source: string, request: string, run: boolean, minSteps = 0): EditPlan {
   const entry = listImages().find(e => e.id === source)
   const id = crypto.randomBytes(16).toString('hex')
   const plan: EditPlan = {
@@ -287,7 +317,7 @@ export function createPlan(source: string, request: string, run: boolean): EditP
       const { tools, editor } = await availableTools()
       plan.tools = tools
       const bytes = fs.readFileSync(path.join(process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache', 'images', entry.file))
-      const { summary, steps } = await planWithRetry(bytes, plan.request, tools, plan.model)
+      const { summary, steps } = await planWithRetry(bytes, plan.request, tools, plan.model, Math.max(0, Math.min(MAX_STEPS, Math.round(minSteps))))
       plan.summary = summary
       plan.steps = steps
       plan.status = 'ready'

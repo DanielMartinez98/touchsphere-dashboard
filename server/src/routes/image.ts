@@ -342,7 +342,9 @@ router.post('/plan', (req: Request, res: Response) => {
   const source = typeof body?.['source'] === 'string' && /^[a-f0-9]{32}$/.test(body['source']) ? body['source'] : ''
   const request = typeof body?.['request'] === 'string' ? body['request'].trim() : ''
   if (!source || !request) { res.status(400).json({ error: 'source (a gallery id) and request (what to change) are required' }); return }
-  const plan = createPlan(source, request, body?.['run'] === true)
+  // `minSteps` is the panel's "More steps": re-plan the same request finer.
+  const minSteps = typeof body?.['minSteps'] === 'number' ? body['minSteps'] : 0
+  const plan = createPlan(source, request, body?.['run'] === true, minSteps)
   res.status(plan.status === 'failed' ? 400 : 202).json(plan)
 })
 

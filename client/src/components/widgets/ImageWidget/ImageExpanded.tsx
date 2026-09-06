@@ -440,12 +440,12 @@ export default function ImageExpanded({
   // Watchtower updates the two halves independently — keeps the row live.
   const qualityApplies = defaults?.qualityApplies !== false
 
-  async function makePlan() {
+  async function makePlan(minSteps = 0) {
     if (!source || !prompt.trim() || planning) return
     setPlanning(true)
     setPlanError('')
     try {
-      const p = await planEdit(source.id, prompt.trim(), false)
+      const p = await planEdit(source.id, prompt.trim(), false, minSteps)
       setImagePlanId(p.id)
     } catch (err) {
       setPlanError(err instanceof Error ? err.message : 'could not plan that')
@@ -599,6 +599,9 @@ export default function ImageExpanded({
               plan={plan}
               onRun={() => void startPlan()}
               onDrop={dropPlan}
+              onMore={plan.status === 'ready' && plan.steps.length < 8 && !planning
+                ? () => void makePlan(plan.steps.length + 1)
+                : undefined}
               onOpenStep={st => {
                 if (st.imageId) openImage(st.imageId, st.prompt, `/api/image/file/${st.imageId}.png`)
                 else if (st.jobId) openImage(st.jobId, st.prompt)
@@ -1264,11 +1267,13 @@ const MODE_LABEL: Record<PlanStep['mode'], string> = {
  * Done: the result. The wording of each step is the planner's own — showing
  * it is what makes a wrong plan arguable before a minute of GPU goes on it.
  */
-function PlanCard({ plan, onRun, onDrop, onOpenStep }: {
+function PlanCard({ plan, onRun, onDrop, onOpenStep, onMore }: {
   plan: EditPlan
   onRun: () => void
   onDrop: () => void
   onOpenStep: (st: PlanStep) => void
+  /** Re-plan the same request with at least one more step. Absent when it can't. */
+  onMore?: () => void
 }) {
   const busy = plan.status === 'planning' || plan.status === 'running'
   const dot = (st: PlanStep) =>
@@ -1337,14 +1342,28 @@ function PlanCard({ plan, onRun, onDrop, onOpenStep }: {
         </ol>
       )}
       {plan.status === 'ready' && (
-        <button
-          type="button"
-          onClick={onRun}
-          className="h-12 rounded-xl bg-pink-500/25 border border-pink-400/40 text-white text-[14px] font-semibold
-                     flex items-center justify-center gap-2 active:scale-[0.98]"
-        >
-          <Play size={15} /> Run {plan.steps.length === 1 ? 'it' : `all ${plan.steps.length} steps`}
-        </button>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onRun}
+            className="flex-1 h-12 rounded-xl bg-pink-500/25 border border-pink-400/40 text-white text-[14px] font-semibold
+                       flex items-center justify-center gap-2 active:scale-[0.98]"
+          >
+            <Play size={15} /> Run {plan.steps.length === 1 ? 'it' : `all ${plan.steps.length} steps`}
+          </button>
+          {/* The plan is the model's opinion of how fine to go; this is the
+              user's. Re-plans the same request with at least one more step. */}
+          {onMore && (
+            <button
+              type="button"
+              onClick={onMore}
+              className="h-12 px-3 rounded-xl bg-white/5 border border-hairline text-white/70 text-[13px] font-semibold
+                         flex items-center justify-center gap-1.5 active:scale-[0.98]"
+            >
+              <ListChecks size={14} /> More steps
+            </button>
+          )}
+        </div>
       )}
       {plan.status === 'done' && plan.resultId && (
         <button

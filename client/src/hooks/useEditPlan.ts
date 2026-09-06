@@ -98,9 +98,9 @@ async function post(url: string, body?: unknown): Promise<EditPlan> {
 }
 
 /** Ask for a plan. `run` false shows it first; true runs it as soon as it exists. */
-export function planEdit(source: string, request: string, run = false): Promise<EditPlan> {
+export function planEdit(source: string, request: string, run = false, minSteps = 0): Promise<EditPlan> {
   listen()
-  return post('/api/image/plan', { source, request, run })
+  return post('/api/image/plan', { source, request, run, ...(minSteps > 0 ? { minSteps } : {}) })
 }
 export function runPlan(id: string): Promise<EditPlan> { return post(`/api/image/plan/${id}/run`) }
 export function cancelPlan(id: string): Promise<EditPlan> { return post(`/api/image/plan/${id}/cancel`) }
