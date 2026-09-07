@@ -2137,26 +2137,29 @@ const ANIMA_AES_NEGATIVE =
  * how you talk to it.
  */
 const ANIMA_PROMPT_GUIDE =
-  'IMPORTANT — this model reads its prompt with a small LANGUAGE model (Qwen-3 0.6B), not ' +
-  'the CLIP text encoder an SDXL anime checkpoint uses. That one fact decides how to prompt ' +
-  'it. A booru character tag like "sakura haruno" is a token CLIP memorised from millions of ' +
-  'captions; a language encoder does not resolve a bare name the same way, so a tag-soup ' +
-  'prompt reliably produces a generic girl who does not look like the character. ' +
-  'SO: WHENEVER A NAMED CHARACTER IS WANTED, WRITE FLOWING ENGLISH SENTENCES, name the ' +
-  'character AND the series they are from, and DESCRIBE HOW THEY LOOK — hair colour and ' +
-  'style, eye colour, their signature outfit — in the same sentence as the name. ' +
-  '"sakura haruno from naruto, appearing as she does in her source material, with her pink ' +
-  'bob and green eyes" reaches the character; "1girl, sakura haruno" does not. This is the ' +
-  'single most common way a picture from this model comes out wrong. ' +
-  'Tags are still fine for a picture with NO named character (a scene, an unnamed figure), ' +
-  'and the model was trained on mixtures of the two, so tags describing the scene can follow ' +
-  'the descriptive sentences. If writing tags: lowercase, and SPACES rather than underscores ' +
-  '(score_* tags are the only ones that keep underscores). An artist tag MUST be written with ' +
-  'an @ in front of it — "@artist name" — or its effect is very weak. Tag order is ' +
-  'quality/meta/year/safety, then subject count (1girl, 1boy), then character, then series, ' +
-  'then artist, then everything else. Plain English wants at least two sentences: very short ' +
-  'prompts give unexpected results. Prompt weighting works but needs higher weights than ' +
-  'SDXL, e.g. (chibi:2). NEVER write quality tags yourself — no "masterpiece", "best ' +
+  'FOR A NAMED CHARACTER, USE BOORU TAGS AND ALWAYS PUT THE SERIES TAG RIGHT AFTER THE ' +
+  'CHARACTER TAG — "1girl, sakura haruno, naruto, ..." — never the character alone. That ' +
+  'pairing is what reaches the character; a character tag on its own is the most common ' +
+  'reason a picture from this model looks like a generic anime girl instead. This is measured ' +
+  'on this box, in a blind comparison, and it beats writing the same request as prose. ' +
+  'Prose is not wrong — the model was trained on Danbooru tags, natural-language captions AND ' +
+  'mixtures — and it is the better register for a scene with no named character, or for ' +
+  'describing lighting and composition after the tags. But when prose names a character it ' +
+  'must still name the series, or it has the same failure as a lone character tag. ' +
+  'IDENTITY COMES FROM THE FACE, so back the character tag with their hair and eyes as tags ' +
+  '("pink hair, short hair, green eyes"). ' +
+  'CLOTHES ARE SEPARATE FROM IDENTITY and are the thing this model most often gets wrong. ' +
+  'Do NOT describe a signature outfit that the scene contradicts: a character swimming is not ' +
+  'wearing her plugsuit or her kimono, and asking for both at once gets you neither. Name the ' +
+  'garment the scene actually calls for, as its own tag ("blue one-piece swimsuit", "white ' +
+  'sundress"), and let the character tag carry the face. Name the signature outfit only when ' +
+  'the character is plausibly wearing it. ' +
+  'Tag hygiene: lowercase, and SPACES rather than underscores (score_* tags are the only ones ' +
+  'that keep underscores). An artist tag MUST be written with an @ in front of it — ' +
+  '"@artist name" — or its effect is very weak. Tag order is quality/meta/year/safety, then ' +
+  'subject count (1girl, 1boy), then character, then series, then artist, then hair and eyes, ' +
+  'then clothing, then pose, then setting. Prompt weighting works but needs higher weights ' +
+  'than SDXL, e.g. (chibi:2). NEVER write quality tags yourself — no "masterpiece", "best ' +
   'quality", "high resolution", "absurdres" — they are prepended for you, and repeating them ' +
   'spends the most heavily weighted tokens in the prompt on words that are already there.'
 
