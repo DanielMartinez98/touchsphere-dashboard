@@ -737,6 +737,8 @@ router.post('/', async (req: Request, res: Response) => {
   let keepListening = false
   // Set by end_conversation's `silent` argument: the reply is deliberately empty.
   let endSilently = false
+  // The last thing the model actually said, across every round.
+  let lastSpoken = ''
 
   // Set when the model asks for something to be put on screen (open_website /
   // play_video). Only the last one survives — the dashboard shows one window.
@@ -775,6 +777,11 @@ router.post('/', async (req: Request, res: Response) => {
             )
           } else if (endSilently) {
             console.log('[chat] ending silently — the user declined more help')
+          } else if (lastSpoken) {
+            console.log(
+              `[chat] empty final message, but the model already spoke on an earlier round — ` +
+              `using that: "${lastSpoken.slice(0, 80)}"`,
+            )
           } else {
             console.warn(
               `[chat] upstream returned an EMPTY final message on round ${round + 1} — ` +
@@ -786,7 +793,9 @@ router.post('/', async (req: Request, res: Response) => {
         }
         // An intentional silence is not a missing reply: only fall back to the
         // apology when the model was meant to say something and didn't.
-        const reply = endSilently ? '' : (text || "I'm here, but I didn't catch a reply that time.")
+        const reply = endSilently
+          ? ''
+          : (text || lastSpoken || "I'm here, but I didn't catch a reply that time.")
         console.log(`[chat] ← reply="${reply.slice(0, 80)}${reply.length > 80 ? '…' : ''}" rounds=${round + 1} changed=[${[...changed].join(',')}] keepListening=${keepListening}${display ? ` display=${display.kind}` : ''}`)
         // Conversation is ending — park the transcript for the next 12h and
         // kick off a background summary. Fire-and-forget so the user gets their
@@ -803,6 +812,12 @@ router.post('/', async (req: Request, res: Response) => {
       }
 
       // Execute each tool call and append the results back into the conversation.
+      // Keep whatever it said alongside the tool call. Models routinely put
+      // the user-facing sentence HERE — "it's 25 degrees in Tokyo" together
+      // with keep_listening — and then have nothing left to add on the final
+      // round, which arrives as an empty message. That is not a failure and
+      // must not be answered with an apology; it is the answer, one round early.
+      if (text.trim()) lastSpoken = text.trim()
       messages.push({ role: 'assistant', content: text, tool_calls: calls })
       for (const c of calls) {
         const name = c.function?.name ?? ''
