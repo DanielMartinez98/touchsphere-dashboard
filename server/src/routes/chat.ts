@@ -340,6 +340,41 @@ const WEB_TOOLS = WEB_SEARCH_ENABLED ? [
  */
 const NUM_CTX = Number(process.env['OLLAMA_NUM_CTX'] ?? 32768)
 
+
+/**
+ * Take written-out tool calls back out of a spoken reply.
+ *
+ * A small model under a heavy tool list sometimes DESCRIBES a call instead of
+ * making one, and the result lands in the text: `{get_weather{location:"Tokyo"}}`,
+ * `call:get_weather{...}`, a bare `keep_listening()`. It is never anything the
+ * user should hear, and on a kiosk it is read aloud by a speech engine.
+ *
+ * This is a net, not a fix — the fix is a model that can hold the tool list, or
+ * a shorter one. But a net stops the worst of it reaching the speaker, and what
+ * it removes is logged so the underlying problem stays visible rather than
+ * being papered over.
+ */
+function stripWrittenToolCalls(text: string, toolNames: string[]): string {
+  if (!text) return text
+  const names = toolNames.filter(Boolean).join('|')
+  if (!names) return text
+  let out = text
+  // String.raw throughout: a plain template literal eats the backslashes, so
+  // \s becomes a literal "s" and the pattern quietly matches almost nothing.
+  // That is how the first version of this appeared to work while only ever
+  // catching one of the three shapes.
+  const rx = (body: string) => new RegExp(body, 'gi')
+  // {name{...}} and {{name(...)}} — the brace forms.
+  out = out.replace(rx(String.raw`\{+\s*(?:call:)?(?:${names})\s*[{(][^})]*[})]\s*\}*`), ' ')
+  // call:name{...} / call:name(...)
+  out = out.replace(rx(String.raw`\bcall:\s*(?:${names})\s*[{(][^})]*[})]`), ' ')
+  // A bare name() or name{} on its own.
+  out = out.replace(rx(String.raw`\b(?:${names})\s*[({]\s*[)}]`), ' ')
+  // Ollama's odd string fences, when they survive the above.
+  out = out.replace(/<\|"\|>/g, '"')
+  return out.replace(/[ 	]{2,}/g, ' ').replace(/\s+([.,!?;:])/g, '$1').replace(/\s{2,}/g, ' ').trim()
+}
+
 // ── Turn-control tools ────────────────────────────────────────────────────
 // The model decides explicitly whether the mic reopens for another turn by
 // calling one of these (instead of the previous '?' heuristic). Default is
@@ -393,6 +428,8 @@ const TURN_CONTROL_TOOLS = [
 // is set — unlike TTS there is no fallback renderer, so a model that can see the
 // tool would promise a picture no configured box can draw.
 const TOOLS = [...DASHBOARD_TOOLS, ...BROWSE_TOOLS, ...GUIDE_VIEW_TOOLS, ...IMAGE_TOOLS, ...PLEX_TOOLS, ...TURN_CONTROL_TOOLS, ...WEB_TOOLS]
+/** Every tool name, for spotting one that was written out rather than called. */
+const TOOL_NAMES = TOOLS.map(t => t.function.name)
 
 // ── Tool implementations ──────────────────────────────────────────────────
 async function runWebSearch(query: string): Promise<string> {
@@ -755,7 +792,14 @@ router.post('/', async (req: Request, res: Response) => {
 
       const msg = resp.message
       const calls = msg?.tool_calls ?? []
-      const text  = (msg?.content ?? resp.response ?? '').trim()
+      const rawText = (msg?.content ?? resp.response ?? '').trim()
+      const text = stripWrittenToolCalls(rawText, TOOL_NAMES)
+      if (rawText !== text) {
+        console.warn(
+          `[chat] the model WROTE a tool call instead of making one — stripped it from the reply. ` +
+          `raw="${rawText.slice(0, 160).replace(/\s+/g, ' ')}"`,
+        )
+      }
 
       // No tool calls → we're done.
       if (calls.length === 0) {
