@@ -828,6 +828,15 @@ router.post('/', async (req: Request, res: Response) => {
    */
   const wantsAction = /\b(search|look ?up|google|find (me |out )?|open|pull up|bring up|show me|put .* on (the )?screen|play|watch|draw|paint|generate|make me a picture)\b/i
     .test(last.content)
+  /**
+   * Stronger than wantsAction: the user asked for something to be ON THE
+   * SCREEN, so a spoken answer is not the thing they asked for. "Search the
+   * web and tell me" is satisfied by talking; "pull up a page" is not, and
+   * answering it with web_search — a tool that returns text and opens nothing
+   * — looked like success to the first version of this check.
+   */
+  const wantsScreen = /\b(open|pull up|bring up|show me|put .* on (the )?screen|display|play|watch)\b/i
+    .test(last.content)
   // Tool calls that actually did something, as opposed to turn control.
   let didSomething = false
 
@@ -900,7 +909,9 @@ router.post('/', async (req: Request, res: Response) => {
         // Telling it plainly, once, and asking again is far more reliable than
         // any amount of instruction in the system prompt, because the model can
         // see its own mistake in context.
-        const askedAndDidNothing = wantsAction && !didSomething
+        // Nothing on screen when a window was asked for, or no tool at all when
+        // an action was asked for. Either way the request went unanswered.
+        const askedAndDidNothing = (wantsScreen && !display) || (wantsAction && !didSomething)
 
         // The nudge has been spent and it STILL called nothing. Do it here.
         if (nudged && askedAndDidNothing && !display) {
