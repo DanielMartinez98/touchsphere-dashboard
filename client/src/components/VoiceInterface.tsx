@@ -1,14 +1,104 @@
+import { useState } from 'react'
+import { Keyboard, Send, X } from 'lucide-react'
 import type { VoiceState } from '../hooks/useVoice'
+import { TouchInput } from './TouchInput'
 
 interface Props {
   voice: VoiceState
+  /** Offer the keyboard button beside the sphere. Off on the phone layout, which has its own field. */
+  typing?: boolean
 }
 
-export function VoiceInterface({ voice }: Props) {
-  const { isListening, isSpeaking, isTranscribing, isThinking, transcript, reply, error, stopSpeaking, cancelListening } = voice
+/**
+ * Typing to the assistant. A sheet at the bottom of the screen with one
+ * field and a Send button; the on-screen keyboard rises under it, and the
+ * sheet sits on the keyboard's top edge (`--ts-keyboard-h`) so the field is
+ * never covered. Sending runs the same turn the microphone would — the reply
+ * is spoken and shown exactly as for a spoken question — so this is the way
+ * to ask in a noisy room, or to ask something long and exact.
+ */
+function TypeSheet({ onSend, onClose, busy }: { onSend: (t: string) => void; onClose: () => void; busy: boolean }) {
+  const [text, setText] = useState('')
+  const send = () => {
+    const t = text.trim()
+    if (!t) return
+    onSend(t)
+    setText('')
+    onClose()
+  }
+  return (
+    <div
+      className="fixed left-0 right-0 z-[9050] px-3 pb-3 kb-room"
+      style={{ bottom: 'var(--ts-keyboard-h, 0px)' }}
+      onPointerDown={e => e.stopPropagation()}
+    >
+      <div className="mx-auto w-[min(96vw,640px)] rounded-3xl bg-[#101014]/95 backdrop-blur-md border border-white/15 shadow-2xl p-3 flex flex-col gap-2">
+        <div className="flex items-center justify-between px-1">
+          <p className="text-[13px] text-white/60 font-semibold tracking-wide">Type to her</p>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center active:scale-95 transition"
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <div className="flex items-end gap-2">
+          <div className="flex-1 min-w-0">
+            <TouchInput
+              value={text}
+              onChange={setText}
+              multiline
+              rows={2}
+              placeholder="Ask her anything…"
+              ariaLabel="Type a message to the assistant"
+              className="w-full bg-white/10 text-white rounded-2xl px-4 py-3 text-[16px] leading-relaxed
+                         placeholder:text-white/30 border border-hairline"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={send}
+            disabled={!text.trim()}
+            aria-label="Send"
+            className="h-12 px-5 rounded-2xl bg-amber-400/25 border border-amber-300/40 text-amber-100
+                       font-semibold flex items-center gap-2 active:scale-95 transition disabled:opacity-40"
+          >
+            <Send size={16} />
+            {busy ? 'Interrupt' : 'Send'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export function VoiceInterface({ voice, typing = false }: Props) {
+  const { isListening, isSpeaking, isTranscribing, isThinking, transcript, reply, error, stopSpeaking, cancelListening, sendText } = voice
+  const [typeOpen, setTypeOpen] = useState(false)
 
   return (
     <>
+      {/* ── Keyboard: type instead of speaking. Sits just outside the sphere's
+             tap circle, lower-right, so it is reachable without touching the
+             orb; hidden while the sheet is up. ── */}
+      {typing && !typeOpen && (
+        <button
+          type="button"
+          onClick={() => setTypeOpen(true)}
+          aria-label="Type to the assistant"
+          className="absolute left-1/2 top-1/2 z-20 translate-x-[140px] translate-y-[140px] w-14 h-14 rounded-full
+                     bg-black/55 backdrop-blur-md border border-white/20 text-white/80 flex items-center justify-center
+                     active:scale-95 transition shadow-lg"
+        >
+          <Keyboard size={22} />
+        </button>
+      )}
+      {typing && typeOpen && (
+        <TypeSheet onSend={sendText} onClose={() => setTypeOpen(false)} busy={isSpeaking || isThinking} />
+      )}
+
       {/* ── Error toast (mic blocked / not secure) ── */}
       {error && (
         <div className="absolute left-1/2 -translate-x-1/2 bottom-28 z-40 w-[min(88vw,500px)] pointer-events-none">

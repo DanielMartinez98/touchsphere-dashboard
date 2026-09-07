@@ -502,7 +502,7 @@ function App() {
       {!companion && <MicMuteButton />}
 
       {/* Voice interface — transcript + reply overlays (mic button removed; tap the orb) */}
-      {showCentre && <VoiceInterface voice={voice} />}
+      {showCentre && <VoiceInterface voice={voice} typing={!companion} />}
 
       {/* Bedtime alert toast — driven by the schedule in settings */}
       <BedtimeBanner />

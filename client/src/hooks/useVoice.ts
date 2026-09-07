@@ -48,6 +48,11 @@ export interface VoiceState {
   // Interrupt the assistant mid-reply and end the conversation. Wired to the
   // on-screen "Stop" button that shows while it's talking.
   stopSpeaking: () => void
+  // Ask by typing instead of speaking. Runs the exact same turn as a
+  // transcript would — same history, same tools, same spoken reply — so a
+  // typed question in a noisy room, or from a phone, is not a second-class
+  // conversation. Interrupts a reply in progress, since typing is intent.
+  sendText: (text: string) => void
 }
 
 // Server base URL (Vite env var). Same one used by the audio recorder so the
@@ -496,6 +501,62 @@ export function useVoice(): VoiceState {
     return (json.text ?? '').trim()
   }, [])
 
+  // ── The turn: a user utterance in, a spoken reply out ──────────────────
+  // Shared by the microphone (after transcription) and by typing. Everything
+  // it touches is a ref or a setter, so it never goes stale.
+  const answer = useCallback(async (text: string) => {
+    // Append this user turn to the running history, then ask the LLM with
+    // full context so multi-turn conversations actually remember prior turns.
+    const isOpeningTurn = historyRef.current.length === 0
+    historyRef.current = [
+      ...historyRef.current,
+      { role: 'user', content: text } as ChatTurn,
+    ].slice(-MAX_HISTORY_TURNS)
+    const { text: replyText, keepListening: wantFollowUp, display } =
+      await fetchReply(historyRef.current, isOpeningTurn)
+    clientLog('info', `reply (${replyText.length} chars, keepListening=${wantFollowUp}): "${replyText.slice(0, 160)}"`)
+    historyRef.current = [
+      ...historyRef.current,
+      { role: 'assistant', content: replyText } as ChatTurn,
+    ].slice(-MAX_HISTORY_TURNS)
+    // Pull out any hidden avatar cues ([wave], [happy]) the model embedded.
+    // History (above) keeps the RAW reply so the model sees its own cue style
+    // in later turns; the user only ever sees and hears the cleaned text.
+    const { clean: spokenText, cues } = extractCues(replyText)
+    // Hand off audio focus from the thinking loop to the TTS reply.
+    stopThinkingSound()
+    setIsThinking(false)
+    setIsSpeaking(true)
+    // The reply text is revealed by the onFirstAudio callback — in sync with
+    // the voice actually starting, not seconds ahead of it while the first
+    // chunk is still being synthesised.
+    speakText(spokenText, () => {
+      setReply(spokenText)
+      // Opened alongside the reply text, not before it: "here's that tutorial"
+      // and the window it refers to land together. The player itself waits for
+      // her to stop talking (see BrowserOverlay's `hold`).
+      if (display) openBrowseFromPayload(display)
+    }, () => {
+      setIsSpeaking(false)
+      setVolume(0)
+      volumeRef.current = 0
+      // The assistant decides explicitly via end_conversation / keep_listening
+      // tool calls. If it didn't opt in to another turn, end the conversation
+      // — the next wake-word starts fresh.
+      if (!wantFollowUp) {
+        clientLog('info', 'conversation ended — the assistant did not keep listening')
+        historyRef.current = []
+        return
+      }
+      clientLog('info', `reopening the mic for a follow-up in ${POST_TTS_GRACE_MS}ms`)
+      // Grace delay so speaker tail / room reverb doesn't trigger VAD on the
+      // freshly-reopened mic. Also gives React time to flush setIsSpeaking
+      // and re-bind startListeningRef to the latest closure (the guard
+      // inside startListening would otherwise still see isSpeaking=true).
+      setTimeout(() => startListeningRef.current?.(true), POST_TTS_GRACE_MS)
+    }, cues)
+  }, [])
+
   const startListening = useCallback(async (isFollowUp = false) => {
     if (isListening || isTranscribing || isThinking || isSpeaking) return
     // Virtual mute — never open the mic. Read from the store (not the hook's
@@ -638,56 +699,7 @@ export function useVoice(): VoiceState {
         return
       }
 
-      // Append this user turn to the running history, then ask the LLM with
-      // full context so multi-turn conversations actually remember prior turns.
-      const isOpeningTurn = historyRef.current.length === 0
-      historyRef.current = [
-        ...historyRef.current,
-        { role: 'user', content: text } as ChatTurn,
-      ].slice(-MAX_HISTORY_TURNS)
-      const { text: replyText, keepListening: wantFollowUp, display } =
-        await fetchReply(historyRef.current, isOpeningTurn)
-      clientLog('info', `reply (${replyText.length} chars, keepListening=${wantFollowUp}): "${replyText.slice(0, 160)}"`)
-      historyRef.current = [
-        ...historyRef.current,
-        { role: 'assistant', content: replyText } as ChatTurn,
-      ].slice(-MAX_HISTORY_TURNS)
-      // Pull out any hidden avatar cues ([wave], [happy]) the model embedded.
-      // History (above) keeps the RAW reply so the model sees its own cue style
-      // in later turns; the user only ever sees and hears the cleaned text.
-      const { clean: spokenText, cues } = extractCues(replyText)
-      // Hand off audio focus from the thinking loop to the TTS reply.
-      stopThinkingSound()
-      setIsThinking(false)
-      setIsSpeaking(true)
-      // The reply text is revealed by the onFirstAudio callback — in sync with
-      // the voice actually starting, not seconds ahead of it while the first
-      // chunk is still being synthesised.
-      speakText(spokenText, () => {
-        setReply(spokenText)
-        // Opened alongside the reply text, not before it: "here's that tutorial"
-        // and the window it refers to land together. The player itself waits for
-        // her to stop talking (see BrowserOverlay's `hold`).
-        if (display) openBrowseFromPayload(display)
-      }, () => {
-        setIsSpeaking(false)
-        setVolume(0)
-        volumeRef.current = 0
-        // The assistant decides explicitly via end_conversation / keep_listening
-        // tool calls. If it didn't opt in to another turn, end the conversation
-        // — the next wake-word starts fresh.
-        if (!wantFollowUp) {
-          clientLog('info', 'conversation ended — the assistant did not keep listening')
-          historyRef.current = []
-          return
-        }
-        clientLog('info', `reopening the mic for a follow-up in ${POST_TTS_GRACE_MS}ms`)
-        // Grace delay so speaker tail / room reverb doesn't trigger VAD on the
-        // freshly-reopened mic. Also gives React time to flush setIsSpeaking
-        // and re-bind startListeningRef to the latest closure (the guard
-        // inside startListening would otherwise still see isSpeaking=true).
-        setTimeout(() => startListeningRef.current?.(true), POST_TTS_GRACE_MS)
-      }, cues)
+      await answer(text)
     }
 
     rec.onerror = (e) => {
@@ -759,7 +771,30 @@ export function useVoice(): VoiceState {
       console.log('[voice] max record time reached')
       stopRecording()
     }, MAX_RECORD_MS)
-  }, [isListening, isTranscribing, isThinking, isSpeaking, cleanup, stopRecording, transcribe])
+  }, [isListening, isTranscribing, isThinking, isSpeaking, cleanup, stopRecording, transcribe, answer])
+
+  // Typed instead of spoken. The mic, if open, is dropped without
+  // transcribing (the typed words ARE the utterance), a reply in progress is
+  // cut off, and the turn runs exactly as a transcript would.
+  const sendText = useCallback((raw: string) => {
+    const text = raw.replace(/\s+/g, ' ').trim()
+    if (!text) return
+    if (recorderRef.current && !stoppedRef.current) stopRecording(true)
+    if (isSpeaking) haltPlayback('the user typed')
+    if (isThinking || isTranscribing) return   // a turn is already on its way
+    clientLog('info', `typed: "${text.slice(0, 160)}"`)
+    setError('')
+    setReply('')
+    setTranscript(text)
+    void startThinkingSound()
+    setIsThinking(true)
+    setIsSpeaking(false)
+    void answer(text).catch(err => {
+      console.warn('[voice] typed turn failed:', err)
+      stopThinkingSound()
+      setIsThinking(false)
+    })
+  }, [isSpeaking, isThinking, isTranscribing, stopRecording, answer])
 
   const stopListening = useCallback(() => {
     stopRecording()
@@ -838,5 +873,5 @@ export function useVoice(): VoiceState {
     return () => window.clearTimeout(t)
   }, [error])
 
-  return { isListening, isSpeaking, isTranscribing, isThinking, transcript, reply, error, volume, startListening, stopListening, cancelListening, stopSpeaking }
+  return { isListening, isSpeaking, isTranscribing, isThinking, transcript, reply, error, volume, startListening, stopListening, cancelListening, stopSpeaking, sendText }
 }

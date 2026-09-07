@@ -17,7 +17,8 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { Fragment } from 'react'
-import { Clapperboard, Brush, ListChecks, Settings, Pause, Play, Square, Tv, Smartphone, WifiOff, Radio, Sparkles, Lock, Briefcase, Moon } from 'lucide-react'
+import { Clapperboard, Brush, ListChecks, Settings, Pause, Play, Square, Tv, Smartphone, WifiOff, Radio, Sparkles, Lock, Briefcase, Moon, SendHorizontal } from 'lucide-react'
+import { TouchInput } from './TouchInput'
 import type { AppMode } from '../hooks/useAppMode'
 import { openPlexPlayer, plexApi, plexImg, type PlexItem, type PlexStatus } from '../hooks/usePlex'
 import { onServerEvent } from '../hooks/useServerEvents'
@@ -86,11 +87,12 @@ export function Companion({ open, setOpen, plexStatus, plexSummary, agent, setAg
   /** The Agent tab: App renders the avatar/sphere and the voice UI behind this layout while it is on. */
   agent: boolean
   setAgent: (on: boolean) => void
-  voice: { isListening: boolean; isThinking: boolean; isSpeaking: boolean }
+  voice: { isListening: boolean; isThinking: boolean; isSpeaking: boolean; sendText: (text: string) => void }
   /** The kiosk's mode — shared state, so switching it here switches the wall. */
   mode: AppMode
   setMode: (m: AppMode) => void
 }) {
+  const [typed, setTyped] = useState('')
   const online = useOnline()
   const { now, kiosks, refresh } = useKioskNow()
   const [queued, setQueued] = useState<number>(0)
@@ -177,10 +179,36 @@ export function Companion({ open, setOpen, plexStatus, plexSummary, agent, setAg
       </div>
 
       {agent ? (
-        <div className="flex-1 min-h-0 flex flex-col items-center justify-end pb-6 pointer-events-none">
+        <div className="flex-1 min-h-0 flex flex-col items-center justify-end pb-4 gap-3 pointer-events-none">
           <p className="text-[13px] text-white/50 text-center px-8 leading-snug">
-            {voice.isListening ? 'Listening…' : voice.isThinking ? 'Thinking…' : voice.isSpeaking ? 'Speaking' : 'Tap the sphere to talk'}
+            {voice.isListening ? 'Listening…' : voice.isThinking ? 'Thinking…' : voice.isSpeaking ? 'Speaking' : 'Tap the sphere to talk, or type below'}
           </p>
+          {/* Typing is the phone's natural way in — a phone is often somewhere
+              speaking to it would be odd — and it runs the same turn as speech. */}
+          <div className="pointer-events-auto w-full px-4 flex items-end gap-2 kb-room">
+            <div className="flex-1 min-w-0">
+              <TouchInput
+                value={typed}
+                onChange={setTyped}
+                multiline
+                rows={1}
+                placeholder="Type to her…"
+                ariaLabel="Type a message to the assistant"
+                className="w-full bg-white/10 text-white rounded-2xl px-4 py-3 text-[16px] leading-relaxed
+                           placeholder:text-white/30 border border-hairline"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => { const t = typed.trim(); if (!t) return; voice.sendText(t); setTyped('') }}
+              disabled={!typed.trim()}
+              aria-label="Send"
+              className="h-12 w-12 rounded-2xl bg-amber-400/25 border border-amber-300/40 text-amber-100
+                         flex items-center justify-center active:scale-95 transition disabled:opacity-40"
+            >
+              <SendHorizontal size={18} />
+            </button>
+          </div>
         </div>
       ) : (
       <div className="flex-1 min-h-0 overflow-y-auto px-5 pb-4 flex flex-col gap-4">
