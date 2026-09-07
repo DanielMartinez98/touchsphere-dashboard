@@ -44,13 +44,6 @@ export function TouchInput({
   // in-progress typing.
   useEffect(() => { if (!open) setDraft(value) }, [value, open])
 
-  // Opening the keyboard covers the bottom third of the screen, and half the
-  // fields in this app live down there — a sheet's input lands underneath it
-  // and you type blind. Scroll it into the middle of what's left.
-  useLayoutEffect(() => {
-    if (!open) return
-    ref.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
-  }, [open])
 
   // Grow a multiline field to fit what's in it.
   //
@@ -63,6 +56,49 @@ export function TouchInput({
   // won't chain it out. Growing the box removes the scroller instead of fighting
   // it, and has the side benefit that you can see the whole thing you typed.
   const shown = open ? draft : value
+
+  // Opening the keyboard covers the bottom third of the screen, and half the
+  // fields in this app live down there — a sheet's input lands underneath it
+  // and you type blind.
+  //
+  // `block: 'center'` was not enough on its own for two reasons, and both were
+  // reported as "I can't read the text while typing". A field already at the
+  // bottom of its scroll range cannot be centred, because there is nothing
+  // below it to scroll up — that is what `.kb-room` fixes, by padding every
+  // scroll container by the board's height. And a multiline box that has grown
+  // taller than the space above the board can never fit in it, so centring
+  // puts its MIDDLE on screen and hides the end, which is exactly where the
+  // caret is while you type.
+  //
+  // So: scroll-margin equal to the board's height (scrollIntoView honours it),
+  // `nearest` for a box that fits, and `start` for one that doesn't — which
+  // keeps the first line pinned near the top and leaves the most room for what
+  // follows. Re-run when the box grows past the board, so a prompt that gets
+  // long as you type doesn't slide back under it.
+  const boardH = () => {
+    const v = getComputedStyle(document.documentElement).getPropertyValue('--ts-keyboard-h')
+    const n = parseFloat(v)
+    return Number.isFinite(n) ? n : 0
+  }
+  useEffect(() => {
+    if (!open) return
+    const el = ref.current
+    if (!el) return
+    // A frame's delay: the board mounts after this and its height is what the
+    // margin is made of.
+    const t = setTimeout(() => {
+      const kb = boardH()
+      el.style.scrollMarginBottom = `${kb + 16}px`
+      el.style.scrollMarginTop = '16px'
+      const free = window.innerHeight - kb - 32
+      const tall = el.getBoundingClientRect().height > free
+      el.scrollIntoView({ block: tall ? 'start' : 'nearest', behavior: 'smooth' })
+    }, 60)
+    return () => clearTimeout(t)
+    // `shown` is a dep on purpose: a growing box has to be re-checked, and
+    // scrollIntoView on an element already in view is a no-op, so this is
+    // quiet while you type inside the visible area.
+  }, [open, shown])
   useLayoutEffect(() => {
     const el = ref.current
     if (!el || !multiline) return

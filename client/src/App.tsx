@@ -93,8 +93,9 @@ function App() {
   const drawImage = useCallback(async (
     prompt: string, orientation: Orientation, source: string, denoise: number, improve: boolean,
     mask = '', region = '', structure?: boolean,
+    hold?: { mode?: 'lines' | 'body' | 'pose'; strength?: number; detail?: 'fine' | 'normal' | 'coarse' },
   ) => {
-    const id = await generateImage(prompt, orientation, source, denoise, improve, mask, region, structure)
+    const id = await generateImage(prompt, orientation, source, denoise, improve, mask, region, structure, hold)
     // The prompt handed to the frame is the one the user typed. When the
     // improver is on, the server replaces it a second later and the frame picks
     // the new one up off the job's own SSE frames — so what is on screen while
@@ -404,6 +405,7 @@ function App() {
             styles={imageStyles}
             capabilities={imageCapabilities}
             keepPoseDefault={imageStructure ? imageStructure.enabled : null}
+            holdDefaults={imageStructure}
             model={imageModel}
             quality={imageQuality}
             params={imageParams}

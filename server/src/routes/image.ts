@@ -467,6 +467,10 @@ router.post('/generate', (req: Request, res: Response) => {
     // Keep the pose through a ControlNet. Omitted means yes for a redraw.
     ...(typeof body?.['structure'] === 'boolean' ? { structure: body['structure'] } : {}),
     ...(body?.['hold'] === 'lines' || body?.['hold'] === 'body' || body?.['hold'] === 'pose' ? { hold: body['hold'] } : {}),
+    ...(typeof body?.['holdStrength'] === 'number' ? { holdStrength: body['holdStrength'] } : {}),
+    ...(typeof body?.['holdEnd'] === 'number' ? { holdEnd: body['holdEnd'] } : {}),
+    ...(body?.['holdDetail'] === 'fine' || body?.['holdDetail'] === 'normal' || body?.['holdDetail'] === 'coarse'
+      ? { holdDetail: body['holdDetail'] } : {}),
     // Omitted rather than defaulted when the panel doesn't say: undefined means
     // "use the saved default", which is resolved in startImage() at queue time.
     ...(typeof body?.['improve'] === 'boolean' ? { improve: body['improve'] } : {}),

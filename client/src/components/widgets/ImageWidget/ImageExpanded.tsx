@@ -29,8 +29,18 @@ import AdvancedPanel from './AdvancedPanel'
 import MaskEditor from './MaskEditor'
 import { STRENGTHS, styleUsable } from '../../../hooks/useImages'
 import type {
-  ImageCapabilities, ImageParams, ImageStyle, Orientation, QueuedJob, StoredImage, StyleDefaults,
+  HoldMode, ImageCapabilities, ImageParams, ImageStyle, Orientation, QueuedJob, StoredImage,
+  StructureSettings, StyleDefaults,
 } from '../../../hooks/useImages'
+
+// How firmly the original's structure is imposed, as three words. The numbers
+// are the ones Settings' stepper reaches; these are the three anybody actually
+// wants, and a chip is one tap where a stepper is six.
+const HOLD_STRENGTHS = [
+  { id: 'loose', label: 'Loose',    hint: 'freer',   value: 0.35 },
+  { id: 'mid',   label: 'Balanced', hint: 'default', value: 0.6 },
+  { id: 'firm',  label: 'Firm',     hint: 'exact',   value: 0.8 },
+]
 
 // How much of the MARKED part to throw away. A different ladder from
 // STRENGTHS, because the question is different: outside the mask nothing
@@ -83,6 +93,8 @@ interface Props {
   capabilities: ImageCapabilities
   /** Whether "keep the pose" is on by default (Settings → Drawing). null while unknown. */
   keepPoseDefault: boolean | null
+  /** The saved pose-hold settings, which the panel's controls start from. */
+  holdDefaults: StructureSettings | null
   /** The one in effect. '' = whatever the workflow specifies. */
   model:    string
   /** Sampling-quality preset: more steps, slower, better. */
@@ -102,6 +114,7 @@ interface Props {
   onGenerate: (
     prompt: string, orientation: Orientation, source: string, denoise: number, improve: boolean,
     mask?: string, region?: string, structure?: boolean,
+    hold?: { mode?: HoldMode; strength?: number; detail?: 'fine' | 'normal' | 'coarse' },
   ) => void
   onDelete:   (id: string) => void
   /** Empty the whole gallery — every render and upload. */
@@ -250,7 +263,7 @@ const QUALITIES: { id: string; label: string; hint: string }[] = [
 
 export default function ImageExpanded({
   images, enabled, busy, queue, queueMax, drawError,
-  styles, capabilities, keepPoseDefault, model, quality,
+  styles, capabilities, keepPoseDefault, holdDefaults, model, quality,
   params, defaults, loras, autoLora,
   onModel, onQuality, onParams, onResetParams, onGenerate, onDelete, onClear, onCancel,
   improveDefault, onImproveChange, onUpload,
@@ -278,6 +291,16 @@ export default function ImageExpanded({
   if (!keepPoseState.seeded && keepPoseDefault !== null) setKeepPoseState({ on: keepPoseDefault, seeded: true })
   const keepPose = keepPoseState.on
   const setKeepPose = (f: (v: boolean) => boolean) => setKeepPoseState(s => ({ on: f(s.on), seeded: true }))
+  // The rest of the hold, per request. Seeded from the saved settings the same
+  // way, so the panel opens on what Settings says and every change here is for
+  // this picture only.
+  const [hold, setHoldState] = useState<{ v: { mode: HoldMode; strength: number; detail: 'fine' | 'normal' | 'coarse' }; seeded: boolean }>(
+    { v: { mode: 'lines', strength: 0.6, detail: 'normal' }, seeded: false })
+  if (!hold.seeded && holdDefaults) {
+    setHoldState({ v: { mode: holdDefaults.mode, strength: holdDefaults.strength, detail: holdDefaults.detail }, seeded: true })
+  }
+  const setHold = (patch: Partial<{ mode: HoldMode; strength: number; detail: 'fine' | 'normal' | 'coarse' }>) =>
+    setHoldState(s => ({ v: { ...s.v, ...patch }, seeded: true }))
   // Which part of the source may change, when only part of it should. In the
   // same store as the source, for the same reason: it is a piece of the request.
   const mask = useImageMask()
@@ -494,6 +517,7 @@ export default function ImageExpanded({
       mode === 'part' && mask ? mask.id : '',
       '',
       capabilities.structure && mode !== 'instruct' ? keepPose : undefined,
+      capabilities.structure && mode !== 'instruct' && keepPose ? hold.v : undefined,
     )
     // The prompt is deliberately KEPT, not cleared: the common next action is
     // another go at the same idea with a word changed, and re-typing it on an
@@ -729,18 +753,91 @@ export default function ImageExpanded({
               different woman in a pink jacket". Offered only when the GPU box
               has a ControlNet, and not for an editor, which holds its own. */}
           {capabilities.structure && mode !== 'instruct' && mode !== 'plan' && (
-            <button
-              type="button"
-              onClick={() => setKeepPose(v => !v)}
-              className={`h-11 rounded-xl px-3 flex items-center justify-between gap-2 text-[13px] font-semibold
-                          border active:scale-[0.98] ${
-                keepPose ? 'bg-white/15 text-white border-white/25' : 'bg-white/5 text-white/50 border-transparent'}`}
-            >
-              <span>Keep the pose and shapes</span>
-              <span className={`text-[11px] uppercase tracking-widest ${keepPose ? 'text-emerald-300/80' : 'text-white/35'}`}>
-                {keepPose ? 'on' : 'off'}
-              </span>
-            </button>
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => setKeepPose(v => !v)}
+                className={`h-11 rounded-xl px-3 flex items-center justify-between gap-2 text-[13px] font-semibold
+                            border active:scale-[0.98] ${
+                  keepPose ? 'bg-white/15 text-white border-white/25' : 'bg-white/5 text-white/50 border-transparent'}`}
+              >
+                <span>Keep the pose and shapes</span>
+                <span className={`text-[11px] uppercase tracking-widest ${keepPose ? 'text-emerald-300/80' : 'text-white/35'}`}>
+                  {keepPose ? 'on' : 'off'}
+                </span>
+              </button>
+
+              {/* The rest of the hold, here rather than only in Settings: which
+                  of these is right changes with what you are asking for — firm
+                  lines for a recolour, loose or body for taking a garment off —
+                  so it belongs next to the prompt, not three screens away.
+                  Settings still owns the DEFAULT these start from. */}
+              {keepPose && (
+                <div className="flex flex-col gap-2 rounded-xl bg-black/25 border border-hairline p-2.5">
+                  <div className="flex gap-1.5">
+                    {(['lines', 'body', 'pose'] as const).map(m => {
+                      const usable = capabilities.holdModes[m]
+                      return (
+                        <button
+                          key={m}
+                          type="button"
+                          disabled={!usable}
+                          onClick={() => usable && setHold({ mode: m })}
+                          title={usable ? undefined : 'Needs the comfyui_controlnet_aux pack on the image server'}
+                          className={`flex-1 h-11 rounded-lg text-[12px] font-semibold border active:scale-95 ${
+                            !usable ? 'bg-white/[0.03] text-white/25 border-transparent line-through'
+                            : hold.v.mode === m ? 'bg-white/20 text-white border-white/25'
+                            : 'bg-white/5 text-white/45 border-transparent'}`}
+                        >
+                          {m === 'lines' ? 'Lines' : m === 'body' ? 'Body' : 'Pose'}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <div className="flex gap-1.5">
+                    {HOLD_STRENGTHS.map(s => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => setHold({ strength: s.value })}
+                        className={`flex-1 h-12 rounded-lg flex flex-col items-center justify-center leading-tight
+                                    border active:scale-95 ${
+                          Math.abs(hold.v.strength - s.value) < 0.03
+                            ? 'bg-white/20 text-white border-white/25'
+                            : 'bg-white/5 text-white/45 border-transparent'}`}
+                      >
+                        <span className="text-[12px] font-semibold">{s.label}</span>
+                        <span className="text-[10px] text-white/35">{s.hint}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {hold.v.mode === 'lines' && (
+                    <div className="flex gap-1.5">
+                      {(['fine', 'normal', 'coarse'] as const).map(d => (
+                        <button
+                          key={d}
+                          type="button"
+                          onClick={() => setHold({ detail: d })}
+                          className={`flex-1 h-10 rounded-lg text-[12px] font-semibold border active:scale-95 ${
+                            hold.v.detail === d ? 'bg-white/20 text-white border-white/25'
+                            : 'bg-white/5 text-white/45 border-transparent'}`}
+                        >
+                          {d === 'fine' ? 'Fine' : d === 'normal' ? 'Normal' : 'Coarse'} lines
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <span className="text-[11px] text-white/30 leading-snug">
+                    {hold.v.mode === 'lines'
+                      ? 'Every contour of the original is pinned, clothes included. Firm for recolouring something that stays; coarse lines let folds and patterns move.'
+                      : hold.v.mode === 'body'
+                        ? "The body's shape and depth are held while the old outlines are free to go — this is the one for taking a garment off or swapping it."
+                        : 'Only the skeleton is held, so everything worn can change while the limbs stay put.'}
+                    {' '}For this picture only; Settings → Drawing sets the default.
+                  </span>
+                </div>
+              )}
+            </div>
           )}
 
           {/* What to type differs by KIND of style, and it is the thing most

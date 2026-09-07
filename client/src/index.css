@@ -233,3 +233,18 @@
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 24px, #000 calc(100% - 12px), transparent 100%);
   mask-image: linear-gradient(to bottom, transparent 0, #000 24px, #000 calc(100% - 12px), transparent 100%);
 }
+
+/* Room for the on-screen keyboard.
+ *
+ * TouchKeyboard is `fixed` to the bottom, so it costs the layout nothing and a
+ * scroll container behind it still ends where it always did — which means its
+ * last ~300px sit UNDER the board with no way to scroll them up. It publishes
+ * its height as --ts-keyboard-h; this is the half that spends it. Every scroll
+ * container a field can live in carries this, so the page can always be
+ * scrolled far enough to put the field above the board.
+ *
+ * Zero when no keyboard is open, so it costs nothing the rest of the time. */
+.kb-room {
+  padding-bottom: var(--ts-keyboard-h, 0px);
+  transition: padding-bottom 120ms ease-out;
+}

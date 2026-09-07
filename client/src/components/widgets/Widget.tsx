@@ -164,7 +164,7 @@ export default function Widget({ position, collapsed, expanded, isOpen, onToggle
                   container for every expanded widget, so one line covers all of
                   them. */}
               <div
-                className="flex-1 min-h-0 overflow-auto scroll-fade-y"
+                className="flex-1 min-h-0 overflow-auto scroll-fade-y kb-room"
                 style={{ paddingBottom: 'var(--ts-keyboard-h, 0px)' }}
               >
                 {expanded}

@@ -1121,6 +1121,11 @@ export interface ImageRequest {
   structure?: boolean
   /** What to hold: lines (edges), body (depth) or pose (skeleton). Default: the setting. */
   hold?:      HoldMode
+  /** How firmly, 0.1-1, and how much of the schedule, 0.2-1. Default: the setting. */
+  holdStrength?: number
+  holdEnd?:      number
+  /** How fine the detected lines are, for the `lines` hold. Default: the setting. */
+  holdDetail?:   'fine' | 'normal' | 'coarse'
 }
 
 // The middle chip in the Draw panel, and what the assistant gets when it asks
@@ -1326,11 +1331,16 @@ export function startImage(req: ImageRequest): ImageJob {
     region,
     structure: !!source && !edits && (req.structure ?? hold.enabled),
     controlnet: '',
+    // Per request first, then the saved setting. The Draw panel sends these
+    // so one picture can be tried a different way without changing the
+    // default everything else uses.
     hold:         req.hold === 'body' || req.hold === 'pose' || req.hold === 'lines' ? req.hold : hold.mode,
-    holdStrength: hold.strength,
-    holdEnd:      hold.end,
-    cannyLow:     CANNY[hold.detail].low,
-    cannyHigh:    CANNY[hold.detail].high,
+    holdStrength: typeof req.holdStrength === 'number' && Number.isFinite(req.holdStrength)
+      ? Math.min(1, Math.max(0.1, req.holdStrength)) : hold.strength,
+    holdEnd:      typeof req.holdEnd === 'number' && Number.isFinite(req.holdEnd)
+      ? Math.min(1, Math.max(0.2, req.holdEnd)) : hold.end,
+    cannyLow:     CANNY[req.holdDetail ?? hold.detail]?.low ?? CANNY[hold.detail].low,
+    cannyHigh:    CANNY[req.holdDetail ?? hold.detail]?.high ?? CANNY[hold.detail].high,
     depthCkpt: '', poseDetector: '', poseEstimator: '',
     // Clamped above so the number the UI shows and the number the sampler gets
     // are the same one. Without a source it stays 1 — a full render — which is

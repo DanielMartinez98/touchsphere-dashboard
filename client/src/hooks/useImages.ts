@@ -728,6 +728,8 @@ export function useImages() {
     region = '',
     /** Hold the source's pose with a ControlNet. Omitted = the server's default (yes for a redraw). */
     structure?: boolean,
+    /** How it is held, for this picture only. Omitted = the saved setting. */
+    hold?: { mode?: HoldMode; strength?: number; detail?: 'fine' | 'normal' | 'coarse' },
   ): Promise<string | null> => {
     const size = SIZES[orientation]
     setDrawError('')
@@ -744,6 +746,9 @@ export function useImages() {
           ...(source && mask ? { mask } : {}),
           ...(source && region && !mask ? { region } : {}),
           ...(source && typeof structure === 'boolean' ? { structure } : {}),
+          ...(source && hold?.mode ? { hold: hold.mode } : {}),
+          ...(source && typeof hold?.strength === 'number' ? { holdStrength: hold.strength } : {}),
+          ...(source && hold?.detail ? { holdDetail: hold.detail } : {}),
           ...(typeof improve === 'boolean' ? { improve } : {}),
         }),
       })

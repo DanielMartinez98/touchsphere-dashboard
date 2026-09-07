@@ -470,7 +470,7 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
           </div>
 
           {/* ── Tab content ── */}
-          <div className="flex-1 overflow-y-auto px-6 pb-8">
+          <div className="flex-1 overflow-y-auto px-6 pb-8 kb-room">
 
             {/* Sounds tab (labeled "Audio" in the tab bar) */}
             {tab === 'sounds' && (
@@ -1865,6 +1865,7 @@ function DrawingTab() {
           the body's depth and lets the old clothes' lines go — right for swapping a shirt for a
           bikini; <span className="text-white/70">pose</span> keeps only the skeleton.
           {!capabilities.structure && ' No ControlNet is installed on the image server yet, so none of this applies until one is (an SDXL union ControlNet in ComfyUI/models/controlnet).'}
+          {' '}These are the defaults; the Draw panel carries the same controls for one picture at a time.
         </p>
         {structure && (
           <PoseHoldCard structure={structure} onChange={setStructure} modes={capabilities.holdModes} available={capabilities.structure} />
