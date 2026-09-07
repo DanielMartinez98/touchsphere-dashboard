@@ -88,7 +88,10 @@ export interface StoredImage {
   prompt: string
   file:   string
   /** 'upload' for a picture the user added rather than one this app drew. */
-  origin?: 'upload'
+  origin?: 'upload' | 'web'
+  /** For a picture found on the web: where it came from. */
+  sourceUrl?: string
+  credit?:    string
   url:    string
   width:  number
   height: number

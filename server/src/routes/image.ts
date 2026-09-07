@@ -17,6 +17,7 @@ import {
   maskPath,
   measureMask,
   saveMask,
+  importWebImage,
   segmentationAvailable,
   structureAvailable,
   holdModes,
@@ -59,6 +60,7 @@ import {
   clearImages,
 } from '../image'
 import { cancelPlan, createPlan, getPlan, runPlan } from '../image-plan'
+import { findAndFetch } from '../image-web'
 import { readStructure, writeStructure, DEFAULT_STRUCTURE } from '../image-structure'
 import {
   buildSystemPrompt,
@@ -605,6 +607,26 @@ router.post('/prompter', (req: Request, res: Response) => {
     `${patch.model !== undefined ? `, model=${saved.model || '(default)'}` : ''}`,
   )
   res.json(saved)
+})
+
+// POST /api/image/web { query } — find a picture on the web and put it in the
+// gallery, where it can be redrawn like anything else.
+router.post('/web', async (req: Request, res: Response) => {
+  const q = typeof (req.body as { query?: unknown })?.query === 'string'
+    ? (req.body as { query: string }).query.trim() : ''
+  if (!q) { res.status(400).json({ error: 'query is required' }); return }
+  try {
+    const got = await findAndFetch(q)
+    if (!got) { res.status(404).json({ error: `nothing usable came back for "${q}"` }); return }
+    const credit = [got.hit.source, got.hit.license].filter(Boolean).join(' · ')
+    const entry = await importWebImage(got.bytes, got.type, got.hit.title || q, {
+      sourceUrl: got.hit.pageUrl || got.hit.url,
+      credit,
+    })
+    res.status(201).json({ ...entry, url: `/api/image/file/${entry.file}` })
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : String(err) })
+  }
 })
 
 // ── Masks: which part of a picture may change ────────────────────────────────

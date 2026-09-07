@@ -107,17 +107,24 @@ const SYSTEM_PROMPT_BODY =
   "you MUST call exactly one of these tools BEFORE producing your final spoken text: " +
   "  - end_conversation()  -- conversation is complete; mic stays closed (this is the default expectation). " +
   "  - keep_listening()    -- you need another user turn; mic reopens after TTS finishes. " +
-  "Call end_conversation in every case below: " +
-  "(a) you answered the question, " +
-  "(b) you completed an action (added/removed/marked an item, fetched info, etc.), " +
-  "(c) you reported a result from a tool, " +
-  "(d) you acknowledged something (\"got it\", \"sure\", \"done\"), " +
-  "(e) you don't know and have nothing more to try. " +
-  "Call keep_listening ONLY when you literally cannot proceed without more input from the user " +
+  "THE CLOSING OFFER \u2014 this is how a conversation normally ends. When you have answered the " +
+  "question or finished the action and have nothing else to do, do NOT hang up. Instead, finish your " +
+  "reply with a SHORT offer of more help \u2014 \"Anything else?\", \"Need anything else?\", \"Want me to do " +
+  "anything else?\" \u2014 and call keep_listening, so the microphone reopens for the answer. " +
+  "Vary the wording; keep it to a few words at the end of what you were already saying. " +
+  "THEN, on the next turn, if their answer is NO or anything equivalent (\"no\", \"nope\", \"that's all\", " +
+  "\"nothing\", \"I'm good\", \"no thanks\", \"that's it\", \"we're done\"), call end_conversation and reply " +
+  "with EXACTLY an empty string \u2014 no goodbye, no \"okay\", no \"let me know\", nothing at all. Say nothing " +
+  "and stop. That silence is deliberate: they said they were done, and one more pleasantry is one more " +
+  "thing to sit through. If their answer is YES or a new request, handle it normally. " +
+  "Call end_conversation WITHOUT the offer only when: " +
+  "(a) they already declined this turn (see above), " +
+  "(b) they said goodbye, thanks-that's-all, or otherwise closed it themselves, " +
+  "(c) they asked you to stop, be quiet, or go away, " +
+  "(d) you are mid-task and something else will speak next (a picture or a guide finishing on its own). " +
+  "Call keep_listening for a real question too \u2014 when you literally cannot proceed without more input " +
   "(ambiguous title, missing date, unclear target, multiple matching items to disambiguate), " +
-  "or when you are OFFERING to show something based on a learned preference (see PERSISTENT MEMORY below) " +
-  "and need a yes or no — that offer is a real question and the mic must reopen for the answer. " +
-  "Never call keep_listening for filler like \"anything else?\", \"sound good?\", or \"let me know if you need more\" \u2014 those are end_conversation. " +
+  "or when you are OFFERING to show something based on a learned preference (see PERSISTENT MEMORY below). " +
   "If you forget to call either tool, the system defaults to end_conversation. " +
   "Only call ONE turn-control tool per reply; if you change your mind mid-turn, the LATER call wins. " +
   "Don't quote the user's question back at them; if you must reference what they asked, paraphrase as a statement. " +
@@ -320,9 +327,10 @@ const TURN_CONTROL_TOOLS = [
       name: 'end_conversation',
       description:
         'Signal that the conversation is COMPLETE and the microphone should NOT reopen. ' +
-        'Call this whenever you have answered the question, completed the requested action, ' +
-        'reported a tool result, acknowledged something, or have nothing more to do. ' +
-        'This is the default — when in doubt, call this. ' +
+        'Call this when the user has just DECLINED your offer of more help (reply with an empty ' +
+        'string — say nothing at all), when they said goodbye or asked you to stop, or when ' +
+        'something else is about to speak. ' +
+        'Otherwise prefer keep_listening with a short "anything else?" — see THE CLOSING OFFER. ' +
         'Call it BEFORE producing your final spoken reply, in the same turn.',
       parameters: { type: 'object', properties: {} },
     },
@@ -333,9 +341,10 @@ const TURN_CONTROL_TOOLS = [
       name: 'keep_listening',
       description:
         'Signal that you NEED another user turn and the microphone should reopen after you finish speaking. ' +
-        'Call this ONLY when you literally cannot proceed without more input from the user ' +
-        '(ambiguous title, missing date, multiple matching items to disambiguate, unclear target). ' +
-        'Do NOT call this for filler like "anything else?" — those should use end_conversation instead. ' +
+        'Call this in TWO cases: (1) you have finished what was asked and are closing with a short ' +
+        '"anything else?" — this is the normal way a conversation ends, and the mic must reopen so ' +
+        'they can answer; (2) you literally cannot proceed without more input (ambiguous title, ' +
+        'missing date, multiple matching items, unclear target). ' +
         'Call it BEFORE producing your final spoken reply, in the same turn.',
       parameters: { type: 'object', properties: {} },
     },

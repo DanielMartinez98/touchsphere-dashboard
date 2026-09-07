@@ -495,7 +495,14 @@ export interface StoredImage {
    * Absent means drawn here, which is what every entry written before this was
    * added was.
    */
-  origin?: 'upload'
+  /**
+  * Where it came from when it wasn't drawn here: the user's device, or a
+  * picture found on the web. Absent for a render.
+  */
+  origin?: 'upload' | 'web'
+  /** For a web picture: where it was found, so the panel can credit it. */
+  sourceUrl?: string
+  credit?:    string
   /** ISO timestamp. */
   at:      string
 }
@@ -616,7 +623,10 @@ function pngSize(bytes: Buffer): { width: number; height: number } | null {
  * `seed: 0` and no `settings` because there was no render: the details panel
  * reads `origin` and says where it came from instead of inventing a sampler.
  */
-export function addUploadedImage(bytes: Buffer, caption: string): StoredImage {
+export function addUploadedImage(
+  bytes: Buffer, caption: string,
+  extra: { origin?: 'upload' | 'web'; sourceUrl?: string; credit?: string } = {},
+): StoredImage {
   const size = pngSize(bytes)
   if (!size) throw new Error('that file could not be read as a PNG')
 
@@ -637,11 +647,13 @@ export function addUploadedImage(bytes: Buffer, caption: string): StoredImage {
     width:  size.width,
     height: size.height,
     seed:   0,
-    origin: 'upload',
+    origin: extra.origin ?? 'upload',
+    ...(extra.sourceUrl ? { sourceUrl: extra.sourceUrl } : {}),
+    ...(extra.credit ? { credit: extra.credit } : {}),
     at:     new Date().toISOString(),
   }
   remember(entry)
-  console.log(`[image] added upload ${file} ${size.width}×${size.height} (${(bytes.length / 1024).toFixed(0)} KB)`)
+  console.log(`[image] added ${entry.origin} ${file} ${size.width}×${size.height} (${(bytes.length / 1024).toFixed(0)} KB)`)
   return entry
 }
 
@@ -3307,6 +3319,75 @@ async function comfyFetch(pathname: string, init?: RequestInit, timeoutMs = HTTP
   } finally {
     clearTimeout(timer)
   }
+}
+
+/**
+ * Anything ComfyUI can read, as a PNG.
+ *
+ * The gallery stores PNG only — `pngSize()` reads an IHDR, the file route's
+ * guard is `<32 hex>.png`, and the ComfyUI upload names follow from that — so
+ * a JPEG off the web cannot simply be written in. The browser converts on the
+ * upload path (a canvas), but there is no browser here.
+ *
+ * Rather than carry an image library (the server image cross-builds for
+ * linux/arm64 and every native dependency is one more thing to keep working),
+ * the conversion is done by the machine that already exists for exactly this:
+ * upload → LoadImage → SaveImage → download. It is one graph and no model, so
+ * it costs no VRAM and finishes in well under a second.
+ *
+ * A picture that is ALREADY a PNG skips all of it, which is the common case
+ * for Wikimedia.
+ */
+export async function toPng(bytes: Buffer, contentType = ''): Promise<Buffer> {
+  const isPng = bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+  if (isPng) return bytes
+  if (!COMFY_URL) throw new Error('that picture is not a PNG and there is no image server to convert it')
+
+  // The extension has to match the bytes: ComfyUI picks its decoder from the
+  // filename, so a JPEG called .png fails to load.
+  const ext = /jpe?g/.test(contentType) ? 'jpg'
+    : /webp/.test(contentType) ? 'webp'
+    : /gif/.test(contentType) ? 'gif'
+    : /bmp/.test(contentType) ? 'bmp'
+    : 'jpg'
+  const name = `touchsphere-import-${crypto.randomBytes(8).toString('hex')}.${ext}`
+  const ref = await uploadInput(name, bytes, 'picture to convert')
+  const graph: ComfyGraph = {
+    load: { class_type: 'LoadImage', inputs: { image: ref } },
+    save: { class_type: 'SaveImage', inputs: { images: ['load', 0], filename_prefix: 'touchsphere-import' } },
+  }
+  const promptId = await queuePrompt(graph)
+  const deadline = Date.now() + 60_000
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 700))
+    const res = await comfyFetch(`/history/${promptId}`, undefined, 10_000)
+    if (!res.ok) continue
+    const hist = await res.json() as Record<string, { status?: { status_str?: string; messages?: unknown[] }; outputs?: Record<string, { images?: OutputRef[] }> }>
+    const h = hist[promptId]
+    if (!h) continue
+    if (h.status?.status_str === 'error') {
+      throw new Error('the image server could not read that picture')
+    }
+    const out = h.outputs?.['save']?.images?.[0]
+    if (out) return downloadOutput(out)
+  }
+  throw new Error('converting that picture took too long')
+}
+
+/**
+ * Put a picture found on the web into the gallery.
+ *
+ * The result is an ordinary gallery entry, so everything downstream — "Change
+ * this", the mask editor, the edit planner, the lineage view — works on it
+ * with no cases of its own. That is the whole point of routing it through
+ * addUploadedImage rather than inventing a second kind of picture.
+ */
+export async function importWebImage(
+  bytes: Buffer, contentType: string, caption: string,
+  extra: { sourceUrl?: string; credit?: string } = {},
+): Promise<StoredImage> {
+  const png = await toPng(bytes, contentType)
+  return addUploadedImage(png, caption, { ...extra, origin: 'web' })
 }
 
 // ── Masks: which part of a picture may change ────────────────────────────────

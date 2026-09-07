@@ -19,6 +19,8 @@ import {
 } from '../image'
 import type { BrowseToolResult, DisplayPayload } from './browse'
 import { createPlan, pickDrawStyle } from '../image-plan'
+import { findAndFetch } from '../image-web'
+import { importWebImage } from '../image'
 
 /**
  * How to write a prompt for the style selected RIGHT NOW.
@@ -179,6 +181,32 @@ export const IMAGE_TOOLS = !imagesEnabled() ? [] : [
           },
         },
         required: ['prompt'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'find_image',
+      description:
+        'Find a REAL picture on the web and put it in the Draw section, full screen. Use when the ' +
+        'user asks for a photo or picture of something that actually exists — "show me a photo of a ' +
+        'red panda", "find a picture of the Golden Gate Bridge", "get me a reference image of a 1967 ' +
+        'Mustang" — or when they want something to edit that you cannot invent. This SEARCHES and ' +
+        'DOWNLOADS; generate_image invents instead. The picture lands in the gallery, so afterwards ' +
+        'it can be redrawn, edited or have part of it changed like any other. Takes a few seconds.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description:
+              'What to search for, in a few plain words, as you would type into an image search. ' +
+              'Name the thing itself ("red panda cub", "Golden Gate Bridge fog"); do not add words ' +
+              'like "picture of" or "photo".',
+          },
+        },
+        required: ['query'],
       },
     },
   },
@@ -418,6 +446,47 @@ async function redraw(prompt: string, about: string, strength: string, region = 
   }
 }
 
+async function findImageOnWeb(query: string): Promise<BrowseToolResult> {
+  if (!query.trim()) return noDisplay('find_image error: pass a `query` saying what to find.')
+  if (!imagesEnabled()) {
+    return noDisplay(
+      'Image generation is not configured on this server (COMFYUI_URL is unset), and a downloaded ' +
+      'picture has to be converted before it can be stored. Say so in one sentence.',
+    )
+  }
+  try {
+    const got = await findAndFetch(query.trim())
+    if (!got) {
+      return noDisplay(
+        `No usable picture came back for "${query.trim()}". Tell the user in one sentence and offer ` +
+        'either to try different words or to draw one instead with generate_image.',
+      )
+    }
+    const credit = [got.hit.source, got.hit.license].filter(Boolean).join(' · ')
+    const entry = await importWebImage(got.bytes, got.type, got.hit.title || query.trim(), {
+      sourceUrl: got.hit.pageUrl || got.hit.url,
+      credit,
+    })
+    console.log(`[chat:tool] find_image → ${entry.id} for "${query.trim()}"`)
+    const display: DisplayPayload = {
+      kind: 'image', jobId: entry.id, prompt: entry.prompt,
+      url: `/api/image/file/${entry.file}`,
+    }
+    return {
+      text:
+        `Found a picture of "${entry.prompt}" (${credit || 'web'}) and put it on the user's screen. ` +
+        'It is in the Draw gallery now, so it can be changed or redrawn if they want. ' +
+        'Say ONE short sentence that you found it — do not describe it in detail, you have not seen it.',
+      display,
+    }
+  } catch (err) {
+    return noDisplay(
+      `Could not fetch that picture: ${err instanceof Error ? err.message : String(err)}. ` +
+      'Tell the user in one sentence.',
+    )
+  }
+}
+
 function planEdit(request: string, about: string): BrowseToolResult {
   if (!imagesEnabled()) {
     return noDisplay('Image generation is not configured on this server (COMFYUI_URL is unset). Say so in one sentence.')
@@ -476,6 +545,7 @@ export async function runImageTool(
     case 'generate_image':  return generate(str('prompt'), str('orientation'))
     case 'redraw_image':    return redraw(str('prompt'), str('about'), str('strength'), str('region'))
     case 'plan_image_edit': return planEdit(str('request'), str('about'))
+    case 'find_image':      return findImageOnWeb(str('query'))
     case 'show_last_image': return showLast(str('about'))
     default: return null
   }

@@ -14,7 +14,7 @@
 
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { X, ArrowDown, Lasso, Wand2, Brush, Upload, Sparkles, AlertTriangle, Loader2 } from 'lucide-react'
+import { X, ArrowDown, Lasso, Wand2, Brush, Upload, Globe, Sparkles, AlertTriangle, Loader2 } from 'lucide-react'
 import { openImage } from '../hooks/useImageOverlay'
 import type { ImageSettings } from '../hooks/useImages'
 
@@ -25,7 +25,7 @@ interface Link {
   width:    number
   height:   number
   at:       string
-  origin:   'render' | 'upload'
+  origin:   'render' | 'upload' | 'web'
   settings: ImageSettings | null
   maskUrl:  string | null
   sourceMissing: boolean
@@ -39,6 +39,7 @@ const BARELY = 0.12
 /** What kind of step this was, in the words the Draw panel uses. */
 function toolOf(st: ImageSettings | null, origin: string): { label: string; icon: React.ReactNode } {
   if (origin === 'upload') return { label: 'Added from your device', icon: <Upload size={13} /> }
+  if (origin === 'web') return { label: 'Found on the web', icon: <Globe size={13} /> }
   if (!st?.source) return { label: 'Drawn from scratch', icon: <Sparkles size={13} /> }
   if (st.mask) return { label: 'Changed a part', icon: <Lasso size={13} /> }
   if (/kontext/i.test(st.styleLabel ?? '')) return { label: 'Instruction edit', icon: <Wand2 size={13} /> }
@@ -101,6 +102,7 @@ function verdict(st: ImageSettings | null): { tone: 'bad' | 'warn'; text: string
 function Facts({ st, origin }: { st: ImageSettings | null; origin: string }) {
   const rows: [string, string][] = []
   if (origin === 'upload') rows.push(['Source', 'your device'])
+  if (origin === 'web') rows.push(['Source', 'found on the web'])
   if (st?.styleLabel) rows.push(['Style', st.styleLabel])
   if (st?.region) rows.push(['Region', st.region])
   else if (st?.mask) rows.push(['Region', 'marked by hand'])

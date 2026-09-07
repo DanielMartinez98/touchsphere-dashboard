@@ -533,10 +533,15 @@ function ImageDetails({
   // no seed — it was not drawn here. Saying so once is the whole of its detail
   // panel; printing "Seed 0, Steps —" against a photograph would be inventing a
   // render that never happened.
-  const uploaded = image.origin === 'upload'
+  const uploaded = image.origin === 'upload' || image.origin === 'web'
 
   if (uploaded) {
-    rows.push({ label: 'Source', value: 'added from your device' })
+    rows.push({
+      label: 'Source',
+      value: image.origin === 'web'
+        ? `found on the web${image.credit ? ` · ${image.credit}` : ''}`
+        : 'added from your device',
+    })
   } else {
     const style = st?.styleLabel || image.modelLabel || st?.style || image.model || ''
     if (style) rows.push({ label: 'Style', value: style })
