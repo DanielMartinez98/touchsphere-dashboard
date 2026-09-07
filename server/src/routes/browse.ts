@@ -585,11 +585,21 @@ router.get('/page', async (req: Request, res: Response) => {
     return res.status(502).json({ error: 'could not fetch that page' })
   }
   const { title, text, image } = extractReadable(html)
+  // A page that fetched fine and extracted to nothing is the common case for a
+  // site that renders itself in JavaScript — Reddit comes back with 6
+  // characters, x.com with none. Reporting that as a success gave the reader an
+  // empty document to draw, which is a BLANK WINDOW: no text, no error, nothing
+  // to tap. The screen can only be honest about it if it is told.
+  const thin = text.trim().length < 200
+  if (thin) {
+    console.log(`[browse] reader extracted ${text.trim().length} chars from ${siteOf(target)} — reporting it as thin`)
+  }
   return res.json({
     url: target.toString(),
     site: siteOf(target),
     title: title || siteOf(target),
     text,
+    thin,
     ...(image ? { image } : {}),
   })
 })

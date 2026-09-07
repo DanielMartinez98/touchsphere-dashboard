@@ -36,9 +36,17 @@ import { useBrowse, closeBrowse, type BrowseTarget } from '../hooks/useBrowse'
 
 const READER_MIN_CHARS = 200
 
-interface ReaderDoc { url: string; title: string; site: string; text: string; image?: string }
+interface ReaderDoc { url: string; title: string; site: string; text: string; image?: string
+  /** The server extracted almost nothing — a JavaScript-rendered page. */
+  thin?: boolean
+}
 
-function ReaderView({ url }: { url: string }) {
+function ReaderView({ url, site, onShowSite }: {
+  url: string
+  site: string
+  /** Flip to the live site. The reader failing is exactly when that is worth offering. */
+  onShowSite: () => void
+}) {
   const [doc, setDoc] = useState<ReaderDoc | null>(null)
   const [error, setError] = useState('')
 
@@ -52,17 +60,42 @@ function ReaderView({ url }: { url: string }) {
       .then(d => { if (!cancelled) setDoc(d) })
       .catch(err => {
         console.warn('[browse] reader fetch failed:', err)
-        if (!cancelled) setError("Couldn't load that page.")
+        if (!cancelled) setError('blocked')
       })
     return () => { cancelled = true }
   }, [url])
 
-  if (error) {
+  // Two different failures, and they want different words. The site refused
+  // the dashboard's request outright (bot protection, a login wall), or it
+  // answered but keeps its text in JavaScript so there was nothing to read.
+  // Neither should render as an empty page, which is what "it didn't load"
+  // actually was.
+  const thin = !!doc && (doc.thin || (doc.text ?? '').trim().length < 200)
+  if (error || thin) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-3 px-8 text-center">
         <AlertTriangle size={32} className="text-amber-300/80" />
-        <p className="text-ink-mid text-base">{error}</p>
-        <p className="text-ink-dim text-sm break-all">{url}</p>
+        <p className="text-ink-mid text-base">
+          {error
+            ? `${site} wouldn't hand the page over.`
+            : `${site} builds its page in the browser, so there is no text to read here.`}
+        </p>
+        <p className="text-ink-dim text-sm leading-relaxed max-w-sm">
+          {error
+            ? 'It blocked the request — usually bot protection or a sign-in wall.'
+            : 'Reader view only shows text the page ships with.'}
+          {' '}Try the live site instead; it may still load in the window.
+        </p>
+        <button
+          type="button"
+          onClick={onShowSite}
+          onPointerDown={e => e.stopPropagation()}
+          className="mt-1 h-12 px-5 rounded-full bg-white/10 border border-hairline text-white
+                     text-sm font-semibold active:scale-95 active:bg-white/20 transition"
+        >
+          Show the live site
+        </button>
+        <p className="text-ink-dim text-xs break-all max-w-sm">{url}</p>
       </div>
     )
   }
@@ -318,7 +351,7 @@ function BrowserWindow({ target, hold }: { target: BrowseTarget; hold: boolean }
         {target.kind === 'video' ? (
           <VideoView target={target} hold={hold} />
         ) : showReader ? (
-          <ReaderView url={target.url} />
+          <ReaderView url={target.url} site={target.site} onShowSite={() => setForceReader(false)} />
         ) : (
           <iframe
             title={target.title}
