@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, lazy, Suspense, type ReactNode } from 'react'
-import { Check, X as XIcon, RotateCw, ClipboardCopy, MessageSquare, Trash2, Volume2, Download, Pin } from 'lucide-react'
+import { Check, X as XIcon, RotateCw, ClipboardCopy, MessageSquare, Trash2, Volume2, Download, Pin, ChevronDown, ChevronRight } from 'lucide-react'
 import { useAudioDevices } from '../hooks/useAudioDevices'
 import { useDevice } from '../hooks/useDevice'
 import { playSound, playRecordChime } from '../utils/sound'
@@ -22,7 +22,7 @@ import { useHost, useHostEnabled, type HostTask } from '../hooks/useHost'
 import { usePresence, useLiveReadings } from '../hooks/usePresence'
 import { TouchInput } from './TouchInput'
 
-type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'system' | 'server' | 'debug'
+type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'prompts' | 'system' | 'server' | 'debug'
 
 // The preview reuses the dashboard's own renderers. Lazy, same chunks App
 // splits out — opening the VTuber tab is what pulls in the heavy deps, and
@@ -403,6 +403,7 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
     { id: 'memory',    label: 'Memory'    },
     { id: 'guides',    label: 'Guides'    },
     { id: 'drawing',   label: 'Drawing'   },
+    { id: 'prompts',   label: 'Prompts'   },
     { id: 'system',    label: 'System'    },
     // Only when the server says it is set up: an "update the host" tab that
     // can't reach a host is a tab full of broken buttons.
@@ -1358,6 +1359,7 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
 
             {/* Drawing tab — how the prompt improver is told to rewrite prompts */}
             {tab === 'drawing' && <DrawingTab />}
+            {tab === 'prompts' && <PromptsTab />}
 
             {/* Server tab — updating the machine this runs on */}
             {tab === 'server' && <ServerTab />}
@@ -2485,6 +2487,137 @@ function PoseHoldCard({ structure, onChange, modes, available }: {
         booru rating tag "safe", which pushes those models away from it. The "Safety tags in
         prompts" switch above removes it from every style at once.
       </p>
+    </div>
+  )
+}
+
+interface SystemPrompt {
+  id:    string
+  label: string
+  what:  string
+  model: string
+  text:  string
+  followedBy?: string
+  editable: boolean
+  editIn?:  string
+  note?:    string
+}
+
+/**
+ * Every system prompt this app sends, as it stands right now.
+ *
+ * Four models are given four different sets of instructions before anything is
+ * asked of them, and two of them lived only in the source — which is the wrong
+ * place for the text that decides what the app says and draws. Composed on the
+ * server by the same functions the real requests use, so this cannot drift
+ * from what is actually sent.
+ *
+ * One open by default (the assistant, the one people mean when they ask), the
+ * rest collapsed: these run to thousands of characters and a page that opens
+ * on all four is a page nobody reads.
+ */
+function PromptsTab() {
+  const [data, setData] = useState<{ prompts: SystemPrompt[]; style: { label: string } } | null>(null)
+  const [error, setError] = useState('')
+  const [open, setOpen] = useState<string>('assistant')
+  const [copied, setCopied] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/prompts')
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then(j => { if (!cancelled) setData(j) })
+      .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : 'could not load them') })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    if (!copied) return
+    const t = setTimeout(() => setCopied(''), 1600)
+    return () => clearTimeout(t)
+  }, [copied])
+
+  if (error) return <p className="max-w-lg mx-auto py-8 text-center text-sm text-red-300">{error}</p>
+  if (!data) return <p className="max-w-lg mx-auto py-8 text-center text-sm text-white/40">Loading the prompts…</p>
+
+  return (
+    <div className="space-y-4 max-w-lg mx-auto pb-4">
+      <p className="text-[12px] text-white/45 leading-relaxed">
+        Everything each model is told before it is asked anything. Built here by the same code the
+        real requests use, so this is what is actually sent — including the parts that change with
+        the selected style ({data.style.label || 'none'}), what is installed on the image server,
+        and what is in memory.
+      </p>
+
+      {data.prompts.map(p => {
+        const isOpen = open === p.id
+        return (
+          <div key={p.id} className="rounded-2xl bg-white/5 border border-white/8 overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setOpen(isOpen ? '' : p.id)}
+              className="w-full px-4 py-3 flex items-start gap-3 text-left active:bg-white/5"
+            >
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2">
+                  <span className="text-[14px] font-semibold text-white/90">{p.label}</span>
+                  {p.editable
+                    ? <span className="text-[10px] uppercase tracking-widest text-violet-300/80 font-semibold">editable</span>
+                    : <span className="text-[10px] uppercase tracking-widest text-white/25 font-semibold">read-only</span>}
+                </span>
+                <span className="block text-[12px] text-white/45 leading-snug mt-0.5">{p.what}</span>
+                <span className="block text-[11px] text-white/30 mt-1 tabular-nums">
+                  {p.model || 'the server default'} · {p.text.length.toLocaleString()} characters
+                </span>
+              </span>
+              {isOpen ? <ChevronDown size={16} className="text-white/40 mt-1 shrink-0" />
+                      : <ChevronRight size={16} className="text-white/40 mt-1 shrink-0" />}
+            </button>
+
+            {isOpen && (
+              <div className="px-4 pb-4">
+                <pre className="selectable-text whitespace-pre-wrap break-words text-[11px] leading-relaxed
+                                text-white/60 bg-black/30 border border-hairline rounded-xl p-3
+                                max-h-[26rem] overflow-y-auto">
+                  {p.text}
+                </pre>
+
+                {p.followedBy && (
+                  <div className="mt-2">
+                    <p className="text-[10px] uppercase tracking-widest text-white/30 font-semibold mb-1">
+                      Then, as the user turn
+                    </p>
+                    <pre className="selectable-text whitespace-pre-wrap break-words text-[11px]
+                                    text-white/50 bg-black/30 border border-hairline rounded-xl p-3">
+                      {p.followedBy}
+                    </pre>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 mt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard?.writeText(p.text).then(() => setCopied(p.id)).catch(() => setCopied(''))
+                    }}
+                    className="h-10 px-4 rounded-xl bg-white/10 border border-hairline text-white/70
+                               text-[12px] font-semibold active:scale-95"
+                  >
+                    {copied === p.id ? 'Copied' : 'Copy'}
+                  </button>
+                  {p.editable && p.editIn && (
+                    <span className="text-[11px] text-white/35">Edit it in the {p.editIn} tab.</span>
+                  )}
+                </div>
+
+                {p.note && (
+                  <p className="text-[11px] text-white/30 leading-snug mt-2">{p.note}</p>
+                )}
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }

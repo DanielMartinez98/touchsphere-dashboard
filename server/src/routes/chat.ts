@@ -235,6 +235,23 @@ function buildSystemPrompt(profile: AssistantProfile): string {
   return `${profile.persona} ${SYSTEM_PROMPT_BODY}${imagePromptGuidance()}`
 }
 
+/**
+ * The assistant's system prompt exactly as a request would build it — the
+ * selected profile's persona, the shared behaviour and tool instructions, the
+ * per-request drawing-style line, the desk sensor, and everything in memory.
+ *
+ * Composed rather than described, so Settings → Prompts cannot drift from what
+ * is actually sent. The one thing it cannot include is a resumed
+ * conversation's recap, which exists only when the previous chat is still
+ * within its window.
+ */
+export function assistantSystemPrompt(): string {
+  const memoryBlock = formatMemoryForPrompt()
+  return buildSystemPrompt(getSelectedProfile())
+    + presenceForPrompt()
+    + (memoryBlock ? `\n${memoryBlock}` : '')
+}
+
 const MAX_PROMPT_LEN     = 1000
 const MAX_HISTORY_MSGS   = 20      // user+assistant turns kept per request
 const MAX_TOOL_ROUNDS    = 5       // safety cap on tool-call loop

@@ -17,6 +17,7 @@ import audioRouter from './routes/audio'
 import ttsRouter from './routes/tts'
 import sttRouter from './routes/stt'
 import chatRouter from './routes/chat'
+import promptsRouter from './routes/prompts'
 import browseRouter from './routes/browse'
 import notionRouter from './routes/notion'
 import timersRouter from './routes/timers'
@@ -186,6 +187,7 @@ app.use('/api/audio', audioRouter)
 app.use('/api/tts', ttsLimiter, ttsRouter)
 app.use('/api/stt', dataLimiter, sttRouter)
 app.use('/api/chat', dataLimiter, chatRouter)
+app.use('/api/prompts', dataLimiter, promptsRouter)
 app.use('/api/browse', dataLimiter, browseRouter)
 app.use('/api/notion', dataLimiter, notionRouter)
 app.use('/api/timers', dataLimiter, timersRouter)

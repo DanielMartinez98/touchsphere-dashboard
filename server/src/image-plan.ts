@@ -410,6 +410,16 @@ async function planWithRetry(image: Buffer, request: string, tools: PlanMode[], 
 }
 
 /**
+ * The planner's system prompt as it stands on THIS machine — which tools are
+ * installed decides half of what it says, so it is composed rather than
+ * quoted. For Settings → Prompts.
+ */
+export async function plannerSystemPrompt(): Promise<string> {
+  const { tools, styles } = await availableTools()
+  return plannerSystem(tools, styles)
+}
+
+/**
  * Start a plan: look at the picture, write the steps, and — when `run` — go.
  * Returns at once with the plan in `planning`; the rest arrives over the
  * `image-plan` SSE event, the same way a render reports.
