@@ -47,6 +47,16 @@ const router = Router()
 const OLLAMA_URL     = process.env['OLLAMA_URL']    ?? 'http://host.docker.internal:11434'
 const OLLAMA_MODEL   = process.env['OLLAMA_MODEL']  ?? 'gemma3'
 const OLLAMA_API_KEY = process.env['OLLAMA_API_KEY'] ?? ''
+// A second model to answer with when the first cannot. Ollama's cloud service
+// has a per-session usage limit as well as the hourly search one, and the day
+// both were found the assistant answered every question with "I lost my train
+// of thought" for as long as the limit lasted. The GPU box next door runs the
+// same model family with no limit at all, so a 429 or a 5xx from the primary
+// is retried there — same messages, same tools — and the log says so.
+//   OLLAMA_FALLBACK_URL=http://<gpu-box>:11434
+//   OLLAMA_FALLBACK_MODEL=qwen3:8b
+const OLLAMA_FALLBACK_URL   = process.env['OLLAMA_FALLBACK_URL']   ?? ''
+const OLLAMA_FALLBACK_MODEL = process.env['OLLAMA_FALLBACK_MODEL'] ?? process.env['OLLAMA_MODEL'] ?? ''
 const TIMEOUT_MS     = Number(process.env['OLLAMA_TIMEOUT_MS'] ?? 30_000)
 
 // ── Thinking mode ─────────────────────────────────────────────────────────
@@ -510,6 +520,24 @@ async function runWebSearch(query: string): Promise<string> {
   }
 }
 
+/**
+ * "Successfully called keep_listening." — a reply that is nothing but the
+ * model narrating its own tool call. Seen from gemma4 after a keep_listening
+ * round: it had said its sentence in the round that made the call, was asked
+ * for a final message, and produced this. Spoken aloud it is gibberish to the
+ * person at the kiosk, so it is treated as no reply at all.
+ */
+function isToolAck(text: string): boolean {
+  const t = text.trim()
+  if (!t) return false
+  // "| [happy] |" — a cue and some punctuation, not a sentence. Also seen from
+  // gemma4 at the end of a long tool round. Nothing here can be spoken.
+  if (!/\p{L}/u.test(t.replace(/\[[a-z _-]+\]/gi, ''))) return true
+  if (t.length > 80) return false
+  return /^(successfully |ok(ay)?[,.]? )?(called|calling|invoked|invoking|executed|executing|ran|running) [a-z_]+( tool)?[.!]?$/i.test(t)
+    || /^(acknowledged|tool call (succeeded|completed|made)|done calling [a-z_]+)[.!]?$/i.test(t)
+}
+
 async function runTool(name: string, args: Record<string, unknown>): Promise<string> {
   if (name === 'end_conversation' || name === 'keep_listening') {
     // Handled at the call-site for control-flow purposes; this branch only
@@ -662,7 +690,31 @@ interface OllamaResponse {
   detail?: string
 }
 
+/** Which backend answered the last request — for the log line. */
+let answeredBy = ''
+
 async function callOllama(messages: ChatMessage[]): Promise<OllamaResponse> {
+  const first = await callOllamaAt(OLLAMA_URL, OLLAMA_MODEL, messages)
+  answeredBy = ''
+  const canFallBack = OLLAMA_FALLBACK_URL && OLLAMA_FALLBACK_MODEL
+    && (OLLAMA_FALLBACK_URL !== OLLAMA_URL || OLLAMA_FALLBACK_MODEL !== OLLAMA_MODEL)
+  // 429 is a quota, 5xx is the service; a network failure comes back as 0.
+  // 4xx other than 429 is our request being wrong, which the fallback would
+  // get wrong too.
+  if (first.status === 200 || !canFallBack || (first.status !== 429 && first.status !== 0 && first.status < 500)) {
+    return first
+  }
+  console.warn(
+    `[chat] ${OLLAMA_URL} answered ${first.status || 'nothing'}` +
+    `${first.detail ? ` (${first.detail.slice(0, 120).replace(/\s+/g, ' ')})` : ''} — ` +
+    `retrying on ${OLLAMA_FALLBACK_MODEL} at ${OLLAMA_FALLBACK_URL}`,
+  )
+  const second = await callOllamaAt(OLLAMA_FALLBACK_URL, OLLAMA_FALLBACK_MODEL, messages)
+  if (second.status === 200) answeredBy = `${OLLAMA_FALLBACK_MODEL} (fallback)`
+  return second.status === 200 ? second : first
+}
+
+async function callOllamaAt(url: string, model: string, messages: ChatMessage[]): Promise<OllamaResponse> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
   try {
@@ -670,7 +722,7 @@ async function callOllama(messages: ChatMessage[]): Promise<OllamaResponse> {
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
 
     const body: Record<string, unknown> = {
-      model: OLLAMA_MODEL,
+      model,
       stream: false,
       messages,
     }
@@ -679,7 +731,7 @@ async function callOllama(messages: ChatMessage[]): Promise<OllamaResponse> {
     // See NUM_CTX. Without this the tools are silently truncated away.
     body['options'] = { num_ctx: NUM_CTX }
 
-    const upstream = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
+    const upstream = await fetch(`${url.replace(/\/$/, '')}/api/chat`, {
       method: 'POST',
       headers,
       signal: ctrl.signal,
@@ -694,6 +746,10 @@ async function callOllama(messages: ChatMessage[]): Promise<OllamaResponse> {
       response?: string
     }
     return { ...json, status: 200 }
+  } catch (err) {
+    // A dead box or a timeout: reported as status 0 so the caller can fall back
+    // instead of throwing past the whole tool loop.
+    return { status: 0, detail: err instanceof Error ? err.message : String(err) }
   } finally {
     clearTimeout(timer)
   }
@@ -807,6 +863,9 @@ router.post('/', async (req: Request, res: Response) => {
   // calling one. Once only: a model that ignores the correction twice is not
   // going to get it on the third go, and the user is waiting.
   let nudged = false
+  // Whether the model has already been asked once to replace a tool
+  // acknowledgement with actual words.
+  let reasked = false
   /**
    * Did the user ask for something that REQUIRES a tool?
    *
@@ -847,7 +906,22 @@ router.post('/', async (req: Request, res: Response) => {
       const msg = resp.message
       const calls = msg?.tool_calls ?? []
       const rawText = (msg?.content ?? resp.response ?? '').trim()
-      const text = stripWrittenToolCalls(rawText, TOOL_NAMES)
+      let text = stripWrittenToolCalls(rawText, TOOL_NAMES)
+      if (isToolAck(text)) {
+        console.warn(`[chat] the model replied with a tool acknowledgement instead of words: "${text}"`)
+        if (calls.length === 0 && !reasked && round < MAX_TOOL_ROUNDS) {
+          reasked = true
+          messages.push({ role: 'assistant', content: rawText })
+          messages.push({
+            role: 'user',
+            content:
+              'That was a description of a tool call, not a reply. Say your actual reply to the user ' +
+              'now, in one or two short spoken sentences. Do not mention tools.',
+          })
+          continue
+        }
+        text = ''
+      }
       if (rawText !== text) {
         console.warn(
           `[chat] the model WROTE a tool call instead of making one — stripped it from the reply. ` +
@@ -946,7 +1020,7 @@ router.post('/', async (req: Request, res: Response) => {
         const reply = endSilently
           ? ''
           : (text || lastSpoken || "I'm here, but I didn't catch a reply that time.")
-        console.log(`[chat] ← reply="${reply.slice(0, 80)}${reply.length > 80 ? '…' : ''}" rounds=${round + 1} changed=[${[...changed].join(',')}] keepListening=${keepListening}${display ? ` display=${display.kind}` : ''}`)
+        console.log(`[chat] ← reply="${reply.slice(0, 80)}${reply.length > 80 ? '…' : ''}" rounds=${round + 1} changed=[${[...changed].join(',')}] keepListening=${keepListening}${display ? ` display=${display.kind}` : ''}${answeredBy ? ` by=${answeredBy}` : ''}`)
         // Conversation is ending — park the transcript for the next 12h and
         // kick off a background summary. Fire-and-forget so the user gets their
         // reply without waiting on either.
