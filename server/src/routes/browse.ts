@@ -398,7 +398,16 @@ export async function searchDuckDuckGo(query: string, limit = 1): Promise<Array<
  * this exists so a small local model that forgets still shows the user something.
  */
 async function searchOneUrl(query: string): Promise<{ url: string; title: string } | null> {
-  return (await searchDuckDuckGo(query, 1))[0] ?? null
+  // Through research.ts's searchWeb, not straight to the DuckDuckGo scrape:
+  // that scrape answers this server with a bot challenge (HTTP 202, zero
+  // results) and was the reason "pull up a page about X" never opened
+  // anything however the model phrased the call. searchWeb tries Ollama's
+  // hosted search first when OLLAMA_API_KEY is set — which finds the right
+  // Wikipedia page in under a second — and only then falls back to the
+  // scrape, paced. A dynamic import because research.ts imports this file.
+  const { searchWeb } = await import('../research')
+  const hit = (await searchWeb(query, 1))[0]
+  return hit ? { url: hit.url, title: hit.title } : null
 }
 
 // ── Tools ────────────────────────────────────────────────────────────────────
