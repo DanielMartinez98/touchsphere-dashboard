@@ -347,12 +347,38 @@ async function youtubeViaResultsPage(query: string): Promise<VideoHit | null> {
   return { videoId: id, title, ...(channel ? { channel } : {}) }
 }
 
+/**
+ * YouTube through Ollama's hosted web search: `site:youtube.com <query>`, and
+ * the first result whose URL carries a video id. No key beyond the one the
+ * server already has, and no scraping. The results-page scrape stays as the
+ * last resort for a box with no key at all, because it is the same kind of
+ * scrape DuckDuckGo started answering with a bot challenge, and one day
+ * YouTube's will too.
+ */
+async function youtubeViaHostedSearch(query: string): Promise<VideoHit | null> {
+  const { searchWeb, SEARCH_PROVIDER } = await import('../research')
+  if (SEARCH_PROVIDER !== 'ollama') return null
+  const hits = await searchWeb(`site:youtube.com ${query}`, 5)
+  for (const h of hits) {
+    const m = /(?:youtube\.com\/watch\?(?:.*&)?v=|youtu\.be\/|youtube\.com\/shorts\/)([\w-]{11})/.exec(h.url)
+    if (!m) continue
+    const title = (h.title || '').replace(/\s*-\s*YouTube\s*$/i, '').trim() || 'YouTube video'
+    return { videoId: m[1]!, title }
+  }
+  return null
+}
+
 export async function searchYouTube(query: string): Promise<VideoHit | null> {
   if (YOUTUBE_API_KEY) {
     const viaApi = await youtubeViaApi(query)
     if (viaApi) return viaApi
-    console.warn('[browse] YouTube Data API returned nothing — falling back to the results page')
+    console.warn('[browse] YouTube Data API returned nothing — trying hosted search')
   }
+  // The Ollama-backed path before the scrape, for the same reason open_website
+  // resolves its query that way now: it is a real search API this server is
+  // already paying for, and the scrape is one bot-challenge away from silence.
+  const viaSearch = await youtubeViaHostedSearch(query).catch(() => null)
+  if (viaSearch) return viaSearch
   return youtubeViaResultsPage(query)
 }
 
