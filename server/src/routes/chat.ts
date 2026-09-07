@@ -102,6 +102,10 @@ const SYSTEM_PROMPT_BODY =
   "Faces: [happy] [excited] [shy] [wink] [sad] [angry] [surprised] [calm] [shocked]. " +
   "Use 0-2 cues per reply, only where they feel natural \u2014 a [wave] on a greeting, a [think] before a tricky answer, " +
   "a [cheer] for good news. Only these exact words in brackets; never invent new ones, never mention the cues aloud. " +
+  "A TOOL NAME IN BRACKETS IS NOT A TOOL CALL: writing [open_website] or [get_weather] does nothing at all — " +
+  "it is read out as text and the tool never runs. The same goes for writing a call as braces or as code. " +
+  "To use a tool you must CALL it through the tool interface. Never write a tool name anywhere in your reply, " +
+  "and NEVER claim you have done something unless the tool actually ran and returned a result to you. " +
   "TURN CONTROL \u2014 you decide explicitly when the conversation ends. " +
   "The microphone is CLOSED while you think and speak. To control whether it reopens after your reply, " +
   "you MUST call exactly one of these tools BEFORE producing your final spoken text: " +
@@ -370,6 +374,9 @@ function stripWrittenToolCalls(text: string, toolNames: string[]): string {
   out = out.replace(rx(String.raw`\bcall:\s*(?:${names})\s*[{(][^})]*[})]`), ' ')
   // A bare name() or name{} on its own.
   out = out.replace(rx(String.raw`\b(?:${names})\s*[({]\s*[)}]`), ' ')
+  // [tool_name] — the model treating the stage-cue syntax as a way to
+  // invoke a tool. It invokes nothing; the words are simply read aloud.
+  out = out.replace(rx(String.raw`\[\s*(?:${names})\s*\]`), ' ')
   // Ollama's odd string fences, when they survive the above.
   out = out.replace(/<\|"\|>/g, '"')
   return out.replace(/[ 	]{2,}/g, ' ').replace(/\s+([.,!?;:])/g, '$1').replace(/\s{2,}/g, ' ').trim()
