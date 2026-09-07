@@ -24,6 +24,7 @@
 import crypto from 'crypto'
 import fs from 'fs'
 import zlib from 'zlib'
+import jpeg from 'jpeg-js'
 import { readStructure, CANNY, type HoldMode } from './image-structure'
 import path from 'path'
 import { broadcast } from './routes/system'
@@ -3341,6 +3342,23 @@ async function comfyFetch(pathname: string, init?: RequestInit, timeoutMs = HTTP
 export async function toPng(bytes: Buffer, contentType = ''): Promise<Buffer> {
   const isPng = bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
   if (isPng) return bytes
+
+  // JPEG in process, and it is the common case off the web. Doing it here
+  // rather than on the GPU box is not an optimisation: the ComfyUI path below
+  // goes through the SAME QUEUE as renders, so a picture asked for out loud
+  // while a 100-step render is going waits two minutes behind it — which is
+  // what "find me a photo" doing nothing for two minutes looked like.
+  // jpeg-js is pure JavaScript, so it costs the arm64 build nothing.
+  const isJpeg = bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+  if (isJpeg) {
+    try {
+      const raw = jpeg.decode(bytes, { useTArray: true, formatAsRGBA: true })
+      return encodeRgbaPng(raw.width, raw.height, Buffer.from(raw.data), MAX_IMPORT_SIDE)
+    } catch (err) {
+      console.warn(`[image] in-process JPEG decode failed, falling back to the GPU box: ${err instanceof Error ? err.message : err}`)
+    }
+  }
+
   if (!COMFY_URL) throw new Error('that picture is not a PNG and there is no image server to convert it')
 
   // The extension has to match the bytes: ComfyUI picks its decoder from the
@@ -3357,7 +3375,9 @@ export async function toPng(bytes: Buffer, contentType = ''): Promise<Buffer> {
     save: { class_type: 'SaveImage', inputs: { images: ['load', 0], filename_prefix: 'touchsphere-import' } },
   }
   const promptId = await queuePrompt(graph)
-  const deadline = Date.now() + 60_000
+  // Generous, because this shares the render queue: the conversion itself is
+  // well under a second, but it starts only when whatever is drawing finishes.
+  const deadline = Date.now() + 5 * 60_000
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, 700))
     const res = await comfyFetch(`/history/${promptId}`, undefined, 10_000)
@@ -3371,7 +3391,82 @@ export async function toPng(bytes: Buffer, contentType = ''): Promise<Buffer> {
     const out = h.outputs?.['save']?.images?.[0]
     if (out) return downloadOutput(out)
   }
-  throw new Error('converting that picture took too long')
+  throw new Error('converting that picture took too long — the image server is busy rendering')
+}
+
+/** Long side cap for an imported picture: plenty for a redraw source, sane on the Pi's volume. */
+const MAX_IMPORT_SIDE = 2048
+
+/**
+ * RGBA pixels as a PNG, downscaled to fit `maxSide`.
+ *
+ * The colour twin of the greyscale writer the mask composer uses, and here for
+ * the same reason: the server image cross-builds for linux/arm64, so every
+ * native dependency is one more thing that has to keep working, and a PNG
+ * encoder over Node's own zlib is forty lines.
+ *
+ * Filter 0 (none) on every row. A smarter filter would compress better, but
+ * this runs once per imported picture and the file is written to a local
+ * volume, not sent anywhere.
+ */
+function encodeRgbaPng(width: number, height: number, rgba: Buffer, maxSide = 0): Buffer {
+  let w = width, h = height, src = rgba
+  const scale = maxSide > 0 ? Math.min(1, maxSide / Math.max(width, height)) : 1
+  if (scale < 1) {
+    // Box-average down, so a 12 MP photo does not arrive as aliased mush.
+    w = Math.max(1, Math.round(width * scale))
+    h = Math.max(1, Math.round(height * scale))
+    const out = Buffer.alloc(w * h * 4)
+    for (let y = 0; y < h; y++) {
+      const y0 = Math.floor(y * height / h), y1 = Math.max(y0 + 1, Math.floor((y + 1) * height / h))
+      for (let x = 0; x < w; x++) {
+        const x0 = Math.floor(x * width / w), x1 = Math.max(x0 + 1, Math.floor((x + 1) * width / w))
+        let r = 0, g = 0, b = 0, a = 0, n = 0
+        for (let sy = y0; sy < y1; sy++) {
+          for (let sx = x0; sx < x1; sx++) {
+            const i = (sy * width + sx) * 4
+            r += rgba[i]!; g += rgba[i + 1]!; b += rgba[i + 2]!; a += rgba[i + 3]!; n++
+          }
+        }
+        const o = (y * w + x) * 4
+        out[o] = r / n; out[o + 1] = g / n; out[o + 2] = b / n; out[o + 3] = a / n
+      }
+    }
+    src = out
+  }
+
+  const stride = w * 4
+  const raw = Buffer.alloc((stride + 1) * h)
+  for (let y = 0; y < h; y++) {
+    raw[y * (stride + 1)] = 0
+    src.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride)
+  }
+  const crcTable = new Int32Array(256)
+  for (let n = 0; n < 256; n++) {
+    let c = n
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    crcTable[n] = c
+  }
+  const crc = (buf: Buffer) => {
+    let c = -1
+    for (let i = 0; i < buf.length; i++) c = crcTable[(c ^ buf[i]!) & 0xff]! ^ (c >>> 8)
+    return (c ^ -1) >>> 0
+  }
+  const chunk = (type: string, data: Buffer) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length)
+    const td = Buffer.concat([Buffer.from(type, 'ascii'), data])
+    const c = Buffer.alloc(4); c.writeUInt32BE(crc(td))
+    return Buffer.concat([len, td, c])
+  }
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4)
+  ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0   // 8-bit RGBA
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(raw, { level: 6 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
 }
 
 /**
