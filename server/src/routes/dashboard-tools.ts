@@ -393,7 +393,14 @@ function getTime(location: string): string {
 // ── Weather / calendar / device (loopback) ───────────────────────────────────
 // Resolve a lat/lon: prefer DEFAULT_LAT/LON, else geoip. Returns null if both
 // fail so callers can short-circuit with a clean error message.
-async function resolveLatLon(): Promise<{ lat: number; lon: number } | null> {
+async function resolveLatLon(location = ''): Promise<{ lat: number; lon: number; name?: string } | null> {
+  if (location.trim()) {
+    const geo = await localGet<{ name?: string; lat?: number; lon?: number }>(`/api/weather/geocode?q=${encodeURIComponent(location.trim())}`)
+    if (geo && typeof geo.lat === 'number' && typeof geo.lon === 'number') {
+      return { lat: geo.lat, lon: geo.lon, ...(geo.name ? { name: geo.name } : {}) }
+    }
+    return null
+  }
   let lat = parseFloat(process.env['DEFAULT_LAT'] ?? '')
   let lon = parseFloat(process.env['DEFAULT_LON'] ?? '')
   if (!isFinite(lat) || !isFinite(lon)) {
@@ -406,15 +413,15 @@ async function resolveLatLon(): Promise<{ lat: number; lon: number } | null> {
   return { lat, lon }
 }
 
-async function getWeather(): Promise<string> {
-  const loc = await resolveLatLon()
-  if (!loc) return 'Weather unavailable: no location.'
+async function getWeather(location = ''): Promise<string> {
+  const loc = await resolveLatLon(location)
+  if (!loc) return location ? `Weather unavailable: I couldn't find a place called "${location}".` : 'Weather unavailable: no location.'
   const w = await localGet<{
     temp: number; feels_like: number; description: string; city?: string;
     humidity: number; wind_speed: number; rain_chance?: number; clouds?: number;
   }>(`/api/weather?lat=${loc.lat}&lon=${loc.lon}`)
   if (!w) return 'Weather unavailable.'
-  const place = w.city ?? 'your location'
+  const place = loc.name ?? w.city ?? 'your location'
   return `${place}: ${Math.round(w.temp)}°C (feels ${Math.round(w.feels_like)}°C), ${w.description}, ` +
          `humidity ${w.humidity}%, wind ${w.wind_speed} m/s, rain chance ${Math.round((w.rain_chance ?? 0) * 100)}%.`
 }
@@ -427,9 +434,9 @@ interface ForecastSlot {
   rain_chance?: number
 }
 
-async function getWeatherForecast(hoursStr: string): Promise<string> {
-  const loc = await resolveLatLon()
-  if (!loc) return 'Forecast unavailable: no location.'
+async function getWeatherForecast(hoursStr: string, location = ''): Promise<string> {
+  const loc = await resolveLatLon(location)
+  if (!loc) return location ? `Forecast unavailable: I couldn't find a place called "${location}".` : 'Forecast unavailable: no location.'
   // OpenWeatherMap returns 3-hour slots; default to next 24h (~8 slots), cap 5 days.
   const hours = Math.max(3, Math.min(120, parseInt(hoursStr, 10) || 24))
   const slots = await localGet<ForecastSlot[]>(`/api/weather/forecast?lat=${loc.lat}&lon=${loc.lon}`)
@@ -1214,8 +1221,19 @@ export const DASHBOARD_TOOLS = [
     type: 'function',
     function: {
       name: 'get_weather',
-      description: "Current weather at the user's configured location. Use for local weather questions.",
-      parameters: { type: 'object', properties: {} },
+      description:
+        'Current weather — at home by default, or anywhere on Earth when `location` is given. ' +
+        'Use this for EVERY current-weather question ("what\'s the weather in Tokyo?", "is it raining in Paris?"); ' +
+        'never web_search for weather.',
+      parameters: {
+        type: 'object',
+        properties: {
+          location: {
+            type: 'string',
+            description: 'A city or place, e.g. "Tokyo" or "Austin, Texas". Omit for the user\'s own location.',
+          },
+        },
+      },
     },
   },
   {
@@ -1382,11 +1400,12 @@ export const DASHBOARD_TOOLS = [
         'Get the upcoming weather forecast for the dashboard\'s location. Returns a temperature range, peak ' +
         'rain chance, and 3-hour-spaced sample slots so you can answer "will it rain tomorrow?", ' +
         '"what\'s the high tonight?", etc. Use this for any future-tense weather question — get_weather only ' +
-        'covers right now.',
+        'covers right now. Pass `location` for a place other than home; never web_search for weather.',
       parameters: {
         type: 'object',
         properties: {
           hours: { type: 'number', description: 'How many hours to look ahead (default 24, max 120).' },
+          location: { type: 'string', description: 'A city or place, e.g. "Tokyo". Omit for the user\'s own location.' },
         },
       },
     },
@@ -1638,10 +1657,10 @@ export async function runDashboardTool(
     case 'recommend_media_item': return recommendMedia(str('type'))
     case 'set_app_mode':         return setAppMode(str('mode'))
     case 'add_notion_task':      return addNotionTask(str('title'), str('due'))
-    case 'get_weather':        return getWeather()
+    case 'get_weather':        return getWeather(str('location'))
     case 'get_weather_forecast': {
       const h = typeof args['hours'] === 'number' ? String(args['hours']) : str('hours')
-      return getWeatherForecast(h)
+      return getWeatherForecast(h, str('location'))
     }
     case 'get_air_quality':    return getAirQuality()
     case 'get_calendar_today': return getCalendarToday()

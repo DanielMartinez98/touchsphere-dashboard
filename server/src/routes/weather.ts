@@ -136,6 +136,40 @@ router.get('/', async (req: Request, res: Response) => {
 // ── GET /api/weather/forecast — 3-hourly slots (≤40, ~5 days) ───────────────
 // The weather route above also populates forecastCache when it runs cold,
 // so in steady state this endpoint almost always serves a cache hit.
+/**
+ * GET /api/weather/geocode?q=Tokyo → { name, country, lat, lon }
+ * OpenWeatherMap's own geocoder, so "the weather in Tokyo" is answered by the
+ * same weather source as home rather than by a web search (which is what the
+ * assistant fell back to when its weather tool had no way to name a place).
+ */
+const geocodeCache = new Map<string, { ts: number; data: { name: string; country: string; lat: number; lon: number } | null }>()
+router.get('/geocode', async (req: Request, res: Response) => {
+  const q = typeof req.query['q'] === 'string' ? req.query['q'].trim().slice(0, 100) : ''
+  if (!q) { res.status(400).json({ error: 'q is required' }); return }
+  const apiKey = process.env['OPENWEATHER_API_KEY']
+  if (!apiKey) { res.status(500).json({ error: 'Weather API key not configured' }); return }
+  const key = q.toLowerCase()
+  const hit = geocodeCache.get(key)
+  if (hit && Date.now() - hit.ts < 24 * 60 * 60 * 1000) {
+    if (!hit.data) { res.status(404).json({ error: `no place called "${q}"` }); return }
+    res.json(hit.data); return
+  }
+  try {
+    const r = await fetch(`https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(q)}&limit=1&appid=${apiKey}`)
+    if (!r.ok) { res.status(502).json({ error: `geocoder ${r.status}` }); return }
+    const list = (await r.json()) as Array<{ name?: string; country?: string; state?: string; lat?: number; lon?: number }>
+    const first = list[0]
+    const data = first && typeof first.lat === 'number' && typeof first.lon === 'number'
+      ? { name: [first.name, first.state, first.country].filter(Boolean).join(', '), country: first.country ?? '', lat: first.lat, lon: first.lon }
+      : null
+    geocodeCache.set(key, { ts: Date.now(), data })
+    if (!data) { res.status(404).json({ error: `no place called "${q}"` }); return }
+    res.json(data)
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : 'geocoder failed' })
+  }
+})
+
 router.get('/forecast', async (req: Request, res: Response) => {
   const { lat, lon } = req.query
   const latNum = parseFloat(lat as string)

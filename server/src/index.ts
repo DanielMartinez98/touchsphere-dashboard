@@ -32,7 +32,7 @@ import presenceRouter from './routes/presence'
 import { elevenLabsKeyState } from './config/keys'
 import { sweepInterrupted } from './guides'
 import { startPlexWatch } from './plex-watch'
-import { SEARCH_PROVIDER } from './research'
+import { SEARCH_PROVIDERS } from './research'
 
 dotenv.config()
 
@@ -71,9 +71,8 @@ console.log('[startup] DEFAULT_LAT/LON       :',
     : '— not set (will use ip-api.com)')
 // Which provider game-guide research will use. DuckDuckGo needs no key but
 // returns no snippets, so a guide built on it leans entirely on page reads.
-console.log('[startup] guide research        :', SEARCH_PROVIDER === 'ollama'
-  ? 'ollama hosted web_search'
-  : 'duckduckgo html (no OLLAMA_API_KEY)')
+console.log('[startup] web search            :', SEARCH_PROVIDERS.join(' → ') +
+  (SEARCH_PROVIDERS.includes('searxng') ? '' : '  (no SEARXNG_URL — set one for a keyless, unlimited fallback)'))
 console.log('[startup] ============================================')
 
 // Guide generation lives in memory and is fire-and-forget, so a restart in the

@@ -26,7 +26,43 @@ import {
 const OLLAMA_API_KEY = process.env['OLLAMA_API_KEY'] ?? ''
 const WEB_SEARCH_URL = process.env['OLLAMA_WEB_SEARCH_URL'] ?? 'https://ollama.com/api/web_search'
 const WEB_FETCH_URL  = process.env['OLLAMA_WEB_FETCH_URL']  ?? 'https://ollama.com/api/web_fetch'
+/** A SearXNG instance (docker-compose.yml's `searxng` service): keyless, unlimited, ~1 s. */
+const SEARXNG_URL    = (process.env['SEARXNG_URL'] ?? '').replace(/\/+$/, '')
 const SEARCH_TIMEOUT_MS = 20_000
+
+// ── The hosted quota ─────────────────────────────────────────────────────────
+//
+// Ollama's hosted web_search has an HOURLY request limit, and the day this was
+// written it was reached by half past ten: one game guide is dozens of
+// searches, every "pull up a page about X" is one or two more, and once the
+// hour's budget is gone every request answers 429 for the rest of it. What
+// that looked like from the couch was the assistant saying "I hit a snag with
+// my search" to everything — the outage that finally got a second provider
+// installed. Three things follow. The 429 carries a Retry-After, so it is
+// remembered and the hosted endpoint is not asked again until then (each
+// refused call still cost a round trip and a log line). The fallbacks are
+// real: SearXNG on the same box when configured, then Wikipedia's own search
+// API, then the DuckDuckGo scrape — so the assistant keeps working, on
+// snippets instead of full pages. And which provider answered is on every hit,
+// so the chat tool can say so rather than let the model guess.
+
+let hostedSearchLimitedUntil = 0
+let hostedFetchLimitedUntil = 0
+
+function noteHostedLimit(kind: 'search' | 'fetch', res: Response): void {
+  const secs = Number(res.headers.get('retry-after')) || 3600
+  const until = Date.now() + secs * 1000
+  if (kind === 'search') hostedSearchLimitedUntil = until
+  else hostedFetchLimitedUntil = until
+  console.warn(`[research] ollama hosted web_${kind} is over its hourly limit — not asking again for ${Math.ceil(secs / 60)} min`)
+}
+
+/** Seconds until the hosted search may be tried again; 0 when it is usable. */
+export function hostedSearchLimitedFor(): number {
+  return Math.max(0, Math.ceil((hostedSearchLimitedUntil - Date.now()) / 1000))
+}
+
+export type SearchProvider = 'ollama' | 'searxng' | 'wikipedia' | 'duckduckgo'
 
 // ── Pages this server cannot read itself ─────────────────────────────────────
 //
@@ -113,7 +149,7 @@ export async function fetchPageHosted(url: string): Promise<HostedPage | null> {
 
   const words = pathWords(url)
   const host = hostOf(url)
-  if (!words || !host) return null
+  if (!words || !host || Date.now() < hostedSearchLimitedUntil) return null
   const hits = await searchViaOllama(`site:${host} ${words}`, 5)   // remembers every hit
   const now = hostedPages.get(key)
   if (now) return now
@@ -126,6 +162,7 @@ export async function fetchPageHosted(url: string): Promise<HostedPage | null> {
 }
 
 async function fetchViaOllama(url: string): Promise<HostedPage | null> {
+  if (Date.now() < hostedFetchLimitedUntil) return null
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT_MS)
   try {
@@ -135,6 +172,7 @@ async function fetchViaOllama(url: string): Promise<HostedPage | null> {
       signal: ctrl.signal,
       body: JSON.stringify({ url }),
     })
+    if (res.status === 429) { noteHostedLimit('fetch', res); return null }
     if (!res.ok) {
       console.warn(`[research] ollama web_fetch ${res.status} for ${url.slice(0, 100)}`)
       return null
@@ -171,8 +209,10 @@ function pathWords(url: string): string {
 export interface SearchHit {
   title:   string
   url:     string
-  /** Snippet from the search provider. Empty on the DuckDuckGo path. */
+  /** The page's full text (hosted), a snippet (SearXNG, Wikipedia), or empty (DuckDuckGo). */
   content: string
+  /** Who answered — so a caller can say "snippets only" when it wasn't the hosted provider. */
+  provider?: SearchProvider
 }
 
 export interface Page {
@@ -182,10 +222,67 @@ export interface Page {
   text:  string
 }
 
-/** Which provider searchWeb will use — reported in the startup/debug logs. */
-export const SEARCH_PROVIDER = OLLAMA_API_KEY ? 'ollama' : 'duckduckgo'
+/** Which provider searchWeb will try first — reported in the startup/debug logs. */
+export const SEARCH_PROVIDER: SearchProvider = OLLAMA_API_KEY ? 'ollama' : SEARXNG_URL ? 'searxng' : 'duckduckgo'
+/** Every provider that is configured, in the order searchWeb tries them. */
+export const SEARCH_PROVIDERS: SearchProvider[] = [
+  ...(OLLAMA_API_KEY ? ['ollama' as const] : []),
+  ...(SEARXNG_URL ? ['searxng' as const] : []),
+  'duckduckgo', 'wikipedia',
+]
+/** True when any search at all is possible — the chat's web tools are offered on this. */
+export const SEARCH_AVAILABLE = OLLAMA_API_KEY.length > 0 || SEARXNG_URL.length > 0
+
+async function searchViaSearxng(query: string, limit: number): Promise<SearchHit[]> {
+  if (!SEARXNG_URL) return []
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 10_000)
+  try {
+    const res = await fetch(`${SEARXNG_URL}/search?q=${encodeURIComponent(query)}&format=json`, { signal: ctrl.signal })
+    if (!res.ok) {
+      console.warn(`[research] searxng ${res.status}${res.status === 403 ? ' — is the json format enabled in its settings.yml?' : ''}`)
+      return []
+    }
+    const json = (await res.json()) as { results?: Array<{ title?: string; url?: string; content?: string }> }
+    return (json.results ?? [])
+      .filter(r => typeof r.url === 'string' && /^https?:\/\//i.test(r.url))
+      .slice(0, limit)
+      .map(r => ({ title: r.title ?? '', url: r.url as string, content: r.content ?? '', provider: 'searxng' as const }))
+  } catch (err) {
+    console.warn('[research] searxng error:', err instanceof Error ? err.message : err)
+    return []
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** Wikipedia's own search — needs nothing, and is the right answer to most "pull up a page about X". */
+async function searchWikipedia(query: string, limit: number): Promise<SearchHit[]> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 10_000)
+  try {
+    const url = `https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=${limit}` +
+                `&srsearch=${encodeURIComponent(query)}`
+    const res = await fetch(url, { signal: ctrl.signal, headers: { 'user-agent': 'TouchSphere dashboard (research)' } })
+    if (!res.ok) return []
+    const json = (await res.json()) as { query?: { search?: Array<{ title?: string; snippet?: string }> } }
+    return (json.query?.search ?? [])
+      .filter(r => typeof r.title === 'string' && r.title.length > 0)
+      .map(r => ({
+        title: r.title as string,
+        url: `https://en.wikipedia.org/wiki/${encodeURIComponent((r.title as string).replace(/ /g, '_'))}`,
+        content: (r.snippet ?? '').replace(/<[^>]+>/g, '').replace(/&quot;/g, '"').replace(/&amp;/g, '&'),
+        provider: 'wikipedia' as const,
+      }))
+  } catch {
+    return []
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 async function searchViaOllama(query: string, limit: number): Promise<SearchHit[]> {
+  if (Date.now() < hostedSearchLimitedUntil) return []
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT_MS)
   try {
@@ -195,13 +292,14 @@ async function searchViaOllama(query: string, limit: number): Promise<SearchHit[
       signal: ctrl.signal,
       body: JSON.stringify({ query, max_results: limit }),
     })
+    if (res.status === 429) { noteHostedLimit('search', res); return [] }
     if (!res.ok) {
-      console.warn(`[research] ollama web_search ${res.status} — falling back to duckduckgo`)
+      console.warn(`[research] ollama web_search ${res.status} — falling back`)
       return []
     }
     const json = (await res.json()) as { results?: Array<{ title?: string; url?: string; content?: string }> }
     const hits = (json.results ?? [])
-      .map(r => ({ title: r.title ?? '', url: r.url ?? '', content: r.content ?? '' }))
+      .map(r => ({ title: r.title ?? '', url: r.url ?? '', content: r.content ?? '', provider: 'ollama' as const }))
       .filter(r => r.url.length > 0)
     // Every hit, not just the ones returned: the page the reader is asked for
     // next is whichever one open_website picks, and that choice is made later.
@@ -238,17 +336,26 @@ export async function searchWeb(query: string, limit = 4): Promise<SearchHit[]> 
     const hits = await searchViaOllama(query, limit)
     if (hits.length > 0) return hits
   }
+  if (SEARXNG_URL) {
+    const hits = await searchViaSearxng(query, limit)
+    if (hits.length > 0) return hits
+  }
   await paceSearches()
   let ddg = await searchDuckDuckGo(query, limit)
-  if (ddg.length === 0) {
+  if (ddg.length === 0 && !SEARXNG_URL) {
     // Almost always throttling rather than a genuinely empty query. One retry
-    // after a longer pause recovers it; two would just be slower.
+    // after a longer pause recovers it; two would just be slower. Not worth
+    // the wait when SearXNG already answered "nothing" — it isn't throttled.
     await new Promise<void>(r => setTimeout(r, SEARCH_GAP_MS * 2))
     lastSearchAt = Date.now()
     ddg = await searchDuckDuckGo(query, limit)
     if (ddg.length > 0) console.log(`[research] search for "${query.slice(0, 50)}" succeeded on retry`)
   }
-  return ddg.map(h => ({ title: h.title, url: h.url, content: '' }))
+  if (ddg.length > 0) return ddg.map(h => ({ title: h.title, url: h.url, content: '', provider: 'duckduckgo' as const }))
+  // The scrape is bot-challenged more often than not. Wikipedia's search is
+  // never the whole web, but it is the right page for most things anyone asks
+  // a dashboard to pull up, and it always answers.
+  return searchWikipedia(query, limit)
 }
 
 /** Fetch a page and extract its readable text. Null when it can't be read. */

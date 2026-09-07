@@ -56,6 +56,29 @@ services:
       - 8.8.8.8
       - 8.8.4.4
 
+  # ── SearXNG — the assistant's own web search ──────────────────────────────
+  # A metasearch engine (Google, Brave, DuckDuckGo… behind one JSON endpoint)
+  # that needs no key and has no quota. It exists because Ollama's hosted
+  # web_search has an HOURLY limit, and one game guide's research plus a
+  # morning of "pull up a page about X" reaches it — after which every search
+  # answered 429 and the assistant said "I hit a snag" to everything. With
+  # SEARXNG_URL set (see .env.example) the server falls back here the moment
+  # the hosted quota is gone, and uses it outright when there is no key.
+  # Not exposed to the host — only the app talks to it, over the compose network.
+  searxng:
+    image: searxng/searxng:latest
+    container_name: touchsphere-searxng
+    restart: unless-stopped
+    expose:
+      - "8080"
+    volumes:
+      - ./docker/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      # SearXNG signs its own cookies with this; anything non-default will do
+      # for an instance nothing but the app can reach.
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-touchsphere-searxng-local}
+      SEARXNG_BASE_URL: http://searxng:8080/
+
   # ── Kokoro — local neural TTS ─────────────────────────────────────────────
   # Runs the 82M-param Kokoro model on CPU and speaks OpenAI's
   # /v1/audio/speech dialect. This is what makes the assistants' voices work

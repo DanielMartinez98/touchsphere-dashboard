@@ -48,8 +48,6 @@ const OLLAMA_URL     = process.env['OLLAMA_URL']    ?? 'http://host.docker.inter
 const OLLAMA_MODEL   = process.env['OLLAMA_MODEL']  ?? 'gemma3'
 const OLLAMA_API_KEY = process.env['OLLAMA_API_KEY'] ?? ''
 const TIMEOUT_MS     = Number(process.env['OLLAMA_TIMEOUT_MS'] ?? 30_000)
-const WEB_SEARCH_URL = process.env['OLLAMA_WEB_SEARCH_URL'] ?? 'https://ollama.com/api/web_search'
-const WEB_FETCH_URL  = process.env['OLLAMA_WEB_FETCH_URL']  ?? 'https://ollama.com/api/web_fetch'
 
 // ── Thinking mode ─────────────────────────────────────────────────────────
 // Reasoning models (Gemma 4 among them) default to thinking, and Ollama then
@@ -78,8 +76,12 @@ const WEB_SEARCH_ENABLED = (() => {
   const flag = process.env['OLLAMA_ENABLE_WEB_SEARCH']
   if (flag === '1' || flag?.toLowerCase() === 'true')  return true
   if (flag === '0' || flag?.toLowerCase() === 'false') return false
-  // Auto: on for Ollama cloud + API key.
-  return /ollama\.com/i.test(OLLAMA_URL) && OLLAMA_API_KEY.length > 0
+  // Auto: on whenever a search provider exists — the hosted one (any key,
+  // wherever the model itself runs) or a SearXNG box. It used to require the
+  // model to be Ollama's cloud service, which silently took web_search and
+  // web_fetch away the day chat moved to the local GPU box: the assistant
+  // could not look anything up and nothing said why.
+  return OLLAMA_API_KEY.length > 0 || (process.env['SEARXNG_URL'] ?? '').length > 0
 })()
 
 // Everything after the persona is identical across assistants. The persona
@@ -269,6 +271,7 @@ const MAX_HISTORY_MSGS   = 20      // user+assistant turns kept per request
 const MAX_TOOL_ROUNDS    = 5       // safety cap on tool-call loop
 const MAX_SEARCH_RESULTS = 5
 const MAX_SNIPPET_CHARS  = 2000    // per-result content from web_search
+const MAX_FETCH_CHARS    = 8000    // one page from web_fetch (the tool loop truncates at 8k anyway)
 const MAX_TOOL_MSG_CHARS = 8000    // total chars we feed back per tool message
 
 type Role = 'system' | 'user' | 'assistant' | 'tool'
@@ -473,40 +476,37 @@ const TOOLS = [...DASHBOARD_TOOLS, ...BROWSE_TOOLS, ...GUIDE_VIEW_TOOLS, ...IMAG
 const TOOL_NAMES = TOOLS.map(t => t.function.name)
 
 // ── Tool implementations ──────────────────────────────────────────────────
+/**
+ * Through research.ts's one search chain — hosted search while its hourly
+ * quota lasts, then SearXNG, DuckDuckGo, Wikipedia — rather than a second
+ * copy of the hosted call that had no fallback at all. A 429 from the hosted
+ * side used to come back to the model as the tool's whole answer, which it
+ * dutifully turned into "I hit my search limit" for every question until the
+ * hour was up. Now the model gets results from whoever answered, and one
+ * line saying so when they are snippets rather than pages.
+ */
 async function runWebSearch(query: string): Promise<string> {
-  if (!OLLAMA_API_KEY) return 'web_search unavailable: no API key configured.'
   console.log(`[chat:tool] web_search query="${query.slice(0, 80)}"`)
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
   try {
-    const res = await fetch(WEB_SEARCH_URL, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'authorization': `Bearer ${OLLAMA_API_KEY}`,
-      },
-      signal: ctrl.signal,
-      body: JSON.stringify({ query, max_results: MAX_SEARCH_RESULTS }),
-    })
-    if (!res.ok) {
-      const detail = await res.text().catch(() => '')
-      console.warn(`[chat:tool] web_search ${res.status}: ${detail.slice(0, 200)}`)
-      return `web_search failed: ${res.status} ${detail.slice(0, 200)}`
-    }
-    const json = (await res.json()) as { results?: Array<{ title?: string; url?: string; content?: string }> }
-    const results = (json.results ?? []).slice(0, MAX_SEARCH_RESULTS)
+    const { searchWeb, hostedSearchLimitedFor } = await import('../research')
+    const results = (await searchWeb(query, MAX_SEARCH_RESULTS)).slice(0, MAX_SEARCH_RESULTS)
     if (results.length === 0) return 'No results.'
-    return results
+    const provider = results[0]?.provider ?? 'unknown'
+    const limited = hostedSearchLimitedFor()
+    const note = provider !== 'ollama'
+      ? `(Results from ${provider}${limited ? `; the hosted search is over its hourly limit for ${Math.ceil(limited / 60)} more min` : ''}. ` +
+        'These are snippets — call web_fetch on the best url for the full page. Do NOT tell the user a search limit was hit; the search worked.)\n\n'
+      : ''
+    console.log(`[chat:tool] web_search → ${results.length} result(s) from ${provider}`)
+    return note + results
       .map((r, i) =>
-        `[${i + 1}] ${r.title ?? '(no title)'}\n${r.url ?? ''}\n${(r.content ?? '').slice(0, MAX_SNIPPET_CHARS)}`,
+        `[${i + 1}] ${r.title || '(no title)'}\n${r.url}\n${r.content.slice(0, MAX_SNIPPET_CHARS)}`,
       )
       .join('\n\n')
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.warn('[chat:tool] web_search error:', msg)
     return `web_search error: ${msg}`
-  } finally {
-    clearTimeout(timer)
   }
 }
 
@@ -531,38 +531,24 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<str
   return `Unknown tool: ${name}`
 }
 
+/**
+ * research.ts's readPage: this server's own fetch first (Wikipedia and most
+ * of the web read fine and cost no quota), then the hosted side for the sites
+ * that refuse a bare server — the same path reader mode takes, so what the
+ * model reads and what the screen shows come from one place.
+ */
 async function runWebFetch(url: string): Promise<string> {
-  if (!OLLAMA_API_KEY) return 'web_fetch unavailable: no API key configured.'
   if (!/^https?:\/\//i.test(url)) return `web_fetch error: url must start with http(s)://`
   console.log(`[chat:tool] web_fetch url="${url.slice(0, 120)}"`)
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
   try {
-    const res = await fetch(WEB_FETCH_URL, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'authorization': `Bearer ${OLLAMA_API_KEY}`,
-      },
-      signal: ctrl.signal,
-      body: JSON.stringify({ url }),
-    })
-    if (!res.ok) {
-      const detail = await res.text().catch(() => '')
-      console.warn(`[chat:tool] web_fetch ${res.status}: ${detail.slice(0, 200)}`)
-      return `web_fetch failed: ${res.status} ${detail.slice(0, 200)}`
-    }
-    const json = (await res.json()) as { title?: string; content?: string }
-    const title = json.title ?? '(no title)'
-    const content = (json.content ?? '').trim()
-    if (!content) return `Fetched ${url} but the page had no extractable content.`
-    return `Title: ${title}\nURL: ${url}\n\n${content}`
+    const { readPage } = await import('../research')
+    const page = await readPage(url, MAX_FETCH_CHARS)
+    if (!page) return `web_fetch could not read ${url}: the site refused or the page has no text. Try another result.`
+    return `Title: ${page.title}\nURL: ${page.url}\n\n${page.text}`
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.warn('[chat:tool] web_fetch error:', msg)
     return `web_fetch error: ${msg}`
-  } finally {
-    clearTimeout(timer)
   }
 }
 

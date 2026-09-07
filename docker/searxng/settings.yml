@@ -1,0 +1,17 @@
+# SearXNG settings for the TouchSphere assistant's search (docker-compose.yml → searxng).
+# Everything not listed here is SearXNG's own default.
+use_default_settings: true
+
+server:
+  # Overridden by the SEARXNG_SECRET environment variable in docker-compose.yml.
+  secret_key: "touchsphere-searxng-local"
+  # The rate limiter needs Redis and would only ever be limiting the app itself.
+  limiter: false
+  image_proxy: false
+
+search:
+  # `json` is what the server asks for (…/search?q=…&format=json). Without it
+  # SearXNG answers 403 to every query.
+  formats:
+    - html
+    - json
