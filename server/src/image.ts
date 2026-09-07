@@ -2137,18 +2137,28 @@ const ANIMA_AES_NEGATIVE =
  * how you talk to it.
  */
 const ANIMA_PROMPT_GUIDE =
-  'This model was trained on Danbooru tags, natural-language captions AND mixtures of ' +
-  'the two, so either register works and you should keep whichever one the user wrote ' +
-  'in rather than converting it. If writing tags: lowercase, and SPACES rather than ' +
-  'underscores (score_* tags are the only ones that keep underscores). An artist tag ' +
-  'MUST be written with an @ in front of it — "@artist name" — or its effect is very ' +
-  'weak. Tag order is quality/meta/year/safety, then subject count (1girl, 1boy), then ' +
-  'character, then series, then artist, then everything else. If writing plain English: ' +
-  'use at least two sentences, because very short prompts give unexpected results, and ' +
-  'when you name a character describe their appearance too rather than relying on the ' +
-  'name alone — that matters most with more than one character in the picture. Prompt ' +
-  'weighting works but needs higher weights than SDXL, e.g. (chibi:2). Do not add ' +
-  'quality tags yourself; they are added for you.'
+  'IMPORTANT — this model reads its prompt with a small LANGUAGE model (Qwen-3 0.6B), not ' +
+  'the CLIP text encoder an SDXL anime checkpoint uses. That one fact decides how to prompt ' +
+  'it. A booru character tag like "sakura haruno" is a token CLIP memorised from millions of ' +
+  'captions; a language encoder does not resolve a bare name the same way, so a tag-soup ' +
+  'prompt reliably produces a generic girl who does not look like the character. ' +
+  'SO: WHENEVER A NAMED CHARACTER IS WANTED, WRITE FLOWING ENGLISH SENTENCES, name the ' +
+  'character AND the series they are from, and DESCRIBE HOW THEY LOOK — hair colour and ' +
+  'style, eye colour, their signature outfit — in the same sentence as the name. ' +
+  '"sakura haruno from naruto, appearing as she does in her source material, with her pink ' +
+  'bob and green eyes" reaches the character; "1girl, sakura haruno" does not. This is the ' +
+  'single most common way a picture from this model comes out wrong. ' +
+  'Tags are still fine for a picture with NO named character (a scene, an unnamed figure), ' +
+  'and the model was trained on mixtures of the two, so tags describing the scene can follow ' +
+  'the descriptive sentences. If writing tags: lowercase, and SPACES rather than underscores ' +
+  '(score_* tags are the only ones that keep underscores). An artist tag MUST be written with ' +
+  'an @ in front of it — "@artist name" — or its effect is very weak. Tag order is ' +
+  'quality/meta/year/safety, then subject count (1girl, 1boy), then character, then series, ' +
+  'then artist, then everything else. Plain English wants at least two sentences: very short ' +
+  'prompts give unexpected results. Prompt weighting works but needs higher weights than ' +
+  'SDXL, e.g. (chibi:2). NEVER write quality tags yourself — no "masterpiece", "best ' +
+  'quality", "high resolution", "absurdres" — they are prepended for you, and repeating them ' +
+  'spends the most heavily weighted tokens in the prompt on words that are already there.'
 
 /** The text encoder and VAE every Anima variant shares. */
 const ANIMA_SHARED = [
@@ -2679,7 +2689,33 @@ export function joinPrefix(prefix: string, body: string): string {
   if (!body) return lead
   // Ends in sentence or marker punctuation → a space is the right separator.
   // Anything else is treated as a tag list, where a comma is.
-  return /[>:.!?]$/.test(lead) ? `${lead} ${body}` : joinPrompt(lead, body)
+  if (/[>:.!?]$/.test(lead)) return `${lead} ${body}`
+  return joinPrompt(dropDuplicateTags(lead, body), body)
+}
+
+/**
+ * Drop tags from the PREFIX that the prompt already contains.
+ *
+ * The quality ladder is prepended for the user, and people type "masterpiece,
+ * best quality" anyway — models' own cards tell them to, and the improver
+ * sometimes adds them back. The result was a prompt beginning "masterpiece,
+ * best quality, masterpiece, best quality, high resolution, ...", which spends
+ * the most heavily weighted tokens a diffusion prompt has on saying the same
+ * thing twice, and pushes the actual subject further down.
+ *
+ * Only exact whole-tag matches are dropped, case-insensitively, and only from
+ * the prefix — the user's own words are never edited. If every tag turns out
+ * to be a duplicate the prefix simply disappears, which is correct: it was
+ * already all there.
+ */
+function dropDuplicateTags(prefix: string, body: string): string {
+  const have = new Set(
+    body.toLowerCase().split(',').map(t => t.trim()).filter(Boolean),
+  )
+  if (have.size === 0) return prefix
+  const kept = prefix.split(',').map(t => t.trim())
+    .filter(t => t.length > 0 && !have.has(t.toLowerCase()))
+  return kept.join(', ')
 }
 
 /** Checkpoint filenames that a `wf:` style replaces and the picker should hide. */
