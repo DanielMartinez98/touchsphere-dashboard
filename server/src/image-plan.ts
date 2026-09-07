@@ -137,7 +137,7 @@ function prune(): void {
 }
 
 /** A style a part/whole step can render with, and the register its prompt wants. */
-export interface DrawStyle { id: string; label: string; register: 'tags' | 'prose' }
+export interface DrawStyle { id: string; label: string; register: 'tags' | 'prose' | 'mixed' }
 
 /**
  * Every installed style that DRAWS (not the editor): workflow styles whose
@@ -232,7 +232,9 @@ function plannerSystem(tools: PlanMode[], styles: DrawStyle[]): string {
       'PICTURE: an anime or illustrated picture gets an anime style, a photograph or realistic render a ' +
       'photoreal one. Write that step\'s prompt in the register the style wants:',
       ...styles.map(st =>
-        `- ${st.id} — "${st.label}": ` + (st.register === 'tags'
+        `- ${st.id} — "${st.label}": ` + (st.register === 'mixed'
+          ? 'booru tags for any named character with its series tag right after it ("1girl, sakura haruno, naruto"), the rest as tags or one or two sentences; an illustration model — never ask it for realism'
+          : st.register === 'tags'
           ? 'anime / illustration model; prompt as comma-separated booru tags describing what is IN the ' +
             'region ("pink jacket, open jacket, zipper, long sleeves, striped shirt underneath").'
           : 'photoreal / general model; prompt as a plain-English description of what is in the region.')),

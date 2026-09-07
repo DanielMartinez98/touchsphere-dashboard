@@ -1676,6 +1676,7 @@ async function run(job: ImageJob): Promise<void> {
     }
 
     const graph = buildGraph(job, sourceName, maskName)
+    await ensureSamplers(graph, job)
     // The graph is where the real step count finally lives — until now it was
     // the style's default, read out of the same graph but before the job's own
     // overrides were patched into it. Re-estimating against it costs nothing and
@@ -1835,19 +1836,27 @@ const BUILTIN_GRAPH: ComfyGraph = {
  *
  * The three published variants share this graph exactly and differ only in the
  * unet filename and the numbers their author recommends, so they are one
- * factory rather than three transcriptions:
+ * factory rather than three transcriptions. From the card (re-read 2026-09-07):
  *
- *   base      v1.0  the pretrained model — most diversity and style adherence
- *   aesthetic v1.1  fine-tuned on high-quality images only; the best default
- *   turbo     v1.1  distilled: ~8-12 steps at cfg 1, no negative prompt
+ *   base      v1.0  the pretrained model — most diversity and style adherence;
+ *                   30-50 steps at cfg 4-5
+ *   aesthetic v1.1  fine-tuned for consistency and a better default style;
+ *                   same numbers, and NO score_* tags (see ANIMA_AES_PREFIX)
+ *   turbo     v1.1  distilled: "use at CFG 1 and 8-12 steps"
  *
- * euler/simple is kept for all three rather than the author's newer `er_sde`
- * suggestion, deliberately: a sampler_name ComfyUI doesn't have fails as a bare
- * "value not in list" naming a sampler the user never chose, and er_sde is
- * recent enough that the GPU box may predate it. Anyone who wants it can put it
- * in a workflow of their own on the volume.
+ * The card ranks its samplers by what they do to the picture: `er_sde` is the
+ * first pick ("neutral style, flat colors, sharp lines"), `euler_a` is softer
+ * and thinner-lined and "can tend towards a 2.5D look", `dpmpp_2m_sde_gpu` is
+ * er_sde with more variety, and plain `euler` is the basic one that "works
+ * well with Turbo/Aesthetic". So base gets er_sde and the other two keep
+ * euler — which is also why the sampler is a parameter here. `simple` is the
+ * scheduler ComfyUI's own template ships; the card's `beta57` is for a
+ * painterly look and is not a scheduler this ComfyUI has. A sampler the GPU
+ * box turns out not to have is swapped for euler at queue time by
+ * ensureSamplers(), so the card's pick can never fail a render as a bare
+ * "value not in list" naming a sampler the user never chose.
  */
-function animaGraph(unet: string, steps: number, cfg: number): ComfyGraph {
+function animaGraph(unet: string, steps: number, cfg: number, sampler = 'euler'): ComfyGraph {
   return {
     '1': { class_type: 'UNETLoader', inputs: { unet_name: unet, weight_dtype: 'default' } },
     '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen_3_06b_base.safetensors', type: 'stable_diffusion', device: 'default' } },
@@ -1858,7 +1867,7 @@ function animaGraph(unet: string, steps: number, cfg: number): ComfyGraph {
     '7': {
       class_type: 'KSampler',
       inputs: {
-        seed: 0, steps, cfg, sampler_name: 'euler', scheduler: 'simple', denoise: 1,
+        seed: 0, steps, cfg, sampler_name: sampler, scheduler: 'simple', denoise: 1,
         model: ['1', 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0],
       },
     },
@@ -2165,7 +2174,19 @@ const ANIMA_PROMPT_GUIDE =
   'then clothing, then pose, then setting. Prompt weighting works but needs higher weights ' +
   'than SDXL, e.g. (chibi:2). NEVER write quality tags yourself — no "masterpiece", "best ' +
   'quality", "high resolution", "absurdres" — they are prepended for you, and repeating them ' +
-  'spends the most heavily weighted tokens in the prompt on words that are already there.'
+  'spends the most heavily weighted tokens in the prompt on words that are already there. ' +
+  'PROSE, when you use it: at least two sentences — a one-line caption is the "short or vague ' +
+  'prompt" the card warns produces unwanted content — and Capitalize character and series ' +
+  'names properly in a sentence ("Sakura Haruno from Naruto"), where tags stay lowercase. Tags ' +
+  'and sentences may be mixed freely in one prompt; a common good shape is the identity and ' +
+  'setting as tags followed by one or two sentences on lighting, mood and composition. ' +
+  'For SEVERAL named characters, tell them apart: each with its own character and series tags, ' +
+  'plus what is certain about each (clothing, pose, position), so the model does not blend them. ' +
+  'NEVER ASK THIS MODEL FOR REALISM. Its card says outright that it "doesn\'t do realism well" ' +
+  'and that this is intended — so never add photorealistic, realistic, photo, 3d render or ' +
+  'raw-photo tags, and when the user asks for something realistic, write it as detailed ' +
+  'illustration instead (fine linework, painterly shading, cinematic lighting). Text in the ' +
+  'picture is limited to a single word or a very short phrase; do not ask for more.'
 
 /** The text encoder and VAE every Anima variant shares. */
 const ANIMA_SHARED = [
@@ -2214,7 +2235,12 @@ const BUILTIN_WORKFLOWS: Record<string, {
    * means an English description. Getting this wrong is what makes a
    * tag-trained model refuse to draw a character it demonstrably knows.
    */
-  promptStyle?: 'tags' | 'prose'
+  /**
+   * `mixed` is Anima: trained on Danbooru tags, natural-language captions AND
+   * mixtures, read by a Qwen-3 language model — so a named character wants its
+   * booru tag with the series beside it, and everything else may be a sentence.
+   */
+  promptStyle?: 'tags' | 'prose' | 'mixed'
   /**
    * How THIS model asks to be prompted, in the words its own card uses.
    *
@@ -2409,7 +2435,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
   },
   'anima-aesthetic-v1-1': {
     label: 'Anima Aesthetic v1.1',
-    promptStyle: 'prose',
+    promptStyle: 'mixed',
     promptGuide: ANIMA_PROMPT_GUIDE,
     prefixes: ANIMA_AES_PREFIX,
     negative: ANIMA_AES_NEGATIVE,
@@ -2419,7 +2445,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
   },
   'anima-turbo-v1-1': {
     label: 'Anima Turbo v1.1',
-    promptStyle: 'prose',
+    promptStyle: 'mixed',
     promptGuide: ANIMA_PROMPT_GUIDE,
     prefixes: ANIMA_PREFIX,
     // Kept even though this style samples at cfg 1, where classifier-free
@@ -2437,11 +2463,14 @@ const BUILTIN_WORKFLOWS: Record<string, {
   },
   'anima-base-v1': {
     label: 'Anima Base v1',
-    promptStyle: 'prose',
+    promptStyle: 'mixed',
     promptGuide: ANIMA_PROMPT_GUIDE,
     prefixes: ANIMA_PREFIX,
     negative: ANIMA_NEGATIVE,
-    graph: animaGraph('anima-base-v1.0.safetensors', 30, 4),
+    // er_sde: the card's first-choice sampler for the base model — "neutral
+    // style, flat colors, sharp lines". Swapped for euler at queue time if the
+    // box lacks it (ensureSamplers).
+    graph: animaGraph('anima-base-v1.0.safetensors', 30, 4, 'er_sde'),
     // Anima ships turbo TWO ways, and both are real:
     //
     //   • anima-turbo-v1.x, a separate distilled CHECKPOINT — the style above,
@@ -2543,7 +2572,7 @@ function withSafety(text: string): string {
  * pre-existing app assumed — so a style that says nothing behaves exactly as
  * before.
  */
-export function stylePromptStyle(style: string): 'tags' | 'prose' {
+export function stylePromptStyle(style: string): 'tags' | 'prose' | 'mixed' {
   if (!style.startsWith(WORKFLOW_PREFIX)) return 'prose'
   return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.promptStyle ?? 'prose'
 }
@@ -2555,7 +2584,10 @@ export function stylePromptStyle(style: string): 'tags' | 'prose' {
  * the honest amount to say about a model this app knows nothing about beyond
  * whether it is tag-trained.
  */
-const GENERIC_PROMPT_GUIDES: Record<'tags' | 'prose', string> = {
+const GENERIC_PROMPT_GUIDES: Record<'tags' | 'prose' | 'mixed', string> = {
+  mixed:
+    'This model reads booru tags and plain English, mixed freely: a named character as its ' +
+    'booru tag with the series tag beside it, the rest as tags or as one or two sentences.',
   tags:
     'Write lowercase Danbooru-style tags separated by commas, not sentences. Lead with ' +
     'subject count and framing (1girl, solo), then the character tag and its series if ' +
@@ -2874,6 +2906,35 @@ function conditioningText(graph: ComfyGraph, startId: string | null): string | n
  * sampler's own `positive`/`negative` links, which is the only place that
  * distinction actually exists.
  */
+/**
+ * A sampler the GPU box does not have becomes `euler` rather than a failed
+ * render. A style may ask for its author's recommended sampler (Anima base's
+ * er_sde) and ComfyUI validates sampler_name against its own list — an older
+ * build fails the whole job with a bare "value not in list" naming a sampler
+ * the user never chose. The list is asked for once and kept, since it changes
+ * only when ComfyUI is updated, and a box that cannot be asked keeps the
+ * graph as it is (the render will then say what is missing, which is the
+ * honest outcome when nothing can be checked).
+ */
+let knownSamplers: Set<string> | null = null
+async function ensureSamplers(graph: ComfyGraph, job: ImageJob): Promise<void> {
+  if (!knownSamplers) {
+    try {
+      const list = await loaderOptions('KSampler', 'sampler_name')
+      if (list.length > 0) knownSamplers = new Set(list)
+    } catch { /* checked next time */ }
+  }
+  if (!knownSamplers) return
+  for (const node of Object.values(graph)) {
+    if (node.class_type !== 'KSampler' && node.class_type !== 'KSamplerAdvanced') continue
+    const want = node.inputs['sampler_name']
+    if (typeof want !== 'string' || knownSamplers.has(want)) continue
+    console.warn(`[image] sampler "${want}" is not on this ComfyUI — using euler for job ${job.id}`)
+    node.inputs['sampler_name'] = 'euler'
+    job.detail = `${job.detail ? job.detail + ' ' : ''}(This ComfyUI has no "${want}" sampler, so euler was used.)`
+  }
+}
+
 function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
   // A `wf:` style brings its own whole graph (Anima, or one the user dropped in);
   // anything else is a checkpoint name patched into the default txt2img graph.

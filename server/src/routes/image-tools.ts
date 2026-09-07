@@ -73,7 +73,19 @@ function baseImagePromptGuidance(): string {
       'and expression". Name the subject explicitly rather than saying "it" or "her". The ' +
       'strength argument is ignored for this style.'
   }
-  if (stylePromptStyle(selectedModel()) !== 'tags') {
+  const register = stylePromptStyle(selectedModel())
+  if (register === 'mixed') {
+    // Anima: a language-model encoder trained on tags, captions and mixtures.
+    // What is measured to matter is the series tag beside the character tag.
+    return ' DRAWING STYLE: the current picture model (Anima) reads booru tags AND plain ' +
+      'English, mixed freely. For a NAMED CHARACTER write its booru tag with the SERIES tag ' +
+      'right after it, lowercase with spaces — "1girl, sakura haruno, naruto" — never the ' +
+      'character alone and never a description in place of the tag; then the scene as tags or ' +
+      'as one or two sentences (lighting, mood, composition). Do not guess hair or eye colours. ' +
+      'Never ask it for realism or photos — it is an illustration model — and never write ' +
+      'quality tags ("masterpiece", "best quality"); those are added for you.'
+  }
+  if (register !== 'tags') {
     return ' DRAWING STYLE: the current picture model reads plain English, so write ' +
       "generate_image's prompt as a descriptive phrase — subject, setting, lighting, style."
   }
