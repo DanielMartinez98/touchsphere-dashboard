@@ -508,6 +508,50 @@ router.get('/prompter', (_req: Request, res: Response) => {
   })
 })
 
+// GET /api/image/lineage/:id — the chain of pictures this one came from, and
+// for each link, everything that decided how it turned out.
+//
+// It exists for one question — "why did this come back unchanged?" — which
+// cannot be answered from the picture alone: the reason is always in what the
+// render was ASKED, and the settings that quietly overrode it (the region that
+// missed, the pose hold that pinned the very lines you wanted gone, an edit
+// whose prompt told the model to keep everything). All of that is already
+// recorded per picture; this walks the `source` links and hands it over in one
+// request so the viewer can draw it.
+router.get('/lineage/:id', (req: Request, res: Response) => {
+  const all = listImages()
+  const byId = new Map(all.map(e => [e.id, e]))
+  const chain: typeof all = []
+  let cur = byId.get(String(req.params['id'] ?? ''))
+  // Oldest first, and bounded: a redraw chain is user-made data and a cycle
+  // (however it got there) must not hang the request.
+  const seen = new Set<string>()
+  while (cur && !seen.has(cur.id) && chain.length < 24) {
+    seen.add(cur.id)
+    chain.unshift(cur)
+    const src = cur.settings?.source
+    cur = src ? byId.get(src) : undefined
+  }
+  if (chain.length === 0) { res.status(404).json({ error: 'no such picture' }); return }
+  res.setHeader('Cache-Control', 'no-store')
+  res.json({
+    chain: chain.map(e => ({
+      id: e.id,
+      url: `/api/image/file/${e.file}`,
+      prompt: e.prompt,
+      width: e.width, height: e.height,
+      at: e.at,
+      origin: e.origin ?? 'render',
+      settings: e.settings ?? null,
+      // The mask as a url, so the region can be drawn over the thumbnail.
+      maskUrl: e.settings?.maskFile ? `/api/image/mask/${e.settings.maskFile}` : null,
+      // Whether the picture it came from is still in the gallery; a pruned
+      // one leaves a link that goes nowhere, and the view says so.
+      sourceMissing: !!e.settings?.source && !byId.has(e.settings.source),
+    })),
+  })
+})
+
 // ── Safety tags ──────────────────────────────────────────────────────────────
 
 // GET/POST /api/image/safety { safeTags } — whether the built-in `safe` prefix

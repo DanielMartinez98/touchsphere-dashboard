@@ -32,10 +32,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  X, AlertTriangle, RefreshCw, ChevronLeft, ChevronRight, Copy, Check, Wand2, Brush, Info, Lasso,
-} from 'lucide-react'
+  X, AlertTriangle, RefreshCw, ChevronLeft, ChevronRight, Copy, Check, Wand2, Brush, Info, Lasso, GitBranch } from 'lucide-react'
 import { closeImage, openImage, useImageJob, useImageTarget, type ImageJobState } from '../hooks/useImageOverlay'
 import { usePlan, type EditPlan } from '../hooks/useEditPlan'
+import ImageLineage from './ImageLineage'
 import { redrawImage, reuseImagePrompt } from '../hooks/useImagePrompt'
 import { onServerEvent } from '../hooks/useServerEvents'
 import type { StoredImage } from '../hooks/useImages'
@@ -125,6 +125,7 @@ export function ImageOverlay() {
   const seq = target?.seq ?? 0
   const [details, setDetails] = useState({ open: false, seq })
   if (details.seq !== seq) setDetails({ open: false, seq })
+
   const detailsOpen = details.open && details.seq === seq
   // Tapping the picture drops the frame — caption, buttons, border — and
   // shows nothing but the picture, edge to edge; tapping it again brings the
@@ -521,6 +522,10 @@ function ImageDetails({
   onOpenSource: () => void
   hasSource:    boolean
 }) {
+  // The full history, owned here rather than by the viewer: the button that
+  // opens it is in this panel, the panel is already reset per picture by its
+  // own `seq` guard, and nothing above needs to know it is open.
+  const [history, setHistory] = useState(false)
   const st = image.settings
   const rows: { label: string; value: string }[] = []
 
@@ -623,6 +628,21 @@ function ImageDetails({
         {/* Walking back up a redraw chain. A button only when the source is
             still there — pruned past the cap or deleted, it is a dead tap, and
             the row above already said the picture was a redraw. */}
+        {/* The whole chain, with the measured change per step and a verdict
+            when one barely moved. Offered for every picture, not just a
+            redraw: "drawn from scratch" is itself the answer to "what did
+            this come from". */}
+        <button
+          type="button"
+          onClick={() => setHistory(true)}
+          className="mt-3 mr-2 h-10 px-4 rounded-full bg-white/10 border border-hairline text-white/70
+                     text-[12px] font-semibold inline-flex items-center gap-2
+                     active:scale-95 active:bg-white/20 transition"
+        >
+          <GitBranch size={14} />
+          How it was made
+        </button>
+
         {st?.source && hasSource && (
           <button
             type="button"
@@ -643,6 +663,8 @@ function ImageDetails({
           </p>
         )}
       </div>
+
+      {history && <ImageLineage id={image.id} onClose={() => setHistory(false)} />}
     </div>
   )
 }

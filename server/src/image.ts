@@ -436,6 +436,21 @@ export interface ImageSettings {
   region?:  string
   /** The ControlNet that held the source's lines in place during a redraw, if one did. */
   controlnet?: string
+  /**
+   * HOW MUCH THE PICTURE ACTUALLY CHANGED, 0-1, against the source it was
+   * redrawn from — the mean of the top 2% of grid cells, the same measure the
+   * plan runner uses to catch an edit that did nothing (imageChange). Recorded
+   * for every redraw rather than only inside plans, because "why did this come
+   * back the same?" is asked of a single render at least as often, and without
+   * the number the answer is a guess.
+   */
+  changed?:      number
+  /** The mask id, so the lineage view can draw the region that was allowed to change. */
+  maskFile?:     string
+  /** What went in front of the prompt, when anything did. */
+  prefix?:       string
+  /** The prompt as SENT to the sampler, prefix and booster included. */
+  fullPrompt?:   string
   /** Wall-clock render time, so "which settings" can be weighed against "how long". */
   tookMs:   number
   /**
@@ -1694,13 +1709,24 @@ async function run(job: ImageJob): Promise<void> {
       ms:     Math.max(1, took - job.improveMs),
       at:     job.endedAt,
     })
+    // How much of the source survived, measured now that both files are on
+    // disk. Cheap (a 64-cell grid over two decoded PNGs) and the only honest
+    // answer to "why does this look identical" — see imageChange().
+    let changed: number | null = null
+    if (job.source && job.sourceFile) {
+      try { changed = imageDifference(job.sourceFile, file) } catch { changed = null }
+      if (changed !== null) {
+        console.log(`[image] ${job.id} changed ${(changed * 100).toFixed(1)}% of the source`)
+      }
+    }
+
     remember({
       id: job.id, prompt: job.prompt, file,
       width: job.width, height: job.height, seed: job.seed,
       ...(job.model ? { model: job.model } : {}),
       // Recorded from the graph that was sent, not from the job's overrides —
       // see renderedWith(). Written AFTER endedAt so the render time is real.
-      settings: renderedWith(job, graph),
+      settings: renderedWith(job, graph, changed),
       at: new Date().toISOString(),
     })
     console.log(
@@ -3137,7 +3163,7 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
  * the sampler node carries the resolved numbers, including the two (sampler and
  * scheduler) that the job never had an opinion about in the first place.
  */
-function renderedWith(job: ImageJob, graph: ComfyGraph): ImageSettings {
+function renderedWith(job: ImageJob, graph: ComfyGraph, changed?: number | null): ImageSettings {
   const samplerId = findNode(graph, ['KSampler', 'KSamplerAdvanced', 'SamplerCustom'])
   const inputs = samplerId ? graph[samplerId]!.inputs : {}
   const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
@@ -3181,6 +3207,10 @@ function renderedWith(job: ImageJob, graph: ComfyGraph): ImageSettings {
     ...(job.source ? { source: job.source, denoise: job.denoise } : {}),
     ...(job.maskFile ? { mask: true, ...(job.region ? { region: job.region } : {}) } : {}),
     ...(job.controlnet ? { controlnet: `${job.controlnet} · ${job.hold} ${Math.round(job.holdStrength * 100)}% to ${Math.round(job.holdEnd * 100)}%` } : {}),
+    ...(typeof changed === 'number' ? { changed } : {}),
+    ...(job.maskFile ? { maskFile: job.maskFile } : {}),
+    ...(job.prefix ? { prefix: job.prefix } : {}),
+    ...(job.source ? { fullPrompt: joinPrompt(joinPrefix(job.prefix, job.prompt), job.optimizations) } : {}),
     tookMs:     Math.max(0, (job.endedAt ?? Date.now()) - job.startedAt),
   }
 }

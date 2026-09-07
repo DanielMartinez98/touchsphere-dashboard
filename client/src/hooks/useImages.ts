@@ -37,6 +37,12 @@ export interface ImageSettings {
   region?:  string
   /** The ControlNet that held the pose during a redraw, when one did. */
   controlnet?: string
+  /** How much of the source actually changed, 0-1. Absent for a fresh render or an older picture. */
+  changed?:    number
+  maskFile?:   string
+  prefix?:     string
+  /** The prompt as sent, prefix and booster included. */
+  fullPrompt?: string
   tookMs:   number
   /** Set only when the prompt improver rewrote the prompt — see image-prompt.ts. */
   promptOriginal?: string
