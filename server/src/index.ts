@@ -20,6 +20,7 @@ import chatRouter from './routes/chat'
 import promptsRouter from './routes/prompts'
 import browseRouter from './routes/browse'
 import notionRouter from './routes/notion'
+import mailRouter from './routes/mail'
 import timersRouter from './routes/timers'
 import memoryRouter from './routes/memory'
 import artworkRouter from './routes/artwork'
@@ -190,6 +191,7 @@ app.use('/api/chat', dataLimiter, chatRouter)
 app.use('/api/prompts', dataLimiter, promptsRouter)
 app.use('/api/browse', dataLimiter, browseRouter)
 app.use('/api/notion', dataLimiter, notionRouter)
+app.use('/api/mail', dataLimiter, mailRouter)
 app.use('/api/timers', dataLimiter, timersRouter)
 app.use('/api/memory', dataLimiter, memoryRouter)
 app.use('/api/guides', dataLimiter, guidesRouter)

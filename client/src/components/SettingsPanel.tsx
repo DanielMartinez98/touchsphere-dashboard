@@ -20,9 +20,10 @@ import type { ParamsResponse } from '../hooks/useImages'
 import { useGuideActivity, type ActivityLevel } from '../hooks/useGuideActivity'
 import { useHost, useHostEnabled, type HostTask } from '../hooks/useHost'
 import { usePresence, useLiveReadings } from '../hooks/usePresence'
+import { useMailSettings } from '../hooks/useMail'
 import { TouchInput } from './TouchInput'
 
-type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'prompts' | 'system' | 'server' | 'debug'
+type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'prompts' | 'mail' | 'system' | 'server' | 'debug'
 
 // The preview reuses the dashboard's own renderers. Lazy, same chunks App
 // splits out — opening the VTuber tab is what pulls in the heavy deps, and
@@ -402,6 +403,7 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
     { id: 'schedule',  label: 'Schedule'  },
     { id: 'memory',    label: 'Memory'    },
     { id: 'guides',    label: 'Guides'    },
+    { id: 'mail',      label: 'Mail'      },
     { id: 'drawing',   label: 'Drawing'   },
     { id: 'prompts',   label: 'Prompts'   },
     { id: 'system',    label: 'System'    },
@@ -1356,6 +1358,7 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
 
             {/* Guides tab — what the guide researcher is doing, and why */}
             {tab === 'guides' && <GuidesTab />}
+            {tab === 'mail' && <MailTab />}
 
             {/* Drawing tab — how the prompt improver is told to rewrite prompts */}
             {tab === 'drawing' && <DrawingTab />}
@@ -2618,6 +2621,182 @@ function PromptsTab() {
           </div>
         )
       })}
+    </div>
+  )
+}
+
+/**
+ * Settings → Mail: register the Google app once, then sign in to as many
+ * Gmail accounts as you like.
+ *
+ * The first half is a chore nobody enjoys and it is written out step by step,
+ * with the redirect URI shown ready to copy — a mismatched redirect is the
+ * single most common way this fails, and Google's error for it says nothing
+ * useful. The second half is one button per account.
+ *
+ * Sign-in happens in a real browser tab rather than in the app: Google refuses
+ * embedded webviews, and the kiosk has no keyboard anyway, so the honest
+ * instruction is to do it from a phone or a computer.
+ */
+function MailTab() {
+  const { status, busy, error, refresh, saveApp, remove, setMuted } = useMailSettings()
+  const [id, setId] = useState({ v: '', seeded: false })
+  const [secret, setSecret] = useState('')
+  const [copied, setCopied] = useState(false)
+  if (!id.seeded && status.clientId) setId({ v: status.clientId, seeded: true })
+
+  useEffect(() => {
+    if (!copied) return
+    const t = setTimeout(() => setCopied(false), 1600)
+    return () => clearTimeout(t)
+  }, [copied])
+
+  // The window that signs an account in. Polls the account list on close,
+  // because the callback lands in that window and this one never hears about it.
+  const signIn = () => {
+    window.open('/api/mail/oauth/start', '_blank', 'noopener')
+    const t = setInterval(() => { void refresh() }, 3000)
+    setTimeout(() => clearInterval(t), 180000)
+  }
+
+  return (
+    <div className="space-y-5 max-w-lg mx-auto pb-4">
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          Gmail on the dashboard
+        </span>
+        <p className="text-[12px] text-white/45 leading-relaxed">
+          Read your mail in the work corner, mark it read, and filter it by the labels you
+          already keep in Gmail. Several accounts at once. Nothing is sent from here and no
+          password is stored — each account grants a token that can read mail and change
+          labels, and you can revoke it from your Google account at any time.
+        </p>
+      </div>
+
+      {error && (
+        <p className="text-[12px] text-red-300 leading-snug rounded-xl bg-red-500/10
+                      border border-red-400/30 px-3 py-2">{error}</p>
+      )}
+
+      {/* Step one: the Google app. */}
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          1 · Register a Google app {status.configured && <span className="text-emerald-300 normal-case tracking-normal">· done</span>}
+        </span>
+        <ol className="text-[12px] text-white/45 leading-relaxed space-y-1 mb-3 list-decimal pl-4">
+          <li>Open <span className="text-white/70">console.cloud.google.com</span> and make a project.</li>
+          <li>APIs &amp; Services → Library → enable the <span className="text-white/70">Gmail API</span>.</li>
+          <li>OAuth consent screen → External → add your own address as a test user.</li>
+          <li>Credentials → Create credentials → <span className="text-white/70">OAuth client ID</span> → Web application.</li>
+          <li>Add this exact redirect URI:</li>
+        </ol>
+        <div className="flex items-center gap-2 mb-3">
+          <code className="selectable-text flex-1 min-w-0 text-[11px] text-white/70 bg-black/30
+                           border border-hairline rounded-xl px-3 py-2 break-all">
+            {status.redirectUri || '(loading)'}
+          </code>
+          <button
+            type="button"
+            onClick={() => { navigator.clipboard?.writeText(status.redirectUri).then(() => setCopied(true)).catch(() => {}) }}
+            className="h-10 px-3 rounded-xl bg-white/10 border border-hairline text-white/70
+                       text-[12px] font-semibold active:scale-95 shrink-0"
+          >
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+        <div className="space-y-2">
+          <TouchInput
+            value={id.v}
+            onChange={v => setId({ v, seeded: true })}
+            commitOn="done"
+            placeholder="Client ID"
+            ariaLabel="Google OAuth client ID"
+            className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px]
+                       placeholder:text-white/30 border border-hairline"
+          />
+          <TouchInput
+            value={secret}
+            onChange={setSecret}
+            commitOn="done"
+            placeholder={status.configured ? 'Client secret (saved — type to replace)' : 'Client secret'}
+            ariaLabel="Google OAuth client secret"
+            className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px]
+                       placeholder:text-white/30 border border-hairline"
+          />
+          <button
+            type="button"
+            disabled={busy || !id.v.trim() || !secret.trim()}
+            onClick={() => { void saveApp(id.v, secret).then(() => setSecret('')) }}
+            className={`w-full h-12 rounded-xl text-sm font-semibold transition ${
+              !busy && id.v.trim() && secret.trim()
+                ? 'bg-sky-500/80 text-white active:scale-95'
+                : 'bg-white/5 text-white/30'}`}
+          >
+            {status.configured ? 'Replace the app' : 'Save the app'}
+          </button>
+        </div>
+      </div>
+
+      {/* Step two: the accounts. */}
+      <div className="border-t border-hairline pt-5">
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          2 · Accounts
+        </span>
+        {!status.configured ? (
+          <p className="text-[12px] text-white/35 leading-relaxed">
+            Register the app above first.
+          </p>
+        ) : (
+          <>
+            <p className="text-[12px] text-white/45 leading-relaxed mb-3">
+              Sign-in opens a Google page in a new tab. Do it from a phone or a computer —
+              Google will not sign in inside the kiosk's browser.
+            </p>
+            <div className="space-y-2">
+              {status.accounts.map(a => (
+                <div key={a.email}
+                     className="flex items-center gap-2 rounded-xl bg-white/5 border border-hairline px-3 py-2.5">
+                  <span className={`min-w-0 flex-1 text-[13px] truncate ${a.muted ? 'text-white/35' : 'text-white/85'}`}>
+                    {a.email}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { void setMuted(a.email, !a.muted) }}
+                    className="h-9 px-3 rounded-lg bg-white/5 border border-hairline text-white/55
+                               text-[11px] font-semibold active:scale-95"
+                  >
+                    {a.muted ? 'Show' : 'Hide'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { void remove(a.email) }}
+                    aria-label={`Sign out ${a.email}`}
+                    className="w-9 h-9 rounded-lg bg-white/5 border border-hairline text-white/45
+                               flex items-center justify-center active:scale-90 active:bg-red-500/40"
+                  >
+                    <XIcon size={14} />
+                  </button>
+                </div>
+              ))}
+              {status.accounts.length === 0 && (
+                <p className="text-[12px] text-white/35">No accounts yet.</p>
+              )}
+              <button
+                type="button"
+                onClick={signIn}
+                className="w-full h-12 rounded-xl bg-white/10 border border-hairline text-white
+                           text-sm font-semibold active:scale-95"
+              >
+                Add an account
+              </button>
+            </div>
+            <p className="text-[11px] text-white/25 leading-relaxed mt-2">
+              "Hide" keeps an account signed in but leaves it out of the corner and its unread
+              count. Removing it revokes the token with Google as well.
+            </p>
+          </>
+        )}
+      </div>
     </div>
   )
 }

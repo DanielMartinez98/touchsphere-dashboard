@@ -23,7 +23,7 @@ import { openPlexPlayer, plexApi, plexImg, type PlexItem, type PlexStatus } from
 import { onServerEvent } from '../hooks/useServerEvents'
 import type { PlexSummary } from './widgets/PlexWidget/PlexWidget'
 
-type OpenWidget = 'time' | 'plex' | 'media' | 'notion' | 'images' | null
+type OpenWidget = 'time' | 'plex' | 'media' | 'notion' | 'images' | 'mail' | null
 
 export interface NowPlaying {
   key: string

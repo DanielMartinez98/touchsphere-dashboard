@@ -14,6 +14,9 @@ import { MediaCollapsed } from './components/widgets/MediaListWidget/MediaListWi
 import MediaListExpanded from './components/widgets/MediaListWidget/MediaListExpanded'
 import { ImageCollapsed } from './components/widgets/ImageWidget/ImageWidget'
 import ImageExpanded from './components/widgets/ImageWidget/ImageExpanded'
+import { MailCollapsed } from './components/widgets/MailWidget/MailWidget'
+import MailExpanded from './components/widgets/MailWidget/MailExpanded'
+import { useMailUnread } from './hooks/useMail'
 import { NotionCollapsed } from './components/widgets/NotionWidget/NotionWidget'
 import NotionExpanded from './components/widgets/NotionWidget/NotionExpanded'
 import { useMediaList } from './hooks/useMediaList'
@@ -54,7 +57,7 @@ const Avatar = lazy(() => import('./components/Avatar/Avatar'))
 const Live2DAvatar = lazy(() => import('./components/Avatar/Live2DAvatar'))
 
 // 'time' is the merged calendar+clock corner; 'images' is the ComfyUI corner.
-type OpenWidget = 'time' | 'plex' | 'media' | 'notion' | 'images' | null
+type OpenWidget = 'time' | 'plex' | 'media' | 'notion' | 'images' | 'mail' | null
 
 // Distinct glowing accent colour per corner.
 const ACCENT = {
@@ -63,6 +66,7 @@ const ACCENT = {
   media:   '#ef4444', // red  (collection)
   notion:  '#22c55e', // green (work tasks)
   images:  '#ec4899', // pink (drawing)
+  mail:    '#38bdf8', // sky (work mail)
 } as const
 
 function App() {
@@ -119,6 +123,9 @@ function App() {
     updateTask:  notionUpdate,
   } = useNotion()
   const { mode, hasCred, setMode, createPassword, verifyPassword, unlock } = useAppMode()
+  // Mail is polled only while the work corner exists, so a rest-mode kiosk
+  // makes no Gmail calls at all.
+  const mail = useMailUnread(mode === 'work')
   const voice = useVoice()
   const muted = useMuted()
   // The assistant owns its own face: it names a model from the catalogue, so
@@ -221,6 +228,10 @@ function App() {
   useEffect(() => {
     if (mode === 'work' && open === 'media')   setOpen(null)
     if (mode !== 'work' && open === 'notion')  setOpen(null)
+    // The top-left corner is two different widgets by mode now, so the same
+    // rule applies to it: a panel whose corner just went away must not stay up.
+    if (mode === 'work' && open === 'plex')    setOpen(null)
+    if (mode !== 'work' && open === 'mail')    setOpen(null)
   }, [mode])
 
   const isRest = mode === 'rest' || mode === 'locked'
@@ -344,20 +355,29 @@ function App() {
         />
       )}
       </>)}
-
-      {/* Top-Left — Plex (amber glow): the library, what's downloading, and
-          what's been asked for. The weather lived here until the media stack
-          needed a corner; it moved in with the clock, whose corner already
-          answers "what's the day looking like". */}
-      <Widget
-        pill={!companion}
-        position="top-left"
-        accent={ACCENT.plex}
-        isOpen={open === 'plex'}
-        onToggle={() => toggle('plex')}
-        collapsed={<PlexCollapsed status={plexStatus} summary={plexSummary} />}
-        expanded={<PlexExpanded status={plexStatus} />}
-      />
+      {/* Top-Left — Mail in work mode, Plex in rest. Along with the
+          bottom-right pair, this is what makes the mode switch change what the
+          screen is FOR rather than only how it looks: the corners that are not
+          the clock are the mode. */}
+      {mode === 'work' ? (
+        <Widget
+          pill={!companion}
+          position="top-left"
+          accent={ACCENT.mail}
+          isOpen={open === 'mail'}
+          onToggle={() => toggle('mail')}
+          collapsed={<MailCollapsed counts={mail.counts} total={mail.total} enabled={mail.enabled} />}
+          expanded={<MailExpanded open={open === 'mail'} />}
+        />
+      ) : (<Widget
+          pill={!companion}
+          position="top-left"
+          accent={ACCENT.plex}
+          isOpen={open === 'plex'}
+          onToggle={() => toggle('plex')}
+          collapsed={<PlexCollapsed status={plexStatus} summary={plexSummary} />}
+          expanded={<PlexExpanded status={plexStatus} />}
+        />)}
 
       {/* Top-Right — Time: calendar, clock and weather (yellow glow).
           Calendar and clock were two corners until image generation needed
