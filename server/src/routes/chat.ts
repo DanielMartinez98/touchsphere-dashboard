@@ -377,6 +377,11 @@ function stripWrittenToolCalls(text: string, toolNames: string[]): string {
   // [tool_name] — the model treating the stage-cue syntax as a way to
   // invoke a tool. It invokes nothing; the words are simply read aloud.
   out = out.replace(rx(String.raw`\[\s*(?:${names})\s*\]`), ' ')
+  // <execute_tool>name{...}</execute_tool> — a fourth shape, and this one can
+  // appear even when the tool DID run, so it leaks into an otherwise correct
+  // answer.
+  out = out.replace(/<execute_tool>[\s\S]*?<\/execute_tool>/gi, ' ')
+  out = out.replace(/<\/?(?:execute_tool|tool_call|function_call)>/gi, ' ')
   // Ollama's odd string fences, when they survive the above.
   out = out.replace(/<\|"\|>/g, '"')
   return out.replace(/[ 	]{2,}/g, ' ').replace(/\s+([.,!?;:])/g, '$1').replace(/\s{2,}/g, ' ').trim()
