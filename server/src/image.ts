@@ -2146,8 +2146,12 @@ const ANIMA_PROMPT_GUIDE =
   'mixtures — and it is the better register for a scene with no named character, or for ' +
   'describing lighting and composition after the tags. But when prose names a character it ' +
   'must still name the series, or it has the same failure as a lone character tag. ' +
-  'IDENTITY COMES FROM THE FACE, so back the character tag with their hair and eyes as tags ' +
-  '("pink hair, short hair, green eyes"). ' +
+  'NEVER GUESS A CHARACTER\'S APPEARANCE. Hair and eye tags OVERRIDE the character tag: get ' +
+  'the colour wrong and you get a different person wearing that colour, which is worse than ' +
+  'saying nothing. So add hair and eye tags ONLY when you are certain of them — if there is ' +
+  'any doubt at all, write the character and series tags alone and let them carry the face. ' +
+  'Do not infer a look from the series, from the name, or from another character in it. ' +
+  'Never repeat the user\'s own words back as appearance tags if they did not give any. ' +
   'CLOTHES ARE SEPARATE FROM IDENTITY and are the thing this model most often gets wrong. ' +
   'Do NOT describe a signature outfit that the scene contradicts: a character swimming is not ' +
   'wearing her plugsuit or her kimono, and asking for both at once gets you neither. Name the ' +
