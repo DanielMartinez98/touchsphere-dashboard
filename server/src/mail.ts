@@ -106,10 +106,35 @@ export function mailAccounts(): { email: string; addedAt: string; muted: boolean
   return read().accounts.map(a => ({ email: a.email, addedAt: a.addedAt, muted: a.muted === true }))
 }
 
+/**
+ * Store the Google app, refusing anything that plainly is not one.
+ *
+ * The three fields on that Settings page are a redirect URI to copy OUT and
+ * two to paste IN, and the first thing that happened in the wild was the
+ * redirect URI landing in the client id box. Google's answer to that is an
+ * error page whose only detail is "flowName=GeneralOAuthFlow", which tells
+ * nobody anything — so the shape is checked here, where a real sentence can
+ * be said about it. A client id always ends in .apps.googleusercontent.com
+ * and a secret never looks like a URL.
+ */
 export function setClientApp(clientId: string, clientSecret: string): void {
+  const id = clientId.trim()
+  const secret = clientSecret.trim()
+  if (id && !/\.apps\.googleusercontent\.com$/.test(id)) {
+    throw new Error(
+      /^https?:/i.test(id)
+        ? 'That looks like the redirect URI, not the client ID. The redirect URI is the one to ' +
+          'copy OUT of here and paste INTO Google. The client ID comes back from Google and ' +
+          'ends in .apps.googleusercontent.com'
+        : 'That is not a Google client ID — it should end in .apps.googleusercontent.com',
+    )
+  }
+  if (secret && /^https?:/i.test(secret)) {
+    throw new Error('That looks like a URL, not the client secret. The secret is the short random string Google shows beside the client ID.')
+  }
   const s = read()
-  s.clientId = clientId.trim()
-  s.clientSecret = clientSecret.trim()
+  s.clientId = id
+  s.clientSecret = secret
   write(s)
   console.log(`[mail] Google app ${s.clientId ? 'set' : 'cleared'}`)
 }

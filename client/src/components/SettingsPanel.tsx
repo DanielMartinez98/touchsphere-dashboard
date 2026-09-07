@@ -2688,7 +2688,7 @@ function MailTab() {
           <li>APIs &amp; Services → Library → enable the <span className="text-white/70">Gmail API</span>.</li>
           <li>OAuth consent screen → External → add your own address as a test user.</li>
           <li>Credentials → Create credentials → <span className="text-white/70">OAuth client ID</span> → Web application.</li>
-          <li>Add this exact redirect URI:</li>
+          <li>Add this exact redirect URI — copy it from here, paste it into Google:</li>
         </ol>
         <div className="flex items-center gap-2 mb-3">
           <code className="selectable-text flex-1 min-w-0 text-[11px] text-white/70 bg-black/30
@@ -2704,12 +2704,15 @@ function MailTab() {
             {copied ? 'Copied' : 'Copy'}
           </button>
         </div>
+        <p className="text-[11px] text-white/35 leading-snug mb-2">
+          Then paste back what Google gives you. These two come FROM Google; the box above goes TO it.
+        </p>
         <div className="space-y-2">
           <TouchInput
             value={id.v}
             onChange={v => setId({ v, seeded: true })}
             commitOn="done"
-            placeholder="Client ID"
+            placeholder="Client ID — ends in .apps.googleusercontent.com"
             ariaLabel="Google OAuth client ID"
             className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px]
                        placeholder:text-white/30 border border-hairline"

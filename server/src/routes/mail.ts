@@ -55,7 +55,12 @@ router.post('/app', (req: Request, res: Response) => {
     res.status(400).json({ error: 'clientId and clientSecret are required' })
     return
   }
-  setClientApp(b.clientId, b.clientSecret)
+  try {
+    setClientApp(b.clientId, b.clientSecret)
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+    return
+  }
   res.json({ ok: true, configured: mailConfigured() })
 })
 
