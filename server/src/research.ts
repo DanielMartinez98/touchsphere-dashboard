@@ -25,7 +25,106 @@ import {
 
 const OLLAMA_API_KEY = process.env['OLLAMA_API_KEY'] ?? ''
 const WEB_SEARCH_URL = process.env['OLLAMA_WEB_SEARCH_URL'] ?? 'https://ollama.com/api/web_search'
+const WEB_FETCH_URL  = process.env['OLLAMA_WEB_FETCH_URL']  ?? 'https://ollama.com/api/web_fetch'
 const SEARCH_TIMEOUT_MS = 20_000
+
+// ── Pages this server cannot read itself ─────────────────────────────────────
+//
+// A growing share of the web answers a bare server fetch with a Cloudflare
+// challenge (every Fandom wiki: HTTP 403, "cf-mitigated: challenge") or with a
+// page that is empty until JavaScript runs. Ollama's hosted searcher has
+// already been through all of that — its hits carry the page's FULL text
+// inline — and its hosted fetch reads most of the rest. So the text of every
+// hit is kept here, keyed by URL, and the reader-mode route and readPage()
+// consult it (then the hosted fetch) whenever the direct fetch comes back
+// blocked or blank. Without this, "pull up a page about X" found the right
+// page, sent it to the screen, and the screen showed "the site wouldn't hand
+// the page over" — the search had the text the whole time.
+
+export interface HostedPage {
+  title: string
+  text:  string
+  /** Where the text came from: a search hit that carried it, or the hosted fetch. */
+  via:   'search' | 'fetch'
+}
+
+const HOSTED_PAGE_CAP = 60
+const hostedPages = new Map<string, HostedPage>()
+
+function pageKey(url: string): string {
+  try {
+    const u = new URL(url)
+    return `${u.origin}${u.pathname.replace(/\/+$/, '')}${u.search}`.toLowerCase()
+  } catch {
+    return url
+  }
+}
+
+/** Keep a page's hosted text for the reader. Newest wins; oldest is dropped past the cap. */
+export function rememberHostedPage(url: string, title: string, content: string, via: HostedPage['via']): void {
+  const text = markdownToText(content)
+  if (text.length < 200 || !url) return
+  const key = pageKey(url)
+  hostedPages.delete(key)
+  hostedPages.set(key, { title: title.trim(), text, via })
+  while (hostedPages.size > HOSTED_PAGE_CAP) {
+    const oldest = hostedPages.keys().next().value
+    if (oldest === undefined) break
+    hostedPages.delete(oldest)
+  }
+}
+
+/**
+ * The hosted side's markdown-ish text as reader prose: navigation gone,
+ * links reduced to their words, images dropped, headings and emphasis
+ * unmarked, table rows flattened. The reader splits on blank lines and draws
+ * paragraphs, so this only has to be plain text, not pretty.
+ */
+export function markdownToText(md: string): string {
+  return stripNavChrome(md)
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/(\*\*|__)(.*?)\1/g, '$2')
+    .replace(/^\s*\|?[\s:|-]+\|[\s:|-]*$/gm, '')
+    .replace(/\s*\|\s*/g, '  ')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+/**
+ * The page's text without this server fetching it: what hosted search already
+ * returned for that URL, else Ollama's hosted fetch. Null when neither has it
+ * (no key, or a page the hosted side can't read either), never a throw.
+ */
+export async function fetchPageHosted(url: string): Promise<HostedPage | null> {
+  const cached = hostedPages.get(pageKey(url))
+  if (cached) return cached
+  if (!OLLAMA_API_KEY) return null
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT_MS)
+  try {
+    const res = await fetch(WEB_FETCH_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${OLLAMA_API_KEY}` },
+      signal: ctrl.signal,
+      body: JSON.stringify({ url }),
+    })
+    if (!res.ok) {
+      console.warn(`[research] ollama web_fetch ${res.status} for ${url.slice(0, 100)}`)
+      return null
+    }
+    const json = (await res.json()) as { title?: string; content?: string }
+    rememberHostedPage(url, json.title ?? '', json.content ?? '', 'fetch')
+    return hostedPages.get(pageKey(url)) ?? null
+  } catch (err) {
+    console.warn('[research] ollama web_fetch error:', err instanceof Error ? err.message : err)
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 export interface SearchHit {
   title:   string
@@ -59,10 +158,13 @@ async function searchViaOllama(query: string, limit: number): Promise<SearchHit[
       return []
     }
     const json = (await res.json()) as { results?: Array<{ title?: string; url?: string; content?: string }> }
-    return (json.results ?? [])
-      .slice(0, limit)
+    const hits = (json.results ?? [])
       .map(r => ({ title: r.title ?? '', url: r.url ?? '', content: r.content ?? '' }))
       .filter(r => r.url.length > 0)
+    // Every hit, not just the ones returned: the page the reader is asked for
+    // next is whichever one open_website picks, and that choice is made later.
+    for (const h of hits) rememberHostedPage(h.url, h.title, h.content, 'search')
+    return hits.slice(0, limit)
   } catch (err) {
     console.warn('[research] ollama web_search error:', err instanceof Error ? err.message : err)
     return []
@@ -114,9 +216,15 @@ export async function readPage(url: string, maxChars = 6000): Promise<Page | nul
   // i.e. ultimately from strangers, and must never be aimed at the LAN.
   if (!target || !isPublicHttpUrl(target)) return null
   const html = await fetchText(target.toString())
-  if (!html) return null
-  const { title, text } = extractReadable(html)
-  if (text.length < 200) return null   // a consent wall or a JS-only page
+  let title = ''
+  let text = ''
+  if (html) ({ title, text } = extractReadable(html))
+  if (text.length < 200) {
+    // Blocked, or a consent wall / JS-only page: the hosted side may have it.
+    const hosted = await fetchPageHosted(target.toString())
+    if (hosted) ({ title, text } = hosted)
+  }
+  if (text.length < 200) return null
   return {
     url:   target.toString(),
     site:  siteOf(target),

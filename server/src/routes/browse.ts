@@ -156,7 +156,16 @@ function framesAllowed(headers: Headers): boolean {
  * blank iframe or a bare hostname in its header — and on any error we answer
  * "not embeddable", because reader mode at least shows *something*.
  */
-async function probePage(url: string): Promise<{ embeddable: boolean; title: string }> {
+interface Probe {
+  /** The page answered 2xx to this server. False for a 404 as much as for a Cloudflare 403. */
+  ok: boolean
+  /** The HTTP status when there was one; absent on a network failure. */
+  status?: number
+  embeddable: boolean
+  title: string
+}
+
+async function probePage(url: string): Promise<Probe> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS)
   try {
@@ -164,18 +173,18 @@ async function probePage(url: string): Promise<{ embeddable: boolean; title: str
     const res = await fetch(url, { headers: BROWSER_HEADERS, signal: ctrl.signal, redirect: 'follow' })
     if (!res.ok) {
       void res.body?.cancel()
-      return { embeddable: false, title: '' }
+      return { ok: false, status: res.status, embeddable: false, title: '' }
     }
     const embeddable = framesAllowed(res.headers)
     if (!/text\/html/i.test(res.headers.get('content-type') ?? '')) {
       void res.body?.cancel()
-      return { embeddable, title: '' }
+      return { ok: true, status: res.status, embeddable, title: '' }
     }
     const buf = await res.arrayBuffer()
     const html = Buffer.from(buf.byteLength > MAX_HTML_BYTES ? buf.slice(0, MAX_HTML_BYTES) : buf).toString('utf8')
-    return { embeddable, title: pageTitle(html) }
+    return { ok: true, status: res.status, embeddable, title: pageTitle(html) }
   } catch {
-    return { embeddable: false, title: '' }
+    return { ok: false, embeddable: false, title: '' }
   } finally {
     clearTimeout(timer)
   }
@@ -432,8 +441,33 @@ async function searchOneUrl(query: string): Promise<{ url: string; title: string
   // Wikipedia page in under a second — and only then falls back to the
   // scrape, paced. A dynamic import because research.ts imports this file.
   const { searchWeb } = await import('../research')
-  const hit = (await searchWeb(query, 1))[0]
+  const hits = await searchWeb(query, 4)
+  // The hosted provider hands back each page's text with the hit. A hit with
+  // a real page of it is one the reader can show even when the site blocks
+  // this server; a thin one is a stub, a redirect or a JavaScript shell.
+  const hit = hits.find(h => h.content.length >= 800) ?? hits[0]
   return hit ? { url: hit.url, title: hit.title } : null
+}
+
+/**
+ * The words in a URL, for searching when the URL itself turns out not to
+ * exist: `/wikis/legend-of-zelda/how-to-get-the-red-ring` → "legend of zelda
+ * how to get the red ring". Only the last two path segments — the ones that
+ * name the page — and never the host, which is what was wrong.
+ */
+function slugWords(u: URL): string {
+  const skip = /^(wiki|wikis|w|en|es|articles?|guides?|pages?|index\.\w+)$/i
+  const segs = u.pathname
+    .split('/')
+    .map(s => { try { return decodeURIComponent(s) } catch { return s } })
+    .filter(s => s && !/^\d+$/.test(s) && !skip.test(s))
+  return segs
+    .slice(-2)
+    .join(' ')
+    .replace(/\.\w{2,5}$/, '')
+    .replace(/[-_+.]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 // ── Tools ────────────────────────────────────────────────────────────────────
@@ -447,8 +481,9 @@ export const BROWSE_TOOLS = [
         'Show a web page ON THE DASHBOARD SCREEN in a browser window the user can read and scroll. ' +
         'Use this when the user asks you to open, show, pull up, browse, or look at a site or article — ' +
         'anything where they want to SEE the page rather than just hear about it. ' +
-        'Strongly prefer passing a real `url` you already have (from web_search results, or an obvious ' +
-        'one like https://en.wikipedia.org/wiki/... ); only fall back to `query` if you have no URL. ' +
+        'Pass a real `url` ONLY if you actually have one — from web_search results or from the user. ' +
+        'NEVER guess or invent a URL: a made-up address opens a "page not found". If you have no real ' +
+        'URL, pass `query` (what the user wants to see) and the dashboard finds the page itself. ' +
         'After calling this, still say one short sentence about what you put on screen.',
       parameters: {
         type: 'object',
@@ -530,8 +565,45 @@ async function openWebsite(args: Record<string, unknown>): Promise<BrowseToolRes
     return { text: `Now playing on screen: "${display.title}".`, display }
   }
 
-  const url = target.toString()
-  const { embeddable, title: pageName } = await probePage(url)
+  let url = target.toString()
+  let probe = await probePage(url)
+  let hostedTitle = ''
+  if (!probe.ok) {
+    // The server could not read the page, and there are two very different
+    // reasons. Either the site refuses THIS server (a Fandom wiki answers
+    // every bare fetch with a Cloudflare challenge) but the page is real and
+    // the hosted side can read it — then reader mode shows it from there. Or
+    // the address does not exist: a small model handed an "obvious" URL will
+    // make one up (an IGN wiki path that 404s, once), and a "page not found"
+    // on screen is the worst outcome of a request that named a real topic.
+    // So a dead URL becomes a search for its words instead.
+    const { fetchPageHosted } = await import('../research')
+    const hosted = await fetchPageHosted(url)
+    if (hosted) {
+      hostedTitle = hosted.title
+      console.log(`[browse] open_website: ${siteOf(target)} answered ${probe.status ?? 'nothing'} to this server; the hosted side has the page, so it opens in reader mode`)
+    } else {
+      const words = (hint || query || slugWords(target)).trim().slice(0, 200)
+      const found = words ? await searchOneUrl(words) : null
+      if (!found) {
+        return {
+          text: `open_website could not open ${url} — the site answered ${probe.status ?? 'nothing'} and no page was found for "${words}". Never invent URLs: call web_search and pass a result's url, or pass a query.`,
+          display: null,
+        }
+      }
+      const next = parseUrl(found.url)
+      if (!next) return { text: 'open_website error: search returned an unusable URL.', display: null }
+      console.log(`[browse] open_website: ${url.slice(0, 100)} answered ${probe.status ?? 'nothing'} — treating it as invented; searched "${words}" → ${found.url}`)
+      target = next
+      url = next.toString()
+      if (!title) title = found.title
+      // May be blocked to this server too; the reader then reads it from the
+      // search text, which searchOneUrl just made sure exists.
+      probe = await probePage(url)
+    }
+  }
+  const embeddable = probe.ok && probe.embeddable
+  const pageName = probe.title || hostedTitle
   const display: DisplayPayload = {
     kind: 'web',
     url,
@@ -616,10 +688,26 @@ router.get('/page', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'a public http(s) `url` is required' })
   }
   const html = await fetchText(target.toString())
-  if (html === null) {
-    return res.status(502).json({ error: 'could not fetch that page' })
+  const direct = html === null ? null : extractReadable(html)
+  let title = direct?.title ?? ''
+  let text  = direct?.text ?? ''
+  const image = direct?.image ?? ''
+  let via: 'direct' | 'search' | 'fetch' = 'direct'
+  if (text.trim().length < 200) {
+    // Blocked (a Cloudflare challenge, a sign-in wall) or a page that is empty
+    // until JavaScript runs. Hosted search already returned this page's text if
+    // it is how the page was found, and the hosted fetch reads most of the rest.
+    const { fetchPageHosted } = await import('../research')
+    const hosted = await fetchPageHosted(target.toString())
+    if (hosted) {
+      title = hosted.title || title
+      text = hosted.text
+      via = hosted.via
+      console.log(`[browse] reader: ${siteOf(target)} ${html === null ? 'blocked this server' : 'came back blank'}; showing the hosted ${via} text (${text.length} chars)`)
+    } else if (html === null) {
+      return res.status(502).json({ error: 'could not fetch that page' })
+    }
   }
-  const { title, text, image } = extractReadable(html)
   // A page that fetched fine and extracted to nothing is the common case for a
   // site that renders itself in JavaScript — Reddit comes back with 6
   // characters, x.com with none. Reporting that as a success gave the reader an
@@ -635,6 +723,7 @@ router.get('/page', async (req: Request, res: Response) => {
     title: title || siteOf(target),
     text,
     thin,
+    via,
     ...(image ? { image } : {}),
   })
 })
