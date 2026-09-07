@@ -198,7 +198,6 @@ export function authUrl(redirectUri: string, state: string): string {
     scope: SCOPE,
     access_type: 'offline',
     prompt: 'consent',
-    include_granted_scopes: 'true',
     state,
   })
   return `${AUTH_URL}?${qs}`
