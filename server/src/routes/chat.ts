@@ -787,6 +787,20 @@ router.post('/', async (req: Request, res: Response) => {
   // calling one. Once only: a model that ignores the correction twice is not
   // going to get it on the third go, and the user is waiting.
   let nudged = false
+  /**
+   * Did the user ask for something that REQUIRES a tool?
+   *
+   * Detecting the model's mistake by what it typed was too narrow: it wrote
+   * "[open_website] search query: …" one time and a bare "search query: …" the
+   * next, and the second slipped through. What the USER said is the stable
+   * signal — "search for", "pull up", "play me", "draw" cannot be satisfied by
+   * talking, so a reply with no tool call at all is a failure however it is
+   * worded.
+   */
+  const wantsAction = /(search|look ?up|google|find (me |out )?|open|pull up|bring up|show me|put .* on (the )?screen|play|watch|draw|paint|generate|make me a picture)/i
+    .test(last.content)
+  // Tool calls that actually did something, as opposed to turn control.
+  let didSomething = false
 
   // Set when the model asks for something to be put on screen (open_website /
   // play_video). Only the last one survives — the dashboard shows one window.
@@ -857,17 +871,21 @@ router.post('/', async (req: Request, res: Response) => {
         // Telling it plainly, once, and asking again is far more reliable than
         // any amount of instruction in the system prompt, because the model can
         // see its own mistake in context.
-        if (!nudged && rawText !== text && round < MAX_TOOL_ROUNDS) {
+        const askedAndDidNothing = wantsAction && !didSomething
+        if (!nudged && (rawText !== text || askedAndDidNothing) && round < MAX_TOOL_ROUNDS) {
           nudged = true
-          console.warn('[chat] nudging the model to make the tool call properly rather than write it')
+          console.warn(
+            `[chat] nudging — ${rawText !== text ? 'wrote a tool call as text' : 'asked for an action but called no tool'}`,
+          )
           messages.push({ role: 'assistant', content: rawText })
           messages.push({
             role: 'user',
             content:
-              'STOP. You wrote the name of a tool in your reply instead of calling it, so nothing ' +
-              'happened — no page opened, no search ran. Do it again properly: CALL the tool through ' +
-              'the tool interface now. If you do not actually need a tool, answer in one short ' +
-              'sentence and do not mention any tool name.',
+              'STOP — nothing actually happened. You described an action instead of performing it: ' +
+              'no page opened, no search ran, nothing was drawn. Saying it, or writing a tool name or ' +
+              'a query in your reply, does NOT run anything. Do it now by CALLING the right tool ' +
+              'through the tool interface. If no tool can do what was asked, say so plainly in one ' +
+              'short sentence and do not pretend it is done.',
           })
           continue
         }
@@ -906,6 +924,7 @@ router.post('/', async (req: Request, res: Response) => {
 
         // Turn-control tools flip the mic flag for the response and feed back a
         // short ACK so the model continues to its final spoken reply.
+        if (name !== 'end_conversation' && name !== 'keep_listening') didSomething = true
         if (name === 'end_conversation') {
           keepListening = false
           // The silence is produced HERE rather than by asking the model to
