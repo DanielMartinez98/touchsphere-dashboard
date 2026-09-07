@@ -60,6 +60,7 @@ console.log('[startup] ELEVENLABS_API_KEY    :',
   : '✓ set')
 console.log('[startup] OLLAMA_URL            :', process.env['OLLAMA_URL']           ?? 'http://host.docker.internal:11434 (default)')
 console.log('[startup] OLLAMA_MODEL          :', process.env['OLLAMA_MODEL']         ?? 'gemma3 (default)')
+console.log('[startup] OLLAMA_NUM_CTX        :', process.env['OLLAMA_NUM_CTX'] ?? '32768 (default)')
 console.log('[startup] OLLAMA_API_KEY        :', process.env['OLLAMA_API_KEY']       ? '✓ set' : '— not set (no auth header)')
 console.log('[startup] YOUTUBE_API_KEY       :', process.env['YOUTUBE_API_KEY']      ? '✓ set' : '— not set (video search falls back to scraping)')
 console.log('[startup] NOTION_API_KEY        :', process.env['NOTION_API_KEY']       ? '✓ set' : '— not set (Notion widget disabled)')

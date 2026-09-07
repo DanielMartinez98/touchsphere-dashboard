@@ -314,6 +314,31 @@ const WEB_TOOLS = WEB_SEARCH_ENABLED ? [
   },
 ] : []
 
+/**
+ * THE most important number in this file, for the same reason it is in
+ * guide-generator.ts: Ollama defaults `num_ctx` to 4096 tokens and discards
+ * the OVERFLOW FROM THE FRONT — which is where the system prompt and the tool
+ * definitions are.
+ *
+ * Measured on this dashboard: the system prompt is ~3,700 tokens and the 53
+ * tool schemas are ~10,000 more, so a request starts at ~13,700 tokens before
+ * a single word is spoken. At the default, two thirds of that is thrown away
+ * and what reaches the model is a truncated tail with no instructions and no
+ * tools — which is exactly what "she stopped doing things" looks like from the
+ * outside. Nothing failed and nothing was logged; the model simply never saw
+ * the tools.
+ *
+ * It never bit while OLLAMA_URL pointed at Ollama's hosted service, which
+ * serves the model's full context regardless. Moving to the local box is what
+ * exposed it.
+ *
+ * 32k leaves room for the prompt, the tools, twenty turns of history and a
+ * reply. gemma4 handles 131k; the cost of a larger window is KV-cache VRAM on
+ * a card ComfyUI is also using, so this is the smallest number that is
+ * comfortably past the cliff rather than the largest that fits.
+ */
+const NUM_CTX = Number(process.env['OLLAMA_NUM_CTX'] ?? 32768)
+
 // ── Turn-control tools ────────────────────────────────────────────────────
 // The model decides explicitly whether the mic reopens for another turn by
 // calling one of these (instead of the previous '?' heuristic). Default is
@@ -526,6 +551,9 @@ async function endConversation(history: ChatMessage[], finalReply: string): Prom
         stream: false,
         messages: summarizerMessages,
         ...(OLLAMA_THINK !== null ? { think: OLLAMA_THINK } : {}),
+        // A whole conversation goes in here; the default window would cut the
+        // start of it off, which is the half worth summarising.
+        options: { num_ctx: NUM_CTX },
       }),
     }).finally(() => clearTimeout(timer))
     if (!res.ok) {
@@ -573,6 +601,8 @@ async function callOllama(messages: ChatMessage[]): Promise<OllamaResponse> {
     }
     if (TOOLS.length > 0) body['tools'] = TOOLS
     if (OLLAMA_THINK !== null) body['think'] = OLLAMA_THINK
+    // See NUM_CTX. Without this the tools are silently truncated away.
+    body['options'] = { num_ctx: NUM_CTX }
 
     const upstream = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
       method: 'POST',

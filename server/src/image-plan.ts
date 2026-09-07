@@ -328,7 +328,9 @@ async function askPlanner(image: Buffer, request: string, tools: PlanMode[], sty
             images: [image.toString('base64')],
           },
         ],
-        options: { temperature: 0.3, num_predict: 900 },
+        // The planner's system prompt is ~2,400 tokens before the picture;
+        // the 4096 default leaves almost nothing for the answer.
+        options: { num_ctx: 16384, temperature: 0.3, num_predict: 900 },
       }),
     })
     if (!res.ok) {

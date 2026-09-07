@@ -280,7 +280,9 @@ export async function improvePrompt(prompt: string, style: StyleFacts): Promise<
         // Warmer than the guide generator's 0.3: this is a creative rewrite
         // rather than structured extraction, and a cold model returns the input
         // almost verbatim, which makes the whole feature look broken.
-        options: { temperature: 0.7, num_predict: 400 },
+        // num_ctx for the same reason as chat.ts: Ollama's 4096 default
+        // truncates from the front, and the front is the instructions.
+        options: { num_ctx: 8192, temperature: 0.7, num_predict: 400 },
       }),
     })
 
@@ -384,7 +386,8 @@ export async function composeRedrawPrompt(
         ],
         // Cooler than the improver's 0.7: this is description, not invention,
         // and the whole point is fidelity to what is in the picture.
-        options: { temperature: 0.4, num_predict: 500 },
+        // A picture rides in this one, so the window has to hold it too.
+        options: { num_ctx: 8192, temperature: 0.4, num_predict: 500 },
       }),
     })
 
@@ -455,7 +458,8 @@ export async function locateBox(image: Buffer, what: string): Promise<Box | null
           },
           { role: 'user', content: `Locate: ${what}`, images: [image.toString('base64')] },
         ],
-        options: { temperature: 0, num_predict: 120 },
+        // locateBox is shown a picture too — same window as the others.
+        options: { num_ctx: 8192, temperature: 0, num_predict: 120 },
       }),
     })
     if (!res.ok) { console.warn(`[image-prompt] locate ${res.status}`); return null }
