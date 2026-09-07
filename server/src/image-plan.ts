@@ -38,7 +38,9 @@ import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
 
-const OLLAMA_URL     = process.env['OLLAMA_URL']     ?? 'http://host.docker.internal:11434'
+// The planner is a picture-side call: same box as the improver and the vision
+// composer (see image-prompt.ts for why that is not the chat's URL).
+const OLLAMA_URL     = process.env['OLLAMA_IMAGE_URL'] ?? process.env['OLLAMA_URL'] ?? 'http://host.docker.internal:11434'
 const OLLAMA_API_KEY = process.env['OLLAMA_API_KEY'] ?? ''
 const PLAN_TIMEOUT_MS = Number(process.env['OLLAMA_IMAGE_TIMEOUT_MS'] ?? 45_000) * 2
 /** Per step. A cold FLUX render with segmentation in front of it is ~2 min; this is a wedge guard. */

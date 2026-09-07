@@ -41,9 +41,21 @@
 import fs from 'fs'
 import path from 'path'
 
-const OLLAMA_URL     = process.env['OLLAMA_URL']     ?? 'http://host.docker.internal:11434'
+// Where the PICTURE-side models live — the improver, the vision composer, the
+// region box finder and (in image-plan.ts) the edit planner. Separate from the
+// chat's OLLAMA_URL because the two want different places: the conversation
+// wants the cloud model's quality and nobody minds where a prompt rewrite
+// runs, while every one of these calls sits inside a render that is already
+// spending the GPU box's time — and the cloud's per-session usage limit is
+// far better spent on talking than on rewriting "a cat in a hat". Defaults to
+// OLLAMA_URL so a setup with one Ollama is unchanged.
+//   OLLAMA_IMAGE_URL=http://<gpu-box>:11434
+const OLLAMA_URL     = process.env['OLLAMA_IMAGE_URL'] ?? process.env['OLLAMA_URL'] ?? 'http://host.docker.internal:11434'
 const OLLAMA_MODEL   = process.env['OLLAMA_MODEL']   ?? 'gemma3'
 const OLLAMA_API_KEY = process.env['OLLAMA_API_KEY'] ?? ''
+
+/** Where the picture-side model calls go — for the startup log and Settings. */
+export function imageModelUrl(): string { return OLLAMA_URL }
 
 /** The model that rewrites prompts. See the header for why it is not the chat one. */
 const ENV_MODEL = process.env['OLLAMA_IMAGE_MODEL'] ?? ''

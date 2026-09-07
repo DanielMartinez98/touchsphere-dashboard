@@ -61,6 +61,13 @@ console.log('[startup] ELEVENLABS_API_KEY    :',
 console.log('[startup] OLLAMA_URL            :', process.env['OLLAMA_URL']           ?? 'http://host.docker.internal:11434 (default)')
 console.log('[startup] OLLAMA_MODEL          :', process.env['OLLAMA_MODEL']         ?? 'gemma3 (default)')
 console.log('[startup] OLLAMA_NUM_CTX        :', process.env['OLLAMA_NUM_CTX'] ?? '32768 (default)')
+console.log('[startup] chat fallback         :', process.env['OLLAMA_FALLBACK_URL']
+  ? `${process.env['OLLAMA_FALLBACK_MODEL'] ?? process.env['OLLAMA_MODEL']} at ${process.env['OLLAMA_FALLBACK_URL']}`
+  : '— none (a cloud quota error is a failed reply)')
+console.log('[startup] picture-side models   :', `${process.env['OLLAMA_IMAGE_MODEL'] || process.env['OLLAMA_MODEL'] || 'gemma3'} (improver, planner)` +
+  ` / ${process.env['OLLAMA_VISION_MODEL'] || process.env['OLLAMA_IMAGE_MODEL'] || process.env['OLLAMA_MODEL'] || 'gemma3'} (vision)` +
+  ` at ${process.env['OLLAMA_IMAGE_URL'] ?? process.env['OLLAMA_URL'] ?? 'http://host.docker.internal:11434'}` +
+  (process.env['OLLAMA_IMAGE_URL'] ? '' : ' (same as chat — set OLLAMA_IMAGE_URL to move them)'))
 console.log('[startup] OLLAMA_API_KEY        :', process.env['OLLAMA_API_KEY']       ? '✓ set' : '— not set (no auth header)')
 console.log('[startup] YOUTUBE_API_KEY       :', process.env['YOUTUBE_API_KEY']      ? '✓ set' : '— not set (video search falls back to scraping)')
 console.log('[startup] NOTION_API_KEY        :', process.env['NOTION_API_KEY']       ? '✓ set' : '— not set (Notion widget disabled)')
