@@ -316,6 +316,27 @@ router.get('/debug', (_req: Request, res: Response) => {
   })
 })
 
+// POST /api/system/client-log — a line from a browser's console, into this log.
+//
+// The kiosk is an Electron window on a Pi with no keyboard, and its console
+// was unreachable: a spoken reply that stopped half-way left no trace anywhere
+// but the screen. The voice loop now reports its milestones here (reply
+// received, first audio, a clip that failed, the turn ending and why), so
+// `docker logs` tells the whole story of a turn from both ends.
+const CLIENT_LOG_MAX = 400
+router.post('/client-log', (req: Request, res: Response) => {
+  const body = req.body as { role?: unknown; level?: unknown; message?: unknown }
+  const role = typeof body.role === 'string' ? body.role.slice(0, 16) : 'client'
+  const level = body.level === 'warn' || body.level === 'error' ? body.level : 'info'
+  const message = typeof body.message === 'string' ? body.message.replace(/\s+/g, ' ').slice(0, CLIENT_LOG_MAX) : ''
+  if (!message) { res.status(400).json({ error: 'message is required' }); return }
+  const line = `[client:${role}] ${message}`
+  if (level === 'error') console.error(line)
+  else if (level === 'warn') console.warn(line)
+  else console.log(line)
+  res.json({ ok: true })
+})
+
 // POST /api/system/restart  — broadcast reload event to all connected clients.
 // The server itself keeps running; each browser tab reloads itself.
 router.post('/restart', (_req: Request, res: Response) => {

@@ -16,6 +16,8 @@ const FALLBACK_REPLIES = [
 ]
 
 // localStorage keys for the selected I/O devices (kept in sync by useAudioDevices).
+import { clientLog } from '../utils/clientLog'
+
 const LS_INPUT_KEY  = 'ts_audio_input_device'
 const LS_OUTPUT_KEY = 'ts_audio_output_device'
 
@@ -150,9 +152,10 @@ let currentClipDone: (() => void) | null = null
 let playToken = 0
 
 /** Stop playback immediately and invalidate any in-flight reply sequence. */
-function haltPlayback() {
+function haltPlayback(reason = 'unspecified') {
   playToken++
   if (currentAudio) {
+    clientLog('warn', `playback halted mid-clip (${reason}) at ${currentAudio.currentTime.toFixed(1)}s of ${isFinite(currentAudio.duration) ? currentAudio.duration.toFixed(1) : '?'}s`)
     try { currentAudio.pause() } catch { /* ignore */ }
     currentAudio = null
   }
@@ -183,7 +186,10 @@ function playClip(objectUrl: string): Promise<void> {
       resolve()
     }
     audio.onended = finish
-    audio.onerror = () => { console.warn('[voice] TTS audio error'); finish() }
+    audio.onerror = () => {
+      clientLog('warn', `a reply clip failed to play (media error ${audio.error?.code ?? '?'}: ${audio.error?.message ?? ''}) — skipping it`)
+      finish()
+    }
 
     currentAudio = audio
     currentClipDone = finish
@@ -212,7 +218,7 @@ function playClip(objectUrl: string): Promise<void> {
         if (currentAudio !== audio) return
         await audio.play()
       } catch (err) {
-        console.warn('[voice] TTS playback failed:', err)
+        clientLog('warn', `a reply clip could not start: ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`)
         finish()
       }
     })()
@@ -220,7 +226,7 @@ function playClip(objectUrl: string): Promise<void> {
 }
 
 async function speakText(text: string, onFirstAudio: () => void, onEnd: () => void, cues?: AvatarCue[]) {
-  haltPlayback()                 // stop any in-flight reply so they don't pile up
+  haltPlayback('a new reply started')   // stop any in-flight reply so they don't pile up
   const token = playToken
   const chunks = splitForSpeech(text)
 
@@ -276,6 +282,7 @@ async function speakText(text: string, onFirstAudio: () => void, onEnd: () => vo
       pending[j]?.then(u => URL.revokeObjectURL(u)).catch(() => {})
     }
   }
+  let spoken = 0
   try {
     prefetch(0)
     prefetch(1)
@@ -284,12 +291,21 @@ async function speakText(text: string, onFirstAudio: () => void, onEnd: () => vo
       try {
         url = await pending[i]!
       } catch (err) {
-        console.warn(`[voice] TTS chunk ${i + 1}/${chunks.length} failed:`, err)
-        abandonFrom(i + 1)
-        break                    // speak what we have rather than nothing
+        // One more go: a single dropped connection used to END THE REPLY here
+        // — the rest of the sentences were never spoken and the mic opened as
+        // if she had finished, which from the couch is her stopping mid-answer.
+        clientLog('warn', `reply clip ${i + 1}/${chunks.length} failed to fetch (${err instanceof Error ? err.message : String(err)}) — retrying once`)
+        try {
+          pending[i] = fetchClip(chunks[i]!)
+          url = await pending[i]!
+        } catch (err2) {
+          clientLog('warn', `reply clip ${i + 1}/${chunks.length} failed again (${err2 instanceof Error ? err2.message : String(err2)}) — skipping that sentence`)
+          if (token !== playToken) { abandonFrom(i + 1); return }
+          continue               // the next sentence, not the end of the turn
+        }
       }
       if (token !== playToken) { URL.revokeObjectURL(url); abandonFrom(i + 1); return }
-      if (i === 0) console.log(`[voice] first audio in ${Math.round(performance.now() - t0)}ms (${chunks.length} chunks)`)
+      if (i === 0) clientLog('info', `first audio in ${Math.round(performance.now() - t0)}ms (${chunks.length} chunks, ${text.length} chars)`)
 
       // Top the pipeline back up before playing, so the wait for upcoming
       // chunks happens underneath the audio the user is already hearing.
@@ -299,13 +315,17 @@ async function speakText(text: string, onFirstAudio: () => void, onEnd: () => vo
       announce()
       fireCuesFor(i)
       await playClip(url)
+      spoken++
       if (token !== playToken) { abandonFrom(i + 1); return }
     }
   } finally {
     if (token === playToken) {
       announce()   // no audio ever played — reveal the text anyway
       resetLipSync()
+      clientLog('info', `reply finished: ${spoken}/${chunks.length} clips played in ${Math.round(performance.now() - t0)}ms`)
       onEnd()
+    } else {
+      clientLog('info', `reply abandoned after ${spoken}/${chunks.length} clips`)
     }
   }
 }
@@ -594,7 +614,7 @@ export function useVoice(): VoiceState {
         setIsTranscribing(false)
       }
       setTranscript(text)
-      console.log('[voice] transcript:', text)
+      clientLog('info', `transcript (${Math.round(blob.size / 1024)} KB of audio): "${text.slice(0, 160)}"`)
 
       // Treat very short or punctuation-only transcripts as no-speech. The
       // server already strips audio-event tags, but Scribe can still emit a
@@ -627,7 +647,7 @@ export function useVoice(): VoiceState {
       ].slice(-MAX_HISTORY_TURNS)
       const { text: replyText, keepListening: wantFollowUp, display } =
         await fetchReply(historyRef.current, isOpeningTurn)
-      console.log(`[voice] reply: "${replyText}" keepListening=${wantFollowUp}`)
+      clientLog('info', `reply (${replyText.length} chars, keepListening=${wantFollowUp}): "${replyText.slice(0, 160)}"`)
       historyRef.current = [
         ...historyRef.current,
         { role: 'assistant', content: replyText } as ChatTurn,
@@ -657,10 +677,11 @@ export function useVoice(): VoiceState {
         // tool calls. If it didn't opt in to another turn, end the conversation
         // — the next wake-word starts fresh.
         if (!wantFollowUp) {
-          console.log('[voice] assistant ended the conversation (no keep_listening)')
+          clientLog('info', 'conversation ended — the assistant did not keep listening')
           historyRef.current = []
           return
         }
+        clientLog('info', `reopening the mic for a follow-up in ${POST_TTS_GRACE_MS}ms`)
         // Grace delay so speaker tail / room reverb doesn't trigger VAD on the
         // freshly-reopened mic. Also gives React time to flush setIsSpeaking
         // and re-bind startListeningRef to the latest closure (the guard
@@ -715,6 +736,7 @@ export function useVoice(): VoiceState {
 
       // Follow-up turn: if the user never spoke within the grace window, abort.
       if (isFollowUp && !sawSpeech && elapsedSinceStart > FOLLOWUP_NO_SPEECH_MS) {
+        clientLog('info', 'follow-up: nothing said within the grace window — ending the conversation')
         stopRecording(true)
         return
       }
@@ -757,7 +779,8 @@ export function useVoice(): VoiceState {
   // thinking loop, drop out of speaking/thinking, reset the volume meter, and
   // clear history so the next wake-word starts fresh.
   const stopSpeaking = useCallback(() => {
-    haltPlayback()
+    clientLog('info', 'Stop tapped — reply cut off by the user')
+    haltPlayback('stop button')
     stopThinkingSound()
     resetLipSync()
     setIsSpeaking(false)
@@ -789,7 +812,7 @@ export function useVoice(): VoiceState {
       cleanup()
       stopThinkingSound()
       historyRef.current = []
-      haltPlayback()
+      haltPlayback('voice hook unmounted')
     }
   }, [cleanup])
 

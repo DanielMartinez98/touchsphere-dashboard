@@ -1020,6 +1020,15 @@ router.post('/', async (req: Request, res: Response) => {
         const reply = endSilently
           ? ''
           : (text || lastSpoken || "I'm here, but I didn't catch a reply that time.")
+        // A reply that ENDS ON A QUESTION wants an answer. The closing offer
+        // depends on the model calling keep_listening beside it, and the
+        // fallback model asks "want me to show you a video, or anything else?"
+        // and then hangs up — a question nobody can answer is worse than no
+        // question. The spoken words are the truth here, not the tool call.
+        if (!keepListening && !endSilently && /\?\s*(\[[a-z _-]+\]\s*)*$/i.test(reply.trim())) {
+          console.log('[chat] the reply ends on a question — keeping the mic open for the answer')
+          keepListening = true
+        }
         console.log(`[chat] ← reply="${reply.slice(0, 80)}${reply.length > 80 ? '…' : ''}" rounds=${round + 1} changed=[${[...changed].join(',')}] keepListening=${keepListening}${display ? ` display=${display.kind}` : ''}${answeredBy ? ` by=${answeredBy}` : ''}`)
         // Conversation is ending — park the transcript for the next 12h and
         // kick off a background summary. Fire-and-forget so the user gets their
