@@ -382,6 +382,35 @@ function stripWrittenToolCalls(text: string, toolNames: string[]): string {
   return out.replace(/[ 	]{2,}/g, ' ').replace(/\s+([.,!?;:])/g, '$1').replace(/\s{2,}/g, ' ').trim()
 }
 
+
+/**
+ * What the user plainly asked to be PUT ON SCREEN, if anything.
+ *
+ * The last resort when the model will not call the tool. Asking it again does
+ * not work — an 8B model apologises ("you are absolutely right, I promise I
+ * will do better") and still calls nothing — so the server stops negotiating
+ * and performs the obvious action itself.
+ *
+ * Deliberately narrow: only the two verbs that are unambiguous about wanting
+ * something on the screen, and only when the model called no tool at all. It
+ * is better to open roughly the right page than to answer a request to open a
+ * page by talking about it.
+ */
+function fallbackScreenAction(said: string): { tool: 'play_video' | 'open_website'; query: string } | null {
+  const q = said
+    // Strip the asking, keep the subject.
+    .replace(/^(uh+|um+|hey|ok(ay)?|so)\b[,\s]*/gi, '')
+    .replace(/\b(please|can you|could you|would you|i want you to|i'd like you to)\b/gi, ' ')
+    .replace(/\b(search (the web )?(for|about)?|look ?up|google|find (me )?(a |an |the )?|open|pull up|bring up|show me|put (it |that )?on (the )?screen|display)\b/gi, ' ')
+    .replace(/\b(a |an |the )?(page|website|site|video|clip)\b(\s+(about|on|for|of))?/gi, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+    .replace(/[?.!,]+$/, '')
+  if (q.length < 2) return null
+  const wantsVideo = /\b(video|clip|youtube|watch|play me|trailer)\b/i.test(said)
+  return { tool: wantsVideo ? 'play_video' : 'open_website', query: q.slice(0, 120) }
+}
+
 // ── Turn-control tools ────────────────────────────────────────────────────
 // The model decides explicitly whether the mic reopens for another turn by
 // calling one of these (instead of the previous '?' heuristic). Default is
@@ -797,7 +826,7 @@ router.post('/', async (req: Request, res: Response) => {
    * talking, so a reply with no tool call at all is a failure however it is
    * worded.
    */
-  const wantsAction = /(search|look ?up|google|find (me |out )?|open|pull up|bring up|show me|put .* on (the )?screen|play|watch|draw|paint|generate|make me a picture)/i
+  const wantsAction = /\b(search|look ?up|google|find (me |out )?|open|pull up|bring up|show me|put .* on (the )?screen|play|watch|draw|paint|generate|make me a picture)\b/i
     .test(last.content)
   // Tool calls that actually did something, as opposed to turn control.
   let didSomething = false
@@ -872,6 +901,26 @@ router.post('/', async (req: Request, res: Response) => {
         // any amount of instruction in the system prompt, because the model can
         // see its own mistake in context.
         const askedAndDidNothing = wantsAction && !didSomething
+
+        // The nudge has been spent and it STILL called nothing. Do it here.
+        if (nudged && askedAndDidNothing && !display) {
+          const fallback = fallbackScreenAction(last.content)
+          if (fallback) {
+            console.warn(`[chat] the model would not call a tool — doing it here: ${fallback.tool}("${fallback.query}")`)
+            const done = await runBrowseTool(fallback.tool, { query: fallback.query })
+            if (done?.display) {
+              display = done.display
+              const said = (text || lastSpoken).trim()
+              const reply = said && !/\b(sorry|apolog|i will do better|you are absolutely right)\b/i.test(said)
+                ? said
+                : `Putting that on screen now.`
+              console.log(`[chat] ← reply="${reply.slice(0, 80)}" (server-side ${fallback.tool}) keepListening=${keepListening}`)
+              if (!keepListening) void endConversation(messages, reply)
+              return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed], keepListening, display })
+            }
+          }
+        }
+
         if (!nudged && (rawText !== text || askedAndDidNothing) && round < MAX_TOOL_ROUNDS) {
           nudged = true
           console.warn(
