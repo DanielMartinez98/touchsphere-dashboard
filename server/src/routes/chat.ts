@@ -113,10 +113,11 @@ const SYSTEM_PROMPT_BODY =
   "anything else?\" \u2014 and call keep_listening, so the microphone reopens for the answer. " +
   "Vary the wording; keep it to a few words at the end of what you were already saying. " +
   "THEN, on the next turn, if their answer is NO or anything equivalent (\"no\", \"nope\", \"that's all\", " +
-  "\"nothing\", \"I'm good\", \"no thanks\", \"that's it\", \"we're done\"), call end_conversation and reply " +
-  "with EXACTLY an empty string \u2014 no goodbye, no \"okay\", no \"let me know\", nothing at all. Say nothing " +
-  "and stop. That silence is deliberate: they said they were done, and one more pleasantry is one more " +
-  "thing to sit through. If their answer is YES or a new request, handle it normally. " +
+  "\"nothing\", \"I'm good\", \"no thanks\", \"that's it\", \"we're done\"), call end_conversation with " +
+  "silent set to true. The TOOL produces the silence — whatever text you write on that turn is " +
+  "discarded — so there is no goodbye and nothing more to sit through. NEVER set silent on any " +
+  "other turn: every other reply must have words in it. If their answer is YES or a new request, " +
+  "handle it normally. " +
   "Call end_conversation WITHOUT the offer only when: " +
   "(a) they already declined this turn (see above), " +
   "(b) they said goodbye, thanks-that's-all, or otherwise closed it themselves, " +
@@ -352,12 +353,22 @@ const TURN_CONTROL_TOOLS = [
       name: 'end_conversation',
       description:
         'Signal that the conversation is COMPLETE and the microphone should NOT reopen. ' +
-        'Call this when the user has just DECLINED your offer of more help (reply with an empty ' +
-        'string — say nothing at all), when they said goodbye or asked you to stop, or when ' +
+        'Call this when the user has just DECLINED your offer of more help, when they said ' +
+        'goodbye or asked you to stop, or when something else is about to speak. ' +
         'something else is about to speak. ' +
         'Otherwise prefer keep_listening with a short "anything else?" — see THE CLOSING OFFER. ' +
         'Call it BEFORE producing your final spoken reply, in the same turn.',
-      parameters: { type: 'object', properties: {} },
+      parameters: {
+        type: 'object',
+        properties: {
+          silent: {
+            type: 'boolean',
+            description:
+              'True ONLY when the user has just declined more help: nothing at all is spoken and ' +
+              'the conversation simply stops, which is what they asked for. Leave it out otherwise.',
+          },
+        },
+      },
     },
   },
   {
@@ -724,6 +735,8 @@ router.post('/', async (req: Request, res: Response) => {
   // true when the model calls keep_listening; flipped back to false if it
   // later calls end_conversation in the same turn.
   let keepListening = false
+  // Set by end_conversation's `silent` argument: the reply is deliberately empty.
+  let endSilently = false
 
   // Set when the model asks for something to be put on screen (open_website /
   // play_video). Only the last one survives — the dashboard shows one window.
@@ -760,6 +773,8 @@ router.post('/', async (req: Request, res: Response) => {
               `was sent; if that is not false, set OLLAMA_THINK=false. See ollama/ollama#15288. ` +
               `thinking="${thinking.slice(0, 200).replace(/\s+/g, ' ')}…"`,
             )
+          } else if (endSilently) {
+            console.log('[chat] ending silently — the user declined more help')
           } else {
             console.warn(
               `[chat] upstream returned an EMPTY final message on round ${round + 1} — ` +
@@ -769,7 +784,9 @@ router.post('/', async (req: Request, res: Response) => {
             )
           }
         }
-        const reply = text || "I'm here, but I didn't catch a reply that time."
+        // An intentional silence is not a missing reply: only fall back to the
+        // apology when the model was meant to say something and didn't.
+        const reply = endSilently ? '' : (text || "I'm here, but I didn't catch a reply that time.")
         console.log(`[chat] ← reply="${reply.slice(0, 80)}${reply.length > 80 ? '…' : ''}" rounds=${round + 1} changed=[${[...changed].join(',')}] keepListening=${keepListening}${display ? ` display=${display.kind}` : ''}`)
         // Conversation is ending — park the transcript for the next 12h and
         // kick off a background summary. Fire-and-forget so the user gets their
@@ -795,8 +812,21 @@ router.post('/', async (req: Request, res: Response) => {
         // short ACK so the model continues to its final spoken reply.
         if (name === 'end_conversation') {
           keepListening = false
-          console.log('[chat:tool] end_conversation \u2014 mic will stay closed')
-          messages.push({ role: 'tool', content: 'Acknowledged. The microphone will stay closed after your reply.', tool_name: name })
+          // The silence is produced HERE rather than by asking the model to
+          // write an empty string. Telling a model to output nothing is a
+          // fragile instruction: an 8B one began returning empty replies on
+          // unrelated turns once that was added, and an empty reply is
+          // indistinguishable from the model having failed — which is what
+          // the fallback sentence further down exists to catch.
+          if (args['silent'] === true) endSilently = true
+          console.log(`[chat:tool] end_conversation — mic will stay closed${endSilently ? ', silently' : ''}`)
+          messages.push({
+            role: 'tool',
+            tool_name: name,
+            content: endSilently
+              ? 'Acknowledged. Nothing will be spoken and the microphone stays closed. You may stop here.'
+              : 'Acknowledged. The microphone will stay closed after your reply.',
+          })
           continue
         }
         if (name === 'keep_listening') {
