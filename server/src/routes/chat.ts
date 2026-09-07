@@ -102,7 +102,7 @@ const SYSTEM_PROMPT_BODY =
   "Faces: [happy] [excited] [shy] [wink] [sad] [angry] [surprised] [calm] [shocked]. " +
   "Use 0-2 cues per reply, only where they feel natural \u2014 a [wave] on a greeting, a [think] before a tricky answer, " +
   "a [cheer] for good news. Only these exact words in brackets; never invent new ones, never mention the cues aloud. " +
-  "A TOOL NAME IN BRACKETS IS NOT A TOOL CALL: writing [open_website] or [get_weather] does nothing at all — " +
+  "Never put a TOOL NAME in brackets, braces or code: that is not a tool call, it does nothing at all — " +
   "it is read out as text and the tool never runs. The same goes for writing a call as braces or as code. " +
   "To use a tool you must CALL it through the tool interface. Never write a tool name anywhere in your reply, " +
   "and NEVER claim you have done something unless the tool actually ran and returned a result to you. " +
@@ -783,6 +783,10 @@ router.post('/', async (req: Request, res: Response) => {
   let endSilently = false
   // The last thing the model actually said, across every round.
   let lastSpoken = ''
+  // Whether we have already told the model that writing a tool call is not
+  // calling one. Once only: a model that ignores the correction twice is not
+  // going to get it on the third go, and the user is waiting.
+  let nudged = false
 
   // Set when the model asks for something to be put on screen (open_website /
   // play_video). Only the last one survives — the dashboard shows one window.
@@ -842,6 +846,32 @@ router.post('/', async (req: Request, res: Response) => {
             )
           }
         }
+        // WROTE A TOOL CALL INSTEAD OF MAKING ONE — try once more.
+        //
+        // This is the failure the stripper only hid: the model narrates
+        // "[open_website] search query: …" as text, no tool runs, and the
+        // reply then claims the page is on screen. It happens on rambling
+        // voice input far more than on tidy typed requests, which is why it
+        // survived a clean benchmark.
+        //
+        // Telling it plainly, once, and asking again is far more reliable than
+        // any amount of instruction in the system prompt, because the model can
+        // see its own mistake in context.
+        if (!nudged && rawText !== text && round < MAX_TOOL_ROUNDS) {
+          nudged = true
+          console.warn('[chat] nudging the model to make the tool call properly rather than write it')
+          messages.push({ role: 'assistant', content: rawText })
+          messages.push({
+            role: 'user',
+            content:
+              'STOP. You wrote the name of a tool in your reply instead of calling it, so nothing ' +
+              'happened — no page opened, no search ran. Do it again properly: CALL the tool through ' +
+              'the tool interface now. If you do not actually need a tool, answer in one short ' +
+              'sentence and do not mention any tool name.',
+          })
+          continue
+        }
+
         // An intentional silence is not a missing reply: only fall back to the
         // apology when the model was meant to say something and didn't.
         const reply = endSilently
