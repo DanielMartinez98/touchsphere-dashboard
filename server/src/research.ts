@@ -94,14 +94,38 @@ export function markdownToText(md: string): string {
 }
 
 /**
- * The page's text without this server fetching it: what hosted search already
- * returned for that URL, else Ollama's hosted fetch. Null when neither has it
- * (no key, or a page the hosted side can't read either), never a throw.
+ * The page's text without this server fetching it, tried three ways: what
+ * hosted search already returned for that URL; Ollama's hosted fetch; and
+ * finally a hosted search scoped to the site for the page's own name. The
+ * third exists for the Fandom wikis, which refuse this server (Cloudflare)
+ * AND the hosted fetch (404) but come back, full text and all, as a search
+ * hit — and game questions land on a Fandom wiki more than anywhere else.
+ * Null when none of it worked (no key, or nothing readable), never a throw.
  */
 export async function fetchPageHosted(url: string): Promise<HostedPage | null> {
-  const cached = hostedPages.get(pageKey(url))
+  const key = pageKey(url)
+  const cached = hostedPages.get(key)
   if (cached) return cached
   if (!OLLAMA_API_KEY) return null
+
+  const fetched = await fetchViaOllama(url)
+  if (fetched) return fetched
+
+  const words = pathWords(url)
+  const host = hostOf(url)
+  if (!words || !host) return null
+  const hits = await searchViaOllama(`site:${host} ${words}`, 5)   // remembers every hit
+  const now = hostedPages.get(key)
+  if (now) return now
+  // The same page under a slightly different address — a redirect target, a
+  // capitalised slug, a trailing section — but never a different page on the
+  // same site: a wrong article with the right title on it is worse than the
+  // honest "couldn't read it".
+  const twin = hits.find(h => hostOf(h.url) === host && lastSegment(h.url) === lastSegment(url))
+  return twin ? hostedPages.get(pageKey(twin.url)) ?? null : null
+}
+
+async function fetchViaOllama(url: string): Promise<HostedPage | null> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT_MS)
   try {
@@ -124,6 +148,24 @@ export async function fetchPageHosted(url: string): Promise<HostedPage | null> {
   } finally {
     clearTimeout(timer)
   }
+}
+
+function hostOf(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, '').toLowerCase() } catch { return '' }
+}
+
+function lastSegment(url: string): string {
+  try {
+    const segs = new URL(url).pathname.split('/').filter(Boolean)
+    return decodeURIComponent(segs[segs.length - 1] ?? '').toLowerCase().replace(/[-_+]+/g, ' ').trim()
+  } catch {
+    return ''
+  }
+}
+
+/** "/wiki/Red_Ring" → "Red Ring": the page's own name, as words a search understands. */
+function pathWords(url: string): string {
+  return lastSegment(url).replace(/\.\w{2,5}$/, '').replace(/\s+/g, ' ').trim()
 }
 
 export interface SearchHit {
