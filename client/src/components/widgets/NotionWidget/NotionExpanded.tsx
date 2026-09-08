@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ChevronLeft, Search, Folders, LayoutList, Home } from 'lucide-react'
-import type { NotionTask, NotionSchema, TaskFields, ProjectRef, TaskDbRef } from '../../../hooks/useNotion'
+import type { NotionTask, NotionSchema, TaskFields, ProjectRef, TaskDbRef, NotionErrorKind } from '../../../hooks/useNotion'
 import { useNotionClient } from '../../../hooks/useNotionClient'
 import HomeView     from './HomeView'
 import BrowseView   from './BrowseView'
@@ -17,9 +17,12 @@ interface Props {
   projects:   Record<string, ProjectRef>
   loading:    boolean
   error:      string | null
+  errorKind:  NotionErrorKind | null
+  me:         { id: string; name: string } | null
   onUpdate:   (id: string, fields: TaskFields) => void
   onCreate:   (fields: { title: string; status?: string; priority?: string; due?: string; dbId?: string }) => void
   onRefresh:  () => void
+  onRefreshSilent?: () => void
 }
 
 const TABS: { kind: 'home' | 'groups' | 'browse' | 'search'; label: string; icon: React.ReactElement }[] = [
@@ -30,7 +33,7 @@ const TABS: { kind: 'home' | 'groups' | 'browse' | 'search'; label: string; icon
 ]
 
 export default function NotionExpanded({
-  schema, schemas, taskDbs, tasks, projects, loading, error, onUpdate, onCreate, onRefresh,
+  schema, schemas, taskDbs, tasks, projects, loading, error, errorKind, me, onUpdate, onCreate, onRefresh, onRefreshSilent,
 }: Props) {
   const client = useNotionClient()
   const view   = client.current
@@ -89,10 +92,13 @@ export default function NotionExpanded({
             projects={projects}
             loading={loading}
             error={error}
+            errorKind={errorKind}
+            me={me}
             client={client}
             onUpdate={onUpdate}
             onCreate={onCreate}
             onRefresh={onRefresh}
+            onRefreshSilent={onRefreshSilent}
           />
         )}
         {view.kind === 'browse'   && <BrowseView   client={client} />}

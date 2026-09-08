@@ -72,7 +72,7 @@ console.log('[startup] picture-side models   :', `${process.env['OLLAMA_IMAGE_MO
 console.log('[startup] OLLAMA_API_KEY        :', process.env['OLLAMA_API_KEY']       ? '✓ set' : '— not set (no auth header)')
 console.log('[startup] YOUTUBE_API_KEY       :', process.env['YOUTUBE_API_KEY']      ? '✓ set' : '— not set (video search falls back to scraping)')
 console.log('[startup] NOTION_API_KEY        :', process.env['NOTION_API_KEY']       ? '✓ set' : '— not set (Notion widget disabled)')
-console.log('[startup] NOTION_DATABASE_ID    :', process.env['NOTION_DATABASE_ID']   ? '✓ set' : '— not set (Notion widget disabled)')
+console.log('[startup] NOTION_DATABASE_ID    :', process.env['NOTION_DATABASE_ID']   ? '✓ set (first choice for new tasks)' : '— not set (task databases are discovered)')
 console.log('[startup] DEFAULT_LAT/LON       :',
   (process.env['DEFAULT_LAT'] && process.env['DEFAULT_LON'])
     ? `${process.env['DEFAULT_LAT']}, ${process.env['DEFAULT_LON']}`

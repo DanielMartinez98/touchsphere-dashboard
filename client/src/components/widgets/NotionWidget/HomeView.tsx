@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { ArrowUpDown, RotateCw, Mic, Plus, Check, ChevronRight, ChevronUp, ChevronDown, CalendarDays, TriangleAlert, Folder } from 'lucide-react'
-import type { NotionTask, NotionSchema, TaskFields, ProjectRef, TaskDbRef } from '../../../hooks/useNotion'
+import type { NotionTask, NotionSchema, TaskFields, ProjectRef, TaskDbRef, NotionErrorKind } from '../../../hooks/useNotion'
 import type { NotionClient } from '../../../hooks/useNotionClient'
 import { colorFg, colorBg } from './notion-colors'
 import MiniCalendar from './MiniCalendar'
@@ -313,10 +313,16 @@ interface Props {
   projects:  Record<string, ProjectRef>
   loading:   boolean
   error:     string | null
+  errorKind: NotionErrorKind | null
+  // Who the list is filtered to; null means everyone's tasks are shown.
+  me:        { id: string; name: string } | null
   client:    NotionClient
   onUpdate:  (id: string, fields: TaskFields) => void
   onCreate:  (fields: { title: string; status?: string; priority?: string; due?: string; dbId?: string }) => void
   onRefresh: () => void
+  // The quiet refetch — no spinner — run when the panel opens, since the
+  // list on the pill may be up to a minute old.
+  onRefreshSilent?: () => void
 }
 
 function GroupsAndRecents({
@@ -393,7 +399,13 @@ function GroupsAndRecents({
   )
 }
 
-export default function HomeView({ schema, schemas, taskDbs, tasks, projects, loading, error, client, onUpdate, onCreate, onRefresh }: Props) {
+export default function HomeView({ schema, schemas, taskDbs, tasks, projects, loading, error, errorKind, me, client, onUpdate, onCreate, onRefresh, onRefreshSilent }: Props) {
+  // Opening the panel is the moment the user is about to act on the list, so
+  // it is brought current first. Deferred a tick, for the lint rule.
+  useEffect(() => {
+    const t = setTimeout(() => { onRefreshSilent?.() }, 0)
+    return () => clearTimeout(t)
+  }, [onRefreshSilent])
   // Show a source chip on rows only when more than one DB is aggregated.
   const dbTitleById = Object.fromEntries(taskDbs.map(d => [d.id, d.title]))
   const showSource  = taskDbs.length > 1
@@ -568,11 +580,30 @@ export default function HomeView({ schema, schemas, taskDbs, tasks, projects, lo
             <span className="w-9 h-9 rounded-full border-2 border-white/20 border-t-green-400 animate-spin" />
           </div>
         )}
-        {!loading && error && (
-          <div className="flex flex-col items-center gap-2 py-10 text-center">
-            <p className="text-white/55 text-base">{error}</p>
-            <p className="text-white/40 text-sm mt-1">Add NOTION_API_KEY + NOTION_DATABASE_ID to server/.env</p>
+        {!loading && error && tasks.length === 0 && (
+          <div className="flex flex-col items-center gap-2 py-10 text-center px-4">
+            <p className="text-white/70 text-base">{error}</p>
+            <p className="text-white/45 text-sm mt-1">
+              {errorKind === 'unconfigured' ? 'Add NOTION_API_KEY to the server and share your task database with the integration.'
+               : errorKind === 'auth'      ? 'The token in NOTION_API_KEY no longer works. Make a new one at notion.so/my-integrations.'
+               : errorKind === 'access'    ? 'In Notion, open the database, tap ··· → Connections, and add this integration.'
+               : errorKind === 'rate'      ? 'Too many requests in a short time. It clears itself; try again in a minute.'
+               : errorKind === 'offline'   ? 'The dashboard server is not answering. Check that it is running.'
+               : 'Tap refresh to try again.'}
+            </p>
+            <button type="button" onClick={onRefresh}
+              className="mt-3 h-11 px-5 rounded-full bg-white/10 text-white/80 text-sm font-semibold active:bg-white/15">
+              Try again
+            </button>
           </div>
+        )}
+        {!loading && error && tasks.length > 0 && (
+          <p className="text-sm text-amber-200/80 px-1">{error} · showing the last list that loaded</p>
+        )}
+        {!loading && !error && !me && schema?.peopleKey && tasks.length > 0 && (
+          <p className="text-sm text-white/40 px-1">
+            Showing everyone's tasks. Pick yourself under Settings → Notion to see only yours.
+          </p>
         )}
         {!loading && !error && allSorted.length === 0 && (
           <div className="flex flex-col items-center gap-2 py-10">

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useServerEvent } from './useServerEvents'
 
 export interface SchemaOption { id: string; name: string; color: string }
 
@@ -16,6 +17,9 @@ export interface NotionSchema {
   // filter/group tasks by project on the Home view.
   projectKey:       string | null
   projectDbId:      string | null
+  // A people property ("Assignee"), when the database has one — what the
+  // "only my tasks" filter keys on once somebody is picked in Settings.
+  peopleKey?:       string | null
 }
 
 export interface NotionTask {
@@ -55,11 +59,22 @@ export type TaskFields = Partial<{
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** What kind of failure the server reported — see classifyNotionError() on the server. */
+export type NotionErrorKind = 'unconfigured' | 'auth' | 'access' | 'rate' | 'timeout' | 'network' | 'notion' | 'offline'
+
+export class NotionApiError extends Error {
+  kind: NotionErrorKind
+  constructor(message: string, kind: NotionErrorKind) { super(message); this.kind = kind }
+}
+
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init)
+  let res: Response
+  try { res = await fetch(url, init) }
+  catch { throw new NotionApiError('The dashboard server could not be reached', 'offline') }
   if (!res.ok) {
-    const json = await res.json().catch(() => ({})) as { error?: string }
-    throw new Error(json.error ?? `HTTP ${res.status}`)
+    const json = await res.json().catch(() => ({})) as { error?: string; kind?: NotionErrorKind }
+    const kind: NotionErrorKind = res.status === 503 ? 'unconfigured' : (json.kind ?? 'notion')
+    throw new NotionApiError(json.error ?? `HTTP ${res.status}`, kind)
   }
   return res.json() as Promise<T>
 }
@@ -74,16 +89,33 @@ interface TasksResponse {
   schemas:  Record<string, NotionSchema>
   dbs:      TaskDbRef[]
   merged:   NotionSchema
+  // Who the list is filtered to, or null for everyone's tasks.
+  me?:      { id: string; name: string } | null
 }
 
-export function useNotion() {
+/**
+ * The task list, kept current.
+ *
+ * `active` is whether the Tasks corner exists right now (work mode). While it
+ * does, the list is refetched every minute, when the tab comes back into
+ * view, and whenever the server announces a change on the `notion` SSE
+ * event — which it does after every task or page edit made through this app,
+ * from any device. Before this the list was fetched once at page load and
+ * then only when a voice command or the refresh button touched it, so a task
+ * ticked in Notion on a phone stayed unticked on the wall for hours. The
+ * minute is for edits made in Notion itself, which nothing announces.
+ */
+export function useNotion(active = true) {
   const [schema,   setSchema]   = useState<NotionSchema | null>(null)
   const [schemas,  setSchemas]  = useState<Record<string, NotionSchema>>({})
   const [taskDbs,  setTaskDbs]  = useState<TaskDbRef[]>([])
   const [tasks,    setTasks]    = useState<NotionTask[]>([])
   const [projects, setProjects] = useState<Record<string, ProjectRef>>({})
+  const [me,       setMe]       = useState<{ id: string; name: string } | null>(null)
   const [loading,  setLoading]  = useState(true)
   const [error,    setError]    = useState<string | null>(null)
+  const [errorKind, setErrorKind] = useState<NotionErrorKind | null>(null)
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null)
 
   // A single /tasks call now returns everything: aggregated tasks, per-DB and
   // merged schemas, and the source DB list. Applied together on load & refresh.
@@ -93,6 +125,15 @@ export function useNotion() {
     setSchemas(t.schemas)
     setTaskDbs(t.dbs)
     setSchema(t.merged)
+    setMe(t.me ?? null)
+    setUpdatedAt(Date.now())
+    setError(null)
+    setErrorKind(null)
+  }, [])
+
+  const fail = useCallback((err: unknown) => {
+    setError(err instanceof Error ? err.message : 'Failed to load')
+    setErrorKind(err instanceof NotionApiError ? err.kind : 'notion')
   }, [])
 
   const loadAll = useCallback(async () => {
@@ -101,19 +142,37 @@ export function useNotion() {
     try {
       applyTasks(await apiFetch<TasksResponse>('/api/notion/tasks'))
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to load')
+      fail(err)
     } finally {
       setLoading(false)
     }
-  }, [applyTasks])
+  }, [applyTasks, fail])
 
+  // The quiet refetch: no spinner, and a failure keeps the last good list on
+  // screen but records why, so a corner that has been showing stale tasks
+  // for ten minutes can say so instead of looking current.
   const refreshTasks = useCallback(async () => {
     try {
       applyTasks(await apiFetch<TasksResponse>('/api/notion/tasks'))
-    } catch { /* silent background refresh */ }
-  }, [applyTasks])
+    } catch (err: unknown) {
+      fail(err)
+    }
+  }, [applyTasks, fail])
 
-  useEffect(() => { void loadAll() }, [loadAll])
+  useEffect(() => {
+    if (!active) return
+    // Deferred a tick rather than called straight out of the effect — the
+    // same shape useMail uses, for the same lint reason.
+    const first = setTimeout(() => { void loadAll() }, 0)
+    const t = setInterval(() => { void refreshTasks() }, 60_000)
+    const onVisible = () => { if (document.visibilityState === 'visible') void refreshTasks() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => { clearTimeout(first); clearInterval(t); document.removeEventListener('visibilitychange', onVisible) }
+  }, [active, loadAll, refreshTasks])
+
+  // A task ticked on the phone is ticked on the wall at once: the server
+  // announces every edit made through this app, on every device.
+  useServerEvent('notion', useCallback(() => { if (active) void refreshTasks() }, [active, refreshTasks]))
 
   // Refetch when the set of task databases changes (Browse → "Show in Tasks").
   useEffect(() => {
@@ -200,9 +259,13 @@ export function useNotion() {
     taskDbs,
     tasks,
     projects,
+    me,
     loading,
     error,
+    errorKind,
+    updatedAt,
     refresh: loadAll,
+    refreshSilent: refreshTasks,
     createTask,
     updateTask,
     archiveTask,

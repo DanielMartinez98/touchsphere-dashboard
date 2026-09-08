@@ -110,19 +110,24 @@ function App() {
   // Announcement for a guide that finished while the user was doing something
   // else — generation takes minutes, so nobody is watching the widget for it.
   const [guideReady, setGuideReady] = useState<{ itemId: string; title: string } | null>(null)
+  const { mode, hasCred, setMode, createPassword, verifyPassword, unlock } = useAppMode()
+  // Polled only while the Tasks corner exists: a rest-mode kiosk makes no
+  // Notion calls at all, the same rule the mail corner follows.
   const {
     schema:      notionSchema,
     schemas:     notionSchemas,
     taskDbs:     notionTaskDbs,
     tasks:       notionTasks,
     projects:    notionProjects,
+    me:          notionMe,
     loading:     notionLoading,
     error:       notionError,
+    errorKind:   notionErrorKind,
     refresh:     notionRefresh,
+    refreshSilent: notionRefreshSilent,
     createTask:  notionCreate,
     updateTask:  notionUpdate,
-  } = useNotion()
-  const { mode, hasCred, setMode, createPassword, verifyPassword, unlock } = useAppMode()
+  } = useNotion(mode === 'work')
   // Mail is polled only while the work corner exists, so a rest-mode kiosk
   // makes no Gmail calls at all.
   const mail = useMailUnread(mode === 'work')
@@ -457,7 +462,7 @@ function App() {
           accent={ACCENT.notion}
           isOpen={open === 'notion'}
           onToggle={() => toggle('notion')}
-          collapsed={<NotionCollapsed tasks={notionTasks} loading={notionLoading} error={notionError} />}
+          collapsed={<NotionCollapsed tasks={notionTasks} loading={notionLoading} error={notionError} errorKind={notionErrorKind} />}
           expanded={
             <NotionExpanded
               schema={notionSchema}
@@ -467,9 +472,12 @@ function App() {
               projects={notionProjects}
               loading={notionLoading}
               error={notionError}
+              errorKind={notionErrorKind}
+              me={notionMe}
               onUpdate={notionUpdate}
               onCreate={notionCreate}
               onRefresh={notionRefresh}
+              onRefreshSilent={notionRefreshSilent}
             />
           }
         />

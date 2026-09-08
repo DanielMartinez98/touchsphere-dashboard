@@ -1,9 +1,18 @@
 import { Router, Request, Response } from 'express'
-import axios from 'axios'
+import axiosLib from 'axios'
 import fs from 'fs'
 import path from 'path'
+import { broadcast } from './system'
+import { isPublicHttpUrl } from './browse'
 
 const router = Router()
+
+// Every call to Notion goes through this instance so every one of them has a
+// deadline. There are forty-odd call sites and none of them set one, which
+// meant a hung request left the widget's spinner up until the socket died —
+// and since nothing polls, nothing retried it. Ten seconds is generous for an
+// API that answers in under one; the embed proxy sets its own, shorter.
+const axios = axiosLib.create({ timeout: 10_000 })
 
 const NOTION_API     = 'https://api.notion.com/v1'
 const NOTION_VERSION = '2022-06-28'
@@ -147,10 +156,15 @@ async function discoverTaskDbIds(force = false): Promise<string[]> {
 }
 
 // The resolved list of databases whose rows appear in the Home task section.
+// Order is load-bearing: a task created with no database named lands in the
+// FIRST of these. The env-named databases come first, then the ones the user
+// added by hand, then whatever discovery found — discovery is a Notion search
+// whose order follows recent edits, and a voice-added task must not change
+// databases because a meeting note was edited this morning.
 async function getTaskDbIds(): Promise<string[]> {
   const store = readStore()
   const auto  = await discoverTaskDbIds().catch(() => [])   // tolerate search failure
-  const set   = new Set<string>([...auto, ...envTaskDbIds(), ...store.included])
+  const set   = new Set<string>([...envTaskDbIds(), ...store.included, ...auto])
   for (const ex of store.excluded) set.delete(ex)
   return Array.from(set)
 }
@@ -160,12 +174,38 @@ function tasksConfigured(): boolean {
 }
 
 // Centralised error response. Notion's API errors carry useful messages we surface.
+/**
+ * What kind of failure this was, in words the screen can act on. The pill
+ * used to say "Not configured" for all of them — an expired token, a rate
+ * limit, Notion being down, the box being offline — and the panel told the
+ * user to add keys to the env file. Each of those wants a different response
+ * from the person reading it, so each gets its own sentence and a `kind` the
+ * client can branch on.
+ */
+type NotionErrorKind = 'auth' | 'access' | 'rate' | 'timeout' | 'network' | 'notion'
+
+function classifyNotionError(err: any): { kind: NotionErrorKind; message: string; status: number } {
+  const status = err?.response?.status as number | undefined
+  const data   = err?.response?.data
+  const code   = err?.code as string | undefined
+  if (status === 401) return { kind: 'auth',    status, message: 'Notion rejected the integration token — it may have been revoked or rotated' }
+  if (status === 403) return { kind: 'access',  status, message: 'The integration is not allowed to see this — share the page or database with it in Notion' }
+  if (status === 404) return { kind: 'access',  status, message: 'Notion has no such page or database, or the integration cannot see it' }
+  if (status === 429) return { kind: 'rate',    status, message: 'Notion is rate-limiting this integration — it will recover in a minute' }
+  if (code === 'ECONNABORTED' || /timeout/i.test(String(err?.message))) {
+    return { kind: 'timeout', status: 504, message: 'Notion did not answer within 10 seconds' }
+  }
+  if (code === 'ENOTFOUND' || code === 'ECONNREFUSED' || code === 'EAI_AGAIN' || code === 'ECONNRESET') {
+    return { kind: 'network', status: 502, message: 'Notion could not be reached — is the server online?' }
+  }
+  const message = data?.message ?? err?.message ?? 'Notion returned an error'
+  return { kind: 'notion', status: status && status >= 400 && status < 600 ? status : 502, message }
+}
+
 function notionError(res: Response, err: any, fallback: string) {
-  const data    = err?.response?.data
-  const status  = err?.response?.status ?? 502
-  const message = data?.message ?? err?.message ?? fallback
-  console.error(`[notion] ${fallback}:`, data ?? err.message)
-  res.status(status >= 400 && status < 600 ? status : 502).json({ error: message })
+  const { kind, message, status } = classifyNotionError(err)
+  console.error(`[notion] ${fallback} (${kind}${err?.response?.status ? ` ${err.response.status}` : ''}): ${message}`)
+  res.status(status).json({ error: message, kind })
 }
 
 // ── Helpers shared by tasks (legacy) and universal layer ──────────────────────
@@ -492,16 +532,31 @@ router.get('/tasks', async (_req, res) => {
       } catch { /* tolerate */ }
     }))
 
-    res.json({ tasks, projects, schemas, dbs, merged: mergeSchemas(Object.values(schemas)) })
+    // `me` rides along so the screen can say "everyone's tasks" when nobody
+    // is picked and a database has an assignee property to filter on.
+    res.json({ tasks, projects, schemas, dbs, merged: mergeSchemas(Object.values(schemas)), me: readMe() })
   } catch (err) { notionError(res, err, 'Failed to fetch tasks') }
 })
 
 // Pick the database a mutation targets. Callers pass `dbId`; if it's missing or
 // not a known task DB we fall back to the first configured one.
+// A task needs a database with a Status (or done checkbox) to land in. The
+// aggregated set can legitimately contain a database with neither — the env
+// var on this server pointed at a Meetings database for months — and a task
+// created there has nowhere to be ticked and a due date that is dropped
+// without a word. So the first database WITH a status wins, in the order above,
+// and if none has one the caller gets null and says so.
 async function resolveTaskDb(dbId?: string): Promise<string | null> {
   const ids = await getTaskDbIds()
   if (dbId && ids.includes(dbId)) return dbId
-  return ids[0] ?? null
+  for (const id of ids) {
+    try {
+      const { schema } = await getDb(id)
+      if (schema.statusKey) return id
+    } catch { /* an unreachable database is not a candidate */ }
+  }
+  console.warn(`[notion] no task database with a Status property among ${ids.length} candidate(s)`)
+  return null
 }
 
 router.post('/tasks', async (req, res) => {
@@ -509,7 +564,7 @@ router.post('/tasks', async (req, res) => {
   const { title, status, priority, due, dbId } = req.body as { title?: string; status?: string; priority?: string; due?: string; dbId?: string }
   if (!title?.trim()) { res.status(400).json({ error: 'title is required' }); return }
   const targetDb = await resolveTaskDb(dbId)
-  if (!targetDb) { res.status(400).json({ error: 'no task database configured' }); return }
+  if (!targetDb) { res.status(400).json({ error: 'none of the task databases has a Status property to file a task under', kind: 'notion' }); return }
   try {
     const schema     = await getSchema(targetDb)
     const properties = buildTaskProperties(schema, { title: title.trim(), status, priority, due: due ?? null })
@@ -523,6 +578,8 @@ router.post('/tasks', async (req, res) => {
       { parent: { database_id: targetDb }, properties },
       { headers: notionHeaders() },
     )
+    console.log(`[notion] created task "${title.trim().slice(0, 60)}" in ${schema.titleKey ? (await getDb(targetDb)).title : targetDb}${due ? ` due ${due}` : ''}`)
+    broadcast('notion', { kind: 'task', op: 'create', id: data.id })
     res.status(201).json(extractTask(data, schema, targetDb))
   } catch (err) { notionError(res, err, 'Failed to create task') }
 })
@@ -543,6 +600,7 @@ router.patch('/tasks/:id', async (req, res) => {
     const properties = buildTaskProperties(schema, fields)
     if (Object.keys(properties).length > 0)
       await axios.patch(`${NOTION_API}/pages/${req.params['id']}`, { properties }, { headers: notionHeaders() })
+    broadcast('notion', { kind: 'task', op: 'update', id: req.params['id'] })
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to update task') }
 })
@@ -551,6 +609,7 @@ router.delete('/tasks/:id', async (req, res) => {
   if (!tasksConfigured()) { res.status(503).json({ error: 'Notion task DB not configured' }); return }
   try {
     await axios.patch(`${NOTION_API}/pages/${req.params['id']}`, { archived: true }, { headers: notionHeaders() })
+    broadcast('notion', { kind: 'task', op: 'archive', id: req.params['id'] })
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to archive task') }
 })
@@ -787,6 +846,7 @@ router.post('/pages', async (req, res) => {
       req.body,
       { headers: notionHeaders() },
     )
+    broadcast('notion', { kind: 'page', op: 'create', id: data.id })
     res.status(201).json({ id: data.id, title: pageTitle(data) })
   } catch (err) { notionError(res, err, 'Failed to create page') }
 })
@@ -796,6 +856,7 @@ router.patch('/pages/:id', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   try {
     await axios.patch(`${NOTION_API}/pages/${req.params['id']}`, req.body, { headers: notionHeaders() })
+    broadcast('notion', { kind: 'page', op: 'update', id: req.params['id'] })
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to update page') }
 })
@@ -804,6 +865,7 @@ router.delete('/pages/:id', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   try {
     await axios.patch(`${NOTION_API}/pages/${req.params['id']}`, { archived: true }, { headers: notionHeaders() })
+    broadcast('notion', { kind: 'page', op: 'archive', id: req.params['id'] })
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to archive page') }
 })
@@ -1151,6 +1213,14 @@ router.get('/oembed', async (req, res) => {
   const url = req.query['url'] as string | undefined
   if (!url || !/^https?:\/\//i.test(url)) {
     res.status(400).json({ error: 'url is required and must start with http(s)' }); return
+  }
+  // The same guard every other user-typed URL in this app passes through:
+  // this route fetches whatever it is given, server-side, and without it a
+  // bookmark block could read the title of anything on the LAN.
+  let parsed: URL
+  try { parsed = new URL(url) } catch { res.status(400).json({ error: 'not a valid URL' }); return }
+  if (!isPublicHttpUrl(parsed)) {
+    res.status(400).json({ error: 'only public web addresses can be embedded' }); return
   }
   try {
     const { data: html } = await axios.get<string>(url, {

@@ -17,7 +17,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { Fragment } from 'react'
-import { Clapperboard, Brush, ListChecks, Settings, Pause, Play, Square, Tv, Smartphone, WifiOff, Radio, Sparkles, Lock, Briefcase, Moon, SendHorizontal } from 'lucide-react'
+import { Clapperboard, Brush, ListChecks, Settings, Pause, Play, Square, Tv, Smartphone, WifiOff, Radio, Sparkles, Lock, Briefcase, Moon, SendHorizontal, ClipboardCheck} from 'lucide-react'
 import { TouchInput } from './TouchInput'
 import type { AppMode } from '../hooks/useAppMode'
 import { openPlexPlayer, plexApi, plexImg, type PlexItem, type PlexStatus } from '../hooks/usePlex'
@@ -130,7 +130,12 @@ export function Companion({ open, setOpen, plexStatus, plexSummary, agent, setAg
   const TABS: { id: OpenWidget | 'settings'; label: string; icon: React.ReactElement; badge?: number }[] = [
     { id: 'plex',   label: 'Plex',   icon: <Clapperboard size={20} />, ...(plexSummary?.downloading ? { badge: plexSummary.downloading } : {}) },
     { id: 'images', label: 'Draw',   icon: <Brush size={20} />, ...(queued ? { badge: queued } : {}) },
-    { id: 'media',  label: 'List',   icon: <ListChecks size={20} /> },
+    // The kiosk's own rule for its bottom-right corner: Tasks while working,
+    // the Watch/Play list while resting. The phone is where a task actually
+    // gets ticked, and it had no way to reach them at all.
+    mode === 'work'
+      ? { id: 'notion', label: 'Tasks', icon: <ClipboardCheck size={20} /> }
+      : { id: 'media',  label: 'List',  icon: <ListChecks size={20} /> },
     { id: 'settings', label: 'Settings', icon: <Settings size={20} /> },
   ]
   const rest = mode === 'rest'
