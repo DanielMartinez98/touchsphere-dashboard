@@ -272,41 +272,46 @@ export async function improvePrompt(prompt: string, style: StyleFacts): Promise<
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
 
-    const res = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
-      method: 'POST',
-      headers,
-      signal: ctrl.signal,
-      body: JSON.stringify({
-        model,
-        stream: false,
-        // think:false for the same reason as the chat and guide routes — a
-        // reasoning model puts its answer in `thinking` and leaves `content`
-        // empty, which would read here as "the improver returned nothing".
-        think: false,
-        // TWO MESSAGES, BUILT HERE, EVERY TIME. No history is threaded in and
-        // none is kept: see the header. This is the whole of the conversation.
-        messages: [
-          { role: 'system', content: buildSystemPrompt(settings.template, style) },
-          { role: 'user',   content: prompt },
-        ],
-        // Warmer than the guide generator's 0.3: this is a creative rewrite
-        // rather than structured extraction, and a cold model returns the input
-        // almost verbatim, which makes the whole feature look broken.
-        // num_ctx for the same reason as chat.ts: Ollama's 4096 default
-        // truncates from the front, and the front is the instructions.
-        options: { num_ctx: 8192, temperature: 0.7, num_predict: 400 },
-      }),
-    })
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => '')
-      console.warn(`[image-prompt] ollama ${res.status}: ${body.slice(0, 200)}`)
-      return give(false, prompt, `the prompt model answered ${res.status}`)
+    const ask = async (extra: string, temperature: number): Promise<string> => {
+      const res = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
+        method: 'POST',
+        headers,
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          model,
+          stream: false,
+          // think:false for the same reason as the chat and guide routes — a
+          // reasoning model puts its answer in `thinking` and leaves `content`
+          // empty, which would read here as "the improver returned nothing".
+          think: false,
+          // TWO MESSAGES, BUILT HERE, EVERY TIME. No history is threaded in and
+          // none is kept: see the header. This is the whole of the conversation.
+          messages: [
+            { role: 'system', content: buildSystemPrompt(settings.template, style) + extra },
+            { role: 'user',   content: prompt },
+          ],
+          // Warmer than the guide generator's 0.3: this is a creative rewrite
+          // rather than structured extraction, and a cold model returns the input
+          // almost verbatim, which makes the whole feature look broken.
+          // num_ctx for the same reason as chat.ts: Ollama's 4096 default
+          // truncates from the front, and the front is the instructions.
+          options: { num_ctx: 8192, temperature, num_predict: 400 },
+        }),
+      })
+      if (!res.ok) {
+        const body = await res.text().catch(() => '')
+        console.warn(`[image-prompt] ollama ${res.status}: ${body.slice(0, 200)}`)
+        throw new Error(`the prompt model answered ${res.status}`)
+      }
+      const json = (await res.json()) as { message?: { content?: string }; response?: string }
+      return unwrap(json.message?.content ?? json.response ?? '')
     }
-
-    const json = (await res.json()) as { message?: { content?: string }; response?: string }
-    const text = unwrap(json.message?.content ?? json.response ?? '')
-
+    let text: string
+    try {
+      text = await ask('', 0.7)
+    } catch (err) {
+      return give(false, prompt, err instanceof Error ? err.message : String(err))
+    }
     if (!text) return give(false, prompt, 'the prompt model returned nothing')
     // A rewrite that came back enormous is a model that started explaining
     // itself. The sampler would spend its whole context on the explanation.
@@ -331,9 +336,26 @@ export async function improvePrompt(prompt: string, style: StyleFacts): Promise<
     if (!text.includes(',') && text.split(/\s+/).length > 8 && /\btags?\b/i.test(style.guidance)) {
       return give(false, prompt, 'the rewrite came back as one run of words with no commas, so your own words were kept')
     }
-    const lost = missingWords(prompt, text)
+    let lost = missingWords(prompt, text)
     if (lost.length > 0) {
-      return give(false, prompt, `the rewrite dropped "${lost.join('", "')}" from your request, so your own words were kept`)
+      // One more go, colder and told what went wrong. On an 8B model the
+      // first answer misspells a surname ("hiyuga") often enough that always
+      // falling back would throw away the tag form that draws the character.
+      try {
+        const again = await ask(
+          `\n\nYOUR PREVIOUS ANSWER DROPPED THE WORD(S) "${lost.join('", "')}" FROM THE REQUEST. Every ` +
+          `word of the request must appear in the prompt, spelled exactly as the user spelled it or as ` +
+          `Danbooru spells that name. Answer with the prompt only.`,
+          0.3,
+        )
+        if (again && again.length <= MAX_PROMPT_CHARS && missingWords(prompt, again).length === 0) {
+          text = again
+          lost = []
+        }
+      } catch { /* the fallback below */ }
+    }
+    if (lost.length > 0) {
+      return give(false, prompt, `the rewrite dropped "${lost.join('", "')}" from your request twice, so your own words were kept`)
     }
     // And it may not invent what the user did not say: a hair or eye colour
     // ("red hair" for a black-haired character), or an artist tag — the
