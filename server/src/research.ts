@@ -262,7 +262,9 @@ async function searchViaSearxng(query: string, limit: number): Promise<SearchHit
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 10_000)
   try {
-    const res = await fetch(`${SEARXNG_URL}/search?q=${encodeURIComponent(query)}&format=json`, { signal: ctrl.signal })
+    // language pinned: the engines localise by the box's IP otherwise, and a
+    // Spanish film is not a Zelda walkthrough.
+    const res = await fetch(`${SEARXNG_URL}/search?q=${encodeURIComponent(query)}&format=json&language=en-US&safesearch=0`, { signal: ctrl.signal })
     if (!res.ok) {
       console.warn(`[research] searxng ${res.status}${res.status === 403 ? ' — is the json format enabled in its settings.yml?' : ''}`)
       return []

@@ -10,6 +10,9 @@ server:
   image_proxy: false
 
 search:
+  # English results, wherever the box is: the server sits behind a Mexican IP
+  # and Bing answered "legend of zelda level 1" with a 2015 film in Spanish.
+  default_lang: "en-US"
   # `json` is what the server asks for (…/search?q=…&format=json). Without it
   # SearXNG answers 403 to every query.
   formats:
