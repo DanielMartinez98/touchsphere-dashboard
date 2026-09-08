@@ -2186,7 +2186,31 @@ const ANIMA_PROMPT_GUIDE =
   'and that this is intended — so never add photorealistic, realistic, photo, 3d render or ' +
   'raw-photo tags, and when the user asks for something realistic, write it as detailed ' +
   'illustration instead (fine linework, painterly shading, cinematic lighting). Text in the ' +
-  'picture is limited to a single word or a very short phrase; do not ask for more.'
+  'picture is limited to a single word or a very short phrase; do not ask for more. ' +
+  'A NAMED CHARACTER MUST LOOK EXACTLY AS IN THE OFFICIAL SERIES — that is the whole point of ' +
+  'naming one, and everything else in the prompt bends to it. So: the character tag with its ' +
+  'series tag first, then the tag "official style" (the Danbooru tag for artwork drawn the way ' +
+  'the original series draws it) and "anime coloring" for a show or "official art" only when ' +
+  'the user asks for the source look literally; NEVER add an @artist tag, a "style of", a ' +
+  'medium (watercolor, oil painting, sketch, chibi, pixel art) or an era tag unless the user ' +
+  'asked for that look, because each of those pulls the face and proportions away from the ' +
+  'series design; never re-describe the face, hair or eyes in words that could contradict ' +
+  'the design; keep the canonical hairstyle, eye shape and body proportions implied by the ' +
+  'character tag and only change what the scene changes (clothes, pose, place, lighting). ' +
+  'When the user asks for a style change ON a character ("Naruto as a cyberpunk"), keep the ' +
+  'character and series tags in front and put the style after them, so identity still wins.'
+
+/**
+ * Appended after every Anima prompt (Settings → Drawing can override it per
+ * style like any booster). `official style` is Danbooru's tag for artwork
+ * drawn the way the original series draws its characters, and it is the one
+ * tag that says "make her look like herself" to a model that reads booru tags:
+ * the user's standing instruction is that a named character must look exactly
+ * as in the official series, and a trailing tag survives an improver that is
+ * off, a voice prompt, and a redraw alike. Harmless on a prompt with no
+ * character in it.
+ */
+const ANIMA_OPTIMIZATIONS = 'official style'
 
 /** The text encoder and VAE every Anima variant shares. */
 const ANIMA_SHARED = [
@@ -2438,6 +2462,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
     promptStyle: 'mixed',
     promptGuide: ANIMA_PROMPT_GUIDE,
     prefixes: ANIMA_AES_PREFIX,
+    optimizations: ANIMA_OPTIMIZATIONS,
     negative: ANIMA_AES_NEGATIVE,
     graph: animaGraph('anima-aesthetic-v1.1.safetensors', 30, 4),
     turboHints: ['anima', 'turbo'],
@@ -2448,6 +2473,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
     promptStyle: 'mixed',
     promptGuide: ANIMA_PROMPT_GUIDE,
     prefixes: ANIMA_PREFIX,
+    optimizations: ANIMA_OPTIMIZATIONS,
     // Kept even though this style samples at cfg 1, where classifier-free
     // guidance — and therefore the negative — does nothing at all. It costs one
     // encode and it is the right string the moment anyone raises cfg in
@@ -2466,6 +2492,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
     promptStyle: 'mixed',
     promptGuide: ANIMA_PROMPT_GUIDE,
     prefixes: ANIMA_PREFIX,
+    optimizations: ANIMA_OPTIMIZATIONS,
     negative: ANIMA_NEGATIVE,
     // er_sde: the card's first-choice sampler for the base model — "neutral
     // style, flat colors, sharp lines". Swapped for euler at queue time if the

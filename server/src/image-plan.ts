@@ -233,7 +233,7 @@ function plannerSystem(tools: PlanMode[], styles: DrawStyle[]): string {
       'photoreal one. Write that step\'s prompt in the register the style wants:',
       ...styles.map(st =>
         `- ${st.id} — "${st.label}": ` + (st.register === 'mixed'
-          ? 'booru tags for any named character with its series tag right after it ("1girl, sakura haruno, naruto"), the rest as tags or one or two sentences; an illustration model — never ask it for realism'
+          ? 'booru tags for any named character with its series tag right after it ("1girl, sakura haruno, naruto") and then "official style" so the character looks exactly as in the series (no artist, medium or era tags unless asked), the rest as tags or one or two sentences; an illustration model — never ask it for realism'
           : st.register === 'tags'
           ? 'anime / illustration model; prompt as comma-separated booru tags describing what is IN the ' +
             'region ("pink jacket, open jacket, zipper, long sleeves, striped shirt underneath").'
