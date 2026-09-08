@@ -7,8 +7,9 @@
 // enough for a pill, and opening the corner refetches straight away.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useServerEvent } from './useServerEvents'
 
-export interface MailAccountInfo { email: string; addedAt: string; muted: boolean }
+export interface MailAccountInfo { email: string; addedAt: string; muted: boolean; canSend: boolean }
 export interface MailStatus {
   configured:  boolean
   enabled:     boolean
@@ -53,10 +54,23 @@ function remembered(key: string, fallback: string): string {
 function remember(key: string, value: string): void {
   try { localStorage.setItem(key, value) } catch { /* private mode */ }
 }
-export interface MailBody extends MailSummary {
-  to: string; cc: string; text: string; fromHtml: boolean
-  attachments: { filename: string; mimeType: string; size: number }[]
+export interface MailAttachment {
+  id: string; filename: string; mimeType: string; size: number; cid?: string; inline: boolean
 }
+export interface MailBody extends MailSummary {
+  to: string; cc: string; text: string; html: string; fromHtml: boolean
+  attachments: MailAttachment[]
+  messageId: string; references: string; replyTo: string
+}
+
+/** Where an attachment's bytes are, for an <img>, a frame, or a tap. */
+export function attachmentUrl(account: string, messageId: string, a: MailAttachment): string {
+  const qs = new URLSearchParams({ account, name: a.filename, type: a.mimeType })
+  return `/api/mail/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(a.id)}?${qs}`
+}
+
+/** What the server broadcasts when mail changes on any screen. */
+interface MailEvent { account?: string; kind?: 'flags' | 'sent'; ids?: string[]; read?: boolean; starred?: boolean }
 
 const EMPTY_STATUS: MailStatus = {
   configured: false, enabled: false, clientId: '', accounts: [], redirectUri: '',
@@ -96,6 +110,10 @@ export function useMailUnread(active: boolean) {
     const t = setInterval(() => { void refresh() }, 120_000)
     return () => { clearTimeout(first); clearInterval(t) }
   }, [active, refresh])
+
+  // A message read on the phone is no longer unread on the wall: the server
+  // announces every flag change, and the count follows it at once.
+  useServerEvent('mail', useCallback(() => { if (active) void refresh() }, [active, refresh]))
 
   const total = counts.reduce((n, c) => n + c.unread, 0)
   return { counts, total, enabled, refresh }
@@ -210,6 +228,47 @@ export function useMailbox(open: boolean) {
     remember(LS_TAB, id)
   }, [])
 
+  // Another screen changed something: flip the rows it names right away, and
+  // refetch the counts and the list so a filter (Unread) is right again.
+  const onMailEvent = useCallback((raw: unknown) => {
+    if (!open || !account) return
+    const ev = (raw ?? {}) as MailEvent
+    if (ev.account && ev.account !== account) return
+    if (ev.kind === 'flags' && ev.ids?.length) {
+      const ids = new Set(ev.ids)
+      setMessages(prev => prev.map(m => (ids.has(m.id) ? {
+        ...m,
+        ...(ev.read !== undefined ? { unread: !ev.read } : {}),
+        ...(ev.starred !== undefined ? { starred: ev.starred } : {}),
+      } : m)))
+      setBody(b => (b && ids.has(b.id) ? {
+        ...b,
+        ...(ev.read !== undefined ? { unread: !ev.read } : {}),
+        ...(ev.starred !== undefined ? { starred: ev.starred } : {}),
+      } : b))
+    }
+    void loadLabels(account)
+    void loadMessages(account, label, query, unreadOnly)
+  }, [open, account, label, query, unreadOnly, loadLabels, loadMessages])
+  useServerEvent('mail', onMailEvent)
+
+  /** Answer the open message. Resolves with an error sentence rather than throwing. */
+  const reply = useCallback(async (id: string, text: string): Promise<string> => {
+    try {
+      const r = await fetch(`/api/mail/messages/${encodeURIComponent(id)}/reply`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account, text }),
+      })
+      const j = await r.json().catch(() => ({})) as { error?: string }
+      if (!r.ok) return j.error ?? `HTTP ${r.status}`
+      return ''
+    } catch (e) {
+      return e instanceof Error ? e.message : 'could not send'
+    }
+  }, [account])
+
+  const canSend = status.accounts.find(a => a.email === account)?.canSend ?? false
+
   const setUnreadOnly = useCallback((v: boolean) => {
     setUnreadOnlyState(v)
     remember(LS_UNREAD, v ? '1' : '0')
@@ -292,6 +351,7 @@ export function useMailbox(open: boolean) {
     nextPage, loadingMore, loadMore,
     body, bodyLoading, openMessage, closeMessage,
     setFlag, markAllRead,
+    reply, canSend,
   }
 }
 

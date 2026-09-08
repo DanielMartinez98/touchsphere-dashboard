@@ -22,6 +22,7 @@
 
 import fs from 'fs'
 import path from 'path'
+import { broadcast } from './routes/system'
 
 const AUTH_URL  = 'https://accounts.google.com/o/oauth2/v2/auth'
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
@@ -30,11 +31,23 @@ const REVOKE_URL = 'https://oauth2.googleapis.com/revoke'
 
 /**
  * `gmail.modify` is read plus label changes — which is what "mark as read"
- * is, since read/unread is the UNREAD label. It cannot send, and it cannot
- * delete permanently. Deliberately not `gmail.readonly`: that would make the
- * mark-as-read this feature was asked for impossible.
+ * is, since read/unread is the UNREAD label — and it cannot delete
+ * permanently. Deliberately not `gmail.readonly`: that would make the
+ * mark-as-read this feature was asked for impossible. `gmail.send` was added
+ * when replying was asked for; it sends and nothing else. An account signed
+ * in before it was added carries only the first scope (Google records what
+ * was granted in the token answer, kept as `scopes`), and replying from it
+ * says to sign in again rather than failing with a bare 403.
  */
-const SCOPE = 'https://www.googleapis.com/auth/gmail.modify'
+const SCOPE_MODIFY = 'https://www.googleapis.com/auth/gmail.modify'
+const SCOPE_SEND   = 'https://www.googleapis.com/auth/gmail.send'
+const SCOPE = `${SCOPE_MODIFY} ${SCOPE_SEND}`
+
+/** Whether this account's grant allows sending. Unknown (an older grant) counts as no. */
+export function canSend(email: string): boolean {
+  const a = read().accounts.find(x => x.email === email)
+  return !!a?.scopes && (a.scopes.includes(SCOPE_SEND) || a.scopes.includes('https://mail.google.com/'))
+}
 
 export interface MailAccount {
   /** The address, from Gmail's own profile — never typed by the user. */
@@ -43,6 +56,8 @@ export interface MailAccount {
   addedAt:      string
   /** Hidden from the corner without being signed out. */
   muted?:       boolean
+  /** The scopes Google says were granted, space-separated. Absent on grants made before it was recorded. */
+  scopes?:      string
 }
 
 interface Store {
@@ -102,8 +117,8 @@ export function mailConfigured(): boolean {
   return !!(s.clientId && s.clientSecret)
 }
 
-export function mailAccounts(): { email: string; addedAt: string; muted: boolean }[] {
-  return read().accounts.map(a => ({ email: a.email, addedAt: a.addedAt, muted: a.muted === true }))
+export function mailAccounts(): { email: string; addedAt: string; muted: boolean; canSend: boolean }[] {
+  return read().accounts.map(a => ({ email: a.email, addedAt: a.addedAt, muted: a.muted === true , canSend: canSend(a.email)}))
 }
 
 /**
@@ -214,7 +229,7 @@ export async function completeSignIn(code: string, redirectUri: string): Promise
       redirect_uri: redirectUri, grant_type: 'authorization_code',
     }),
   })
-  const j = await res.json() as { access_token?: string; refresh_token?: string; error_description?: string; error?: string }
+  const j = await res.json() as { access_token?: string; refresh_token?: string; scope?: string; error_description?: string; error?: string }
   if (!res.ok || !j.access_token) {
     throw new Error(j.error_description ?? j.error ?? `Google answered ${res.status}`)
   }
@@ -232,7 +247,10 @@ export async function completeSignIn(code: string, redirectUri: string): Promise
 
   const store = read()
   store.accounts = store.accounts.filter(a => a.email !== email)
-  store.accounts.push({ email, refreshToken: j.refresh_token, addedAt: new Date().toISOString() })
+  store.accounts.push({
+    email, refreshToken: j.refresh_token, addedAt: new Date().toISOString(),
+    ...(j.scope ? { scopes: j.scope } : {}),
+  })
   write(store)
   tokens.set(email, { token: j.access_token, until: Date.now() + 55 * 60_000 })
   console.log(`[mail] signed in ${email} (${store.accounts.length} account(s))`)
@@ -438,14 +456,37 @@ export async function listMessages(
   return { messages, ...(list.nextPageToken ? { nextPageToken: list.nextPageToken } : {}) }
 }
 
+export interface MailAttachment {
+  /** Gmail's attachment id, for GET /messages/:id/attachments/:attId. */
+  id:       string
+  filename: string
+  mimeType: string
+  size:     number
+  /** The Content-ID an HTML body refers to it by (`cid:…`), without the angle brackets. */
+  cid?:     string
+  /** Disposition inline: a picture placed in the body rather than a file on the end. */
+  inline:   boolean
+}
+
 export interface MailBody extends MailSummary {
   to:   string
   cc:   string
   /** Plain text if the message has any, else text flattened out of the HTML. */
   text: string
-  /** True when the original was HTML and this is the flattening of it. */
+  /**
+   * The HTML body as sent, when there is one. The panel renders it in a
+   * sandboxed frame with a content-security policy that allows no scripts
+   * and, until asked, nothing from the web — so the formatting survives and
+   * the tracking pixels do not load.
+   */
+  html: string
+  /** True when the original was HTML and `text` is the flattening of it. */
   fromHtml: boolean
-  attachments: { filename: string; mimeType: string; size: number }[]
+  attachments: MailAttachment[]
+  /** Reply headers: the Message-ID to answer, the References chain, and where replies go. */
+  messageId:  string
+  references: string
+  replyTo:    string
 }
 
 interface Part {
@@ -471,13 +512,33 @@ function findPart(part: Part | undefined, mime: string): Part | undefined {
   return undefined
 }
 
-function collectAttachments(part: Part | undefined, out: MailBody['attachments'] = []): MailBody['attachments'] {
+function collectAttachments(part: Part | undefined, out: MailAttachment[] = []): MailAttachment[] {
   if (!part) return out
-  if (part.filename && part.body?.attachmentId) {
-    out.push({ filename: part.filename, mimeType: part.mimeType ?? 'application/octet-stream', size: part.body.size ?? 0 })
+  if (part.body?.attachmentId) {
+    const cid = header(part.headers, 'content-id').replace(/^<|>$/g, '')
+    const disposition = header(part.headers, 'content-disposition')
+    const mimeType = part.mimeType ?? 'application/octet-stream'
+    // A part with an attachment id and no filename is nearly always an inline
+    // picture the HTML refers to by cid; it needs a name to be offered as a file.
+    const filename = part.filename || (cid ? `${cid.split('@')[0]}.${(mimeType.split('/')[1] ?? 'bin').replace(/[^a-z0-9]/gi, '')}` : 'attachment')
+    out.push({
+      id: part.body.attachmentId,
+      filename,
+      mimeType,
+      size: part.body.size ?? 0,
+      ...(cid ? { cid } : {}),
+      inline: /^inline/i.test(disposition) || (!!cid && !part.filename),
+    })
   }
   for (const p of part.parts ?? []) collectAttachments(p, out)
   return out
+}
+
+/** One attachment's bytes. Gmail hands them back base64url-encoded. */
+export async function getAttachment(email: string, id: string, attachmentId: string): Promise<Buffer> {
+  const j = await api<{ data?: string; size?: number }>(
+    email, `/messages/${encodeURIComponent(id)}/attachments/${encodeURIComponent(attachmentId)}`)
+  return Buffer.from((j.data ?? '').replace(/-/g, '+').replace(/_/g, '/'), 'base64')
 }
 
 /**
@@ -514,9 +575,10 @@ export async function getMessage(email: string, id: string): Promise<MailBody> {
   const headers = m.payload?.headers
   const from = splitFrom(header(headers, 'from'))
   const plain = findPart(m.payload, 'text/plain')
-  const html = plain ? undefined : findPart(m.payload, 'text/html')
+  const htmlPart = findPart(m.payload, 'text/html')
+  const html = htmlPart?.body?.data ? decode(htmlPart.body.data) : ''
   const text = plain?.body?.data ? decode(plain.body.data)
-    : html?.body?.data ? htmlToText(decode(html.body.data))
+    : html ? htmlToText(html)
     : (m.snippet ?? '')
 
   return {
@@ -537,8 +599,59 @@ export async function getMessage(email: string, id: string): Promise<MailBody> {
     starred: (m.labelIds ?? []).includes('STARRED'),
     labels: m.labelIds ?? [],
     text: text.slice(0, 40_000),
+    html: html.slice(0, 400_000),
     fromHtml: !plain && !!html,
     attachments: collectAttachments(m.payload),
+    messageId:  header(headers, 'message-id'),
+    references: header(headers, 'references'),
+    replyTo:    header(headers, 'reply-to'),
+  }
+}
+
+/**
+ * Answer a message. Plain text, threaded onto the original with In-Reply-To
+ * and References so Gmail and the other end file it under the same
+ * conversation, sent to the Reply-To when there is one and the sender
+ * otherwise, with the original quoted below the way every mail client does.
+ * Needs the send scope; an older grant is told to sign in again.
+ */
+export async function sendReply(email: string, id: string, text: string): Promise<{ id: string }> {
+  if (!canSend(email)) {
+    throw new Error('Replying is not allowed for this account yet — sign in again from Settings → Mail to grant it.')
+  }
+  const orig = await getMessage(email, id)
+  const to = orig.replyTo || `${orig.fromName && orig.fromName !== orig.from ? `"${orig.fromName.replace(/"/g, '')}" ` : ''}<${orig.from}>`
+  const subject = /^re:/i.test(orig.subject) ? orig.subject : `Re: ${orig.subject}`
+  const when = orig.date ? new Date(orig.date).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }) : ''
+  const quoted = orig.text.split('\n').map(l => `> ${l}`).join('\n')
+  const body = `${text.trim()}\n\nOn ${when}, ${orig.fromName || orig.from} wrote:\n${quoted}\n`
+  const encodedSubject = /^[\x20-\x7e]*$/.test(subject) ? subject : `=?UTF-8?B?${Buffer.from(subject, 'utf8').toString('base64')}?=`
+  const lines = [
+    `From: ${email}`,
+    `To: ${to}`,
+    `Subject: ${encodedSubject}`,
+    ...(orig.messageId ? [`In-Reply-To: ${orig.messageId}`, `References: ${[orig.references, orig.messageId].filter(Boolean).join(' ')}`] : []),
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset="UTF-8"',
+    'Content-Transfer-Encoding: base64',
+    '',
+    Buffer.from(body, 'utf8').toString('base64'),
+  ]
+  const raw = Buffer.from(lines.join('\r\n'), 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  try {
+    const sent = await api<{ id: string }>(email, '/messages/send', {
+      method: 'POST',
+      body: JSON.stringify({ raw, threadId: orig.threadId }),
+    })
+    console.log(`[mail] ${email} replied to ${id} (${sent.id})`)
+    broadcast('mail', { account: email, kind: 'sent', threadId: orig.threadId })
+    return { id: sent.id }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/403|insufficient|scope/i.test(msg)) {
+      throw new Error('Gmail refused to send: this account was signed in before replying was allowed. Sign in again from Settings → Mail.')
+    }
+    throw err
   }
 }
 
@@ -557,6 +670,10 @@ export async function setFlags(
     method: 'POST',
     body: JSON.stringify({ addLabelIds: add, removeLabelIds: remove }),
   })
+  // Every open screen — the kiosk, a phone — gets the same frame, so a message
+  // read on one is not still bold on the other. The flags ride along so a
+  // list can flip its row without a refetch; the counts refetch regardless.
+  broadcast('mail', { account: email, kind: 'flags', ids: [id], ...flags })
 }
 
 /** Mark every message a filter matches, for "mark all read" on a label. */
@@ -567,6 +684,7 @@ export async function markAllRead(email: string, labelIds: string[]): Promise<nu
     method: 'POST',
     body: JSON.stringify({ ids: messages.map(m => m.id), removeLabelIds: ['UNREAD'] }),
   })
+  broadcast('mail', { account: email, kind: 'flags', ids: messages.map(m => m.id), read: true })
   return messages.length
 }
 

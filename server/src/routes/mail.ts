@@ -3,8 +3,8 @@
 import { Router, type Request, type Response } from 'express'
 import crypto from 'crypto'
 import {
-  authUrl, clientIdOnly, completeSignIn, getMessage, listLabels, listMessages,
-  mailAccounts, mailConfigured, mailEnabled, markAllRead, removeAccount,
+  authUrl, clientIdOnly, completeSignIn, getAttachment, getMessage, listLabels, listMessages,
+  mailAccounts, mailConfigured, mailEnabled, markAllRead, removeAccount, sendReply,
   setClientApp, setFlags, setMuted, unreadCounts,
 } from '../mail'
 
@@ -185,6 +185,45 @@ router.get('/messages/:id', async (req: Request, res: Response) => {
   try {
     res.setHeader('Cache-Control', 'no-store')
     res.json(await getMessage(account, String(req.params['id'] ?? '')))
+  } catch (err) {
+    console.warn(`[mail] ${req.method} ${req.path}: ${err instanceof Error ? err.message : String(err)}`)
+    res.status(502).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+// GET /api/mail/messages/:id/attachments/:attId?account=&name=&type= — the bytes,
+// served inline so a picture shows in the panel and a PDF opens in a frame.
+router.get('/messages/:id/attachments/:attId', async (req: Request, res: Response) => {
+  const account = accountOf(req)
+  if (!account) { res.status(409).json({ error: 'no account signed in' }); return }
+  const name = (typeof req.query['name'] === 'string' ? req.query['name'] : 'attachment').replace(/[\r\n"\\]/g, '_').slice(0, 120)
+  const type = typeof req.query['type'] === 'string' && /^[\w.+-]+\/[\w.+-]+$/.test(req.query['type'])
+    ? req.query['type'] : 'application/octet-stream'
+  try {
+    const bytes = await getAttachment(account, String(req.params['id'] ?? ''), String(req.params['attId'] ?? ''))
+    // Never let a mail's attachment run as a page on this origin: HTML and
+    // SVG are handed over as files rather than rendered.
+    const safeType = /^(text\/html|image\/svg)/i.test(type) ? 'application/octet-stream' : type
+    res.setHeader('Content-Type', safeType)
+    res.setHeader('Content-Disposition', `${safeType === 'application/octet-stream' ? 'attachment' : 'inline'}; filename="${name}"`)
+    res.setHeader('Cache-Control', 'private, max-age=3600')
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.send(bytes)
+  } catch (err) {
+    console.warn(`[mail] ${req.method} ${req.path}: ${err instanceof Error ? err.message : String(err)}`)
+    res.status(502).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+// POST /api/mail/messages/:id/reply { account, text }
+router.post('/messages/:id/reply', async (req: Request, res: Response) => {
+  const b = req.body as { account?: string; text?: unknown } | undefined
+  const account = b?.account || (mailAccounts()[0]?.email ?? '')
+  if (!account) { res.status(409).json({ error: 'no account signed in' }); return }
+  const text = typeof b?.text === 'string' ? b.text.trim() : ''
+  if (!text) { res.status(400).json({ error: 'text is required' }); return }
+  try {
+    res.json({ ok: true, ...(await sendReply(account, String(req.params['id'] ?? ''), text.slice(0, 20_000))) })
   } catch (err) {
     console.warn(`[mail] ${req.method} ${req.path}: ${err instanceof Error ? err.message : String(err)}`)
     res.status(502).json({ error: err instanceof Error ? err.message : String(err) })
