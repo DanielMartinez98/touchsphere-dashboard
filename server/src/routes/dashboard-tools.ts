@@ -602,7 +602,7 @@ async function listTasks(which: string, project: string): Promise<string> {
     return 0
   })
   const label = scope === 'overdue' ? 'overdue tasks' : scope === 'today' ? 'tasks due today or earlier'
-    : scope === 'week' ? 'tasks due this week' : scope === 'done' ? 'completed tasks' : 'open tasks'
+    : scope === 'week' ? 'tasks due within a week, overdue ones included' : scope === 'done' ? 'completed tasks' : 'open tasks'
   if (list.length === 0) return `No ${label}${proj ? ` in ${project}` : ''}.`
   const shown = list.slice(0, 15)
   const lines = shown.map(t => {
@@ -1538,7 +1538,8 @@ export const DASHBOARD_TOOLS = [
       name: 'list_tasks',
       description:
         "Read the user's Notion task list. Use it for \"what's on my list\", \"what do I have to do\", \"what's overdue\", " +
-        '"anything due today", "what did I finish". Returns the tasks with their due dates and projects; read them back briefly.',
+        '"anything due today", "what did I finish". Returns the tasks with their due dates and projects. READ THE TITLES BACK ' +
+        '(a count alone is useless to someone who cannot see the screen) — all of them up to about eight, the first few plus the count beyond that.',
       parameters: {
         type: 'object',
         properties: {
