@@ -414,6 +414,25 @@ function stripWrittenToolCalls(text: string, toolNames: string[]): string {
  * is better to open roughly the right page than to answer a request to open a
  * page by talking about it.
  */
+/**
+ * "Remember that …" / "forget …" when the model narrated it instead of doing
+ * it, even after the nudge. The local model answers "I've forgotten about
+ * that" with no tool call at all, and memory is the one place where a
+ * pretended action is worst: the user believes something was kept or
+ * dropped. The words after the verb are the fact or the query.
+ */
+function fallbackMemoryAction(said: string): { tool: 'remember' | 'forget'; args: Record<string, unknown> } | null {
+  const s = said.trim().replace(/[.!?]+$/, '')
+  const forget = s.match(/\b(?:forget|delete from (?:your )?memory|stop remembering)\s+(?:about\s+|that\s+)?(?:my\s+|the\s+)?(.{3,})$/i)
+  if (forget) return { tool: 'forget', args: { query: forget[1].trim() } }
+  const remember = s.match(/\b(?:remember|keep in mind|note)\s+(?:that\s+)?(.{4,})$/i)
+  if (remember) {
+    const fact = remember[1].trim().replace(/^(my|i)\b/i, m => (m.toLowerCase() === 'my' ? "the user's" : 'the user'))
+    return { tool: 'remember', args: { content: fact.charAt(0).toUpperCase() + fact.slice(1), scope: 'long', topic: 'other' } }
+  }
+  return null
+}
+
 function fallbackScreenAction(said: string): { tool: 'play_video' | 'open_website'; query: string } | null {
   const q = said
     // Strip the asking, keep the subject.
@@ -1021,6 +1040,24 @@ router.post('/', async (req: Request, res: Response) => {
                 ? said
                 : `Putting that on screen now.`
               console.log(`[chat] ← reply="${reply.slice(0, 80)}" (server-side ${fallback.tool}) keepListening=${keepListening}`)
+              if (!keepListening) void endConversation(messages, reply)
+              return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed], keepListening, display, tools: toolsCalled, ...(answeredBy ? { by: answeredBy } : {}) })
+            }
+          }
+        }
+
+        // Memory verbs get the same treatment as screen verbs: done here when
+        // the model would not do it, with the tool's own answer spoken.
+        if (nudged && askedAndDidNothing && !didSomething) {
+          const mem = fallbackMemoryAction(last.content)
+          if (mem) {
+            console.warn(`[chat] the model would not call ${mem.tool} — doing it here: ${JSON.stringify(mem.args).slice(0, 120)}`)
+            const out = await runDashboardTool(mem.tool, mem.args)
+            if (out !== null) {
+              toolsCalled.push(mem.tool)
+              changed.add('memory')
+              const reply = out.slice(0, 200)
+              console.log(`[chat] ← reply="${reply.slice(0, 80)}" (server-side ${mem.tool}) keepListening=${keepListening}`)
               if (!keepListening) void endConversation(messages, reply)
               return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed], keepListening, display, tools: toolsCalled, ...(answeredBy ? { by: answeredBy } : {}) })
             }
