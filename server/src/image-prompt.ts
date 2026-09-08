@@ -324,6 +324,13 @@ export async function improvePrompt(prompt: string, style: StyleFacts): Promise<
     // did not know the character and substituted the one it did. A rewrite is
     // only ever allowed to add; every significant word the user typed must
     // still be there.
+    // A booru-style rewrite that came back as one run of words with no commas
+    // is the model ignoring the format ("[count] lunch (dragon ball) dragon
+    // ball @toriyama world setting …"); the encoder cannot tell where one
+    // tag ends, so the user's own words are safer.
+    if (!text.includes(',') && text.split(/\s+/).length > 8 && /\btags?\b/i.test(style.guidance)) {
+      return give(false, prompt, 'the rewrite came back as one run of words with no commas, so your own words were kept')
+    }
     const lost = missingWords(prompt, text)
     if (lost.length > 0) {
       return give(false, prompt, `the rewrite dropped "${lost.join('", "')}" from your request, so your own words were kept`)
@@ -356,25 +363,36 @@ const KEEP_STOPWORDS = new Set([
  * possessive, a hyphen) so "hancock's" still counts as "hancock".
  */
 export function missingWords(original: string, rewrite: string): string[] {
-  const norm = (s: string) => s.toLowerCase().replace(/['’]s\b/g, '').replace(/[^a-z0-9\s-]/g, ' ')
+  // Long vowels folded on both sides, so the Danbooru romanisation the model
+  // is asked for ("hyuuga", "joutarou") still counts as the name the user
+  // typed ("hyuga", "jotaro").
+  const fold = (s: string) => s.replace(/ou/g, 'o').replace(/([aeiou])\1/g, '$1')
+  const norm = (s: string) => fold(s.toLowerCase().replace(/['’]s\b/g, '').replace(/[^a-z0-9\s-]/g, ' '))
   const have = norm(rewrite)
   const words = [...new Set(norm(original).split(/[\s-]+/).filter(w => w.length >= 4 && !KEEP_STOPWORDS.has(w) && !/^\d+$/.test(w)))]
   return words.filter(w => !have.includes(w) && !have.includes(w.replace(/s$/, '')))
 }
 
 /** Hair and eye colours, and artist tags, that the user never asked for. */
+/** An @artist tag as the model writes it: the @ and up to four name words. */
+const ARTIST_TAG = /@[a-z0-9_.'-]+(?: [a-z0-9_.'-]+){0,3}/gi
+
 export function stripInvented(original: string, rewrite: string): string {
   const o = original.toLowerCase()
   const saidLook = /\b(hair|eyes?|blonde?|brunette|redhead)\b/.test(o)
-  const ownArtists = new Set((original.match(/@[a-z0-9 _().'-]+/gi) ?? []).map(a => a.trim().toLowerCase()))
-  const tags = rewrite.split(',').map(t => t.trim()).filter(Boolean)
+  const ownArtists = new Set((original.match(ARTIST_TAG) ?? []).map(a => a.trim().toLowerCase()))
+  let text = rewrite
+    // "[count]" — the guide's order line copied back as a literal.
+    .replace(/\[[a-z /]+\]/gi, ' ')
+    // An artist the user did not type, wherever it sits in the text.
+    .replace(ARTIST_TAG, a => (ownArtists.has(a.trim().toLowerCase()) ? a : ' '))
+  const tags = text.split(',').map(t => t.trim().replace(/\s{2,}/g, ' ')).filter(Boolean)
   const kept = tags.filter(t => {
     const l = t.toLowerCase()
     if (!saidLook && /\b(hair|eyes?)\b/.test(l) && !/\bwet hair\b|\bhair ornament\b|\bhairband\b|\bhair ribbon\b/.test(l)) return false
-    if (l.startsWith('@') && !ownArtists.has(l)) return false
     return true
   })
-  return kept.join(', ')
+  return kept.join(', ').replace(/\s+,/g, ',').trim()
 }
 
 /** The model composeRedrawPrompt() will use. */

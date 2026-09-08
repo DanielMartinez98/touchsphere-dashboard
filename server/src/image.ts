@@ -2160,10 +2160,13 @@ const ANIMA_PROMPT_GUIDE =
   'REGISTER: booru tags and plain English mix freely (the model was trained on both). Tags are ' +
   'lowercase with spaces, not underscores. A sentence, when you write one, is at least two sentences ' +
   'long and Capitalises character and series names.\n' +
-  'ORDER: [count] [character] [series] [artist] [meta] [appearance] [clothes] [pose] [setting] [lighting].\n' +
+  'ORDER, as comma-separated tags: the subject count (1girl, 1boy), then the character, the series, ' +
+  'the artist, the meta tag, then appearance, clothes, pose, setting and lighting.\n' +
   'CHARACTER: the Danbooru character tag, family name first for Japanese names ("haruno sakura", ' +
-  '"hyuuga hinata", "uzumaki naruto"), immediately followed by the SERIES tag ("naruto"). Never the ' +
-  'character alone, never a description in place of the tag. IF YOU DO NOT KNOW THE CHARACTER, KEEP ' +
+  '"hyuuga hinata", "uzumaki naruto"), immediately followed by the SERIES tag ("naruto"). A character ' +
+  'with a single name carries the series in brackets, as Danbooru files it: "power (chainsaw man)", ' +
+  '"lunch (dragon ball)", "nami (one piece)". Never the ' +
+  'character alone, never a description in place of the tag, never an invented surname. IF YOU DO NOT KNOW THE CHARACTER, KEEP ' +
   'THE NAME EXACTLY AS THE USER TYPED IT — never replace it with another character from the same ' +
   'series (asked for Launch from Dragon Ball, do not write Goku). The user\'s words always survive.\n' +
   'ARTIST: the series\' own creator as an @ tag ("@masashi kishimoto") is one of the strongest levers ' +
@@ -2243,6 +2246,8 @@ const ANIMA_CREATORS: Array<[RegExp, string]> = [
  */
 const CHARACTER_ALIASES: Array<[RegExp, string]> = [
   [/\blaunch\b(?=[\s\S]*\bdragon ?ball\b)/i, 'lunch (dragon ball)'],
+  [/\b(?:gogetsu )?power\b(?=[\s\S]*\bchainsaw man\b)/i, 'power (chainsaw man)'],
+  [/\bnami\b(?=[\s\S]*\bone piece\b)/i, 'nami (one piece)'],
   [/\bkrillin\b/i, 'kuririn'],
   [/\bbulma\b/i, 'bulma'],
   [/\bzoro\b(?=[\s\S]*\bone piece\b)/i, 'roronoa zoro'],
@@ -2255,8 +2260,10 @@ export function applyAnimaFidelity(prompt: string, original = ''): { prompt: str
   const added: string[] = []
   // An @ tag the user did not type is an invented one, whoever wrote it.
   if (original) {
-    const own = new Set((original.match(/@[a-z0-9 _().'-]+/gi) ?? []).map(a => a.trim().toLowerCase()))
-    out = out.split(',').map(t => t.trim()).filter(t => !(t.startsWith('@') && !own.has(t.toLowerCase()))).join(', ')
+    const artistTag = /@[a-z0-9_.'-]+(?: [a-z0-9_.'-]+){0,3}/gi
+    const own = new Set((original.match(artistTag) ?? []).map(a => a.trim().toLowerCase()))
+    out = out.replace(artistTag, a => (own.has(a.trim().toLowerCase()) ? a : ' '))
+      .replace(/\s{2,}/g, ' ').replace(/\s+,/g, ',').replace(/,\s*,/g, ',').trim()
   }
   for (const [alias, tag] of CHARACTER_ALIASES) {
     if (alias.test(out) && !out.toLowerCase().includes(tag)) { out = out.replace(alias, tag); added.push(tag) }
