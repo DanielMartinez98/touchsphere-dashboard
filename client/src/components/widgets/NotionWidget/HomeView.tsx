@@ -175,9 +175,9 @@ function TaskSheet({
   const due = task.due ? fmtDue(task.due) : null
   const quick = [{ label: 'Today', days: 0 }, { label: 'Tomorrow', days: 1 }, { label: 'Next week', days: 7 }]
   return (
-    <div className="absolute inset-0 z-30 flex flex-col justify-end">
+    <div className="fixed inset-0 z-[9050] flex flex-col justify-end">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative bg-[#0e1117] border-t border-white/10 rounded-t-3xl z-40 overflow-y-auto max-h-[92vh] kb-room">
+      <div className="relative bg-[#0e1117] border-t border-white/10 rounded-t-3xl z-40 overflow-y-auto max-h-[92vh] kb-room max-w-3xl w-full mx-auto">
         <div className="px-5 pb-10 pt-3">
           <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-4" />
           <div className="flex flex-col gap-5">
@@ -353,7 +353,7 @@ function CreateTaskSheet({
   const dueLabel = due ? new Date(due + 'T12:00').toLocaleDateString([], { month: 'short', day: 'numeric' }) : 'No date'
 
   return (
-    <div className="absolute inset-0 z-30 flex flex-col justify-end">
+    <div className="fixed inset-0 z-[9050] flex flex-col justify-end">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
       <div className="relative bg-[#0e1117] border-t border-white/10 rounded-t-3xl z-40 overflow-y-auto max-h-[92vh]">
         <div className="px-5 pb-10 pt-3">
