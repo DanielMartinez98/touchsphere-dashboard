@@ -15,3 +15,20 @@ search:
   formats:
     - html
     - json
+
+# More engines than the default four. A guide is dozens of searches, and an
+# engine answers a burst with "too many requests" for a while — with only
+# Brave, Google and DuckDuckGo on, three rebuilds in a row left the box
+# answering nothing. These add independent sources so one suspension does
+# not empty the answer.
+engines:
+  - name: bing
+    disabled: false
+  - name: qwant
+    disabled: false
+  - name: mojeek
+    disabled: false
+  - name: wikipedia
+    disabled: false
+  - name: startpage
+    disabled: true

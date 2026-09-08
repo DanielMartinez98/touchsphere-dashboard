@@ -57,6 +57,8 @@ import {
   researchWalkthrough,
   SEARCH_AVAILABLE,
   SEARCH_PROVIDERS,
+  searchHealth,
+  wrongSibling,
   type ChapterCategory,
   type Page,
   findGameWiki,
@@ -658,10 +660,10 @@ async function buildOutline(itemId: string, title: string, order?: string, sourc
       requireGameMention: true,
     })
     for (const page of got) {
+      if (wrongSibling(page.title, title)) continue
       if (!pages.some(p => p.url === page.url)) pages.push(page)
     }
   }
-
   if (pages.length === 0) {
     note({
       itemId, title, stage: 'research', level: 'error',
@@ -687,6 +689,26 @@ async function buildOutline(itemId: string, title: string, order?: string, sourc
   update(itemId, g => { g.phase = 'Finding walkthroughs…' })
   const walkthroughs = WEB_FIRST ? await findWalkthroughs(title, 3, OUTLINE_CHARS) : []
   const hosts = [...new Set(walkthroughs.map(p => hostOf(p.url)))]
+  if (WEB_FIRST && walkthroughs.length === 0) {
+    // No walkthrough because search is throttled is a different situation from
+    // no walkthrough because none exists — and the first must not become a
+    // guide written from whatever Wikipedia's search happened to rank.
+    const health = searchHealth()
+    if (!health.ok) {
+      note({
+        itemId, title, stage: 'research', level: 'error',
+        message: `Stopping: web search is throttled right now — ${health.why}. Nothing usable can be ` +
+                 `found this way, and a guide written from the wrong pages is worse than none. ` +
+                 `Try again in about ${health.retryInMin} minutes`,
+      })
+      update(itemId, g => {
+        g.status = 'failed'
+        g.error = `Web search is throttled right now (${health.why}). Try again in about ${health.retryInMin} minutes.`
+        delete g.phase
+      })
+      return null
+    }
+  }
   note({
     itemId, title, stage: 'research', level: walkthroughs.length > 0 ? 'good' : 'warn',
     message: walkthroughs.length > 0

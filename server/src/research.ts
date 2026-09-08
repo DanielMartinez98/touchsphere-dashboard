@@ -233,6 +233,30 @@ export const SEARCH_PROVIDERS: SearchProvider[] = [
 /** True when any search at all is possible — the chat's web tools are offered on this. */
 export const SEARCH_AVAILABLE = OLLAMA_API_KEY.length > 0 || SEARXNG_URL.length > 0
 
+/** What the SearXNG box last said about its engines, for the honest early stop. */
+let searxngLastEmptyAt = 0
+let searxngLastTrouble = ''
+
+/**
+ * Can a walkthrough be looked for right now? The hosted search is over its
+ * hourly limit, or the SearXNG engines are suspended for too many requests —
+ * three guide rebuilds in a row did exactly that — and then the chain drops
+ * to Wikipedia's search, which for "Level 3 walkthrough" returns the history
+ * of Nintendo. A guide built from that is worse than no guide, so the caller
+ * asks first and says why it is stopping.
+ */
+export function searchHealth(): { ok: boolean; why: string; retryInMin: number } {
+  const hostedLimited = OLLAMA_API_KEY ? hostedSearchLimitedFor() : 0
+  const hostedOk = !!OLLAMA_API_KEY && hostedLimited === 0
+  const searxOk = !!SEARXNG_URL && Date.now() - searxngLastEmptyAt > 2 * 60_000
+  if (hostedOk || searxOk) return { ok: true, why: '', retryInMin: 0 }
+  const parts: string[] = []
+  if (OLLAMA_API_KEY) parts.push(`Ollama's hosted search is over its hourly limit for ${Math.ceil(hostedLimited / 60)} more min`)
+  if (SEARXNG_URL) parts.push(`the SearXNG engines answered nothing${searxngLastTrouble ? ` (${searxngLastTrouble})` : ''}`)
+  if (parts.length === 0) parts.push('no search provider is configured')
+  return { ok: false, why: parts.join(' and '), retryInMin: Math.max(10, Math.ceil(hostedLimited / 60)) }
+}
+
 async function searchViaSearxng(query: string, limit: number): Promise<SearchHit[]> {
   if (!SEARXNG_URL) return []
   const ctrl = new AbortController()
@@ -243,7 +267,18 @@ async function searchViaSearxng(query: string, limit: number): Promise<SearchHit
       console.warn(`[research] searxng ${res.status}${res.status === 403 ? ' — is the json format enabled in its settings.yml?' : ''}`)
       return []
     }
-    const json = (await res.json()) as { results?: Array<{ title?: string; url?: string; content?: string }> }
+    const json = (await res.json()) as {
+      results?: Array<{ title?: string; url?: string; content?: string }>
+      unresponsive_engines?: Array<[string, string]>
+    }
+    if ((json.results ?? []).length === 0) {
+      searxngLastEmptyAt = Date.now()
+      searxngLastTrouble = (json.unresponsive_engines ?? []).slice(0, 3).map(([e, why]) => `${e}: ${why}`).join(', ')
+      if (searxngLastTrouble) console.warn(`[research] searxng returned nothing — ${searxngLastTrouble}`)
+    } else {
+      searxngLastEmptyAt = 0
+      searxngLastTrouble = ''
+    }
     return (json.results ?? [])
       .filter(r => typeof r.url === 'string' && /^https?:\/\//i.test(r.url))
       .slice(0, limit)
@@ -535,10 +570,12 @@ export async function findWalkthroughs(gameTitle: string, limit = 3, maxChars = 
     const host = hostOf(hit.url)
     // One index page per site: two pages of the same walkthrough say the same thing twice.
     if (hosts.has(host)) continue
+    if (/wikipedia\.org$/.test(host)) continue      // an encyclopedia is not a walkthrough
+    if (wrongSibling(hit.title, gameTitle)) continue
     const page = await pageFromHit(hit, maxChars)
     if (!page) continue
-    if (!mentionsGame(`${page.title}\n${page.text}`, gameTitle, 2)) {
-      console.warn(`[research] walkthrough candidate ${host} "${page.title.slice(0, 50)}" never names "${qualifier}" — skipped`)
+    if (!mentionsGame(`${page.title}\n${page.text}`, gameTitle, 2) || wrongSibling(page.title, gameTitle)) {
+      console.warn(`[research] walkthrough candidate ${host} "${page.title.slice(0, 50)}" is not about "${qualifier}" — skipped`)
       continue
     }
     hosts.add(host)
@@ -581,18 +618,24 @@ export async function researchWalkthrough(
       seen.add(hit.url)
       const host = hostOf(hit.url)
       if (onlyHost ? !(host === onlyHost || host.endsWith(`.${onlyHost}`)) : !(isWalkthroughHost(host) || looksLikeWalkthrough(hit.title, hit.url))) continue
+      if (/wikipedia\.org$/.test(host) || wrongSibling(hit.title, gameTitle)) continue
       if (share(`${hit.title} ${decodeURIComponent(hit.url).replace(/[-_/]+/g, ' ')}`) < 0.5) continue
       const page = await pageFromHit(hit, maxChars)
       if (!page) continue
       const body = `${page.title}\n${page.text}`
-      if (!mentionsGame(body, gameTitle) || share(body) < 0.5) continue
+      if (!mentionsGame(body, gameTitle) || wrongSibling(page.title, gameTitle) || share(body) < 0.5) continue
       pages.push(page)
       console.log(`[research] walkthrough for "${chapter.slice(0, 40)}": ${host} "${page.title.slice(0, 50)}" (${page.text.length} chars)`)
     }
   }
-  for (const host of hosts) await tryQuery(`site:${host} ${qualifier} ${chapter}`, host)
-  await tryQuery(`${qualifier} ${chapter} walkthrough`)
-  await tryQuery(`"${gameTitle}" ${chapter} walkthrough guide`)
+  // One search per chapter in the common case: the first host that has the
+  // page settles it. Every extra query is a step closer to the engines'
+  // "too many requests", which is what emptied the search mid-guide before.
+  for (const host of hosts) {
+    if (pages.length > 0) break
+    await tryQuery(`site:${host} ${qualifier} ${chapter}`, host)
+  }
+  if (pages.length === 0) await tryQuery(`${qualifier} ${chapter} walkthrough`)
   return pages
 }
 
@@ -742,6 +785,26 @@ export function gameQualifier(gameTitle: string): string {
  * words at all (the franchise-named "The Legend of Zelda") can't be filtered on,
  * so it isn't — the caller keeps the page rather than pretending to know better.
  */
+/**
+ * Is this page about a DIFFERENT game that merely carries this one's name?
+ *
+ * "The Legend of Zelda" is both a game and the name of every game after it,
+ * so a page titled "The Legend of Zelda: Breath of the Wild" mentions the
+ * 1986 game in every paragraph and is not about it — and nine chapters of an
+ * NES guide were written from it. When the wanted title has no subtitle and
+ * the page's title is the wanted title plus a subtitle, it is a sibling.
+ */
+export function wrongSibling(pageTitle: string, gameTitle: string): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/['’]/g, '').replace(/\s+/g, ' ').trim()
+  const want = norm(gameTitle)
+  const got = norm(pageTitle)
+  if (/[:\-–—]\s*\S/.test(want.replace(/^the\s+/, ''))) return false   // the wanted title has a subtitle of its own
+  const i = got.indexOf(want)
+  if (i < 0) return false
+  const rest = got.slice(i + want.length)
+  return /^\s*[:\-–—]\s*\S/.test(rest) || /^\s+(ii|iii|iv|2|3|4|[a-z]+'s\b)/.test(rest)
+}
+
 export function mentionsGame(text: string, gameTitle: string, minMentions = 1): boolean {
   const keywords = titleKeywords(gameTitle)
   if (keywords.length === 0) return true
@@ -1629,6 +1692,10 @@ export async function researchGame(
         )
         continue
       }
+      if (wrongSibling(p.title, gameTitle)) {
+        console.warn(`[research] rejected ${p.site} "${p.title.slice(0, 60)}" (${why}) — a different game in the same series`)
+        continue
+      }
       pages.push(p)
     }
   }
@@ -1667,8 +1734,10 @@ export async function researchGame(
   }
 
   if (pages.length === 0) {
+    // Wikipedia's search ranks loosely ("Level 3 walkthrough" → "History of
+    // Nintendo"), so its article is taken only when its TITLE names the game.
     const [wikipediaArticle] = await wikiSearch('en.wikipedia.org', `${gameTitle} ${topic}`.trim(), 1)
-    if (wikipediaArticle) {
+    if (wikipediaArticle && mentionsGame(wikipediaArticle, gameTitle) && !wrongSibling(wikipediaArticle, gameTitle)) {
       const page = await wikiExtract('en.wikipedia.org', wikipediaArticle, maxChars)
       if (page) accept([page], 'wikipedia')
     }
