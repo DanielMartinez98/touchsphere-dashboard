@@ -552,6 +552,7 @@ export async function findWalkthroughs(gameTitle: string, limit = 3, maxChars = 
     `${gameTitle} walkthrough guide table of contents`,
     `${qualifier} walkthrough strategywiki OR zeldadungeon OR ign OR gamefaqs`,
   ]
+  const siblings = await siblingNames(gameTitle)
   const seen = new Set<string>()
   const hits: SearchHit[] = []
   for (const q of queries) {
@@ -573,10 +574,10 @@ export async function findWalkthroughs(gameTitle: string, limit = 3, maxChars = 
     // One index page per site: two pages of the same walkthrough say the same thing twice.
     if (hosts.has(host)) continue
     if (/wikipedia\.org$/.test(host)) continue      // an encyclopedia is not a walkthrough
-    if (wrongSibling(hit.title, gameTitle)) continue
+    if (wrongSibling(hit.title, gameTitle) || aboutSibling(hit.title, hit.url, '', siblings)) continue
     const page = await pageFromHit(hit, maxChars)
     if (!page) continue
-    if (!mentionsGame(`${page.title}\n${page.text}`, gameTitle, 2) || wrongSibling(page.title, gameTitle) || siblingHeavy(page.text, gameTitle)) {
+    if (!mentionsGame(`${page.title}\n${page.text}`, gameTitle, 2) || wrongSibling(page.title, gameTitle) || siblingHeavy(page.text, gameTitle) || aboutSibling(page.title, page.url, page.text, siblings)) {
       console.warn(`[research] walkthrough candidate ${host} "${page.title.slice(0, 50)}" is not about "${qualifier}" — skipped`)
       continue
     }
@@ -610,6 +611,7 @@ export async function researchWalkthrough(
   // dungeon's steps. So the title (or the URL) must carry the chapter's words,
   // and the guide's own index pages are never candidates.
   const excluded = new Set(exclude.map(u => u.replace(/\/+$/, '').toLowerCase()))
+  const siblings = await siblingNames(gameTitle)
   const seen = new Set<string>()
   const pages: Page[] = []
   const tryQuery = async (q: string, onlyHost?: string) => {
@@ -620,12 +622,12 @@ export async function researchWalkthrough(
       seen.add(hit.url)
       const host = hostOf(hit.url)
       if (onlyHost ? !(host === onlyHost || host.endsWith(`.${onlyHost}`)) : !(isWalkthroughHost(host) || looksLikeWalkthrough(hit.title, hit.url))) continue
-      if (/wikipedia\.org$/.test(host) || wrongSibling(hit.title, gameTitle)) continue
+      if (/wikipedia\.org$/.test(host) || wrongSibling(hit.title, gameTitle) || aboutSibling(hit.title, hit.url, '', siblings)) continue
       if (share(`${hit.title} ${decodeURIComponent(hit.url).replace(/[-_/]+/g, ' ')}`) < 0.5) continue
       const page = await pageFromHit(hit, maxChars)
       if (!page) continue
       const body = `${page.title}\n${page.text}`
-      if (!mentionsGame(body, gameTitle) || wrongSibling(page.title, gameTitle) || siblingHeavy(page.text, gameTitle) || share(body) < 0.5) continue
+      if (!mentionsGame(body, gameTitle) || wrongSibling(page.title, gameTitle) || siblingHeavy(page.text, gameTitle) || aboutSibling(page.title, page.url, page.text, siblings) || share(body) < 0.5) continue
       pages.push(page)
       console.log(`[research] walkthrough for "${chapter.slice(0, 40)}": ${host} "${page.title.slice(0, 50)}" (${page.text.length} chars)`)
     }
@@ -823,6 +825,68 @@ export function siblingHeavy(text: string, gameTitle: string): boolean {
   const all = (body.match(new RegExp(esc, 'gi')) ?? []).length
   const withSubtitle = (body.match(new RegExp(`${esc}\\s*[:\\-–—]\\s*[A-Z]`, 'g')) ?? []).length
   return withSubtitle >= 3 && withSubtitle > all - withSubtitle
+}
+
+/**
+ * The franchise's OTHER games, by name, from the wiki's own list of games —
+ * so "Breath of the Wild", "Majora's Mask", "Ocarina of Time" for the 1986
+ * game. This is what makes the sibling test data rather than guesswork: a
+ * title rule cannot see that IGN's "Find every collectible in Zelda: Breath
+ * of the Wild" is another game, and a page about the wanted game does not
+ * name a sibling in its title, its address, or three times in its text.
+ * Cached per title; a wiki with no games list yields an empty set and the
+ * test passes everything, which is the old behaviour.
+ */
+const siblingCache = new Map<string, string[]>()
+export async function siblingNames(gameTitle: string): Promise<string[]> {
+  const cached = siblingCache.get(gameTitle)
+  if (cached) return cached
+  const out: string[] = []
+  try {
+    const wiki = await findGameWiki(gameTitle)
+    if (wiki) {
+      // Asked raw rather than through categoryMembers(): that helper answers
+      // nothing for a category over 40 pages because a chapter list that long
+      // is not one, but a franchise's games list is exactly that long.
+      const json = await wikiApi<CategoryMembersReply>(wiki.host, {
+        action: 'query', list: 'categorymembers', cmtitle: 'Category:Games', cmlimit: '120', cmtype: 'page',
+      })
+      const members = (json?.query?.categorymembers ?? [])
+        .map(m => (typeof m.title === 'string' ? m.title.trim() : ''))
+        .filter(t => t.length > 0 && !/\(series\)$/i.test(t))
+      const norm = (s: string) => s.toLowerCase().replace(/['’]/g, '').replace(/\s+/g, ' ').trim()
+      const want = norm(gameTitle)
+      const qualifier = norm(gameQualifier(gameTitle))
+      // Only games of this franchise: the wiki files guest appearances
+      // (Skyrim, Smash Bros.) under Games too, and those are not siblings.
+      const keys = titleKeywords(gameTitle).map(norm)
+      for (const m of members) {
+        const full = norm(m)
+        if (full === want || !keys.some(k => full.includes(k))) continue
+        // The distinctive half: what follows the franchise name, or the name itself.
+        const distinct = full.includes(': ') ? full.slice(full.indexOf(': ') + 2) : full
+        if (distinct.length < 5 || distinct === want || distinct === qualifier || want.includes(distinct)) continue
+        out.push(distinct)
+      }
+    }
+  } catch { /* no wiki, no siblings */ }
+  siblingCache.set(gameTitle, out)
+  if (out.length > 0) console.log(`[research] ${gameTitle}: ${out.length} sibling game(s) to keep out — ${out.slice(0, 5).join(', ')}…`)
+  return out
+}
+
+/** Does this page belong to a sibling? Its title or address names one, or its text does three times over. */
+export function aboutSibling(title: string, url: string, text: string, siblings: string[]): string {
+  if (siblings.length === 0) return ''
+  const norm = (s: string) => s.toLowerCase().replace(/['’]/g, '').replace(/[-_+/]+/g, ' ').replace(/\s+/g, ' ')
+  const head = norm(`${title} ${decodeURIComponent(url)}`)
+  for (const s of siblings) if (head.includes(s)) return s
+  const body = norm(text.slice(0, 20_000))
+  for (const s of siblings) {
+    const n = body.split(s).length - 1
+    if (n >= 3) return s
+  }
+  return ''
 }
 
 export function mentionsGame(text: string, gameTitle: string, minMentions = 1): boolean {
@@ -1700,6 +1764,7 @@ export async function researchGame(
   const { limit = 1, maxChars = 6000, preferredSite, webFirst = false, requireGameMention = false } = opts
   const pages: Page[] = []
   const qualifier = gameQualifier(gameTitle)
+  const siblings = await siblingNames(gameTitle)
 
   const accept = (candidates: Page[], why: string): void => {
     for (const p of candidates) {
@@ -1712,8 +1777,9 @@ export async function researchGame(
         )
         continue
       }
-      if (wrongSibling(p.title, gameTitle) || siblingHeavy(p.text, gameTitle)) {
-        console.warn(`[research] rejected ${p.site} "${p.title.slice(0, 60)}" (${why}) — a different game in the same series`)
+      const sib = aboutSibling(p.title, p.url, p.text, siblings)
+      if (wrongSibling(p.title, gameTitle) || siblingHeavy(p.text, gameTitle) || sib) {
+        console.warn(`[research] rejected ${p.site} "${p.title.slice(0, 60)}" (${why}) — a different game in the same series${sib ? ` (${sib})` : ''}`)
         continue
       }
       pages.push(p)
