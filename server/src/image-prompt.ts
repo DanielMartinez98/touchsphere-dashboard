@@ -319,7 +319,21 @@ export async function improvePrompt(prompt: string, style: StyleFacts): Promise<
     if (text.length < Math.min(12, prompt.length)) {
       return give(false, prompt, 'the rewrite came back too short to be a prompt')
     }
-    return give(text !== prompt, text, '')
+    // THE USER'S SUBJECT SURVIVES OR THE REWRITE IS THROWN AWAY. Asked for
+    // "launch from dragon ball", the local model wrote "goku, dragon ball": it
+    // did not know the character and substituted the one it did. A rewrite is
+    // only ever allowed to add; every significant word the user typed must
+    // still be there.
+    const lost = missingWords(prompt, text)
+    if (lost.length > 0) {
+      return give(false, prompt, `the rewrite dropped "${lost.join('", "')}" from your request, so your own words were kept`)
+    }
+    // And it may not invent what the user did not say: a hair or eye colour
+    // ("red hair" for a black-haired character), or an artist tag — the
+    // dashboard adds the series' creator from a table, and a made-up @ tag
+    // would block the right one.
+    const cleaned = stripInvented(prompt, text)
+    return give(cleaned !== prompt, cleaned, '')
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.warn('[image-prompt] error:', msg)
@@ -327,6 +341,40 @@ export async function improvePrompt(prompt: string, style: StyleFacts): Promise<
   } finally {
     clearTimeout(timer)
   }
+}
+
+const KEEP_STOPWORDS = new Set([
+  'from', 'with', 'and', 'the', 'this', 'that', 'into', 'onto', 'over', 'under', 'near', 'her', 'his',
+  'their', 'them', 'they', 'she', 'him', 'who', 'while', 'when', 'where', 'some', 'very', 'like', 'just',
+  'please', 'draw', 'make', 'picture', 'image', 'photo', 'render', 'wearing', 'holding', 'sitting',
+  'standing', 'looking', 'background', 'style', 'anime', 'original', 'character', 'series', 'version',
+])
+
+/**
+ * The significant words of the request that the rewrite no longer contains.
+ * Four letters or more, not a filler word, matched loosely (a plural, a
+ * possessive, a hyphen) so "hancock's" still counts as "hancock".
+ */
+export function missingWords(original: string, rewrite: string): string[] {
+  const norm = (s: string) => s.toLowerCase().replace(/['’]s\b/g, '').replace(/[^a-z0-9\s-]/g, ' ')
+  const have = norm(rewrite)
+  const words = [...new Set(norm(original).split(/[\s-]+/).filter(w => w.length >= 4 && !KEEP_STOPWORDS.has(w) && !/^\d+$/.test(w)))]
+  return words.filter(w => !have.includes(w) && !have.includes(w.replace(/s$/, '')))
+}
+
+/** Hair and eye colours, and artist tags, that the user never asked for. */
+export function stripInvented(original: string, rewrite: string): string {
+  const o = original.toLowerCase()
+  const saidLook = /\b(hair|eyes?|blonde?|brunette|redhead)\b/.test(o)
+  const ownArtists = new Set((original.match(/@[a-z0-9 _().'-]+/gi) ?? []).map(a => a.trim().toLowerCase()))
+  const tags = rewrite.split(',').map(t => t.trim()).filter(Boolean)
+  const kept = tags.filter(t => {
+    const l = t.toLowerCase()
+    if (!saidLook && /\b(hair|eyes?)\b/.test(l) && !/\bwet hair\b|\bhair ornament\b|\bhairband\b|\bhair ribbon\b/.test(l)) return false
+    if (l.startsWith('@') && !ownArtists.has(l)) return false
+    return true
+  })
+  return kept.join(', ')
 }
 
 /** The model composeRedrawPrompt() will use. */

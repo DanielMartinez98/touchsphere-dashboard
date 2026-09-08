@@ -1678,7 +1678,7 @@ async function run(job: ImageJob): Promise<void> {
     // Anima only: the creator tag the improver was asked for and may have
     // dropped. Applied to job.prompt so the gallery shows the prompt as drawn.
     if (BUILTIN_WORKFLOWS[job.model.slice(WORKFLOW_PREFIX.length)]?.promptStyle === 'mixed') {
-      const fixed = applyAnimaFidelity(job.prompt)
+      const fixed = applyAnimaFidelity(job.prompt, job.promptOriginal ?? '')
       if (fixed.added) {
         console.log(`[image] ${job.id} added the series' creator for fidelity: ${fixed.added}`)
         job.prompt = fixed.prompt
@@ -2163,11 +2163,13 @@ const ANIMA_PROMPT_GUIDE =
   'ORDER: [count] [character] [series] [artist] [meta] [appearance] [clothes] [pose] [setting] [lighting].\n' +
   'CHARACTER: the Danbooru character tag, family name first for Japanese names ("haruno sakura", ' +
   '"hyuuga hinata", "uzumaki naruto"), immediately followed by the SERIES tag ("naruto"). Never the ' +
-  'character alone, never a description in place of the tag.\n' +
-  'ARTIST: the series\' own creator as an @ tag ("@masashi kishimoto") — the card says an artist tag ' +
-  'is one of the strongest levers and MUST carry the @ — but ONLY when you are certain who made it; ' +
-  'a wrong creator is a wrong series. No other artist, "style of", medium (watercolor, chibi, sketch, ' +
-  'pixel art) or era tag unless the user asked for that look.\n' +
+  'character alone, never a description in place of the tag. IF YOU DO NOT KNOW THE CHARACTER, KEEP ' +
+  'THE NAME EXACTLY AS THE USER TYPED IT — never replace it with another character from the same ' +
+  'series (asked for Launch from Dragon Ball, do not write Goku). The user\'s words always survive.\n' +
+  'ARTIST: the series\' own creator as an @ tag ("@masashi kishimoto") is one of the strongest levers ' +
+  'the card names — the dashboard adds it for the series it knows, so write one yourself ONLY when you ' +
+  'are certain who made the series; an invented artist is removed. No other artist, "style of", ' +
+  'medium (watercolor, chibi, sketch, pixel art) or era tag unless the user asked for that look.\n' +
   'META: "official style" (drawn the way the source draws it) by default; "anime screencap" when the ' +
   'user wants a frame of the show; "official art" for a key visual.\n' +
   'APPEARANCE: only what you are certain of — hair colour and style, eye colour, signature marks. A ' +
@@ -2233,10 +2235,32 @@ const ANIMA_CREATORS: Array<[RegExp, string]> = [
  * right after the series tag, in the card's own tag order. Idempotent, and a
  * no-op for prompts with no known series or with an @ tag already in them.
  */
-export function applyAnimaFidelity(prompt: string): { prompt: string; added: string } {
+/**
+ * Names people type that are not the Danbooru tag. Small and deliberately
+ * so: only cases where the romanisation itself differs, because a table of
+ * every character is a job for the model, not this file. "Launch" is the
+ * English dub's spelling of a character Danbooru files as "lunch".
+ */
+const CHARACTER_ALIASES: Array<[RegExp, string]> = [
+  [/\blaunch\b(?=[\s\S]*\bdragon ?ball\b)/i, 'lunch (dragon ball)'],
+  [/\bkrillin\b/i, 'kuririn'],
+  [/\bbulma\b/i, 'bulma'],
+  [/\bzoro\b(?=[\s\S]*\bone piece\b)/i, 'roronoa zoro'],
+  [/\bluffy\b(?=[\s\S]*\bone piece\b)/i, 'monkey d. luffy'],
+]
+
+export function applyAnimaFidelity(prompt: string, original = ''): { prompt: string; added: string } {
   const f = fidelitySettings()
   let out = prompt
   const added: string[] = []
+  // An @ tag the user did not type is an invented one, whoever wrote it.
+  if (original) {
+    const own = new Set((original.match(/@[a-z0-9 _().'-]+/gi) ?? []).map(a => a.trim().toLowerCase()))
+    out = out.split(',').map(t => t.trim()).filter(t => !(t.startsWith('@') && !own.has(t.toLowerCase()))).join(', ')
+  }
+  for (const [alias, tag] of CHARACTER_ALIASES) {
+    if (alias.test(out) && !out.toLowerCase().includes(tag)) { out = out.replace(alias, tag); added.push(tag) }
+  }
   if (f.creator && !/(^|[,\s])@/.test(out)) {
     for (const [series, creator] of ANIMA_CREATORS) {
       const m = series.exec(out)
