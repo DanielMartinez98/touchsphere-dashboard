@@ -1675,6 +1675,15 @@ async function run(job: ImageJob): Promise<void> {
       maskName = await uploadMask(job)
     }
 
+    // Anima only: the creator tag the improver was asked for and may have
+    // dropped. Applied to job.prompt so the gallery shows the prompt as drawn.
+    if (BUILTIN_WORKFLOWS[job.model.slice(WORKFLOW_PREFIX.length)]?.promptStyle === 'mixed') {
+      const fixed = applyAnimaFidelity(job.prompt)
+      if (fixed.added) {
+        console.log(`[image] ${job.id} added the series' creator for fidelity: ${fixed.added}`)
+        job.prompt = fixed.prompt
+      }
+    }
     const graph = buildGraph(job, sourceName, maskName)
     await ensureSamplers(graph, job)
     // The graph is where the real step count finally lives — until now it was
@@ -2175,6 +2184,13 @@ const ANIMA_PROMPT_GUIDE =
   'than SDXL, e.g. (chibi:2). NEVER write quality tags yourself — no "masterpiece", "best ' +
   'quality", "high resolution", "absurdres" — they are prepended for you, and repeating them ' +
   'spends the most heavily weighted tokens in the prompt on words that are already there. ' +
+  'CHARACTER TAGS ARE DANBOORU\u2019S, NOT THE SPOKEN NAME: for Japanese characters Danbooru puts ' +
+  'the FAMILY NAME FIRST and romanises long vowels — "haruno sakura", "hyuuga hinata", "uzumaki ' +
+  'naruto", "hatsune miku", "kamado nezuko", "souryuu asuka langley" — and that exact form is ' +
+  'what the model learned, so "hinata hyuga" reaches it far more weakly than "hyuuga hinata". ' +
+  'Western-named characters keep their natural order ("power (chainsaw man)", "ochako uraraka" ' +
+  'is "uraraka ochako"). When you know the Danbooru tag, use it; when you do not, family name ' +
+  'first is the better guess for a Japanese name. ' +
   'PROSE, when you use it: at least two sentences — a one-line caption is the "short or vague ' +
   'prompt" the card warns produces unwanted content — and Capitalize character and series ' +
   'names properly in a sentence ("Sakura Haruno from Naruto"), where tags stay lowercase. Tags ' +
@@ -2214,7 +2230,81 @@ const ANIMA_PROMPT_GUIDE =
   'weight on the character tag the way the card shows — "(sakura haruno:1.4)" — and on the ' +
   'creator tag, since this model wants higher weights than SDXL. When the user asks for a style ' +
   'change ON a character ("Naruto as a cyberpunk"), keep the character, series and creator tags ' +
-  'in front and put the new style after them, so identity still wins.'
+  'in front and put the new style after them, so identity still wins. ' +
+  'WORKED EXAMPLES — copy this shape exactly: ' +
+  '"Hinata Hyuga from Naruto sitting in a pool" \u2192 "1girl, hyuuga hinata, naruto, @masashi ' +
+  'kishimoto, official style, blue one-piece swimsuit, sitting in a swimming pool, wet hair, ' +
+  'looking at viewer, bright sunlight, clear blue water, summer" \u2014 ' +
+  '"nezuko in a bamboo forest at night" \u2192 "1girl, kamado nezuko, kimetsu no yaiba, ' +
+  '@koyoharu gotouge, official style, pink kimono, bamboo muzzle, bamboo forest, night, ' +
+  'moonlight, mist. She stands between the tall stalks with the moon behind her." \u2014 ' +
+  '"sakura from naruto pink bikini poolside" \u2192 "1girl, haruno sakura, naruto, @masashi ' +
+  'kishimoto, official style, pink bikini, poolside, sitting, bright daylight, soft shadows".'
+
+/**
+ * The series a prompt names \u2192 the artist tag Anima should carry for it.
+ *
+ * Danbooru artist tags for the people who drew the source material, keyed by
+ * the series tag the prompt already contains. The guide asks the improver to
+ * write these itself, and the local 8B model does not do it reliably — a
+ * measured run produced "1girl, hinata hyuga, naruto, ..." with the rule in
+ * front of it — so applyAnimaFidelity() puts the creator in when the model
+ * forgot, for the series it knows. Only the source's own creator ever goes in
+ * (a studio for an anime-original), and never when the prompt already carries
+ * any @ tag, because an artist the user chose beats one this table would add.
+ */
+const ANIMA_CREATORS: Array<[RegExp, string]> = [
+  [/\bnaruto\b/i,                         '@masashi kishimoto'],
+  [/\bboruto\b/i,                         '@masashi kishimoto'],
+  [/\b(kimetsu no yaiba|demon slayer)\b/i, '@koyoharu gotouge'],
+  [/\bchainsaw man\b/i,                   '@tatsuki fujimoto'],
+  [/\bone piece\b/i,                      '@eiichiro oda'],
+  [/\bdragon ?ball\b/i,                   '@akira toriyama'],
+  [/\bbleach\b/i,                         '@kubo tite'],
+  [/\b(neon genesis )?evangelion\b/i,     '@sadamoto yoshiyuki'],
+  [/\bjujutsu kaisen\b/i,                 '@akutami gege'],
+  [/\b(boku no hero academia|my hero academia)\b/i, '@horikoshi kouhei'],
+  [/\b(shingeki no kyojin|attack on titan)\b/i, '@isayama hajime'],
+  [/\bspy x family\b/i,                   '@endou tatsuya'],
+  [/\bfullmetal alchemist\b/i,            '@arakawa hiromu'],
+  [/\bhunter x hunter\b/i,                '@togashi yoshihiro'],
+  [/\bsailor moon\b/i,                    '@takeuchi naoko'],
+  [/\bfairy tail\b/i,                     '@mashima hiro'],
+  [/\bsword art online\b/i,               '@abec'],
+  [/\bre:?zero\b/i,                       '@ootsuka shinichirou'],
+  [/\bkonosuba\b/i,                       '@mishima kurone'],
+  [/\boshi no ko\b/i,                     '@yokoyari mengo'],
+  [/\bfrieren\b/i,                        '@abe tsukasa'],
+  [/\bsolo leveling\b/i,                  '@jang sung-rak'],
+  [/\bvocaloid\b/i,                       '@kei (keigarou)'],
+  [/\bgenshin impact\b/i,                 '@mihoyo'],
+  [/\bhonkai\b/i,                         '@mihoyo'],
+  [/\bblue archive\b/i,                   '@nexon'],
+  [/\bviolet evergarden\b/i,              '@kyoto animation'],
+  [/\bk-on!?\b/i,                         '@kyoto animation'],
+  [/\bmadoka magica\b/i,                  '@aoki ume'],
+  [/\bsteins;?gate\b/i,                   '@huke'],
+]
+
+/**
+ * A named character must look as in its series: if the prompt names a series
+ * this file knows and carries no artist tag, the source's creator goes in
+ * right after the series tag, in the card's own tag order. Idempotent, and a
+ * no-op for prompts with no known series or with an @ tag already in them.
+ */
+export function applyAnimaFidelity(prompt: string): { prompt: string; added: string } {
+  if (/(^|[,\s])@/.test(prompt)) return { prompt, added: '' }
+  for (const [series, creator] of ANIMA_CREATORS) {
+    const m = series.exec(prompt)
+    if (!m) continue
+    // Insert after the tag the series name sits in — up to the next comma.
+    const tagEnd = prompt.indexOf(',', m.index)
+    const at = tagEnd === -1 ? prompt.length : tagEnd
+    const out = `${prompt.slice(0, at)}, ${creator}${prompt.slice(at)}`
+    return { prompt: out, added: creator }
+  }
+  return { prompt, added: '' }
+}
 
 /**
  * Appended after every Anima prompt (Settings → Drawing can override it per
