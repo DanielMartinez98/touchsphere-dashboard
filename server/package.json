@@ -7,7 +7,8 @@
     "dev": "nodemon --exec \"ts-node --transpile-only\" src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "research": "ts-node --transpile-only scripts/research-dry-run.ts"
+    "research": "ts-node --transpile-only scripts/research-dry-run.ts",
+    "test:local-ai": "ts-node --transpile-only scripts/local-ai-test.ts"
   },
   "keywords": [],
   "author": "",

@@ -14,8 +14,8 @@ import systemRouter from './routes/system'
 import stateRouter from './routes/state'
 import deviceRouter from './routes/device'
 import audioRouter from './routes/audio'
-import ttsRouter from './routes/tts'
-import sttRouter from './routes/stt'
+import ttsRouter, { ttsChainSummary } from './routes/tts'
+import sttRouter, { sttSummary, whisperUrl } from './routes/stt'
 import chatRouter from './routes/chat'
 import promptsRouter from './routes/prompts'
 import browseRouter from './routes/browse'
@@ -39,10 +39,11 @@ dotenv.config()
 // ── Startup diagnostics ───────────────────────────────────────────────────────
 // ElevenLabs keys are `sk_…`. Presence alone is not a useful check: a
 // wrong-format key still reads as "set", and the failure it causes is silent in
-// both directions — TTS quietly degrades to espeak-ng, while STT (which has no
-// fallback at all) 502s on every utterance. The dashboard looks perfectly alive
-// and just stops responding to speech, so the format is worth asserting here
-// rather than leaving it to be discovered from ElevenLabs' 400.
+// both directions — TTS quietly degrades to the next voice in its chain, while
+// STT on a box with no local Whisper (which then has no fallback at all) 502s
+// on every utterance. The dashboard looks perfectly alive and just stops
+// responding to speech, so the format is worth asserting here rather than
+// leaving it to be discovered from ElevenLabs' 400.
 const ELEVEN_KEY = process.env['ELEVENLABS_API_KEY'] ?? ''
 const ELEVEN_KEY_MALFORMED = elevenLabsKeyState() === 'malformed'
 
@@ -55,9 +56,14 @@ console.log('[startup] LOG_LEVEL             :', process.env['LOG_LEVEL'] ?? 'in
 console.log('[startup] OPENWEATHER_API_KEY   :', process.env['OPENWEATHER_API_KEY'] ? '✓ set' : '✗ MISSING')
 console.log('[startup] CALENDAR_ICAL_URL     :', process.env['CALENDAR_ICAL_URL']   ? '✓ set' : '— not set (calendar disabled)')
 console.log('[startup] ELEVENLABS_API_KEY    :',
-  !ELEVEN_KEY            ? '— not set (TTS will use espeak-ng, STT disabled)'
+  !ELEVEN_KEY            ? '— not set (no cloud voice; the local providers below carry speech)'
   : ELEVEN_KEY_MALFORMED ? `✗ MALFORMED (starts with "${ELEVEN_KEY.slice(0, 3)}…", expected "sk_")`
   : '✓ set')
+// The two halves of the voice loop, as provider chains, with which links are
+// local spelled out. "Every AI tool runs on this box" is a claim these two
+// lines and the web-search line below either back or refute.
+console.log('[startup] speech-to-text        :', sttSummary())
+console.log('[startup] text-to-speech        :', ttsChainSummary())
 console.log('[startup] OLLAMA_URL            :', process.env['OLLAMA_URL']           ?? 'http://host.docker.internal:11434 (default)')
 console.log('[startup] OLLAMA_MODEL          :', process.env['OLLAMA_MODEL']         ?? 'gemma3 (default)')
 console.log('[startup] OLLAMA_NUM_CTX        :', process.env['OLLAMA_NUM_CTX'] ?? '32768 (default)')
@@ -114,8 +120,13 @@ if (!process.env['OPENWEATHER_API_KEY']) {
 if (ELEVEN_KEY_MALFORMED) {
   console.error('[startup] WARNING: ELEVENLABS_API_KEY does not look like an ElevenLabs key.')
   console.error('[startup]          Keys begin with "sk_" — elevenlabs.io → Profile → API Keys.')
-  console.error('[startup]          Until it is fixed: /api/stt fails on every utterance (voice')
-  console.error('[startup]          input will not work at all) and /api/tts falls back to espeak-ng.')
+  if (whisperUrl()) {
+    console.error('[startup]          Until it is fixed ElevenLabs is skipped: voice input stays on the')
+    console.error('[startup]          local Whisper and /api/tts on the local voices, so nothing stops.')
+  } else {
+    console.error('[startup]          Until it is fixed: /api/stt fails on every utterance (voice')
+    console.error('[startup]          input will not work at all) and /api/tts falls back to espeak-ng.')
+  }
 }
 
 const app = express()
@@ -146,10 +157,10 @@ app.use(helmet({
 // LAN kiosks live on a different origin (the Pi) and POST audio here, so allow it.
 // Tighten by setting AUDIO_ALLOWED_ORIGIN=http://192.168.1.42 if you want to lock down.
 const allowed = process.env['AUDIO_ALLOWED_ORIGIN']
-// exposedHeaders: without it the browser hides X-TTS-Provider from JS on a
-// cross-origin kiosk, and the Debug tab silently loses the one field that says
-// which engine actually spoke.
-app.use(cors({ origin: allowed ?? '*', exposedHeaders: ['X-TTS-Provider'] }))
+// exposedHeaders: without it the browser hides X-TTS-Provider (and its STT
+// twin) from JS on a cross-origin kiosk, and the Debug tab silently loses the
+// one field that says which engine actually spoke or listened.
+app.use(cors({ origin: allowed ?? '*', exposedHeaders: ['X-TTS-Provider', 'X-STT-Provider'] }))
 app.use(express.json())
 
 // Request logger — logs method, path, status code, and response time

@@ -2,6 +2,9 @@ import { Router, Request, Response } from 'express'
 import fs from 'fs'
 import path from 'path'
 import { elevenLabsKeyState } from '../config/keys'
+import { sttProviders, sttSummary, whisperUrl } from './stt'
+import { ttsChainSummary } from './tts'
+import { SEARCH_PROVIDERS, SEARCH_LOCAL_FIRST } from '../research'
 
 const router = Router()
 
@@ -173,7 +176,11 @@ router.get('/version/check', async (_req: Request, res: Response) => {
 router.get('/check/elevenlabs', async (_req: Request, res: Response) => {
   const key = (process.env['ELEVENLABS_API_KEY'] ?? '').trim()
   if (!key) {
-    return res.status(502).json({ error: 'ELEVENLABS_API_KEY not set — voice input is disabled' })
+    return res.status(502).json({
+      error: whisperUrl()
+        ? 'ELEVENLABS_API_KEY not set — cloud voice is off; speech runs on the local Whisper and Kokoro'
+        : 'ELEVENLABS_API_KEY not set — voice input is disabled',
+    })
   }
   if (elevenLabsKeyState() === 'malformed') {
     return res.status(502).json({ error: `malformed key (starts with "${key.slice(0, 3)}…", expected "sk_")` })
@@ -181,7 +188,7 @@ router.get('/check/elevenlabs', async (_req: Request, res: Response) => {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 10_000)
   try {
-    const upstream = await fetch('https://api.elevenlabs.io/v1/user', {
+    const upstream = await fetch(`${(process.env['ELEVENLABS_API_URL'] ?? 'https://api.elevenlabs.io').replace(/\/+$/, '')}/v1/user`, {
       headers: { 'xi-api-key': key },
       signal: ctrl.signal,
     })
@@ -283,7 +290,12 @@ router.get('/debug', (_req: Request, res: Response) => {
   // debugging away from the actual fault.
   const warnings: string[] = []
   if (elevenLabsKeyState() === 'malformed') {
-    warnings.push('ELEVENLABS_API_KEY is set but malformed — ElevenLabs keys start with "sk_". Voice input (STT) will fail on every utterance; TTS falls back to espeak-ng.')
+    warnings.push(whisperUrl()
+      ? 'ELEVENLABS_API_KEY is set but malformed — ElevenLabs keys start with "sk_". It is skipped: voice input stays on the local Whisper and TTS on the local voices.'
+      : 'ELEVENLABS_API_KEY is set but malformed — ElevenLabs keys start with "sk_". Voice input (STT) will fail on every utterance; TTS falls back to espeak-ng.')
+  }
+  if (sttProviders().length === 0) {
+    warnings.push('No speech-to-text provider is configured — set WHISPER_URL (local Whisper, the `whisper` compose service) or ELEVENLABS_API_KEY. Voice input is disabled until then.')
   }
 
   res.json({
@@ -308,10 +320,29 @@ router.get('/debug', (_req: Request, res: Response) => {
       // otherwise: films still get posters, games silently get none.
       TMDB_API_KEY:        !!env['TMDB_API_KEY'],
       IGDB_CREDENTIALS:    !!(env['IGDB_CLIENT_ID'] && env['IGDB_CLIENT_SECRET']),
+      // The local AI services. Each is "set" when a URL points at it; whether
+      // it answers is what the connection checks below are for.
+      WHISPER_URL:         !!env['WHISPER_URL'],
+      KOKORO_URL:          !!env['KOKORO_URL'],
+      RVC_URL:             !!env['RVC_URL'],
+      COMFYUI_URL:         !!env['COMFYUI_URL'],
+      SEARXNG_URL:         !!env['SEARXNG_URL'],
     },
     ollama: {
       url:   env['OLLAMA_URL']   ?? 'http://host.docker.internal:11434 (default)',
       model: env['OLLAMA_MODEL'] ?? 'gemma3 (default)',
+    },
+    // Which engines answer, in the order they are tried, with the local ones
+    // marked. This is the panel's answer to "is anything still going to the
+    // cloud?" — a booleans table can't say which of two configured providers
+    // actually comes first.
+    chains: {
+      stt:    sttSummary(),
+      tts:    ttsChainSummary(),
+      search: SEARCH_PROVIDERS.map(p => p === 'ollama' ? 'ollama hosted (cloud)' : p === 'searxng' ? 'searxng (local)' : p).join(' → ')
+        + (SEARCH_LOCAL_FIRST ? ' (SEARCH_PREFER_LOCAL)' : ''),
+      chat:   `${env['OLLAMA_MODEL'] ?? 'gemma3 (default)'} at ${env['OLLAMA_URL'] ?? 'http://host.docker.internal:11434 (default)'}`
+        + (env['OLLAMA_FALLBACK_URL'] ? ` → ${env['OLLAMA_FALLBACK_MODEL'] ?? env['OLLAMA_MODEL'] ?? ''} at ${env['OLLAMA_FALLBACK_URL']}` : ''),
     },
   })
 })

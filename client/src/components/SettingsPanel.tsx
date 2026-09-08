@@ -67,6 +67,9 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
   const [sttRecording,  setSttRecording]  = useState(false)
   const [sttUploading,  setSttUploading]  = useState(false)
   const [sttTranscript, setSttTranscript] = useState<string>('')
+  // Which engine produced the transcript — the local Whisper or ElevenLabs —
+  // read off the reply rather than assumed, since /api/stt is a chain now.
+  const [sttProvider,   setSttProvider]   = useState<string>('')
   const [sttError,      setSttError]      = useState<string | null>(null)
   // Object URL for the most recent recording — used for the "tape playback".
   const [sttClipUrl,    setSttClipUrl]    = useState<string | null>(null)
@@ -100,6 +103,7 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
 
     setSttError(null)
     setSttTranscript('')
+    setSttProvider('')
     // Free any previous clip before starting a fresh recording.
     if (sttClipUrl) {
       try { URL.revokeObjectURL(sttClipUrl) } catch { /* ignore */ }
@@ -167,8 +171,9 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
           const detail = await res.text().catch(() => '')
           throw new Error(`HTTP ${res.status} ${detail.slice(0, 200)}`)
         }
-        const json = (await res.json()) as { text?: string; language_code?: string }
+        const json = (await res.json()) as { text?: string; language_code?: string; provider?: string }
         setSttTranscript((json.text ?? '').trim() || '(no speech detected)')
+        setSttProvider(json.provider ?? res.headers.get('X-STT-Provider') ?? '')
       } catch (err) {
         setSttError(err instanceof Error ? err.message : String(err))
       } finally {
@@ -544,8 +549,9 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
                 </div>
 
                 {/* Transcribe (STT) test — records mic audio, uploads to /api/stt,
-                    and shows what ElevenLabs Scribe heard. Tap once to start,
-                    again to stop and transcribe. */}
+                    and shows what the server's transcriber heard — the local
+                    Whisper, or ElevenLabs Scribe behind it — naming which one
+                    answered. Tap once to start, again to stop and transcribe. */}
                 <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Transcribe (STT)</span>
                 <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
                   <div className="flex items-center gap-2.5">
@@ -555,7 +561,7 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
                       <line x1="12" y1="19" x2="12" y2="23" />
                       <line x1="8" y1="23" x2="16" y2="23" />
                     </svg>
-                    <span className="text-white/70 text-sm font-medium">Mic → ElevenLabs Scribe</span>
+                    <span className="text-white/70 text-sm font-medium">Mic → server speech-to-text</span>
                   </div>
                   <button
                     onClick={() => void handleSttToggle()}
@@ -577,6 +583,11 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
                       <p className="text-violet-200 text-sm leading-relaxed break-words">
                         “{sttTranscript}”
                       </p>
+                      {sttProvider && (
+                        <p className="text-violet-300/60 text-xs mt-1.5">
+                          heard by {sttProvider === 'whisper' ? 'Whisper (local)' : sttProvider === 'elevenlabs' ? 'ElevenLabs Scribe (cloud)' : sttProvider}
+                        </p>
+                      )}
                     </div>
                   )}
                   {sttClipUrl && (
@@ -3360,6 +3371,10 @@ interface ServerDebug {
   // Faults a boolean can't express — e.g. a key that is present but the wrong
   // shape. Absent on servers older than this field.
   warnings?: string[]
+  // The provider chains — which engine answers speech-to-text, speech, search
+  // and chat, in the order they are tried, with the local links marked. This
+  // is how the panel answers "is anything still going to the cloud?".
+  chains?: Record<string, string>
 }
 
 interface CheckResult { state: 'ok' | 'fail'; ms: number; detail?: string }
@@ -3411,10 +3426,15 @@ const CHECK_LABELS: { id: string; label: string }[] = [
   { id: 'air',      label: 'Air quality' },
   { id: 'notion',   label: 'Notion tasks' },
   { id: 'device',   label: 'Device stats (Pi)' },
-  // Voice input dies completely when this key is bad, and nothing else in this
-  // list would notice — so it gets its own probe rather than being inferred
-  // from a TTS test that quietly falls back to espeak and passes.
-  { id: 'eleven',   label: 'ElevenLabs key (voice in/out)' },
+  // The local transcriber. A real round trip (a second of silence through
+  // the model) rather than a ping, because a container that is up but still
+  // loading weights answers a ping and fails an utterance.
+  { id: 'whisper',  label: 'Whisper (local voice in)' },
+  // Voice input used to die completely when this key was bad, and nothing
+  // else in this list would notice — so it gets its own probe rather than
+  // being inferred from a TTS test that quietly falls back and passes. With a
+  // local Whisper configured this is the cloud fallback, not the only ear.
+  { id: 'eleven',   label: 'ElevenLabs key (cloud voice in/out)' },
   // Image generation has no fallback renderer the way TTS has espeak, so "the
   // GPU box is off" is the whole failure and there is nothing else in this list
   // that would hint at it.
@@ -3431,6 +3451,11 @@ const CONFIG_LABELS: Record<string, string> = {
   DEFAULT_LAT_LON:     'Default coordinates',
   TMDB_API_KEY:        'TMDB key (movie/show art)',
   IGDB_CREDENTIALS:    'IGDB keys (game art)',
+  WHISPER_URL:         'Whisper URL (local speech-to-text)',
+  KOKORO_URL:          'Kokoro URL (local speech)',
+  RVC_URL:             'RVC URL (local voice conversion)',
+  COMFYUI_URL:         'ComfyUI URL (local image generation)',
+  SEARXNG_URL:         'SearXNG URL (local web search)',
 }
 
 async function timedFetch(path: string, init?: RequestInit, timeoutMs = 10_000): Promise<{ result: CheckResult; json?: any }> {
@@ -3542,18 +3567,22 @@ function DebugTab() {
     const lon = typeof geo.json?.lon === 'number' ? geo.json.lon : 0
     const now = new Date()
 
-    const endpoints: { id: string; path: string }[] = [
+    const endpoints: { id: string; path: string; timeoutMs?: number }[] = [
       { id: 'health',   path: '/api/health' },
       { id: 'weather',  path: `/api/weather?lat=${lat}&lon=${lon}` },
       { id: 'calendar', path: `/api/calendar/month?year=${now.getFullYear()}&month=${now.getMonth() + 1}` },
       { id: 'air',      path: `/api/airquality?lat=${lat}&lon=${lon}` },
       { id: 'notion',   path: '/api/notion/tasks' },
       { id: 'device',   path: '/api/device' },
+      // A cold Whisper loads its model inside this request, and on CPU that
+      // is longer than the 10 s the others get; "answered in 24 s" is the
+      // useful reading, "timed out" is not.
+      { id: 'whisper',  path: '/api/stt/check', timeoutMs: 50_000 },
       { id: 'eleven',   path: '/api/system/check/elevenlabs' },
       { id: 'comfy',    path: '/api/image/check' },
     ]
     await Promise.all(endpoints.map(async ep => {
-      const { result, json } = await timedFetch(ep.path)
+      const { result, json } = await timedFetch(ep.path, undefined, ep.timeoutMs)
       // A valid key that has burned its whole quota passes authentication and
       // then fails every synthesis — reported here rather than shown as a
       // clean pass, since the symptom is identical to a dead key.
@@ -3561,9 +3590,11 @@ function DebugTab() {
         setChecks(prev => ({ ...prev, [ep.id]: { ...result, state: 'fail', detail: `quota exhausted (${json.charactersUsed}/${json.characterLimit} characters)` } }))
         return
       }
-      // The ComfyUI probe reports the card and its free VRAM. That's the number
-      // you want when a render fails, so keep it rather than a bare "ok".
-      if (ep.id === 'comfy' && result.state === 'ok' && typeof json?.detail === 'string') {
+      // The ComfyUI probe reports the card and its free VRAM, the Whisper
+      // probe the model and how long the round trip took. Those are the
+      // numbers you want when something fails, so keep them rather than a
+      // bare "ok".
+      if ((ep.id === 'comfy' || ep.id === 'whisper') && result.state === 'ok' && typeof json?.detail === 'string') {
         setChecks(prev => ({ ...prev, [ep.id]: { ...result, detail: json.detail } }))
         return
       }
@@ -3772,6 +3803,20 @@ function DebugTab() {
               <span className="text-sm text-white/70 shrink-0">Ollama</span>
               <span className="text-sm text-white/60 text-right break-all">{server.ollama.model}<br /><span className="text-white/40 text-xs">{server.ollama.url}</span></span>
             </div>
+            {/* Who answers what, in order. Each link says whether it is local,
+                so this block is the one place that states plainly whether any
+                speech, search or chat still leaves the box. */}
+            {server.chains && ([
+              ['stt',    'Speech-to-text'],
+              ['tts',    'Text-to-speech'],
+              ['search', 'Web search'],
+              ['chat',   'Chat model'],
+            ] as const).map(([key, label]) => server.chains?.[key] ? (
+              <div key={key} className={rowClass}>
+                <span className="text-sm text-white/70 shrink-0">{label}</span>
+                <span className="text-xs text-white/60 text-right break-words max-w-[65%]">{server.chains[key]}</span>
+              </div>
+            ) : null)}
           </>
         )}
       </div>

@@ -37,6 +37,10 @@ services:
       # docker-compose.voice.yml THERE instead. See that file for the steps.
       KOKORO_URL: ${KOKORO_URL:-http://kokoro:8880}
       RVC_URL: ${RVC_URL:-http://rvc:5050}
+      # Local speech-to-text (the `whisper` service below, or the same image on
+      # the GPU box via docker-compose.voice.yml). Tried BEFORE ElevenLabs
+      # Scribe, which becomes the fallback; with neither, voice input is off.
+      WHISPER_URL: ${WHISPER_URL:-http://whisper:8000}
       # ComfyUI image generation. NO default, unlike the two above: there is no
       # local-voice-style sibling container to fall back to, because SDXL on this
       # box's CPU is minutes per image. Unset = the assistant is simply never
@@ -97,6 +101,35 @@ services:
     restart: unless-stopped
     expose:
       - "8880"
+
+  # ── Whisper — local speech-to-text ────────────────────────────────────────
+  # The listening half of the voice loop, on this box. Until this existed the
+  # dashboard could speak without the internet (Kokoro, espeak) but could not
+  # HEAR without it: /api/stt was ElevenLabs Scribe or nothing. speaches wraps
+  # faster-whisper in OpenAI's /v1/audio/transcriptions API — the same shape
+  # Kokoro uses for speech — and the app talks to it exactly as it would to
+  # any other server speaking that dialect (faster-whisper-server, LocalAI,
+  # whisper.cpp's server with --convert and WHISPER_PATH=/inference).
+  #
+  # The model named by WHISPER_MODEL (default Systran/faster-whisper-small,
+  # ~500 MB) is downloaded on first use into the volume below and kept, so the
+  # download happens once; the app sends a second of silence 15 s after boot
+  # to make that first load happen while nobody is talking. `small` is the
+  # right size for a 4-core CPU box (a sentence in ~1–2 s once warm); a GPU
+  # box can run distil-large-v3 through docker-compose.voice.yml instead.
+  # Published for amd64 AND arm64, so it also runs on the Pi. Same
+  # local-voice profile as kokoro: opt in with
+  #   docker compose --profile local-voice up -d
+  # Not exposed to the host — only the app talks to it, over the compose network.
+  whisper:
+    image: ghcr.io/speaches-ai/speaches:latest-cpu
+    container_name: touchsphere-whisper
+    profiles: ["local-voice"]
+    restart: unless-stopped
+    expose:
+      - "8000"
+    volumes:
+      - whisper-models:/home/ubuntu/.cache/huggingface/hub
 
   # ── RVC — local voice conversion (Miku's voice) ───────────────────────────
   # Second half of Miku's pipeline: Kokoro speaks the words, this re-timbres them
@@ -159,5 +192,6 @@ services:
 
 volumes:
   touchsphere-cache:
+  whisper-models:  # downloaded Whisper weights — a one-time fetch, kept across restarts
   caddy-data:     # Caddy stores its CA and certs here — persist across restarts
   caddy-config:

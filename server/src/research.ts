@@ -222,14 +222,30 @@ export interface Page {
   text:  string
 }
 
+// SEARCH_PREFER_LOCAL=1 puts the SearXNG box AHEAD of Ollama's hosted search
+// instead of behind it. The hosted search is the better answer when it is
+// allowed to be first — real ranking, and each hit carries the page's full
+// text — but it is a cloud call with an hourly quota, and a box meant to run
+// its AI tools on its own hardware wants the keyless local engine to answer
+// first and the hosted one to be what it falls back to. What is NOT changed
+// by this flag: fetchPageHosted() still reaches for the hosted side when a
+// site refuses this server (every Fandom wiki), because there is no local
+// alternative to that short of a headless browser. Only meaningful with a
+// SEARXNG_URL; without one the chain is exactly what it was.
+const LOCAL_FIRST = /^(1|true|yes|on)$/i.test((process.env['SEARCH_PREFER_LOCAL'] ?? '').trim()) && SEARXNG_URL.length > 0
+
 /** Which provider searchWeb will try first — reported in the startup/debug logs. */
-export const SEARCH_PROVIDER: SearchProvider = OLLAMA_API_KEY ? 'ollama' : SEARXNG_URL ? 'searxng' : 'duckduckgo'
+export const SEARCH_PROVIDER: SearchProvider =
+  LOCAL_FIRST ? 'searxng' : OLLAMA_API_KEY ? 'ollama' : SEARXNG_URL ? 'searxng' : 'duckduckgo'
 /** Every provider that is configured, in the order searchWeb tries them. */
 export const SEARCH_PROVIDERS: SearchProvider[] = [
+  ...(LOCAL_FIRST ? ['searxng' as const] : []),
   ...(OLLAMA_API_KEY ? ['ollama' as const] : []),
-  ...(SEARXNG_URL ? ['searxng' as const] : []),
+  ...(SEARXNG_URL && !LOCAL_FIRST ? ['searxng' as const] : []),
   'duckduckgo', 'wikipedia',
 ]
+/** True when the local engine answers first (SEARCH_PREFER_LOCAL with a SEARXNG_URL). */
+export const SEARCH_LOCAL_FIRST = LOCAL_FIRST
 /** True when any search at all is possible — the chat's web tools are offered on this. */
 export const SEARCH_AVAILABLE = OLLAMA_API_KEY.length > 0 || SEARXNG_URL.length > 0
 
@@ -369,11 +385,15 @@ async function paceSearches(): Promise<void> {
  * nothing, so a lapsed key degrades to keyless rather than to no guide.
  */
 export async function searchWeb(query: string, limit = 4): Promise<SearchHit[]> {
+  if (LOCAL_FIRST) {
+    const hits = await searchViaSearxng(query, limit)
+    if (hits.length > 0) return hits
+  }
   if (OLLAMA_API_KEY) {
     const hits = await searchViaOllama(query, limit)
     if (hits.length > 0) return hits
   }
-  if (SEARXNG_URL) {
+  if (SEARXNG_URL && !LOCAL_FIRST) {
     const hits = await searchViaSearxng(query, limit)
     if (hits.length > 0) return hits
   }
