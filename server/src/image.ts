@@ -30,7 +30,7 @@ import path from 'path'
 import { broadcast } from './routes/system'
 import { advanceSeed, paramsFor, type ImageParams } from './image-params'
 import { estimateRender, humanMs, recordRender } from './image-timing'
-import { composeRedrawPrompt, visionModel, improvePrompt, prompterModel, readPrompter, locateBox } from './image-prompt'
+import { composeKontextInstruction, composeRedrawPrompt, visionModel, improvePrompt, prompterModel, readPrompter, locateBox } from './image-prompt'
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -446,6 +446,10 @@ export interface ImageSettings {
    * the number the answer is a guess.
    */
   changed?:      number
+  /** An edit that came back unchanged was drawn again with this rewritten instruction. */
+  retriedWith?:  string
+  /** Why the rewrite was not possible, when the retry could not happen. */
+  retryFailed?:  string
   /** The mask id, so the lineage view can draw the region that was allowed to change. */
   maskFile?:     string
   /** What went in front of the prompt, when anything did. */
@@ -808,6 +812,9 @@ export interface ImageJob {
   promptOriginal: string
   /** Which model rewrote it. '' when nothing did. */
   improvedBy:     string
+  /** The rewritten instruction an unchanged edit was retried with, and why not if it wasn't. */
+  retriedWith?:   string
+  retryFailed?:   string
   /**
    * Time spent rewriting, so it can be subtracted from the render's timing
    * sample. Left in, it would teach image-timing.ts that this style is several
@@ -1684,7 +1691,18 @@ async function run(job: ImageJob): Promise<void> {
         job.prompt = fixed.prompt
       }
     }
-    const graph = buildGraph(job, sourceName, maskName)
+    let graph!: ComfyGraph
+    let bytes!: Buffer
+    let file = ''
+    let took = 0
+    let changed: number | null = null
+    // An EDIT that comes back unchanged is drawn again once, with the
+    // instruction rewritten by a model that can see the picture. Kontext is
+    // literal: it changes nothing when the subject is not named the way it
+    // appears or the change is vague, and the user's own words were tried
+    // first because that is what they asked for.
+    for (let attempt = 1; attempt <= 2; attempt++) {
+    graph = buildGraph(job, sourceName, maskName)
     await ensureSamplers(graph, job)
     // The graph is where the real step count finally lives — until now it was
     // the style's default, read out of the same graph but before the job's own
@@ -1704,7 +1722,7 @@ async function run(job: ImageJob): Promise<void> {
       'The GPU is done. Fetching the finished picture back and writing it to the ' +
       'dashboard, which is where the gallery reads it from.')
 
-    const bytes = await downloadOutput(output)
+    bytes = await downloadOutput(output)
     // The size the picture actually came back at wins over the one computed at
     // queue time. They agree for a fresh render; for an edit or a resized
     // redraw the graph's own scaling node had the final say, and the number
@@ -1715,7 +1733,7 @@ async function run(job: ImageJob): Promise<void> {
       job.width = real.width
       job.height = real.height
     }
-    const file = `${job.id}.png`
+    file = `${job.id}.png`
     const dest = path.join(imagesDir(), file)
     const tmp = `${dest}.tmp-${process.pid}`
     fs.writeFileSync(tmp, bytes)
@@ -1724,7 +1742,7 @@ async function run(job: ImageJob): Promise<void> {
     job.file = file
     job.status = 'ready'
     job.endedAt = Date.now()
-    const took = job.endedAt - job.startedAt
+    took = job.endedAt - job.startedAt
     // Filed against the style, the workload and the warmth, so the NEXT render
     // like this one can be estimated from it — see image-timing.ts. The step
     // count carries the redraw discount, or a style would look faster than it is
@@ -1745,12 +1763,43 @@ async function run(job: ImageJob): Promise<void> {
     // How much of the source survived, measured now that both files are on
     // disk. Cheap (a 64-cell grid over two decoded PNGs) and the only honest
     // answer to "why does this look identical" — see imageChange().
-    let changed: number | null = null
+    changed = null
     if (job.source && job.sourceFile) {
       try { changed = imageDifference(job.sourceFile, file) } catch { changed = null }
       if (changed !== null) {
-        console.log(`[image] ${job.id} changed ${(changed * 100).toFixed(1)}% of the source`)
+        const edit = styleEdits(job.model)
+        const verdict = changed < 0.05 ? (edit ? 'the editor found nothing to do' : 'essentially unchanged')
+          : changed < 0.12 ? 'changed only a little' : 'changed'
+        console.log(
+          `[image] ${job.id} ${verdict}: ${(changed * 100).toFixed(1)}% of the source — ` +
+          `${styleLabel(job.model)}, ${edit ? 'instruction' : 'prompt'}="${job.prompt.slice(0, 140)}"` +
+          `${job.promptOriginal && job.promptOriginal !== job.prompt ? ` (typed: "${job.promptOriginal.slice(0, 80)}")` : ''}` +
+          `, source ${job.sourceWidth ?? '?'}×${job.sourceHeight ?? '?'} → ${job.width}×${job.height}` +
+          `${edit ? '' : `, strength ${Math.round((job.denoise ?? 1) * 100)}%`}${job.mask ? ', masked' : ''}` +
+          `${job.controlnet ? `, pose held by ${job.controlnet}` : ''}, attempt ${attempt}`,
+        )
+        if (edit && changed < 0.05 && attempt === 1 && !job.mask) {
+          push(job, 'rewriting the instruction',
+            `The editor changed only ${(changed * 100).toFixed(1)}% of the picture with "${job.prompt.slice(0, 80)}" — ` +
+            'it found nothing to do with those words. Asking a model that can see the picture to write the ' +
+            'same change the way the editor needs it, then drawing once more.')
+          const better = await composeKontextInstruction(fs.readFileSync(job.sourceFile), job.prompt)
+          if (better.changed) {
+            console.log(`[image] ${job.id} retrying with the rewritten instruction: "${better.prompt.slice(0, 160)}" (${better.model}, ${better.ms}ms)`)
+            job.promptOriginal = job.promptOriginal || job.prompt
+            job.retriedWith = better.prompt
+            job.prompt = better.prompt
+            job.improveMs += better.ms
+            job.status = 'running'
+            push(job, 'drawing again', `Drawing again with: "${better.prompt.slice(0, 160)}"`)
+            continue
+          }
+          job.retryFailed = better.why
+          console.warn(`[image] ${job.id} could not rewrite the instruction — ${better.why}; the unchanged picture stands`)
+        }
       }
+    }
+    break
     }
 
     remember({
@@ -3518,6 +3567,8 @@ function renderedWith(job: ImageJob, graph: ComfyGraph, changed?: number | null)
     ...(job.maskFile ? { mask: true, ...(job.region ? { region: job.region } : {}) } : {}),
     ...(job.controlnet ? { controlnet: `${job.controlnet} · ${job.hold} ${Math.round(job.holdStrength * 100)}% to ${Math.round(job.holdEnd * 100)}%` } : {}),
     ...(typeof changed === 'number' ? { changed } : {}),
+    ...(job.retriedWith ? { retriedWith: job.retriedWith } : {}),
+    ...(job.retryFailed ? { retryFailed: job.retryFailed } : {}),
     ...(job.maskFile ? { maskFile: job.maskFile } : {}),
     ...(job.prefix ? { prefix: job.prefix } : {}),
     ...(job.source ? { fullPrompt: joinPrompt(joinPrefix(job.prefix, job.prompt), job.optimizations) } : {}),

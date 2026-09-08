@@ -46,6 +46,8 @@ export interface ImageSettings {
   tookMs:   number
   /** Set only when the prompt improver rewrote the prompt — see image-prompt.ts. */
   promptOriginal?: string
+  retriedWith?:    string
+  retryFailed?:    string
   improvedBy?:     string
   /** Booster text that was appended to the prompt, when there was any. */
   optimizations?:  string

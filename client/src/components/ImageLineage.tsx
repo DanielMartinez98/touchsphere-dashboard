@@ -90,7 +90,19 @@ function verdict(st: ImageSettings | null): { tone: 'bad' | 'warn'; text: string
   if (!st.mask && typeof st.denoise === 'number' && st.denoise > 0 && st.denoise < 0.5) {
     causes.push(`Strength was ${Math.round(st.denoise * 100)}%, which keeps most of the original by design. Try a stronger setting.`)
   }
-  if (isEdit && !causes.length) {
+  if (isEdit && st.retriedWith) {
+    causes.push(
+      `The first attempt with your words changed nothing, so it was drawn again with the instruction ` +
+      `rewritten by a model that looked at the picture: "${st.retriedWith}". This is that second result. ` +
+      'If it still missed, the editor cannot see the subject the way it was named — use "Just a part" and mark the region by hand.',
+    )
+  } else if (isEdit && st.retryFailed) {
+    causes.push(
+      `The editor found nothing to do with this instruction, and the rewrite that would have been tried ` +
+      `could not be made (${st.retryFailed}). Name the subject as it appears in the picture and say the ` +
+      'change concretely — "replace her striped top with a blue bikini top" rather than "put a bikini on her".',
+    )
+  } else if (isEdit && !causes.length) {
     causes.push(
       'The editor did not find anything to do with this instruction. Name the subject as it appears ' +
       'in the picture and say the change concretely, or use "Just a part" and mark the region by hand.',

@@ -530,6 +530,77 @@ export async function composeRedrawPrompt(
   }
 }
 
+/**
+ * The instruction an editor (FLUX Kontext) will act on, written by a model
+ * that can SEE the picture, after the user's own words changed nothing.
+ *
+ * Kontext reads an instruction, and it is literal: "put a bikini on woman"
+ * works when there is a woman it can find and a garment it can swap, and
+ * comes back untouched when the subject is not named the way it appears, the
+ * change is vague ("make it better"), or the sentence lists what to keep.
+ * This asks the vision model to look at the picture and write the same
+ * change as Kontext wants it — the subject named as it appears, the change
+ * concrete, one short clause on what is at risk — and it never throws: a
+ * failure hands the user's words back with the reason.
+ */
+export async function composeKontextInstruction(image: Buffer, request: string): Promise<Improvement> {
+  const started = Date.now()
+  const model = visionModel()
+  const give = (changed: boolean, text: string, why: string): Improvement => ({
+    prompt: text, original: request, changed, model, ms: Date.now() - started, why,
+  })
+  const system =
+    'You write instructions for an image EDITING model (FLUX Kontext). You are shown a picture and ' +
+    'what the user wants changed in it. The editor is literal, so write the change the way it ' +
+    'needs it:\n' +
+    '- Name the subject as it actually appears in the picture ("the woman with dark hair in the ' +
+    'striped top", "the red car on the left"), never "her", "it" or "the character".\n' +
+    '- Say the change concretely: what it becomes, its colour, material, position. "Replace her ' +
+    'striped top with a blue bikini top" rather than "put a bikini on her".\n' +
+    '- To add something, say where it goes and how it is worn or placed. To remove something, say ' +
+    'what fills the space.\n' +
+    '- Then ONE short clause naming only what is at risk ("Keep her face and pose."). Never a list ' +
+    'of everything to keep — that reads as "change nothing".\n' +
+    '- Two sentences at most. Plain English. No quality words, no style words unless the user asked ' +
+    'for a style. Answer with the instruction only.'
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
+  try {
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
+    const res = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
+      method: 'POST',
+      headers,
+      signal: ctrl.signal,
+      body: JSON.stringify({
+        model,
+        stream: false,
+        think: false,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: `The user wants: ${request}\nThe previous attempt with those exact words changed nothing in the picture. Write the instruction that will.`, images: [image.toString('base64')] },
+        ],
+        options: { num_ctx: 8192, temperature: 0.3, num_predict: 200 },
+      }),
+    })
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      return give(false, request, `the vision model answered ${res.status}: ${body.slice(0, 80)}`)
+    }
+    const json = (await res.json()) as { message?: { content?: string }; response?: string }
+    const text = unwrap(json.message?.content ?? json.response ?? '').replace(/\s+/g, ' ').trim()
+    if (!text) return give(false, request, 'the vision model returned nothing')
+    if (text.length > 600) return give(false, request, `the instruction came back ${text.length} characters long`)
+    if (text.toLowerCase() === request.toLowerCase()) return give(false, request, 'the vision model gave the same words back')
+    return give(true, text, '')
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return give(false, request, `the vision model could not be reached (${msg.slice(0, 80)})`)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** A rectangle in fractions of the picture, 0-1, from the top-left. */
 export interface Box { left: number; top: number; right: number; bottom: number }
 
