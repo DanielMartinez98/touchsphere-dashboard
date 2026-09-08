@@ -64,6 +64,7 @@ console.log('[startup] OLLAMA_NUM_CTX        :', process.env['OLLAMA_NUM_CTX'] ?
 console.log('[startup] chat fallback         :', process.env['OLLAMA_FALLBACK_URL']
   ? `${process.env['OLLAMA_FALLBACK_MODEL'] ?? process.env['OLLAMA_MODEL']} at ${process.env['OLLAMA_FALLBACK_URL']}`
   : '— none (a cloud quota error is a failed reply)')
+console.log('[startup] guide model           :', `${process.env['OLLAMA_GUIDE_MODEL'] || process.env['OLLAMA_MODEL'] || 'gemma3'} at ${process.env['OLLAMA_GUIDE_URL'] ?? process.env['OLLAMA_URL'] ?? 'http://host.docker.internal:11434'}`)
 console.log('[startup] picture-side models   :', `${process.env['OLLAMA_IMAGE_MODEL'] || process.env['OLLAMA_MODEL'] || 'gemma3'} (improver, planner)` +
   ` / ${process.env['OLLAMA_VISION_MODEL'] || process.env['OLLAMA_IMAGE_MODEL'] || process.env['OLLAMA_MODEL'] || 'gemma3'} (vision)` +
   ` at ${process.env['OLLAMA_IMAGE_URL'] ?? process.env['OLLAMA_URL'] ?? 'http://host.docker.internal:11434'}` +

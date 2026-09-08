@@ -69,7 +69,11 @@ import { note } from './guide-activity'
 import { cacheGuideImage } from './guide-media'
 import { searchYouTube } from './routes/browse'
 
-const OLLAMA_URL     = process.env['OLLAMA_URL']     ?? 'http://host.docker.internal:11434'
+// Where the guide model lives. Its own setting for the same reason the picture
+// models have one: a guide is a dozen calls nobody is waiting on, and the cloud
+// model's per-session limit is better spent on conversation. Defaults to the
+// chat's Ollama.
+const OLLAMA_URL     = process.env['OLLAMA_GUIDE_URL'] ?? process.env['OLLAMA_URL'] ?? 'http://host.docker.internal:11434'
 const OLLAMA_MODEL   = process.env['OLLAMA_MODEL']   ?? 'gemma3'
 const OLLAMA_API_KEY = process.env['OLLAMA_API_KEY'] ?? ''
 
