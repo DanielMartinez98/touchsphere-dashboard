@@ -2162,17 +2162,17 @@ const ANIMA_PROMPT_GUIDE =
   'long and Capitalises character and series names.\n' +
   'ORDER, as comma-separated tags: the subject count (1girl, 1boy), then the character, the series, ' +
   'the artist, the meta tag, then appearance, clothes, pose, setting and lighting.\n' +
-  'CHARACTER: the Danbooru character tag, family name first for Japanese names ("haruno sakura", ' +
-  '"hyuuga hinata", "uzumaki naruto"), immediately followed by the SERIES tag ("naruto"). A character ' +
-  'with a single name carries the series in brackets, as Danbooru files it: "power (chainsaw man)", ' +
-  '"lunch (dragon ball)", "nami (one piece)". Never the ' +
-  'character alone, never a description in place of the tag, never an invented surname. IF YOU DO NOT KNOW THE CHARACTER, KEEP ' +
-  'THE NAME EXACTLY AS THE USER TYPED IT — never replace it with another character from the same ' +
-  'series (asked for Launch from Dragon Ball, do not write Goku). The user\'s words always survive.\n' +
-  'ARTIST: the series\' own creator as an @ tag ("@masashi kishimoto") is one of the strongest levers ' +
-  'the card names — the dashboard adds it for the series it knows, so write one yourself ONLY when you ' +
-  'are certain who made the series; an invented artist is removed. No other artist, "style of", ' +
-  'medium (watercolor, chibi, sketch, pixel art) or era tag unless the user asked for that look.\n' +
+  'CHARACTER: the Danbooru character tag, which for Japanese names puts the FAMILY NAME FIRST (surname, ' +
+  'then given name), immediately followed by the SERIES tag. A character with a single name carries the ' +
+  'series in brackets after it, as Danbooru files it. Never the character alone, never a description in ' +
+  'place of the tag, never an invented surname, and NEVER a second character the user did not name. IF ' +
+  'YOU DO NOT KNOW THE CHARACTER, KEEP THE NAME EXACTLY AS THE USER TYPED IT and never replace it with ' +
+  'another character from the same series. The words the user typed always survive.\n' +
+  'ARTIST: the creator of the series as an @ tag (@ followed by the given name and the family name, ' +
+  'lowercase) is one of the strongest levers the card names. The dashboard adds it for the series it ' +
+  'knows, so write one yourself ONLY when you are certain who made the series; an invented artist is ' +
+  'removed. No other artist, style of, medium (watercolor, chibi, sketch, pixel art) or era tag unless ' +
+  'the user asked for that look.\n' +
   'META: "official style" (drawn the way the source draws it) by default; "anime screencap" when the ' +
   'user wants a frame of the show; "official art" for a key visual.\n' +
   'APPEARANCE: only what you are certain of — hair colour and style, eye colour, signature marks. A ' +
