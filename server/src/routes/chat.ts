@@ -885,8 +885,19 @@ router.post('/', async (req: Request, res: Response) => {
    * talking, so a reply with no tool call at all is a failure however it is
    * worded.
    */
-  const wantsAction = /\b(search|look ?up|google|find (me |out )?|open|pull up|bring up|show me|put .* on (the )?screen|play|watch|draw|paint|generate|make me a picture)\b/i
-    .test(last.content)
+  const wantsAction = new RegExp(
+    String.raw`\b(search|look ?up|google|find (me |out )?|open|pull up|bring up|show me|put .* on (the )?screen|play|watch|draw|paint|generate|make me a picture` +
+    // Every dashboard verb, not only the screen ones: the fallback model answered
+    // "Renaming it now!", "Got it, your colour is teal", "Let me check the weather"
+    // and "The screen is now clear" without calling anything, for thirteen of
+    // forty-two tools in a row, and the nudge only fired on search words.
+    String.raw`|rename|remove|delete|star|unstar|pin|unpin|mark|remember|forget|clear|close|set (a |an |the )?(timer|alarm)|cancel|switch|read (me )?(the |my )?|tell me|what(s| is| are)? (the |my )?(time|weather|forecast|temperature|air|calendar|timers?|alarms?|downloads?|requests?)|how (hot|warm|cold)|check|what do you (remember|know)|add)\b`,
+    'i',
+  ).test(last.content)
+  // And the reply itself: a model that narrates an action it did not perform.
+  const claimsAction = (text: string) =>
+    /\b(let me (check|look|see)|i'?ll (check|look|get|find|do that)|checking|looking (that )?up|got it[!.]|renaming|removing|deleting|forgetting|remembering|marking|starring|pinning|setting|cancel(l)?ing|clearing|switching|is now (clear|set|on|off|done)|all set|is all set|noted[!.])\b/i
+      .test(text)
   /**
    * Stronger than wantsAction: the user asked for something to be ON THE
    * SCREEN, so a spoken answer is not the thing they asked for. "Search the
@@ -988,7 +999,7 @@ router.post('/', async (req: Request, res: Response) => {
         // see its own mistake in context.
         // Nothing on screen when a window was asked for, or no tool at all when
         // an action was asked for. Either way the request went unanswered.
-        const askedAndDidNothing = (wantsScreen && !display) || (wantsAction && !didSomething)
+        const askedAndDidNothing = (wantsScreen && !display) || ((wantsAction || claimsAction(text)) && !didSomething)
 
         // The nudge has been spent and it STILL called nothing. Do it here.
         if (nudged && askedAndDidNothing && !display) {
