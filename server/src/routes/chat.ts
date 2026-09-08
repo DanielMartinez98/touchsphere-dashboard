@@ -898,6 +898,9 @@ router.post('/', async (req: Request, res: Response) => {
     .test(last.content)
   // Tool calls that actually did something, as opposed to turn control.
   let didSomething = false
+  // Every tool the model called this turn, in order — returned on the reply so a
+  // test can see what ran without reading the log, and a client could too.
+  const toolsCalled: string[] = []
 
   // Set when the model asks for something to be put on screen (open_website /
   // play_video). Only the last one survives — the dashboard shows one window.
@@ -1001,7 +1004,7 @@ router.post('/', async (req: Request, res: Response) => {
                 : `Putting that on screen now.`
               console.log(`[chat] ← reply="${reply.slice(0, 80)}" (server-side ${fallback.tool}) keepListening=${keepListening}`)
               if (!keepListening) void endConversation(messages, reply)
-              return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed], keepListening, display })
+              return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed], keepListening, display, tools: toolsCalled, ...(answeredBy ? { by: answeredBy } : {}) })
             }
           }
         }
@@ -1043,14 +1046,14 @@ router.post('/', async (req: Request, res: Response) => {
         // kick off a background summary. Fire-and-forget so the user gets their
         // reply without waiting on either.
         if (!keepListening) void endConversation(messages, reply)
-        return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed], keepListening, display })
+        return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed], keepListening, display, tools: toolsCalled, ...(answeredBy ? { by: answeredBy } : {}) })
       }
 
       // Cap reached — bail with whatever text we have so the user hears something.
       if (round === MAX_TOOL_ROUNDS) {
         console.warn(`[chat] tool-call cap reached (${MAX_TOOL_ROUNDS}) — returning fallback`)
         const reply = text || "I tried to look that up but couldn't finish in time."
-        return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed], keepListening, display })
+        return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed], keepListening, display, tools: toolsCalled, ...(answeredBy ? { by: answeredBy } : {}) })
       }
 
       // Execute each tool call and append the results back into the conversation.
@@ -1068,6 +1071,7 @@ router.post('/', async (req: Request, res: Response) => {
         // Turn-control tools flip the mic flag for the response and feed back a
         // short ACK so the model continues to its final spoken reply.
         if (name !== 'end_conversation' && name !== 'keep_listening') didSomething = true
+        toolsCalled.push(name)
         if (name === 'end_conversation') {
           keepListening = false
           // The silence is produced HERE rather than by asking the model to
