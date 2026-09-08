@@ -188,7 +188,7 @@ async function fetchViaOllama(url: string): Promise<HostedPage | null> {
   }
 }
 
-function hostOf(url: string): string {
+export function hostOf(url: string): string {
   try { return new URL(url).hostname.replace(/^www\./, '').toLowerCase() } catch { return '' }
 }
 
@@ -460,6 +460,138 @@ export async function researchPages(query: string, limit = 2, maxChars = 6000): 
     console.warn(`[research] ${hits.length} result(s) for "${query.slice(0, 60)}" but none readable`)
   }
   return pages
+}
+
+// ── Walkthroughs ─────────────────────────────────────────────────────────────
+//
+// A wiki DESCRIBES a dungeon; a walkthrough ROUTES you through it. Every guide
+// that came out as an encyclopedia article cut into checkboxes came out that
+// way because its chapters and its steps were written from wiki articles —
+// which have Plot and Development sections and no idea which room the boss
+// key is in. So the walkthrough is found first and the guide is built from
+// IT: its table of contents is the chapter list, already in playing order,
+// and its pages are what the steps are written from. The wiki keeps the job
+// it is good at, the exhaustive lists of collectibles.
+
+/** Sites whose pages route a player through a game rather than describe it. */
+export const WALKTHROUGH_HOSTS = [
+  'strategywiki.org', 'zeldadungeon.net', 'ign.com', 'gamefaqs.gamespot.com', 'neoseeker.com',
+  'gamerguides.com', 'thonky.com', 'powerpyx.com', 'game8.co', 'fextralife.com', 'samurai-gamers.com',
+  'rpgsite.net', 'gamepressure.com', 'supercheats.com', 'psnprofiles.com', 'trueachievements.com',
+  'gamesradar.com', 'pcgamer.com', 'eurogamer.net', 'rockpapershotgun.com', 'vg247.com', 'thegamer.com',
+  'gamerant.com', 'zeldawiki.wiki', 'zeldauniverse.net', 'gamefaqs.com', 'gamespot.com', 'polygon.com',
+]
+
+export function isWalkthroughHost(host: string): boolean {
+  const h = host.replace(/^www\./, '').toLowerCase()
+  return WALKTHROUGH_HOSTS.some(w => h === w || h.endsWith(`.${w}`))
+}
+
+/** Looks like a walkthrough page by its own words, wherever it is hosted. */
+function looksLikeWalkthrough(title: string, url: string): boolean {
+  return /walkthrough|guide|how to (beat|get|complete)|100%|all (collectibles|locations)/i.test(`${title} ${url}`)
+}
+
+/** A search hit turned into a page: the provider's inline text when it has one, else read. */
+async function pageFromHit(hit: SearchHit, maxChars: number): Promise<Page | null> {
+  const inline = stripNavChrome(hit.content ?? '')
+  if (inline.length >= 1200) {
+    const parsed = parseUrl(hit.url)
+    return { url: hit.url, site: parsed ? siteOf(parsed) : hit.url, title: hit.title || hit.url, text: inline.slice(0, maxChars) }
+  }
+  const page = await readPage(hit.url, maxChars)
+  return page ? { ...page, title: hit.title || page.title } : null
+}
+
+/**
+ * The walkthrough INDEX pages for a game — the ones whose contents are the
+ * chapter list — on the sites that write walkthroughs. Up to `limit` pages,
+ * best first, each required to actually be about this game.
+ */
+export async function findWalkthroughs(gameTitle: string, limit = 3, maxChars = 12_000): Promise<Page[]> {
+  const qualifier = gameQualifier(gameTitle)
+  const queries = [
+    `"${gameTitle}" walkthrough`,
+    `${gameTitle} walkthrough guide table of contents`,
+    `${qualifier} walkthrough strategywiki OR zeldadungeon OR ign OR gamefaqs`,
+  ]
+  const seen = new Set<string>()
+  const hits: SearchHit[] = []
+  for (const q of queries) {
+    if (hits.length >= limit * 3) break
+    for (const h of await searchWeb(q, 8)) {
+      if (seen.has(h.url)) continue
+      seen.add(h.url)
+      const host = hostOf(h.url)
+      if (isWalkthroughHost(host) || looksLikeWalkthrough(h.title, h.url)) hits.push(h)
+    }
+  }
+  // Dedicated walkthrough sites first, then anything that calls itself one.
+  hits.sort((a, b) => Number(isWalkthroughHost(hostOf(b.url))) - Number(isWalkthroughHost(hostOf(a.url))))
+  const pages: Page[] = []
+  const hosts = new Set<string>()
+  for (const hit of hits) {
+    if (pages.length >= limit) break
+    const host = hostOf(hit.url)
+    // One index page per site: two pages of the same walkthrough say the same thing twice.
+    if (hosts.has(host)) continue
+    const page = await pageFromHit(hit, maxChars)
+    if (!page) continue
+    if (!mentionsGame(`${page.title}\n${page.text}`, gameTitle, 2)) {
+      console.warn(`[research] walkthrough candidate ${host} "${page.title.slice(0, 50)}" never names "${qualifier}" — skipped`)
+      continue
+    }
+    hosts.add(host)
+    pages.push(page)
+    console.log(`[research] walkthrough index: ${host} "${page.title.slice(0, 60)}" (${page.text.length} chars)`)
+  }
+  return pages
+}
+
+/**
+ * The walkthrough pages for ONE chapter: the same sites the index came from,
+ * asked for that chapter by name, then any walkthrough site. A page must name
+ * both the game and something of the chapter, or it is the wrong dungeon.
+ */
+export async function researchWalkthrough(
+  gameTitle: string,
+  chapter: string,
+  hosts: string[],
+  limit = 2,
+  maxChars = 14_000,
+): Promise<Page[]> {
+  const qualifier = gameQualifier(gameTitle)
+  const chapterWords = contentWordsOf(chapter)
+  const namesChapter = (text: string) =>
+    chapterWords.length === 0 || chapterWords.filter(w => text.toLowerCase().includes(w)).length >= Math.ceil(chapterWords.length / 2)
+  const seen = new Set<string>()
+  const pages: Page[] = []
+  const tryQuery = async (q: string, onlyHost?: string) => {
+    if (pages.length >= limit) return
+    for (const hit of await searchWeb(q, 6)) {
+      if (pages.length >= limit) return
+      if (seen.has(hit.url)) continue
+      seen.add(hit.url)
+      const host = hostOf(hit.url)
+      if (onlyHost ? !(host === onlyHost || host.endsWith(`.${onlyHost}`)) : !(isWalkthroughHost(host) || looksLikeWalkthrough(hit.title, hit.url))) continue
+      const page = await pageFromHit(hit, maxChars)
+      if (!page) continue
+      const body = `${page.title}\n${page.text}`
+      if (!mentionsGame(body, gameTitle) || !namesChapter(body)) continue
+      pages.push(page)
+      console.log(`[research] walkthrough for "${chapter.slice(0, 40)}": ${host} "${page.title.slice(0, 50)}" (${page.text.length} chars)`)
+    }
+  }
+  for (const host of hosts) await tryQuery(`site:${host} ${qualifier} ${chapter}`, host)
+  await tryQuery(`${qualifier} ${chapter} walkthrough`)
+  await tryQuery(`"${gameTitle}" ${chapter} walkthrough guide`)
+  return pages
+}
+
+/** The words of a chapter title that could identify it in a page — no articles, no numbers alone. */
+function contentWordsOf(s: string): string[] {
+  return s.toLowerCase().replace(/['’]/g, '').split(/[^a-z0-9]+/)
+    .filter(w => w.length >= 3 && !STOPWORDS.has(w) && !/^(level|chapter|part|stage|world|the|walkthrough)$/.test(w))
 }
 
 /**

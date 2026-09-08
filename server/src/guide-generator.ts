@@ -47,11 +47,16 @@ import {
   communityChapters,
   communityQuery,
   communityTableOfContents,
+  findWalkthroughs,
   gameQualifier,
+  hostOf,
+  isWalkthroughHost,
   mentionsGame,
   researchGame,
   researchPages,
-  SEARCH_PROVIDER,
+  researchWalkthrough,
+  SEARCH_AVAILABLE,
+  SEARCH_PROVIDERS,
   type ChapterCategory,
   type Page,
   findGameWiki,
@@ -108,7 +113,10 @@ const YOUTUBE_GAP_MS  = 400                      // politeness gap between video
  * available; without one it is a CAPTCHA generator, and the wiki-first order is
  * correct. Same config, opposite right answer.
  */
-const WEB_FIRST = SEARCH_PROVIDER === 'ollama'
+// Walkthrough sites before the wiki whenever there is a search provider that
+// can reach them — the hosted one, or the SearXNG box, which has no hourly
+// quota. Without any, the wiki is all there is and the guide says so.
+const WEB_FIRST = SEARCH_AVAILABLE
 
 // Per-page budgets. Outline pages only have to convey how the game is divided
 // up; a section's pages have to contain the actual walkthrough, so they get
@@ -239,7 +247,10 @@ const OUTLINE_SCHEMA: JsonSchema = {
         type: 'object',
         properties: {
           title:   { type: 'string' },
-          kind:    { type: 'string', enum: [...SECTION_KINDS] },
+          // No "reference": a chapter is something a player does. "Characters
+          // and Locations" and "Game Information" shipped as tickable chapters
+          // and moved the completion bar for reading an encyclopedia.
+          kind:    { type: 'string', enum: ['progression', 'collectible', 'sidequest'] },
           counts:  { type: 'boolean' },
           summary: { type: 'string' },
         },
@@ -345,11 +356,32 @@ function outlinePrompt(
   pages: Page[],
   toc: string[],
   chapters: ChapterCategory[],
+  walkthroughs: Page[] = [],
+  retryWith: string[] = [],
 ): string {
   return (
     `Game: ${title}\n\n` +
-    `Below are notes from community guides and wikis for this game.\n\n` +
+    (walkthroughs.length > 0
+      ? `Below are the CONTENTS PAGES of ${walkthroughs.length} walkthrough(s) for this game, followed by ` +
+        `notes from its wiki.\n\n${researchBlock(walkthroughs)}\n\n`
+      : `Below are notes from community guides and wikis for this game.\n\n`) +
     `${researchBlock(pages)}\n\n` +
+    (walkthroughs.length > 0
+      ? `THE PROGRESSION CHAPTERS ARE THE WALKTHROUGH'S OWN SECTIONS, IN THE WALKTHROUGH'S OWN ORDER. ` +
+        `A walkthrough is already a route through the game in playing order, so copy its division: one ` +
+        `chapter per walkthrough section — a dungeon, a level, an area, a mission, a chapter of the ` +
+        `story — named EXACTLY as the walkthrough names it (its real in-game name, spelled the same, ` +
+        `e.g. "Level 1: The Eagle", "Woodfall Temple", "Chapter 3: The Cursed Village"), and in the ` +
+        `sequence the walkthrough lists them. Do not rename, merge, split or reorder them, and do not add ` +
+        `a progression chapter the walkthrough does not have. Overworld travel between two dungeons ` +
+        `belongs to whichever walkthrough section covers it, not to a chapter of its own. ` +
+        `Then add the collectible and side-content lists as their own chapters after the progression.\n\n`
+      : '') +
+    (retryWith.length > 0
+      ? `YOUR PREVIOUS ANSWER USED CHAPTER NAMES THAT APPEAR NOWHERE IN THE SOURCES, so they were ` +
+        `invented. Every chapter title must be a name that appears in the pages above, letter for ` +
+        `letter. These names from the sources are acceptable: ${retryWith.map(n => `"${n}"`).join(', ')}.\n\n`
+      : '') +
     // The strongest signal in the prompt, and the only one that is a fact rather
     // than an inference: these lists come straight off the wiki's own per-game
     // categories, so they name the real places, in the real game, exhaustively.
@@ -386,9 +418,10 @@ function outlinePrompt(
     `- Every section title must name something from THIS game, "${title}". Never a place, item or ` +
     `boss from another game in the same series.\n` +
     `- "kind": "progression" for story/dungeon/chapter sections, "collectible" for lists of things to ` +
-    `collect, "sidequest" for optional quests, "reference" for pure reference tables (controls, enemy ` +
-    `stats, item prices) that a player does not "complete".\n` +
-    `- "counts": true if finishing that section is part of 100% completion, false for reference sections.\n` +
+    `collect, "sidequest" for optional quests. NOTHING ELSE: no reference tables, no "Characters", ` +
+    `"Locations", "Abilities", "Controls", "Game Information" or "Enemies" chapters — a chapter is ` +
+    `something the player DOES and ticks off, never something they read.\n` +
+    `- "counts": true if finishing that section is part of 100% completion.\n` +
     `- "summary": at most one short sentence.\n` +
     `- "organization": one short sentence naming the structure you used, e.g. ` +
     `"by dungeon, then masks and heart pieces, the way the Zelda community tracks it".\n` +
@@ -433,13 +466,19 @@ function stepListPrompt(
           `should be able to get through this part with nothing but these steps. Be specific enough to ` +
           `act on ("Shoot an ice arrow at the water to freeze a stepping stone"), never vague ("solve ` +
           `the water puzzle").\n` +
+          `EVERY STEP IS ONE CONCRETE ACTION IN ONE CONCRETE PLACE: a room, a screen, a direction, an ` +
+          `object, an enemy, an item — "Push the left block north to open the door", "In the second ` +
+          `room, bomb the north wall", "Kill the three Keese before the Compass appears". A step that ` +
+          `names a whole area or an outcome — "Explore the temple", "Break the curse", "Complete the ` +
+          `dungeon", "Defeat the enemies", "Travel across Hyrule Field" — is a SUMMARY, not a step, and ` +
+          `is forbidden. Follow the route in the walkthrough's own order, room by room, and keep the ` +
+          `walkthrough's directions (north/south, left/right, screen counts, room counts) exactly.\n` +
           `Divide it into the parts the player experiences in order — typically: getting there and ` +
           `opening the way in; then the areas or floors of the place itself, one part each; then the ` +
           `mini-boss; then the boss. Name the parts after the real places and bosses, not "Part 1".`
-
   const count = section.kind === 'progression'
-    ? `- 3 to 6 parts, 3 to 8 steps in each. A dungeon described in five steps total has been ` +
-      `summarized, not written.\n`
+    ? `- 3 to 8 parts, 3 to 8 steps in each — normally 12 to 40 steps for a dungeon or a level. A ` +
+      `dungeon described in five steps total has been summarized, not written.\n`
     : `- 2 to 6 parts. One step per real entry, ${GUIDE_CAPS.MAX_STEPS_PER_SECTION} steps across the ` +
       `whole section at most.\n`
 
@@ -550,7 +589,7 @@ function update(itemId: string, mutate: (g: Guide) => void): Guide | null {
   return next
 }
 
-async function buildOutline(itemId: string, title: string, order?: string, sourceSite?: string): Promise<{ guide: Guide; pages: Page[] } | null> {
+async function buildOutline(itemId: string, title: string, order?: string, sourceSite?: string): Promise<{ guide: Guide; pages: Page[]; hosts: string[] } | null> {
   update(itemId, g => { g.phase = 'Reading community guides…' })
 
   // The game's own wiki article plus its walkthrough page: what the game is, and
@@ -627,6 +666,23 @@ async function buildOutline(itemId: string, title: string, order?: string, sourc
              pages.map(p => `"${p.title}" on ${p.site} (${p.text.length.toLocaleString()} chars)`).join(', '),
   })
 
+  // The walkthroughs: the pages whose contents ARE the chapter list. Found
+  // through search, so absent on a box with no provider — and then the guide
+  // is built from the wiki and says so, rather than pretending.
+  update(itemId, g => { g.phase = 'Finding walkthroughs…' })
+  const walkthroughs = WEB_FIRST ? await findWalkthroughs(title, 3, OUTLINE_CHARS) : []
+  const hosts = [...new Set(walkthroughs.map(p => hostOf(p.url)))]
+  note({
+    itemId, title, stage: 'research', level: walkthroughs.length > 0 ? 'good' : 'warn',
+    message: walkthroughs.length > 0
+      ? `Found ${walkthroughs.length} walkthrough(s) to build the route from — ` +
+        walkthroughs.map(p => `${p.site} "${p.title.slice(0, 50)}"`).join(', ')
+      : (WEB_FIRST
+          ? 'No walkthrough page could be found for this game — the chapters will come from the wiki, ' +
+            'which describes places rather than routing through them'
+          : 'No search provider is configured (OLLAMA_API_KEY or SEARXNG_URL), so no walkthrough can be ' +
+            'looked for — building from the wiki alone'),
+  })
   update(itemId, g => { g.phase = 'Planning the sections…' })
   // The article headings are a fallback, not a supplement. When the categories
   // came through they name the game's real contents, and the headings alongside
@@ -634,29 +690,60 @@ async function buildOutline(itemId: string, title: string, order?: string, sourc
   // a character's dialogue subheadings, which is worse than nothing in a prompt
   // whose whole job is deciding what the chapters are.
   const tocHint = chapters.length > 0 ? [] : toc
-  const outline = await callOllamaJson<OutlineReply>(
-    'outline', SYSTEM, outlinePrompt(title, order, pages, tocHint, chapters), OUTLINE_SCHEMA)
-  const raw = Array.isArray(outline?.sections) ? outline!.sections : []
-  const sections: GuideSection[] = raw
+  // Everything a chapter may be named after: the walkthroughs' text and the
+  // wiki's own lists. A title that appears in neither was invented — "Level 1:
+  // Temple of the Forest" shipped for a game whose first level is The Eagle.
+  const corpus = [...walkthroughs, ...pages].map(p => p.text.toLowerCase()).join('\n')
+  const listed = chapters.flatMap(c => c.members)
+  const isReal = (secTitle: string): boolean => {
+    const t = secTitle.toLowerCase().replace(/['’]/g, '')
+    if (corpus.replace(/['’]/g, '').includes(t)) return true
+    if (listed.some(m => t.includes(m.toLowerCase()) || m.toLowerCase().includes(t))) return true
+    // "Level 3: The Manji" is real when "the manji" is; the label half is ours.
+    const after = t.replace(/^(level|chapter|stage|world|part|mission|act|episode)\s*\d+\s*[:\-–—]\s*/i, '')
+    return after.length >= 4 && (corpus.includes(after) || listed.some(m => m.toLowerCase().includes(after)))
+  }
+  const toSections = (raw: OutlineReply['sections']): GuideSection[] => (Array.isArray(raw) ? raw : [])
     .map((s, i): GuideSection | null => {
       const secTitle = str(s?.title)
       if (!secTitle) return null
       const kindRaw = str(s?.kind) as SectionKind
       const kind: SectionKind = SECTION_KINDS.includes(kindRaw) ? kindRaw : 'progression'
+      if (kind === 'reference') return null
       const summary = str(s?.summary)
       return {
         id: `sec${i + 1}-${crypto.randomBytes(2).toString('hex')}`,
         title: secTitle,
         kind,
-        counts: typeof s?.counts === 'boolean' ? s.counts : kind !== 'reference',
+        counts: typeof s?.counts === 'boolean' ? s.counts : true,
         ...(summary ? { summary } : {}),
         state: 'pending',
         steps: [],
       }
     })
     .filter((s): s is GuideSection => s !== null)
-    .slice(0, GUIDE_CAPS.MAX_SECTIONS)
-
+  let outline = await callOllamaJson<OutlineReply>(
+    'outline', SYSTEM, outlinePrompt(title, order, pages, tocHint, chapters, walkthroughs), OUTLINE_SCHEMA)
+  let sections = toSections(outline?.sections)
+  const invented = sections.filter(s => s.kind === 'progression' && !isReal(s.title))
+  if (invented.length > 0) {
+    note({
+      itemId, title, stage: 'outline', level: 'warn',
+      message: `${invented.length} chapter name(s) appear nowhere in the sources and were dropped as invented: ` +
+               invented.map(s => s.title).join(', ') +
+               (invented.length >= Math.max(2, sections.filter(s => s.kind === 'progression').length / 2)
+                 ? '. Asking again with the real names'
+                 : ''),
+    })
+    sections = sections.filter(s => !invented.includes(s))
+    if (sections.filter(s => s.kind === 'progression').length < 3) {
+      outline = await callOllamaJson<OutlineReply>(
+        'outline (retry)', SYSTEM,
+        outlinePrompt(title, order, pages, tocHint, chapters, walkthroughs, listed.slice(0, 40)), OUTLINE_SCHEMA)
+      sections = toSections(outline?.sections).filter(s => s.kind !== 'progression' || isReal(s.title))
+    }
+  }
+  sections = sections.slice(0, GUIDE_CAPS.MAX_SECTIONS)
   if (sections.length === 0) {
     note({
       itemId, title, stage: 'outline', level: 'error',
@@ -677,7 +764,8 @@ async function buildOutline(itemId: string, title: string, order?: string, sourc
   const saved = update(itemId, g => {
     g.organization = str(outline?.organization) || 'Ordered the way this game is usually played through.'
     g.sections = sections
-    g.sources = pages.map(p => ({ url: p.url, site: p.site, title: p.title }))
+    // The walkthroughs first: their sites are what the chapters are researched on.
+    g.sources = [...walkthroughs, ...pages].map(p => ({ url: p.url, site: p.site, title: p.title }))
     if (overall) g.video = overall
     g.phase = `0 of ${sections.length} sections`
   })
@@ -685,7 +773,12 @@ async function buildOutline(itemId: string, title: string, order?: string, sourc
     itemId, title, stage: 'outline', level: 'good',
     message: `Planned ${sections.length} chapters — ${saved?.organization?.slice(0, 90) ?? ''}`,
   })
-  return saved ? { guide: saved, pages } : null
+  return saved ? { guide: saved, pages: [...walkthroughs, ...pages], hosts } : null
+}
+
+/** The walkthrough sites a guide was built from, for researching its chapters on the same sites. */
+function walkthroughHostsOf(guide: Guide | null | undefined): string[] {
+  return [...new Set((guide?.sources ?? []).map(s => hostOf(s.url)).filter(h => h && isWalkthroughHost(h)))]
 }
 
 const totalChars = (pages: Page[]) => pages.reduce((n, p) => n + p.text.length, 0)
@@ -739,6 +832,7 @@ async function researchSection(
   fallbackPages: Page[],
   wider: boolean,
   preferredSite?: string,
+  hosts: string[] = [],
 ): Promise<{ pages: Page[]; own: Page[] }> {
   const own: Page[] = []
   const add = (got: Page[]) => {
@@ -746,7 +840,21 @@ async function researchSection(
       if (!own.some(p => p.url === page.url)) own.push(page)
     }
   }
-
+  // A route comes from a walkthrough. The chapter is looked for on the sites
+  // the guide's walkthrough index came from — so "Level 3" resolves to that
+  // walkthrough's own Level 3 page — and then on any walkthrough site, before
+  // the wiki is consulted at all. The wiki still follows as background, which
+  // is what it is good for.
+  if (section.kind === 'progression' && WEB_FIRST) {
+    add(await researchWalkthrough(gameTitle, section.title, preferredSite ? [preferredSite, ...hosts] : hosts, 2, SECTION_CHARS))
+    if (own.length === 0) {
+      note({
+        itemId, title: gameTitle, section: section.title, stage: 'research', level: 'warn',
+        message: 'No walkthrough page for this chapter — it will be written from the wiki article, ' +
+                 'which describes the place rather than routing through it',
+      })
+    }
+  }
   for (const query of sectionQueries(gameTitle, section, wider)) {
     if (totalChars(own) >= SECTION_MIN_CHARS) break
     add(await researchGame(gameTitle, query, {
@@ -906,10 +1014,15 @@ export function dropPlaceholderRuns(steps: Array<{ text: string; group: string }
  * content words, or enough length that it is plainly carrying detail.
  */
 export function isVacuousNote(stepText: string, note: string): boolean {
-  if (note.length >= 80) return false
   const known = new Set(contentWords(stepText))
-  const fresh = new Set(contentWords(note).filter(w => !known.has(w)))
-  return fresh.size < 3
+  const all = contentWords(note)
+  const fresh = new Set(all.filter(w => !known.has(w)))
+  // Three new content words, and they must be a real share of the note: "Go
+  // two rooms up, one left" explained as "Go two rooms up, one room left, one
+  // room up and one room right" is longer than the step and says the step.
+  // A long note (a real paragraph of method) passes on length alone.
+  if (note.length >= 140) return false
+  return fresh.size < 3 || fresh.size / Math.max(1, all.length) < 0.4
 }
 
 /**
@@ -1366,11 +1479,12 @@ async function fillSection(
   index: number,
   total: number,
   fallbackPages: Page[],
-  opts: { wider?: boolean; phase?: string; keepBest?: boolean } = {},
+  opts: { wider?: boolean; phase?: string; keepBest?: boolean; hosts?: string[] } = {},
 ): Promise<FilledSection> {
   const current = loadGuide(itemId)
   const section = current?.sections.find(s => s.id === sectionId)
   if (!current || !section) return { steps: 0 }
+  const hosts = opts.hosts ?? walkthroughHostsOf(current)
 
   update(itemId, g => {
     g.phase = opts.phase ?? `${section.title} (${index + 1} of ${total})`
@@ -1380,8 +1494,7 @@ async function fillSection(
     message: `Started chapter ${index + 1} of ${total} (${section.kind})`,
   })
 
-  const { pages, own } = await researchSection(itemId, title, section, fallbackPages, opts.wider === true, current.sourceSite)
-
+  const { pages, own } = await researchSection(itemId, title, section, fallbackPages, opts.wider === true, current.sourceSite, hosts)
   // ── Pass one: the skeleton, saved and broadcast on its own ──────────────────
   // The chapter becomes usable here — every step tickable, nothing explained yet.
   // Saving between the passes is what makes a failure in the second one cost only
@@ -1489,7 +1602,7 @@ async function run(itemId: string, title: string, order?: string, sourceSite?: s
         })
         return
       }
-      const filled = await fillSection(itemId, title, ids[i]!, i, ids.length, outlined.pages)
+      const filled = await fillSection(itemId, title, ids[i]!, i, ids.length, outlined.pages, { hosts: outlined.hosts })
       if (filled.shortfall) shortfalls.add(ids[i]!)
     }
 
@@ -1513,15 +1626,29 @@ async function run(itemId: string, title: string, order?: string, sourceSite?: s
         await fillSection(itemId, title, section.id, i, needsWork.length, outlined.pages, {
           wider: true,
           keepBest: true,
+          hosts: outlined.hosts,
           phase: `Filling gaps — ${section.title} (${i + 1} of ${needsWork.length})`,
         })
       }
     }
-
+    // A chapter that is still empty after the repair pass is REMOVED, not shown:
+    // an empty checklist with a bar that cannot move is the single thing that
+    // made the guides read as unfinished. It is named in the activity feed so
+    // it can be asked for again by name.
+    const stillEmpty = (loadGuide(itemId)?.sections ?? []).filter(s => s.steps.length === 0)
+    if (stillEmpty.length > 0) {
+      note({
+        itemId, title, stage: 'repair', level: 'warn',
+        message: `Removed ${stillEmpty.length} chapter(s) that stayed empty after two attempts: ` +
+                 stillEmpty.map(s => s.title).join(', ') +
+                 '. Ask for one by name ("add a chapter for …") to try it again',
+      })
+    }
     const done = update(itemId, g => {
-      const anyReady = g.sections.some(s => s.steps.length > 0)
+      g.sections = g.sections.filter(s => s.steps.length > 0)
+      const anyReady = g.sections.length > 0
       g.status = anyReady ? 'ready' : 'failed'
-      if (!anyReady) g.error = 'None of the sections could be researched. Try retrying in a moment.'
+      if (!anyReady) g.error = 'None of the chapters could be written from what was found online. Try again in a moment, or name a walkthrough site.'
       delete g.phase
     })
     const p = done ? guideProgress(done) : null
@@ -1771,7 +1898,7 @@ export function startGuide(opts: { itemId: string; title: string; order?: string
     message: `${existing ? 'Rebuilding from scratch' : 'Queued a new guide'}` +
              `${order ? `, ordered "${order}"` : ''}${sourceSite ? `, sourced from ${sourceSite}` : ''} — ` +
              `model ${GUIDE_MODEL}, ${NUM_CTX} token context, ` +
-             `${WEB_FIRST ? 'hosted search (walkthrough sites first)' : 'wiki-first (no search key)'}`,
+             `${WEB_FIRST ? `walkthrough sites first via ${SEARCH_PROVIDERS.join(' → ')}` : 'wiki-first (no search provider)'}`,
   })
   enqueue(() => run(itemId, title, order, sourceSite))
   return 'started'
