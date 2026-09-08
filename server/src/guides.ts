@@ -25,7 +25,7 @@ const FILE = 'guides.json'
 // rather than trusted — one runaway generation should not be able to fill the
 // Pi's disk or freeze the kiosk trying to render 4000 checkboxes.
 const MAX_GUIDES            = 40
-const MAX_SECTIONS          = 16
+const MAX_SECTIONS          = 24
 // A full collectible list is the reason this is generous: Majora's Mask has 24
 // masks and 52 heart pieces, and a list that stops short of the real count is
 // worse than no list, because the bar then reads 100% on an unfinished game.

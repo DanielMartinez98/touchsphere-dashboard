@@ -559,25 +559,33 @@ export async function researchWalkthrough(
   hosts: string[],
   limit = 2,
   maxChars = 14_000,
+  exclude: string[] = [],
 ): Promise<Page[]> {
   const qualifier = gameQualifier(gameTitle)
   const chapterWords = contentWordsOf(chapter)
-  const namesChapter = (text: string) =>
-    chapterWords.length === 0 || chapterWords.filter(w => text.toLowerCase().includes(w)).length >= Math.ceil(chapterWords.length / 2)
+  const share = (text: string) =>
+    chapterWords.length === 0 ? 1 : chapterWords.filter(w => text.toLowerCase().includes(w)).length / chapterWords.length
+  // The page has to be ABOUT the chapter, not merely mention it: a
+  // walkthrough's index page names every level and was being accepted as the
+  // page for each of them, which wrote "Enter Level 1", "Enter Level 2" … as a
+  // dungeon's steps. So the title (or the URL) must carry the chapter's words,
+  // and the guide's own index pages are never candidates.
+  const excluded = new Set(exclude.map(u => u.replace(/\/+$/, '').toLowerCase()))
   const seen = new Set<string>()
   const pages: Page[] = []
   const tryQuery = async (q: string, onlyHost?: string) => {
     if (pages.length >= limit) return
     for (const hit of await searchWeb(q, 6)) {
       if (pages.length >= limit) return
-      if (seen.has(hit.url)) continue
+      if (seen.has(hit.url) || excluded.has(hit.url.replace(/\/+$/, '').toLowerCase())) continue
       seen.add(hit.url)
       const host = hostOf(hit.url)
       if (onlyHost ? !(host === onlyHost || host.endsWith(`.${onlyHost}`)) : !(isWalkthroughHost(host) || looksLikeWalkthrough(hit.title, hit.url))) continue
+      if (share(`${hit.title} ${decodeURIComponent(hit.url).replace(/[-_/]+/g, ' ')}`) < 0.5) continue
       const page = await pageFromHit(hit, maxChars)
       if (!page) continue
       const body = `${page.title}\n${page.text}`
-      if (!mentionsGame(body, gameTitle) || !namesChapter(body)) continue
+      if (!mentionsGame(body, gameTitle) || share(body) < 0.5) continue
       pages.push(page)
       console.log(`[research] walkthrough for "${chapter.slice(0, 40)}": ${host} "${page.title.slice(0, 50)}" (${page.text.length} chars)`)
     }

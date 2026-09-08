@@ -758,7 +758,16 @@ async function buildOutline(itemId: string, title: string, order?: string, sourc
       sections = toSections(outline?.sections).filter(s => s.kind !== 'progression' || isReal(s.title))
     }
   }
-  sections = sections.slice(0, GUIDE_CAPS.MAX_SECTIONS)
+  // Under the cap, the lists a completionist needs are kept and the
+  // progression is trimmed from its end (a second quest's later dungeons
+  // rather than the Heart Containers): a guide with every dungeon and no
+  // collectibles can never reach 100%.
+  if (sections.length > GUIDE_CAPS.MAX_SECTIONS) {
+    const lists = sections.filter(s => s.kind !== 'progression')
+    const route = sections.filter(s => s.kind === 'progression').slice(0, Math.max(3, GUIDE_CAPS.MAX_SECTIONS - lists.length))
+    const keep = new Set([...route, ...lists].slice(0, GUIDE_CAPS.MAX_SECTIONS))
+    sections = sections.filter(s => keep.has(s))
+  }
   if (sections.length === 0) {
     note({
       itemId, title, stage: 'outline', level: 'error',
@@ -864,7 +873,8 @@ async function researchSection(
     // A collectible chapter wants the "all X locations" page a walkthrough
     // site keeps; the wiki's article on the item is generic across the series.
     const ask = section.kind === 'progression' ? section.title : `${section.title} locations`
-    add(await researchWalkthrough(gameTitle, ask, preferredSite ? [preferredSite, ...hosts] : hosts, 2, SECTION_CHARS))
+    const indexPages = (loadGuide(itemId)?.sources ?? []).map(s => s.url)
+    add(await researchWalkthrough(gameTitle, ask, preferredSite ? [preferredSite, ...hosts] : hosts, 2, SECTION_CHARS, indexPages))
     if (own.length === 0) {
       note({
         itemId, title: gameTitle, section: section.title, stage: 'research', level: 'warn',
@@ -1129,24 +1139,34 @@ async function writeStepList(
   }
 
   if (pages.length === 0) return []
-
   const first = parse(await callOllamaJson<StepListReply>(
     `chapter "${section.title}"`, SYSTEM, stepListPrompt(gameTitle, section, pages, expected), STEP_LIST_SCHEMA))
-  if (first.length > 0) return first
-
+  // A dungeon chapter with a page of route behind it and a handful of steps in
+  // front of it has been summarised — the same local model produced 20 steps
+  // and then 1 step for the same page on consecutive runs. Ask once more,
+  // saying so, and keep whichever answer is longer.
+  const thin = section.kind === 'progression' && first.length < 6 && totalChars(pages) >= 3000
+  if (first.length > 0 && !thin) return first
   note({
     itemId, title: gameTitle, section: section.title, stage: 'steps', level: 'warn',
-    message: 'The model listed no steps on the first pass — asking again, more firmly',
+    message: first.length === 0
+      ? 'The model listed no steps on the first pass — asking again, more firmly'
+      : `Only ${first.length} step(s) for a chapter the sources describe at length — asking again for the full route`,
   })
-  return parse(await callOllamaJson<StepListReply>(
+  const second = parse(await callOllamaJson<StepListReply>(
     `chapter "${section.title}" (retry)`,
     SYSTEM,
     `${stepListPrompt(gameTitle, section, pages, expected)}\n\n` +
-    `IMPORTANT: your previous attempt returned no steps. The notes above DO describe this part of ` +
-    `the game — read them again and pull out every concrete thing the player does, gets, or fights. ` +
-    `If the notes are a list of things, write one step per thing. Return at least 3 steps.`,
+    (first.length === 0
+      ? `IMPORTANT: your previous attempt returned no steps. The notes above DO describe this part of ` +
+        `the game — read them again and pull out every concrete thing the player does, gets, or fights. ` +
+        `If the notes are a list of things, write one step per thing. Return at least 3 steps.`
+      : `IMPORTANT: your previous attempt returned only ${first.length} step(s), which summarises this ` +
+        `chapter instead of routing through it. The notes describe the route room by room — write every ` +
+        `room-level action in order: each door, key, block, enemy group, item and the boss. Expect 12 to 40 steps.`),
     STEP_LIST_SCHEMA,
   ))
+  return second.length > first.length ? second : first
 }
 
 /** How many steps get explained per model call. Small enough that a batch always finishes. */
@@ -1201,7 +1221,10 @@ async function detailSteps(
     let subbed = 0
     for (const d of Array.isArray(reply?.details) ? reply.details : []) {
       const n = typeof d?.n === 'number' ? d.n : Number(d?.n)
-      const noteText = str(d?.note)
+      const noteRaw = str(d?.note)
+      // "where: north-west" and "Empty note" are the model answering the wrong
+      // field; neither is a note.
+      const noteText = /^\s*(where\s*:|empty note|none|n\/a)\b/i.test(noteRaw) ? '' : noteRaw
       if (!Number.isInteger(n)) continue
       const target = batch.find(b => b.n === n)
       if (!target) continue
