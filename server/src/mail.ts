@@ -270,12 +270,22 @@ async function accessToken(email: string): Promise<string> {
   return j.access_token
 }
 
-async function api<T>(email: string, pathname: string, init?: RequestInit): Promise<T> {
+async function api<T>(email: string, pathname: string, init?: RequestInit, attempt = 0): Promise<T> {
   const token = await accessToken(email)
   const res = await fetch(`${API}${pathname}`, {
     ...init,
     headers: { ...(init?.headers ?? {}), authorization: `Bearer ${token}`, 'content-type': 'application/json' },
   })
+  // Gmail meters per second and a page of the list is a list call plus one
+  // metadata call per row, which a fast tap through two tabs can push over.
+  // The answer is "wait a moment", which is what this does, once, rather than
+  // a 502 on a tab the user just opened.
+  if ((res.status === 429 || res.status === 503) && attempt < 2) {
+    const wait = Math.min(5000, (Number(res.headers.get('retry-after')) || 1.5) * 1000)
+    await res.text().catch(() => '')
+    await new Promise<void>(r => setTimeout(r, wait))
+    return api<T>(email, pathname, init, attempt + 1)
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => '')
     let detail = body.slice(0, 200)

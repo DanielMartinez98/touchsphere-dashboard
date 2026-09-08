@@ -146,6 +146,7 @@ router.get('/labels', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store')
     res.json({ account, labels: await listLabels(account) })
   } catch (err) {
+    console.warn(`[mail] ${req.method} ${req.path}: ${err instanceof Error ? err.message : String(err)}`)
     res.status(502).json({ error: err instanceof Error ? err.message : String(err) })
   }
 })
@@ -172,6 +173,7 @@ router.get('/messages', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store')
     res.json({ account, ...out })
   } catch (err) {
+    console.warn(`[mail] ${req.method} ${req.path}: ${err instanceof Error ? err.message : String(err)}`)
     res.status(502).json({ error: err instanceof Error ? err.message : String(err) })
   }
 })
@@ -184,6 +186,7 @@ router.get('/messages/:id', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store')
     res.json(await getMessage(account, String(req.params['id'] ?? '')))
   } catch (err) {
+    console.warn(`[mail] ${req.method} ${req.path}: ${err instanceof Error ? err.message : String(err)}`)
     res.status(502).json({ error: err instanceof Error ? err.message : String(err) })
   }
 })
@@ -200,6 +203,7 @@ router.post('/messages/:id/flags', async (req: Request, res: Response) => {
     })
     res.json({ ok: true })
   } catch (err) {
+    console.warn(`[mail] ${req.method} ${req.path}: ${err instanceof Error ? err.message : String(err)}`)
     res.status(502).json({ error: err instanceof Error ? err.message : String(err) })
   }
 })
@@ -213,6 +217,7 @@ router.post('/read-all', async (req: Request, res: Response) => {
     const n = await markAllRead(account, b?.label ? [b.label] : ['INBOX'])
     res.json({ ok: true, marked: n })
   } catch (err) {
+    console.warn(`[mail] ${req.method} ${req.path}: ${err instanceof Error ? err.message : String(err)}`)
     res.status(502).json({ error: err instanceof Error ? err.message : String(err) })
   }
 })
