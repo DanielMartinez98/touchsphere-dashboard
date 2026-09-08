@@ -27,7 +27,11 @@ export default function PageView({ pageId, client, onTitle }: { pageId: string; 
   const [page,        setPage]        = useState<NotionPage | null>(null)
   const [loading,     setLoading]     = useState(true)
   const [error,       setError]       = useState<string | null>(null)
-  const [propsOpen,   setPropsOpen]   = useState(false)
+  // null until the user has an opinion; before that, a page that has a
+  // status or a date property (a task, in other words) opens on its
+  // properties, since those ARE the page for a task — its body is usually
+  // empty. Everything else keeps them folded, as before.
+  const [propsChoice, setPropsChoice] = useState<boolean | null>(null)
   const [archConfirm, setArchConfirm] = useState(false)
   const [showIcon,    setShowIcon]    = useState(false)
   const [showComments, setShowComments] = useState(false)
@@ -104,6 +108,9 @@ export default function PageView({ pageId, client, onTitle }: { pageId: string; 
   }
 
   const propEntries = Object.entries(page.properties).filter(([key]) => key !== titleKey)
+  const taskLike    = propEntries.some(([, v]) => v?.type === 'status' || v?.type === 'date' || v?.type === 'checkbox')
+  const propsOpen   = propsChoice ?? taskLike
+  const setPropsOpen = (f: (o: boolean) => boolean) => setPropsChoice(f(propsOpen))
   const cover = page.cover?.file?.url ?? page.cover?.external?.url
   // Number of groups this page belongs to — drives the "📁 In N groups" chip.
   const groupCount = groups.groupsContaining(page.id).length
@@ -167,7 +174,7 @@ export default function PageView({ pageId, client, onTitle }: { pageId: string; 
       {propEntries.length > 0 && (
         <div className="px-1">
           <button type="button" onClick={() => setPropsOpen(o => !o)}
-            className="text-sm text-white/45 active:text-white flex items-center gap-1.5">
+            className="h-11 px-3 -mx-3 rounded-xl text-sm text-white/60 active:bg-white/[0.06] active:text-white flex items-center gap-2">
             {propsOpen ? '▾' : '▸'} {propsOpen ? 'Hide' : 'Show'} {propEntries.length} propert{propEntries.length === 1 ? 'y' : 'ies'}
           </button>
           {propsOpen && (

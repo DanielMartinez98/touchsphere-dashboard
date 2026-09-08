@@ -21,6 +21,7 @@ interface Props {
   me:         { id: string; name: string } | null
   onUpdate:   (id: string, fields: TaskFields) => void
   onCreate:   (fields: { title: string; status?: string; priority?: string; due?: string; dbId?: string }) => void
+  onArchive?: (id: string) => void
   onRefresh:  () => void
   onRefreshSilent?: () => void
 }
@@ -33,7 +34,7 @@ const TABS: { kind: 'home' | 'groups' | 'browse' | 'search'; label: string; icon
 ]
 
 export default function NotionExpanded({
-  schema, schemas, taskDbs, tasks, projects, loading, error, errorKind, me, onUpdate, onCreate, onRefresh, onRefreshSilent,
+  schema, schemas, taskDbs, tasks, projects, loading, error, errorKind, me, onUpdate, onCreate, onArchive, onRefresh, onRefreshSilent,
 }: Props) {
   const client = useNotionClient()
   const view   = client.current
@@ -97,6 +98,7 @@ export default function NotionExpanded({
             client={client}
             onUpdate={onUpdate}
             onCreate={onCreate}
+            onArchive={onArchive}
             onRefresh={onRefresh}
             onRefreshSilent={onRefreshSilent}
           />

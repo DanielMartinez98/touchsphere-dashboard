@@ -127,6 +127,7 @@ function App() {
     refreshSilent: notionRefreshSilent,
     createTask:  notionCreate,
     updateTask:  notionUpdate,
+    archiveTask: notionArchive,
   } = useNotion(mode === 'work')
   // Mail is polled only while the work corner exists, so a rest-mode kiosk
   // makes no Gmail calls at all.
@@ -476,6 +477,7 @@ function App() {
               me={notionMe}
               onUpdate={notionUpdate}
               onCreate={notionCreate}
+              onArchive={notionArchive}
               onRefresh={notionRefresh}
               onRefreshSilent={notionRefreshSilent}
             />

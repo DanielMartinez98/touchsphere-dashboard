@@ -148,6 +148,132 @@ function TaskRow({
   )
 }
 
+// ── Task sheet: a task's own fields, editable from the list ─────────────────
+//
+// Tapping a task used to open its Notion PAGE: a title, three chips, an empty
+// "+ Add block" box, an "Archive page" bar — and the status, due date and
+// project it is a task BECAUSE of, folded away behind a dim 14px "Show 5
+// properties" link. On the kiosk that read as "I can't change anything about
+// this task", which was the honest description. So a tap now opens this: the
+// fields the row shows, as controls, saved through the same optimistic update
+// the done circle uses. The page is one button away for notes.
+function TaskSheet({
+  task, schema, projects, sourceTitle, onUpdate, onArchive, onOpenPage, onClose,
+}: {
+  task:        NotionTask
+  schema:      NotionSchema
+  projects:    Record<string, ProjectRef>
+  sourceTitle: string | null
+  onUpdate:    (fields: TaskFields) => void
+  onArchive?:  () => void
+  onOpenPage:  () => void
+  onClose:     () => void
+}) {
+  const [showCal, setShowCal]   = useState(false)
+  const [confirm, setConfirm]   = useState(false)
+  const taskProjects = task.projectIds.map(id => projects[id]).filter(Boolean) as ProjectRef[]
+  const due = task.due ? fmtDue(task.due) : null
+  const quick = [{ label: 'Today', days: 0 }, { label: 'Tomorrow', days: 1 }, { label: 'Next week', days: 7 }]
+  return (
+    <div className="absolute inset-0 z-30 flex flex-col justify-end">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="relative bg-[#0e1117] border-t border-white/10 rounded-t-3xl z-40 overflow-y-auto max-h-[92vh] kb-room">
+        <div className="px-5 pb-10 pt-3">
+          <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-4" />
+          <div className="flex flex-col gap-5">
+            <label className="flex flex-col gap-2">
+              <span className="text-sm text-white/35 uppercase tracking-wider font-medium">
+                Task{sourceTitle ? ` · ${sourceTitle}` : ''}
+              </span>
+              <TouchInput value={task.title} onChange={t => { if (t.trim() && t !== task.title) onUpdate({ title: t.trim() }) }}
+                commitOn="done"
+                ariaLabel="Task title"
+                className="bg-white/10 text-white rounded-xl px-4 py-4 text-base font-medium outline-none focus:ring-2 focus:ring-green-400" />
+            </label>
+            {schema.statusKey && schema.statusOptions.length > 0 && (
+              <ChipRow label="Status" options={schema.statusOptions} value={task.status}
+                onChange={v => onUpdate({ status: v })} />
+            )}
+            {schema.priorityKey && schema.priorityOptions.length > 0 && (
+              <ChipRow label="Priority" options={schema.priorityOptions} value={task.priority}
+                onChange={v => onUpdate({ priority: v })} allowNone />
+            )}
+            {schema.dueKey && (
+              <div className="flex flex-col gap-2">
+                <span className="text-sm text-white/35 uppercase tracking-wider font-medium">Due date</span>
+                <div className="flex gap-2">
+                  {quick.map(({ label, days }) => {
+                    const iso = isoInDays(days)
+                    const active = task.due === iso
+                    return (
+                      <button key={label} type="button"
+                        onClick={() => { onUpdate({ due: active ? null : iso }); setShowCal(false) }}
+                        className={`flex-1 h-12 rounded-xl text-sm font-semibold transition-colors
+                          ${active ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/60 active:bg-white/10'}`}>
+                        {label}
+                      </button>
+                    )
+                  })}
+                  {task.due && (
+                    <button type="button" onClick={() => { onUpdate({ due: null }); setShowCal(false) }}
+                      className="h-12 px-4 rounded-xl text-sm font-semibold bg-white/[0.06] text-white/50 active:bg-white/10">
+                      None
+                    </button>
+                  )}
+                </div>
+                <button type="button" onClick={() => setShowCal(v => !v)}
+                  className="flex items-center gap-3 bg-white/[0.06] rounded-xl px-4 py-3.5 text-base w-full active:bg-white/10">
+                  <CalendarDays size={18} className="text-white/60" />
+                  <span className={due ? (due.overdue ? 'text-red-300' : 'text-white') : 'text-white/40'}>
+                    {task.due
+                      ? `${new Date(task.due + 'T12:00').toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}${due?.overdue ? ` · ${due.label}` : ''}`
+                      : 'No date'}
+                  </span>
+                  <span className="text-white/30 ml-auto">{showCal ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</span>
+                </button>
+                {showCal && <MiniCalendar value={task.due ?? ''} onChange={d => { onUpdate({ due: d }); setShowCal(false) }} />}
+              </div>
+            )}
+            {taskProjects.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <span className="text-sm text-white/35 uppercase tracking-wider font-medium">Project</span>
+                <div className="flex gap-2 flex-wrap">
+                  {taskProjects.map(p => (
+                    <span key={p.id} className="px-3 py-2 rounded-xl text-sm bg-blue-500/15 text-blue-200/85">
+                      {p.icon ? `${p.icon} ` : '📁 '}{p.title}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3 mt-1">
+              <button type="button" onClick={onOpenPage}
+                className="h-14 rounded-2xl bg-white/10 text-white/80 text-sm font-semibold active:bg-white/15 flex items-center justify-center gap-2">
+                Notes &amp; page <ChevronRight size={16} />
+              </button>
+              <button type="button" onClick={onClose}
+                className="h-14 rounded-2xl bg-green-500 text-black text-sm font-bold active:bg-green-400">Done</button>
+            </div>
+            {onArchive && (
+              confirm ? (
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setConfirm(false)}
+                    className="flex-1 h-12 rounded-xl bg-white/10 text-white/60 text-sm font-semibold active:bg-white/15">Keep it</button>
+                  <button type="button" onClick={() => { onArchive(); onClose() }}
+                    className="flex-1 h-12 rounded-xl bg-red-500/80 text-white text-sm font-semibold active:bg-red-500">Archive this task</button>
+                </div>
+              ) : (
+                <button type="button" onClick={() => setConfirm(true)}
+                  className="h-12 rounded-xl text-sm text-red-300/80 active:bg-red-500/10">Archive…</button>
+              )
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Quick-add task sheet (creates in the configured task DB) ─────────────────
 
 function ChipRow({
@@ -319,6 +445,7 @@ interface Props {
   client:    NotionClient
   onUpdate:  (id: string, fields: TaskFields) => void
   onCreate:  (fields: { title: string; status?: string; priority?: string; due?: string; dbId?: string }) => void
+  onArchive?: (id: string) => void
   onRefresh: () => void
   // The quiet refetch — no spinner — run when the panel opens, since the
   // list on the pill may be up to a minute old.
@@ -399,7 +526,9 @@ function GroupsAndRecents({
   )
 }
 
-export default function HomeView({ schema, schemas, taskDbs, tasks, projects, loading, error, errorKind, me, client, onUpdate, onCreate, onRefresh, onRefreshSilent }: Props) {
+export default function HomeView({ schema, schemas, taskDbs, tasks, projects, loading, error, errorKind, me, client, onUpdate, onCreate, onArchive, onRefresh, onRefreshSilent }: Props) {
+  // The task whose sheet is open — its fields, editable, without leaving the list.
+  const [editing, setEditing] = useState<string | null>(null)
   // Opening the panel is the moment the user is about to act on the list, so
   // it is brought current first. Deferred a tick, for the lint rule.
   useEffect(() => {
@@ -619,12 +748,11 @@ export default function HomeView({ schema, schemas, taskDbs, tasks, projects, lo
             schema={schema}
             projects={projects}
             sourceTitle={showSource ? (dbTitleById[task.dbId] ?? null) : null}
-            onTap={() => client.navigate({ kind: 'page', id: task.id })}
+            onTap={() => setEditing(task.id)}
             onToggleDone={() => toggleDone(task)}
             onTapProject={id => setProjectFilter(projectFilter === id ? null : id)}
           />
         ))}
-
         {/* Completed tasks live behind a collapsed header so the active queue
             stays short — the count still gives the day's sense of progress. */}
         {!loading && !error && schema && done.length > 0 && (
@@ -642,7 +770,7 @@ export default function HomeView({ schema, schemas, taskDbs, tasks, projects, lo
                 schema={schema}
                 projects={projects}
                 sourceTitle={showSource ? (dbTitleById[task.dbId] ?? null) : null}
-                onTap={() => client.navigate({ kind: 'page', id: task.id })}
+                onTap={() => setEditing(task.id)}
                 onToggleDone={() => toggleDone(task)}
                 onTapProject={id => setProjectFilter(projectFilter === id ? null : id)}
               />
@@ -682,6 +810,26 @@ export default function HomeView({ schema, schemas, taskDbs, tasks, projects, lo
       {creating && schema && (
         <CreateTaskSheet schema={schema} schemas={schemas} taskDbs={taskDbs} onSave={onCreate} onClose={() => setCreating(false)} />
       )}
+      {editing && (() => {
+        // Read the task fresh from the list on every render, so the sheet
+        // shows the optimistic update the moment a chip is tapped.
+        const task = tasks.find(t => t.id === editing)
+        if (!task) return null
+        const sch = schemas[task.dbId] ?? schema
+        if (!sch) return null
+        return (
+          <TaskSheet
+            task={task}
+            schema={sch}
+            projects={projects}
+            sourceTitle={showSource ? (dbTitleById[task.dbId] ?? null) : null}
+            onUpdate={fields => onUpdate(task.id, fields)}
+            onArchive={onArchive ? () => onArchive(task.id) : undefined}
+            onOpenPage={() => { setEditing(null); client.navigate({ kind: 'page', id: task.id }) }}
+            onClose={() => setEditing(null)}
+          />
+        )
+      })()}
     </div>
   )
 }
