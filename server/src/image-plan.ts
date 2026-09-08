@@ -334,6 +334,7 @@ async function askPlanner(image: Buffer, request: string, tools: PlanMode[], sty
         ],
         // The planner's system prompt is ~2,400 tokens before the picture;
         // the 4096 default leaves almost nothing for the answer.
+        keep_alive: 0,   // the planner shares the card with the renders it plans
         options: { num_ctx: 16384, temperature: 0.3, num_predict: 900 },
       }),
     })

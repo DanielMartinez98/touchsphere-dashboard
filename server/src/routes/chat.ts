@@ -757,7 +757,7 @@ async function callOllamaAt(url: string, model: string, messages: ChatMessage[],
     // See NUM_CTX. Without this the tools are silently truncated away.
     body['options'] = { num_ctx: NUM_CTX }
     // A local model stays loaded between turns; the cloud ignores this.
-    if (!/ollama\.com/i.test(url)) body['keep_alive'] = '30m'
+    if (!/ollama\.com/i.test(url)) body['keep_alive'] = '5m'   // longer starved ComfyUI of VRAM on the same card
 
     const upstream = await fetch(`${url.replace(/\/$/, '')}/api/chat`, {
       method: 'POST',

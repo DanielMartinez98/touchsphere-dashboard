@@ -295,7 +295,11 @@ export async function improvePrompt(prompt: string, style: StyleFacts): Promise<
           // almost verbatim, which makes the whole feature look broken.
           // num_ctx for the same reason as chat.ts: Ollama's 4096 default
           // truncates from the front, and the front is the instructions.
-          options: { num_ctx: 8192, temperature, num_predict: 400 },
+          // Unloaded the moment it answers: this model shares the card with ComfyUI,
+        // and a render that starts while 5 GB of language model is still resident
+        // runs in paged mode — a 53 s edit took 6 minutes that way.
+        keep_alive: 0,
+        options: { num_ctx: 8192, temperature, num_predict: 400 },
         }),
       })
       if (!res.ok) {
@@ -500,6 +504,10 @@ export async function composeRedrawPrompt(
         // Cooler than the improver's 0.7: this is description, not invention,
         // and the whole point is fidelity to what is in the picture.
         // A picture rides in this one, so the window has to hold it too.
+        // Unloaded the moment it answers: this model shares the card with ComfyUI,
+        // and a render that starts while 5 GB of language model is still resident
+        // runs in paged mode — a 53 s edit took 6 minutes that way.
+        keep_alive: 0,
         options: { num_ctx: 8192, temperature: 0.4, num_predict: 500 },
       }),
     })
@@ -580,6 +588,10 @@ export async function composeKontextInstruction(image: Buffer, request: string):
           { role: 'system', content: system },
           { role: 'user', content: `The user wants: ${request}\nThe previous attempt with those exact words changed nothing in the picture. Write the instruction that will.`, images: [image.toString('base64')] },
         ],
+        // Unloaded the moment it answers: this model shares the card with ComfyUI,
+        // and a render that starts while 5 GB of language model is still resident
+        // runs in paged mode — a 53 s edit took 6 minutes that way.
+        keep_alive: 0,
         options: { num_ctx: 8192, temperature: 0.3, num_predict: 200 },
       }),
     })
