@@ -356,7 +356,19 @@ export interface MailSummary {
   unread:   boolean
   starred:  boolean
   labels:   string[]
+  /**
+   * Sent by a machine to a list: it carries a List-Unsubscribe header or a
+   * bulk/list Precedence. Gmail's categories catch most marketing, but a
+   * measured look at this mailbox's Primary and Updates tabs found sale
+   * countdowns and "don't miss out" mail in both, and this header is the one
+   * thing every one of them shares that a bank alert or a security warning
+   * never has. The panel hides these in the tabs meant for people.
+   */
+  bulk:     boolean
 }
+
+/** Marketing by its own words, for the rows the header test alone leaves through. */
+const PROMO_SUBJECT = /(\d+\s*%\s*(off|de descuento)|\bsale\b|\bdeal|\boferta|\bpromo|last call|don'?t miss|ends (tonight|soon|today)|limited time|free shipping|\bcoupon|\bdescuento|hurry|final hours|flash sale|black friday|cyber monday|newsletter)/i
 
 function header(headers: { name?: string; value?: string }[] | undefined, want: string): string {
   return headers?.find(h => (h.name ?? '').toLowerCase() === want)?.value ?? ''
@@ -388,20 +400,29 @@ export async function listMessages(
     const m = await api<{
       id: string; threadId: string; snippet?: string; internalDate?: string
       labelIds?: string[]; payload?: { headers?: { name?: string; value?: string }[] }
-    }>(email, `/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`)
+    }>(email, `/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date` +
+              `&metadataHeaders=List-Unsubscribe&metadataHeaders=Precedence`)
     const from = splitFrom(header(m.payload?.headers, 'from'))
+    const subject = header(m.payload?.headers, 'subject') || '(no subject)'
+    const listy = !!header(m.payload?.headers, 'list-unsubscribe')
+      || /\b(bulk|list)\b/i.test(header(m.payload?.headers, 'precedence'))
+    const labels = m.labelIds ?? []
     return {
       id: m.id,
       threadId: m.threadId,
       account: email,
       from: from.address,
       fromName: from.name,
-      subject: header(m.payload?.headers, 'subject') || '(no subject)',
+      subject,
       snippet: (m.snippet ?? '').slice(0, 300),
       date: m.internalDate ? new Date(Number(m.internalDate)).toISOString() : '',
-      unread: (m.labelIds ?? []).includes('UNREAD'),
-      starred: (m.labelIds ?? []).includes('STARRED'),
-      labels: m.labelIds ?? [],
+      unread: labels.includes('UNREAD'),
+      starred: labels.includes('STARRED'),
+      labels,
+      // Promotions is bulk by definition; elsewhere a list header AND a
+      // sales-pitch subject, so a bank's newsletter-shaped statement notice
+      // (list header, plain subject) stays in view.
+      bulk: labels.includes('CATEGORY_PROMOTIONS') || (listy && PROMO_SUBJECT.test(subject)),
     }
   }))
   return { messages, ...(list.nextPageToken ? { nextPageToken: list.nextPageToken } : {}) }
@@ -498,6 +519,9 @@ export async function getMessage(email: string, id: string): Promise<MailBody> {
     cc: header(headers, 'cc'),
     subject: header(headers, 'subject') || '(no subject)',
     snippet: m.snippet ?? '',
+    bulk: (m.labelIds ?? []).includes('CATEGORY_PROMOTIONS')
+      || ((!!header(headers, 'list-unsubscribe') || /(bulk|list)/i.test(header(headers, 'precedence')))
+          && PROMO_SUBJECT.test(header(headers, 'subject') || '')),
     date: m.internalDate ? new Date(Number(m.internalDate)).toISOString() : '',
     unread: (m.labelIds ?? []).includes('UNREAD'),
     starred: (m.labelIds ?? []).includes('STARRED'),
@@ -536,15 +560,27 @@ export async function markAllRead(email: string, labelIds: string[]): Promise<nu
   return messages.length
 }
 
-/** One number per account for the collapsed corner. Never throws for one bad account. */
-export async function unreadCounts(): Promise<{ email: string; unread: number; error?: string }[]> {
+/**
+ * One number per account for the collapsed corner. Never throws for one bad
+ * account.
+ *
+ * The number is PRIMARY's unread, not the inbox's. On the mailbox this was
+ * built against the inbox stood at 26,540 unread, of which 26,289 were
+ * Promotions — a number that answers nothing when glanced at from across the
+ * room. Primary said 44, which is the count of things a person might actually
+ * open. The inbox total rides along for the panel's "More" row.
+ */
+export async function unreadCounts(): Promise<{ email: string; unread: number; inbox: number; error?: string }[]> {
   const accounts = read().accounts.filter(a => a.muted !== true)
   return Promise.all(accounts.map(async a => {
     try {
-      const d = await api<{ messagesUnread?: number }>(a.email, '/labels/INBOX')
-      return { email: a.email, unread: d.messagesUnread ?? 0 }
+      const [p, i] = await Promise.all([
+        api<{ messagesUnread?: number }>(a.email, '/labels/CATEGORY_PERSONAL').catch(() => ({ messagesUnread: 0 })),
+        api<{ messagesUnread?: number }>(a.email, '/labels/INBOX'),
+      ])
+      return { email: a.email, unread: p.messagesUnread ?? 0, inbox: i.messagesUnread ?? 0 }
     } catch (err) {
-      return { email: a.email, unread: 0, error: err instanceof Error ? err.message : String(err) }
+      return { email: a.email, unread: 0, inbox: 0, error: err instanceof Error ? err.message : String(err) }
     }
   }))
 }

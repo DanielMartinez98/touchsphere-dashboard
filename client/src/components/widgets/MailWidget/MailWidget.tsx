@@ -6,8 +6,8 @@
 // answers to "do I need to sit down".
 
 interface Props {
-  /** Unread per account, muted ones already excluded by the server. */
-  counts:  { email: string; unread: number; error?: string }[]
+  /** Unread in Primary per account (and the whole inbox beside it), muted ones already excluded. */
+  counts:  { email: string; unread: number; inbox?: number; error?: string }[]
   total:   number
   /** null while unknown, false when no account is signed in. */
   enabled: boolean | null
@@ -28,16 +28,26 @@ export function MailCollapsed({ counts, total, enabled }: Props) {
       ) : broken.length === counts.length && counts.length > 0 ? (
         <span className="text-sm text-amber-300/90 leading-tight">Sign in again</span>
       ) : total === 0 ? (
-        <span className="text-sm font-semibold text-sky-300">All read</span>
+        <>
+          <span className="text-sm font-semibold text-sky-300">Primary clear</span>
+          {counts.some(c => (c.inbox ?? 0) > 0) && (
+            <span className="text-[11px] text-white/35 leading-tight text-center">
+              {counts.reduce((n, c) => n + (c.inbox ?? 0), 0).toLocaleString()} elsewhere
+            </span>
+          )}
+        </>
       ) : (
         <>
           <span className="text-2xl font-bold font-display tabular-nums text-white leading-none">
             {total}
           </span>
+          {/* "Primary", named: the inbox as a whole was 26,540 unread on the
+              mailbox this was built for, and a number that size on a wall means
+              nothing. This is the count of mail a person might open. */}
           <span className="text-[11px] text-white/45 leading-tight text-center">
             {counts.length > 1
-              ? `unread · ${withMail.length} of ${counts.length} inboxes`
-              : 'unread'}
+              ? `in Primary · ${withMail.length} of ${counts.length} inboxes`
+              : 'in Primary'}
           </span>
         </>
       )}

@@ -21,6 +21,37 @@ export interface MailSummary {
   id: string; threadId: string; account: string
   from: string; fromName: string; subject: string; snippet: string
   date: string; unread: boolean; starred: boolean; labels: string[]
+  /** Machine-sent to a list (marketing, newsletters). Hidden in the people tabs. */
+  bulk: boolean
+}
+
+/**
+ * The tabs, decided from what this mailbox actually holds rather than from
+ * Gmail's full label list:
+ *
+ *   Primary   the mail from people and the services one signed up to hear
+ *             from — 44 unread on the day this was measured
+ *   Updates   bank alerts, security warnings, receipts, App Store mail; also
+ *             where the bulk filter earns its keep, since sale countdowns land
+ *             here too
+ *   Starred   what was kept on purpose
+ *
+ * Everything else sits behind "More": Social was 39 LinkedIn notifications
+ * out of 40, Promotions was 26,000 unread advertisements, Forums was empty,
+ * and Spam is spam. They are one tap away, not on the wall.
+ */
+export const MAIN_TABS = ['CATEGORY_PERSONAL', 'CATEGORY_UPDATES', 'STARRED'] as const
+export const HIDDEN_TABS = ['CATEGORY_SOCIAL', 'CATEGORY_PROMOTIONS', 'CATEGORY_FORUMS', 'SPAM'] as const
+/** Where the bulk filter applies: the tabs meant for people, never the ad tab itself. */
+export const PEOPLE_TABS = new Set<string>(['CATEGORY_PERSONAL', 'CATEGORY_UPDATES', 'INBOX', 'IMPORTANT', 'STARRED'])
+
+const LS_TAB = 'ts_mail_tab'
+const LS_UNREAD = 'ts_mail_unread_only'
+function remembered(key: string, fallback: string): string {
+  try { return localStorage.getItem(key) ?? fallback } catch { return fallback }
+}
+function remember(key: string, value: string): void {
+  try { localStorage.setItem(key, value) } catch { /* private mode */ }
 }
 export interface MailBody extends MailSummary {
   to: string; cc: string; text: string; fromHtml: boolean
@@ -40,7 +71,7 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 
 /** The pill's half: how much unread there is, per account. Cheap and polled. */
 export function useMailUnread(active: boolean) {
-  const [counts, setCounts] = useState<{ email: string; unread: number; error?: string }[]>([])
+  const [counts, setCounts] = useState<{ email: string; unread: number; inbox: number; error?: string }[]>([])
   const [enabled, setEnabled] = useState<boolean | null>(null)
 
   const refresh = useCallback(async () => {
@@ -48,7 +79,7 @@ export function useMailUnread(active: boolean) {
       const s = await json<MailStatus>('/api/mail/status')
       setEnabled(s.enabled)
       if (!s.enabled) { setCounts([]); return }
-      const u = await json<{ accounts: { email: string; unread: number; error?: string }[] }>('/api/mail/unread')
+      const u = await json<{ accounts: { email: string; unread: number; inbox: number; error?: string }[] }>('/api/mail/unread')
       setCounts(u.accounts)
     } catch {
       setEnabled(false)
@@ -75,9 +106,15 @@ export function useMailbox(open: boolean) {
   const [status, setStatus] = useState<MailStatus>(EMPTY_STATUS)
   const [account, setAccount] = useState('')
   const [labels, setLabels] = useState<MailLabel[]>([])
-  const [label, setLabel] = useState('INBOX')
+  // Primary by default, and the last tab used after that — a wall display is
+  // opened to the same place every time.
+  const [label, setLabelState] = useState(() => remembered(LS_TAB, 'CATEGORY_PERSONAL'))
+  const [unreadOnly, setUnreadOnlyState] = useState(() => remembered(LS_UNREAD, '0') === '1')
+  const [showBulk, setShowBulk] = useState(false)
   const [query, setQuery] = useState('')
   const [messages, setMessages] = useState<MailSummary[]>([])
+  const [nextPage, setNextPage] = useState('')
+  const [loadingMore, setLoadingMore] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [body, setBody] = useState<MailBody | null>(null)
@@ -108,17 +145,19 @@ export function useMailbox(open: boolean) {
     } catch (e) { setError(e instanceof Error ? e.message : 'could not read the labels') }
   }, [])
 
-  const loadMessages = useCallback(async (who: string, lbl: string, q: string) => {
+  const loadMessages = useCallback(async (who: string, lbl: string, q: string, unread: boolean) => {
     if (!who) return
     const mine = ++seq.current
     setLoading(true)
     setError('')
+    setNextPage('')
     try {
       const qs = new URLSearchParams({ account: who, limit: '25' })
       if (lbl) qs.set('label', lbl)
       if (q.trim()) qs.set('q', q.trim())
-      const j = await json<{ messages: MailSummary[] }>(`/api/mail/messages?${qs}`)
-      if (mine === seq.current) setMessages(j.messages)
+      if (unread) qs.set('unread', '1')
+      const j = await json<{ messages: MailSummary[]; nextPageToken?: string }>(`/api/mail/messages?${qs}`)
+      if (mine === seq.current) { setMessages(j.messages); setNextPage(j.nextPageToken ?? '') }
     } catch (e) {
       if (mine === seq.current) { setMessages([]); setError(e instanceof Error ? e.message : 'could not read the mail') }
     } finally {
@@ -126,19 +165,62 @@ export function useMailbox(open: boolean) {
     }
   }, [])
 
+  /** The next page, appended. Gmail pages by token, so this is the only way down. */
+  const loadMore = useCallback(async () => {
+    if (!account || !nextPage || loadingMore) return
+    const mine = seq.current
+    setLoadingMore(true)
+    try {
+      const qs = new URLSearchParams({ account, limit: '25', pageToken: nextPage })
+      if (label) qs.set('label', label)
+      if (query.trim()) qs.set('q', query.trim())
+      if (unreadOnly) qs.set('unread', '1')
+      const j = await json<{ messages: MailSummary[]; nextPageToken?: string }>(`/api/mail/messages?${qs}`)
+      if (mine === seq.current) {
+        setMessages(prev => {
+          const seen = new Set(prev.map(m => m.id))
+          return [...prev, ...j.messages.filter(m => !seen.has(m.id))]
+        })
+        setNextPage(j.nextPageToken ?? '')
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'could not read more mail')
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [account, label, query, unreadOnly, nextPage, loadingMore])
+
   useEffect(() => {
     if (!open || !account) return
     const t = setTimeout(() => {
       void loadLabels(account)
-      void loadMessages(account, label, query)
+      void loadMessages(account, label, query, unreadOnly)
     }, 0)
     return () => clearTimeout(t)
-  }, [open, account, label, query, loadLabels, loadMessages])
+  }, [open, account, label, query, unreadOnly, loadLabels, loadMessages])
 
   const refresh = useCallback(() => {
     void loadLabels(account)
-    void loadMessages(account, label, query)
-  }, [account, label, query, loadLabels, loadMessages])
+    void loadMessages(account, label, query, unreadOnly)
+  }, [account, label, query, unreadOnly, loadLabels, loadMessages])
+
+  const setLabel = useCallback((id: string) => {
+    setLabelState(id)
+    setShowBulk(false)
+    remember(LS_TAB, id)
+  }, [])
+
+  const setUnreadOnly = useCallback((v: boolean) => {
+    setUnreadOnlyState(v)
+    remember(LS_UNREAD, v ? '1' : '0')
+  }, [])
+
+  // The bulk filter: in the tabs meant for people, machine-sent marketing is
+  // folded away behind one line that says how much was hidden. Never in
+  // Promotions, where bulk is the whole point of the tab.
+  const hideBulk = PEOPLE_TABS.has(label) && !showBulk && !query.trim()
+  const visible = hideBulk ? messages.filter(m => !m.bulk) : messages
+  const hiddenBulk = hideBulk ? messages.length - visible.length : 0
 
   /**
    * Open a message, and mark it read the way every mail client does.
@@ -203,8 +285,11 @@ export function useMailbox(open: boolean) {
   return {
     status, account, setAccount,
     labels, label, setLabel,
+    unreadOnly, setUnreadOnly,
     query, setQuery,
-    messages, loading, error, refresh,
+    messages: visible, hiddenBulk, showBulk, setShowBulk,
+    loading, error, refresh,
+    nextPage, loadingMore, loadMore,
     body, bodyLoading, openMessage, closeMessage,
     setFlag, markAllRead,
   }

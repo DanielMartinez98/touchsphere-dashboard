@@ -150,12 +150,16 @@ router.get('/labels', async (req: Request, res: Response) => {
   }
 })
 
-// GET /api/mail/messages?account=&label=&q=&limit=&pageToken=
+// GET /api/mail/messages?account=&label=&q=&unread=1&limit=&pageToken=
 router.get('/messages', async (req: Request, res: Response) => {
   const account = accountOf(req)
   if (!account) { res.status(409).json({ error: 'no account signed in' }); return }
   const label = typeof req.query['label'] === 'string' ? req.query['label'] : ''
-  const q = typeof req.query['q'] === 'string' ? req.query['q'] : ''
+  // A switch rather than a search term: "unread only" is the one filter used
+  // on every visit, and typing "is:unread" on a kiosk is not a filter.
+  const unreadOnly = req.query['unread'] === '1' || req.query['unread'] === 'true'
+  const typed = typeof req.query['q'] === 'string' ? req.query['q'] : ''
+  const q = [typed, unreadOnly ? 'is:unread' : ''].filter(Boolean).join(' ')
   const limit = Number(req.query['limit']) || 25
   const pageToken = typeof req.query['pageToken'] === 'string' ? req.query['pageToken'] : ''
   try {

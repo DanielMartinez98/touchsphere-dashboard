@@ -7,18 +7,21 @@
 // round X every expanded widget carries closes the panel; a labelled back pill
 // leaves the message. Those must never be the same guess.
 //
-// The filters are NOT invented here. They are the label list Gmail returns —
-// the system ones, the category tabs, and everything the user made — so the
-// filtering on the wall is the filtering they already keep in Gmail. The
-// search box takes Gmail's own query syntax for the same reason.
+// The filters are Gmail's own labels, but not all of them at once. Three tabs
+// sit on the wall — Primary, Updates, Starred — because that is where the mail
+// a person opens lives (see MAIN_TABS in useMail for the measurement behind
+// it), and everything else — Social, Promotions, Forums, Spam, the whole
+// inbox, the user's own labels — is one tap away behind "More". The search
+// box takes Gmail's own query syntax, and "Unread" is a switch rather than a
+// search term because it is the one filter used on every visit.
 
 import { useState } from 'react'
 import {
   Mail, Search, RefreshCw, Star, ArrowLeft, CheckCheck, Loader2, AlertTriangle,
-  Paperclip, Inbox, Tag, MailOpen,
+  Paperclip, Inbox, Tag, MailOpen, ChevronDown, ChevronUp, EyeOff, Eye,
 } from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
-import { useMailbox } from '../../../hooks/useMail'
+import { useMailbox, MAIN_TABS, HIDDEN_TABS } from '../../../hooks/useMail'
 
 /** Relative for the last day, then the date — a mail list is scanned, not read. */
 function when(iso: string): string {
@@ -37,8 +40,21 @@ export default function MailExpanded({ open }: { open: boolean }) {
   const m = useMailbox(open)
   const [searching, setSearching] = useState(false)
   const [draft, setDraft] = useState('')
+  const [more, setMore] = useState(false)
 
   const accounts = m.status.accounts.filter(a => !a.muted)
+  const byId = new Map(m.labels.map(l => [l.id, l]))
+  const mainTabs = MAIN_TABS.map(id => byId.get(id)).filter((l): l is NonNullable<typeof l> => !!l)
+  // Behind "More": the noisy categories, the whole inbox, Important, and the
+  // user's own labels — in that order, since the first four are the same on
+  // every account and the labels are theirs.
+  const moreTabs = [
+    ...HIDDEN_TABS.map(id => byId.get(id)).filter((l): l is NonNullable<typeof l> => !!l),
+    ...['INBOX', 'IMPORTANT'].map(id => byId.get(id)).filter((l): l is NonNullable<typeof l> => !!l),
+    ...m.labels.filter(l => l.type === 'user'),
+  ]
+  const onMoreTab = !!m.label && !MAIN_TABS.includes(m.label as typeof MAIN_TABS[number])
+  const currentName = byId.get(m.label)?.name ?? m.label
 
   if (!m.status.configured) {
     return (
@@ -170,9 +186,11 @@ export default function MailExpanded({ open }: { open: boolean }) {
         </div>
       )}
 
-      {/* Gmail's labels, in Gmail's own order, with their unread counts. */}
+      {/* The three tabs that matter, then "More" for the rest. A tab from
+          behind More, once chosen, is shown in its place so the row still says
+          where you are. */}
       <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1 shrink-0">
-        {m.labels.map(l => (
+        {mainTabs.map(l => (
           <button
             key={l.id}
             type="button"
@@ -183,13 +201,61 @@ export default function MailExpanded({ open }: { open: boolean }) {
                 ? 'bg-white/20 text-white border-white/25'
                 : 'bg-white/5 text-white/45 border-transparent'}`}
           >
-            {l.id === 'INBOX' ? <Inbox size={12} /> : l.type === 'user' ? <Tag size={12} /> : null}
+            {l.id === 'STARRED' ? <Star size={12} /> : <Inbox size={12} />}
             {l.name}
             {l.unread > 0 && (
-              <span className="text-[10px] tabular-nums text-sky-300 font-bold">{l.unread}</span>
+              <span className="text-[10px] tabular-nums text-sky-300 font-bold">{l.unread.toLocaleString()}</span>
             )}
           </button>
         ))}
+        <button
+          type="button"
+          onClick={() => setMore(v => !v)}
+          aria-expanded={more}
+          className={`shrink-0 h-10 px-3 rounded-xl text-[12px] font-semibold border flex items-center gap-1.5
+                      transition-colors ${
+            onMoreTab && !more
+              ? 'bg-white/20 text-white border-white/25'
+              : 'bg-white/5 text-white/45 border-transparent'}`}
+        >
+          {onMoreTab && !more ? currentName : 'More'}
+          {more ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        </button>
+      </div>
+      {more && (
+        <div className="flex flex-wrap gap-2 -mt-1 shrink-0">
+          {moreTabs.map(l => (
+            <button
+              key={l.id}
+              type="button"
+              onClick={() => { m.setLabel(l.id); setMore(false) }}
+              className={`h-9 px-3 rounded-xl text-[12px] font-semibold border flex items-center gap-1.5
+                          transition-colors ${
+                m.label === l.id
+                  ? 'bg-white/20 text-white border-white/25'
+                  : 'bg-white/5 text-white/45 border-transparent'}`}
+            >
+              {l.type === 'user' ? <Tag size={12} /> : null}
+              {l.name}
+              {l.unread > 0 && (
+                <span className="text-[10px] tabular-nums text-white/40 font-bold">{l.unread.toLocaleString()}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* All / Unread. A switch, not a search term: it is the one filter used
+          on every visit, and it is remembered per device. */}
+      <div role="radiogroup" aria-label="Show" className="h-10 p-1 rounded-xl bg-white/5 border border-hairline flex shrink-0 self-start">
+        <button type="button" role="radio" aria-checked={!m.unreadOnly} onClick={() => m.setUnreadOnly(false)}
+          className={`h-8 px-4 rounded-lg text-[12px] font-semibold transition ${!m.unreadOnly ? 'bg-white/20 text-white' : 'text-white/45'}`}>
+          All
+        </button>
+        <button type="button" role="radio" aria-checked={m.unreadOnly} onClick={() => m.setUnreadOnly(true)}
+          className={`h-8 px-4 rounded-lg text-[12px] font-semibold transition ${m.unreadOnly ? 'bg-sky-500/30 text-sky-100' : 'text-white/45'}`}>
+          Unread
+        </button>
       </div>
 
       {/* Search, in Gmail's own syntax. Collapsed to an icon until wanted:
@@ -271,7 +337,9 @@ export default function MailExpanded({ open }: { open: boolean }) {
         <div className="py-10 flex justify-center text-white/40"><Loader2 size={22} className="animate-spin" /></div>
       ) : m.messages.length === 0 ? (
         <p className="py-8 text-center text-[13px] text-white/40">
-          {m.query ? 'Nothing matches that search.' : 'Nothing here.'}
+          {m.query ? 'Nothing matches that search.'
+            : m.hiddenBulk > 0 ? `Only marketing here — ${m.hiddenBulk} hidden.`
+            : m.unreadOnly ? 'Nothing unread.' : 'Nothing here.'}
         </p>
       ) : (
         <ul className="flex flex-col gap-1.5">
@@ -313,6 +381,34 @@ export default function MailExpanded({ open }: { open: boolean }) {
             </li>
           ))}
         </ul>
+      )}
+
+      {/* Marketing that reached a people tab, folded away rather than deleted:
+          one line says how much, and shows it on request. */}
+      {(m.hiddenBulk > 0 || m.showBulk) && !m.query && (
+        <button
+          type="button"
+          onClick={() => m.setShowBulk(!m.showBulk)}
+          className="h-10 rounded-xl bg-white/[0.03] border border-dashed border-white/15 text-white/45
+                     text-[12px] flex items-center justify-center gap-2 active:bg-white/5"
+        >
+          {m.showBulk
+            ? <><EyeOff size={13} /> Hide marketing again</>
+            : <><Eye size={13} /> {m.hiddenBulk} marketing email{m.hiddenBulk === 1 ? '' : 's'} hidden · show</>}
+        </button>
+      )}
+
+      {m.nextPage && (
+        <button
+          type="button"
+          onClick={() => void m.loadMore()}
+          disabled={m.loadingMore}
+          className="h-11 rounded-xl bg-white/5 border border-hairline text-white/60 text-[13px] font-semibold
+                     flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50"
+        >
+          {m.loadingMore ? <Loader2 size={15} className="animate-spin" /> : <ChevronDown size={15} />}
+          Older mail
+        </button>
       )}
     </div>
   )
