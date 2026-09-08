@@ -82,9 +82,10 @@ function baseImagePromptGuidance(): string {
       'right after it, lowercase with spaces — "1girl, sakura haruno, naruto" — never the ' +
       'character alone and never a description in place of the tag; then the scene as tags or ' +
       'as one or two sentences (lighting, mood, composition). Do not guess hair or eye colours. ' +
-      'A named character must look EXACTLY as in the official series: add the tag "official ' +
-      'style" after the series tag, and never add an artist tag, a "style of", a medium ' +
-      '(watercolor, chibi, sketch) or an era unless the user asked for that look. ' +
+      'A named character must look EXACTLY as in the official series: after the series tag add ' +
+      'the series’ own creator as an artist tag with @ in front ("@masashi kishimoto" for ' +
+      'Naruto) when you are certain who made it, then "official style"; never any other artist ' +
+      'tag, "style of", medium (watercolor, chibi, sketch) or era unless the user asked for it. ' +
       'Never ask it for realism or photos — it is an illustration model — and never write ' +
       'quality tags ("masterpiece", "best quality"); those are added for you.'
   }

@@ -2188,17 +2188,33 @@ const ANIMA_PROMPT_GUIDE =
   'illustration instead (fine linework, painterly shading, cinematic lighting). Text in the ' +
   'picture is limited to a single word or a very short phrase; do not ask for more. ' +
   'A NAMED CHARACTER MUST LOOK EXACTLY AS IN THE OFFICIAL SERIES — that is the whole point of ' +
-  'naming one, and everything else in the prompt bends to it. So: the character tag with its ' +
-  'series tag first, then the tag "official style" (the Danbooru tag for artwork drawn the way ' +
-  'the original series draws it) and "anime coloring" for a show or "official art" only when ' +
-  'the user asks for the source look literally; NEVER add an @artist tag, a "style of", a ' +
-  'medium (watercolor, oil painting, sketch, chibi, pixel art) or an era tag unless the user ' +
-  'asked for that look, because each of those pulls the face and proportions away from the ' +
-  'series design; never re-describe the face, hair or eyes in words that could contradict ' +
-  'the design; keep the canonical hairstyle, eye shape and body proportions implied by the ' +
-  'character tag and only change what the scene changes (clothes, pose, place, lighting). ' +
-  'When the user asks for a style change ON a character ("Naruto as a cyberpunk"), keep the ' +
-  'character and series tags in front and put the style after them, so identity still wins.'
+  'naming one, and everything else in the prompt bends to it. The card gives four levers for ' +
+  'that, in its own tag order [quality] [count] [character] [series] [artist] [general]: ' +
+  '(1) the character tag with its SERIES tag right after it, both at the front where the model ' +
+  'weights hardest; (2) an ARTIST TAG FOR THE SERIES’ OWN CREATOR — the card says an artist ' +
+  'tag is one of the strongest things in a prompt and MUST be written with @ in front, so write ' +
+  'the mangaka, illustrator or character designer of that series as "@first last" in lowercase ' +
+  '("@masashi kishimoto" for Naruto, "@koyoharu gotouge" for Demon Slayer, "@tatsuki fujimoto" ' +
+  'for Chainsaw Man, "@yoshiyuki sadamoto" for Evangelion, "@eiichiro oda" for One Piece, ' +
+  '"@akira toriyama" for Dragon Ball) or the studio when the look is the anime’s rather than ' +
+  'the manga’s ("@kyoto animation", "@ufotable") — ONLY when you are certain who made the ' +
+  'series; a wrong creator drags the face toward the wrong series, so with any doubt use no ' +
+  'artist tag at all; (3) the meta tag "official style" (drawn the way the source draws it) ' +
+  'after the artist tag, or "anime screencap" when the user wants it to look like a frame of the ' +
+  'show, or "official art" when they want a key visual; (4) the canonical appearance, which the ' +
+  'card itself recommends ("name a character, then describe their basic appearance") — hair ' +
+  'colour and style, eye colour, and signature marks (whisker marks, a forehead seal, a scar, ' +
+  'the hair ornament) — but ONLY the details you are certain of, because a wrong colour ' +
+  'overrides the character tag and produces a stranger; when unsure, leave the face to the ' +
+  'character and series tags. NEVER add any OTHER artist tag, a "style of", a medium (watercolor, ' +
+  'oil painting, sketch, chibi, pixel art) or an era tag unless the user asked for that look, ' +
+  'since each pulls the face and proportions away from the series design; keep the canonical ' +
+  'hairstyle and body proportions and only change what the scene changes (clothes, pose, place, ' +
+  'lighting). If the user says a previous picture did not look like the character, raise the ' +
+  'weight on the character tag the way the card shows — "(sakura haruno:1.4)" — and on the ' +
+  'creator tag, since this model wants higher weights than SDXL. When the user asks for a style ' +
+  'change ON a character ("Naruto as a cyberpunk"), keep the character, series and creator tags ' +
+  'in front and put the new style after them, so identity still wins.'
 
 /**
  * Appended after every Anima prompt (Settings → Drawing can override it per
