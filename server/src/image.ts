@@ -564,6 +564,49 @@ function remember(entry: StoredImage): void {
   }
 }
 
+/**
+ * Files on disk that no gallery entry points at.
+ *
+ * A render writes its PNG and then records it; anything that throws in
+ * between leaves the picture on the volume with nothing pointing at it — the
+ * user never sees the render they waited for, and pruning (which walks the
+ * index) can never reclaim it, so it sits there for the life of the volume.
+ * Three appeared the day the instruction-retry landed. They are adopted back
+ * into the gallery at boot rather than deleted: the GPU time was spent, the
+ * picture is the thing that was asked for, and a filename is enough to show
+ * it. What is lost is the settings, so they say so honestly.
+ */
+export function adoptOrphanImages(): number {
+  let files: string[]
+  try { files = fs.readdirSync(imagesDir()).filter(f => /^[a-f0-9]{32}\.png$/.test(f)) } catch { return 0 }
+  const known = new Set(listImages().map(e => e.file))
+  const orphans = files.filter(f => !known.has(f))
+  if (orphans.length === 0) return 0
+  const adopted: StoredImage[] = []
+  for (const file of orphans) {
+    try {
+      const full = path.join(imagesDir(), file)
+      const stat = fs.statSync(full)
+      const size = pngSize(fs.readFileSync(full))
+      adopted.push({
+        id: file.replace(/\.png$/, ''),
+        prompt: '(recovered — the dashboard restarted before this render was filed)',
+        file,
+        width: size?.width ?? 0,
+        height: size?.height ?? 0,
+        seed: 0,
+        at: stat.mtime.toISOString(),
+      })
+    } catch { /* unreadable: leave it alone */ }
+  }
+  if (adopted.length === 0) return 0
+  // Merged by time so a recovered picture sits where it was drawn, not at the top.
+  const all = [...adopted, ...listImages()].sort((a, b) => (b.at ?? '').localeCompare(a.at ?? ''))
+  saveIndex(all.slice(0, MAX_STORED))
+  console.log(`[image] adopted ${adopted.length} orphaned picture(s) back into the gallery: ${adopted.map(a => a.file).join(', ')}`)
+  return adopted.length
+}
+
 export function forgetImage(id: string): boolean {
   const all = listImages()
   const hit = all.find(e => e.id === id)
@@ -1764,7 +1807,15 @@ async function run(job: ImageJob): Promise<void> {
     // How much of the source survived, measured now that both files are on
     // disk. Cheap (a 64-cell grid over two decoded PNGs) and the only honest
     // answer to "why does this look identical" — see imageChange().
+    //
+    // EVERYTHING FROM HERE TO THE RETRY DECISION IS BEST-EFFORT. The picture
+    // exists on disk and the GPU time is spent; a failure while measuring it
+    // or while rewriting an instruction must never cost the user the render.
+    // It did: three pictures were written, threw on the way to remember(),
+    // and became files nothing pointed at — invisible in the gallery and
+    // beyond the reach of pruning.
     changed = null
+    try {
     if (job.source && job.sourceFile) {
       try { changed = imageDifference(job.sourceFile, file) } catch { changed = null }
       if (changed !== null) {
@@ -1806,6 +1857,9 @@ async function run(job: ImageJob): Promise<void> {
           console.warn(`[image] ${job.id} could not rewrite the instruction — ${better.why}; the unchanged picture stands`)
         }
       }
+    }
+    } catch (err) {
+      console.warn(`[image] ${job.id} failed while measuring or rewriting, keeping the picture it drew:`, err instanceof Error ? err.message : err)
     }
     break
     }

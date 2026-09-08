@@ -83,6 +83,17 @@ console.log('[startup] web search            :', SEARCH_PROVIDERS.join(' → ') 
   (SEARCH_PROVIDERS.includes('searxng') ? '' : '  (no SEARXNG_URL — set one for a keyless, unlimited fallback)'))
 console.log('[startup] ============================================')
 
+// A render that threw between writing its PNG and filing it leaves a picture
+// nothing points at. Adopt those back rather than leaking them on the volume.
+void (async () => {
+  try {
+    const { adoptOrphanImages } = await import('./image')
+    adoptOrphanImages()
+  } catch (err) {
+    console.warn('[startup] could not check for orphaned pictures:', err instanceof Error ? err.message : err)
+  }
+})()
+
 // Guide generation lives in memory and is fire-and-forget, so a restart in the
 // middle of one leaves a guide stuck on "generating" — a spinner with nothing
 // behind it. Fail those now so the view can offer Retry.
