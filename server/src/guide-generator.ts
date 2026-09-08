@@ -477,6 +477,13 @@ function stepListPrompt(
           `dungeon", "Defeat the enemies", "Travel across Hyrule Field" — is a SUMMARY, not a step, and ` +
           `is forbidden. Follow the route in the walkthrough's own order, room by room, and keep the ` +
           `walkthrough's directions (north/south, left/right, screen counts, room counts) exactly.\n` +
+          `BUT ONE JOURNEY IS ONE STEP: getting from one place to the next is a single step that lists ` +
+          `the moves in it — "From the entrance go two rooms up, one left, one up, then one right" — never ` +
+          `a step per screen ("Go one right" / "Go four up" / "Go one left" is three boxes for one walk). ` +
+          `And an action and its result are one step, not two: "In the room one left and one up from ` +
+          `the entrance, kill the five Green Zols to make the Compass appear", not "Find the Compass ` +
+          `room" followed by "Defeat the Zols". A good chapter reads as the sequence of things that ` +
+          `happen, each one worth a tick.\n` +
           `Divide it into the parts the player experiences in order — typically: getting there and ` +
           `opening the way in; then the areas or floors of the place itself, one part each; then the ` +
           `mini-boss; then the boss. Name the parts after the real places and bosses, not "Part 1".`
@@ -558,7 +565,11 @@ function detailsPrompt(
         return `${head}${s.n}. ${s.text}`
       })
       .join('\n') + `\n\n` +
-    `TASK: for EACH numbered step above, write one short note giving ${want}\n\n` +
+    `TASK: for EACH numbered step above, write one short note giving ${want}\n` +
+    `A note must ADD something the step does not say — an enemy count, a direction, a room, what ` +
+    `you need first, what hurts the boss, what to avoid, what you get. If the notes have nothing to ` +
+    `add beyond the step's own words, give that step an EMPTY note; a note that restates the step ` +
+    `is deleted anyway.\n\n` +
     // The single biggest complaint about the guides this replaced was that the
     // steps were not detailed enough to act on. A note is prose you read; subs
     // are the thing you actually do, in order, with a box beside each — which is
@@ -849,8 +860,11 @@ async function researchSection(
   // walkthrough's own Level 3 page — and then on any walkthrough site, before
   // the wiki is consulted at all. The wiki still follows as background, which
   // is what it is good for.
-  if (section.kind === 'progression' && WEB_FIRST) {
-    add(await researchWalkthrough(gameTitle, section.title, preferredSite ? [preferredSite, ...hosts] : hosts, 2, SECTION_CHARS))
+  if (WEB_FIRST && section.kind !== 'reference') {
+    // A collectible chapter wants the "all X locations" page a walkthrough
+    // site keeps; the wiki's article on the item is generic across the series.
+    const ask = section.kind === 'progression' ? section.title : `${section.title} locations`
+    add(await researchWalkthrough(gameTitle, ask, preferredSite ? [preferredSite, ...hosts] : hosts, 2, SECTION_CHARS))
     if (own.length === 0) {
       note({
         itemId, title: gameTitle, section: section.title, stage: 'research', level: 'warn',
@@ -1026,7 +1040,7 @@ export function isVacuousNote(stepText: string, note: string): boolean {
   // room up and one room right" is longer than the step and says the step.
   // A long note (a real paragraph of method) passes on length alone.
   if (note.length >= 140) return false
-  return fresh.size < 3 || fresh.size / Math.max(1, all.length) < 0.4
+  return fresh.size < 3 || fresh.size / Math.max(1, all.length) < 0.3
 }
 
 /**
@@ -1040,7 +1054,9 @@ export function isVacuousNote(stepText: string, note: string): boolean {
  * from the section's own title, and returns null rather than a guess.
  */
 export function statedTotal(text: string, sectionTitle: string): number | null {
-  const nouns = contentWords(sectionTitle).filter(w => w.endsWith('s') && w.length >= 5)
+  const nouns = [...new Set(contentWords(sectionTitle)
+    .filter(w => w.length >= 4)
+    .map(w => (w.endsWith('s') ? w : `${w}s`)))]
   let best: number | null = null
   for (const noun of nouns) {
     const re = new RegExp(`\\b(\\d{1,3})\\s+(?:\\w+\\s+){0,2}?${noun}\\b`, 'gi')
@@ -1106,7 +1122,7 @@ async function writeStepList(
 
     return kept.slice(0, GUIDE_CAPS.MAX_STEPS_PER_SECTION).map((s, i) => ({
       id: `${section.id}-${i + 1}`,
-      text: s.text,
+      text: s.text.charAt(0).toUpperCase() + s.text.slice(1),
       ...(s.group ? { group: s.group } : {}),
       done: false,
     }))
@@ -1181,6 +1197,7 @@ async function detailSteps(
     // of the chapter with notes meant for the last.
     const byId = new Map<string, StepDetail>()
     let vacuous = 0
+    const vacuousExamples: string[] = []
     let subbed = 0
     for (const d of Array.isArray(reply?.details) ? reply.details : []) {
       const n = typeof d?.n === 'number' ? d.n : Number(d?.n)
@@ -1191,7 +1208,10 @@ async function detailSteps(
       // A note that only restates its step is worse than no note: the step keeps
       // its honest plain checkbox instead of an explanation that explains nothing.
       const keptNote = noteText && !isVacuousNote(target.text, noteText) ? noteText : ''
-      if (noteText && !keptNote) vacuous++
+      if (noteText && !keptNote) {
+        vacuous++
+        if (vacuousExamples.length < 2) vacuousExamples.push(`"${target.text.slice(0, 40)}" → "${noteText.slice(0, 60)}"`)
+      }
       const subs = cleanSubs(target.text, d?.subs)
       const pin = mapPosition(str(d?.where))
       // Nothing usable came back for this step at all — leave it exactly as it
@@ -1207,8 +1227,7 @@ async function detailSteps(
     if (vacuous > 0) {
       note({
         itemId, title: gameTitle, section: section.title, stage: 'detail', level: 'info',
-        message: `Dropped ${vacuous} note(s) that only repeated the step back ` +
-                 `(e.g. "Travel to Woodfall" explained as "Travel to the cardinal direction of Woodfall")`,
+        message: `Dropped ${vacuous} note(s) that only repeated the step back — ${vacuousExamples.join('; ')}`,
       })
     }
 
