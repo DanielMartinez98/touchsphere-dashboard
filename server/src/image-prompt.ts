@@ -368,7 +368,7 @@ export function missingWords(original: string, rewrite: string): string[] {
   // typed ("hyuga", "jotaro").
   const fold = (s: string) => s.replace(/ou/g, 'o').replace(/([aeiou])\1/g, '$1')
   const norm = (s: string) => fold(
-    s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/['’]s\b/g, '').replace(/[^a-z0-9\s-]/g, ' '),
+    s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/['’]s/g, '').replace(/[^a-z0-9\s-]/g, ' '),
   )
   const have = norm(rewrite)
   const words = [...new Set(norm(original).split(/[\s-]+/).filter(w => w.length >= 4 && !KEEP_STOPWORDS.has(w) && !/^\d+$/.test(w)))]
