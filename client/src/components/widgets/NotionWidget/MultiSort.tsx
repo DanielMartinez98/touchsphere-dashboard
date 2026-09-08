@@ -72,7 +72,7 @@ export default function MultiSort({
           onMove={dir => moveKey(i, dir)} />
       ))}
       <button type="button" onClick={addKey}
-        className="self-start px-3 py-1.5 rounded-full text-[11px] font-medium bg-white/[0.06] text-white/55 active:bg-white/10">
+        className="self-start px-3 py-1.5 rounded-full text-sm font-medium bg-white/[0.06] text-white/55 active:bg-white/10">
         + Add sort
       </button>
     </div>
@@ -97,24 +97,24 @@ function SortRow({
     <div className="flex flex-col gap-1.5 bg-white/[0.02] border border-white/[0.05] rounded-xl p-2">
       <div className="flex items-center gap-1.5 flex-wrap">
         <button type="button" onClick={() => setPick(o => !o)}
-          className="px-2.5 py-1 rounded-full text-[11px] bg-white/[0.06] text-white/75 active:bg-white/10">
+          className="px-2.5 py-1 rounded-full text-sm bg-white/[0.06] text-white/75 active:bg-white/10">
           {label}
         </button>
         <button type="button"
           onClick={() => onChange({ direction: k.direction === 'ascending' ? 'descending' : 'ascending' })}
-          className="px-2.5 py-1 rounded-full text-[11px] bg-white/[0.06] text-white/55 active:bg-white/10">
+          className="px-2.5 py-1 rounded-full text-sm bg-white/[0.06] text-white/55 active:bg-white/10">
           {k.direction === 'ascending' ? '↑ Asc' : '↓ Desc'}
         </button>
         <div className="ml-auto flex gap-1">
           <button type="button" disabled={isFirst} onClick={() => onMove(-1)}
             aria-label="Move up"
-            className="w-6 h-6 rounded-full bg-white/10 text-white/55 text-xs active:bg-white/20 disabled:opacity-25">↑</button>
+            className="w-6 h-6 rounded-full bg-white/10 text-white/55 text-sm active:bg-white/20 disabled:opacity-25">↑</button>
           <button type="button" disabled={isLast}  onClick={() => onMove(1)}
             aria-label="Move down"
-            className="w-6 h-6 rounded-full bg-white/10 text-white/55 text-xs active:bg-white/20 disabled:opacity-25">↓</button>
+            className="w-6 h-6 rounded-full bg-white/10 text-white/55 text-sm active:bg-white/20 disabled:opacity-25">↓</button>
           <button type="button" onClick={onRemove}
             aria-label="Remove sort"
-            className="w-6 h-6 rounded-full bg-red-500/20 text-red-300 text-xs active:bg-red-500/40">×</button>
+            className="w-6 h-6 rounded-full bg-red-500/20 text-red-300 text-sm active:bg-red-500/40">×</button>
         </div>
       </div>
 
@@ -122,18 +122,18 @@ function SortRow({
         <div className="flex flex-wrap gap-1 bg-white/[0.025] rounded-lg p-2">
           <button type="button"
             onClick={() => { onChange({ timestamp: 'last_edited_time', property: undefined }); setPick(false) }}
-            className={`px-2.5 py-1 rounded-full text-[11px] ${k.timestamp === 'last_edited_time' ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
+            className={`px-2.5 py-1 rounded-full text-sm ${k.timestamp === 'last_edited_time' ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
             Last edited
           </button>
           <button type="button"
             onClick={() => { onChange({ timestamp: 'created_time', property: undefined }); setPick(false) }}
-            className={`px-2.5 py-1 rounded-full text-[11px] ${k.timestamp === 'created_time' ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
+            className={`px-2.5 py-1 rounded-full text-sm ${k.timestamp === 'created_time' ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
             Created
           </button>
           {props.map(p => (
             <button key={p.name} type="button"
               onClick={() => { onChange({ property: p.name, timestamp: undefined }); setPick(false) }}
-              className={`px-2.5 py-1 rounded-full text-[11px] ${k.property === p.name ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
+              className={`px-2.5 py-1 rounded-full text-sm ${k.property === p.name ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
               {p.name} <span className="opacity-50">·{p.type}</span>
             </button>
           ))}

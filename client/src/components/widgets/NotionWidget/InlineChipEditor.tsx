@@ -39,14 +39,14 @@ export default function InlineChipEditor({
             {propType === 'multi_select' ? 'Pick options' : 'Pick a value'}
           </h3>
           <button type="button" onClick={() => { onPick(isMulti ? [] : null); if (!isMulti) onClose() }}
-            className="text-[11px] text-white/55 active:text-white/85 px-2 py-1 rounded-full bg-white/[0.06]">Clear</button>
+            className="text-sm text-white/55 active:text-white/85 px-2 py-1 rounded-full bg-white/[0.06]">Clear</button>
         </div>
         <div className="flex flex-wrap gap-1.5">
           {options.map(o => {
             const isOn = selected.has(o.name)
             return (
               <button key={o.id} type="button" onClick={() => toggle(o.name)}
-                className="px-3 py-1.5 rounded-full text-xs font-medium border"
+                className="px-3 py-1.5 rounded-full text-sm font-medium border"
                 style={{
                   background:  isOn ? colorBg(o.color, 0.3) : 'rgba(255,255,255,0.05)',
                   color:       isOn ? colorFg(o.color)       : 'rgba(255,255,255,0.45)',
@@ -57,7 +57,7 @@ export default function InlineChipEditor({
             )
           })}
           {options.length === 0 && (
-            <p className="text-xs text-white/30 italic">No options defined.</p>
+            <p className="text-sm text-white/30 italic">No options defined.</p>
           )}
         </div>
         {isMulti && (

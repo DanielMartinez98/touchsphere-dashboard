@@ -68,7 +68,7 @@ export default function TimelineView({
           {new Date(anchorMs + (days - 1) * DAY_MS).toLocaleDateString([], { month: 'short', day: 'numeric' })}
         </span>
         <button type="button" onClick={() => setAnchorMs(today.getTime() - 7 * DAY_MS)}
-          className="px-3 py-2 rounded-full text-xs bg-white/[0.06] text-white/60 active:bg-white/10">Today</button>
+          className="px-3 py-2 rounded-full text-sm bg-white/[0.06] text-white/60 active:bg-white/10">Today</button>
         <button type="button" onClick={() => setAnchorMs(m => m + 7 * DAY_MS)} aria-label="Forward one week"
           className="w-11 h-11 rounded-full bg-glass-2 text-white flex items-center justify-center active:scale-90"><ChevronRight size={20} /></button>
       </div>
@@ -81,7 +81,7 @@ export default function TimelineView({
               const isToday = d.getTime() === today.getTime()
               const isWeekend = d.getDay() === 0 || d.getDay() === 6
               return (
-                <div key={i} className={`flex-shrink-0 text-center text-[10px] ${isToday ? 'text-green-400 font-bold' : isWeekend ? 'text-white/25' : 'text-white/40'}`}
+                <div key={i} className={`flex-shrink-0 text-center text-sm ${isToday ? 'text-green-400 font-bold' : isWeekend ? 'text-white/25' : 'text-white/40'}`}
                   style={{ width: DAY_PX }}>
                   <div>{d.toLocaleDateString([], { weekday: 'narrow' })}</div>
                   <div className="tabular-nums">{d.getDate()}</div>
@@ -93,7 +93,7 @@ export default function TimelineView({
           {/* Row bars */}
           <div className="flex flex-col gap-1.5">
             {projected.length === 0 && (
-              <p className="text-xs text-white/30 italic py-4 text-center">No rows in window.</p>
+              <p className="text-sm text-white/30 italic py-4 text-center">No rows in window.</p>
             )}
             {projected.map(({ row, left, width }) => {
               const color = rowColor(row, schema)
@@ -101,7 +101,7 @@ export default function TimelineView({
                 <div key={row.id} className="relative h-8" style={{ width: days * DAY_PX }}>
                   <button type="button"
                     onClick={() => client.navigate({ kind: 'page', id: row.id })}
-                    className="absolute h-full rounded-md px-2 flex items-center text-[13px] truncate active:scale-[0.98] border"
+                    className="absolute h-full rounded-md px-2 flex items-center text-sm truncate active:scale-[0.98] border"
                     style={{
                       left:        left * DAY_PX,
                       width:       width * DAY_PX - 4,

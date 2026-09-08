@@ -107,7 +107,7 @@ function QuickAddRow({
         <div className="flex gap-1 overflow-x-auto scrollbar-hide">
           {statusOpts.map((o: any) => (
             <button key={o.id} type="button" onClick={() => setStatus(s => s === o.name ? null : o.name)}
-              className="flex-shrink-0 px-2.5 py-0.5 rounded-full text-xs border"
+              className="flex-shrink-0 px-2.5 py-0.5 rounded-full text-sm border"
               style={{
                 background:  status === o.name ? colorBg(o.color, 0.3) : 'rgba(255,255,255,0.04)',
                 color:       status === o.name ? colorFg(o.color)       : 'rgba(255,255,255,0.45)',
@@ -155,7 +155,7 @@ function Row({
         <p className="text-[15px] font-medium text-white truncate flex-1">{title}</p>
       </div>
       {displayProps.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 text-[13px]">
+        <div className="flex flex-wrap gap-1.5 text-sm">
           {displayProps.map(k => {
             const val = row.properties[k]
             if (!val) return null
@@ -203,7 +203,7 @@ function ListView({
         <button key={r.id} type="button" onClick={() => onToggleSelect(r.id)}
           className={`w-full text-left rounded-xl p-3 border flex items-start gap-3
             ${isSel ? 'bg-blue-500/15 border-blue-500/40' : 'bg-white/[0.04] border-white/[0.06] active:bg-white/[0.08]'}`}>
-          <span className={`flex-shrink-0 w-6 h-6 mt-0.5 rounded-md border-2 flex items-center justify-center text-xs
+          <span className={`flex-shrink-0 w-6 h-6 mt-0.5 rounded-md border-2 flex items-center justify-center text-sm
             ${isSel ? 'bg-blue-500/40 border-blue-500/60 text-white' : 'border-white/30'}`}>
             {isSel && '✓'}
           </span>
@@ -257,8 +257,8 @@ function ListView({
       {Array.from(buckets.entries()).map(([name, { color, rows: rs }]) => (
         <details key={name} open className="flex flex-col gap-1">
           <summary className="flex items-center gap-2 cursor-pointer list-none px-1 py-1">
-            <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: colorFg(color) }}>{name}</span>
-            <span className="text-xs text-white/30 tabular-nums">{rs.length}</span>
+            <span className="text-sm font-semibold uppercase tracking-wider" style={{ color: colorFg(color) }}>{name}</span>
+            <span className="text-sm text-white/30 tabular-nums">{rs.length}</span>
           </summary>
           <div className="flex flex-col gap-2 mt-1">{rs.map(renderRow)}</div>
         </details>
@@ -266,8 +266,8 @@ function ListView({
       {ungrouped.length > 0 && (
         <details className="flex flex-col gap-1">
           <summary className="flex items-center gap-2 cursor-pointer list-none px-1 py-1">
-            <span className="text-xs font-semibold uppercase tracking-wider text-white/35">No {groupBy}</span>
-            <span className="text-xs text-white/25 tabular-nums">{ungrouped.length}</span>
+            <span className="text-sm font-semibold uppercase tracking-wider text-white/35">No {groupBy}</span>
+            <span className="text-sm text-white/25 tabular-nums">{ungrouped.length}</span>
           </summary>
           <div className="flex flex-col gap-2 mt-1">{ungrouped.map(renderRow)}</div>
         </details>
@@ -312,9 +312,9 @@ function BoardView({
       {columns.map(col => (
         <div key={col.key} className="flex-shrink-0 w-56 flex flex-col gap-2">
           <div className="flex items-center justify-between px-1">
-            <span className="text-xs font-semibold uppercase tracking-wider"
+            <span className="text-sm font-semibold uppercase tracking-wider"
                   style={{ color: colorFg(col.color) }}>{col.label}</span>
-            <span className="text-xs text-white/30 tabular-nums">{col.rows.length}</span>
+            <span className="text-sm text-white/30 tabular-nums">{col.rows.length}</span>
           </div>
           <div className="flex flex-col gap-2 max-h-[60vh] overflow-y-auto pr-1">
             {col.rows.map(r => (
@@ -324,7 +324,7 @@ function BoardView({
                 <p className="text-sm text-white truncate">{getRowTitle(r, schema)}</p>
               </button>
             ))}
-            {col.rows.length === 0 && <p className="text-[13px] text-white/20 italic px-1">empty</p>}
+            {col.rows.length === 0 && <p className="text-sm text-white/20 italic px-1">empty</p>}
           </div>
         </div>
       ))}
@@ -370,7 +370,7 @@ function CalendarView({
         <button type="button" onClick={next} aria-label="Next month" className="w-11 h-11 rounded-full bg-glass-2 text-white flex items-center justify-center active:scale-90"><ChevronRight size={20} /></button>
       </div>
       <div className="grid grid-cols-7 mb-1">
-        {['S','M','T','W','T','F','S'].map((d, i) => <span key={i} className="text-xs text-white/25 text-center">{d}</span>)}
+        {['S','M','T','W','T','F','S'].map((d, i) => <span key={i} className="text-sm text-white/25 text-center">{d}</span>)}
       </div>
       <div className="grid grid-cols-7 gap-1">
         {Array.from({ length: first }).map((_, i) => <div key={i} />)}
@@ -381,15 +381,15 @@ function CalendarView({
           const isT  = day === today.getDate() && pm === today.getMonth() && py === today.getFullYear()
           return (
             <div key={day} className={`min-h-[60px] rounded-md p-1 ${isT ? 'bg-white/10' : 'bg-white/[0.03]'}`}>
-              <div className={`text-xs mb-0.5 ${isT ? 'text-white' : 'text-white/35'}`}>{day}</div>
+              <div className={`text-sm mb-0.5 ${isT ? 'text-white' : 'text-white/35'}`}>{day}</div>
               <div className="flex flex-col gap-0.5">
                 {rs.slice(0, 3).map(r => (
                   <button key={r.id} type="button" onClick={() => client.navigate({ kind: 'page', id: r.id })}
-                    className="text-left text-xs truncate text-white/85 bg-blue-500/30 rounded px-1 active:bg-blue-500/50">
+                    className="text-left text-sm truncate text-white/85 bg-blue-500/30 rounded px-1 active:bg-blue-500/50">
                     {getRowTitle(r, schema).slice(0, 16)}
                   </button>
                 ))}
-                {rs.length > 3 && <span className="text-[11px] text-white/40">+{rs.length - 3}</span>}
+                {rs.length > 3 && <span className="text-sm text-white/40">+{rs.length - 3}</span>}
               </div>
             </div>
           )
@@ -422,7 +422,7 @@ function GalleryView({
                      : r.icon?.emoji ? <span className="text-2xl">{r.icon.emoji}</span>
                      : <FileText size={24} className="text-white/40" />}
             </div>
-            <p className="px-2.5 py-2 text-xs text-white truncate">{getRowTitle(r, schema)}</p>
+            <p className="px-2.5 py-2 text-sm text-white truncate">{getRowTitle(r, schema)}</p>
           </button>
         )
       })}
@@ -654,7 +654,7 @@ export default function DatabaseView({ dbId, client, onTitle }: { dbId: string; 
       {view === 'timeline' && dateKey  && <TimelineView rows={rows} schema={schema} client={client} dateKey={dateKey} />}
       {view === 'gallery'  && <GalleryView rows={rows} schema={schema} client={client} />}
 
-      <p className="text-xs text-white/25 text-center pt-2">{rows.length} row{rows.length === 1 ? '' : 's'}</p>
+      <p className="text-sm text-white/25 text-center pt-2">{rows.length} row{rows.length === 1 ? '' : 's'}</p>
 
       {/* View options sheet — saved views, filter, sort, group-by in one place */}
       {showViewSheet && (
@@ -667,16 +667,16 @@ export default function DatabaseView({ dbId, client, onTitle }: { dbId: string; 
               <h3 className="text-base font-bold text-white">View options</h3>
 
               <div className="flex flex-col gap-2">
-                <span className="text-xs text-white/45 uppercase tracking-wider">Saved views</span>
+                <span className="text-sm text-white/45 uppercase tracking-wider">Saved views</span>
                 {savedViews.views.length === 0 && !saveOpen && (
-                  <p className="text-[13px] text-white/40 italic">No saved views yet — set up filters below, then save them.</p>
+                  <p className="text-sm text-white/40 italic">No saved views yet — set up filters below, then save them.</p>
                 )}
                 {savedViews.views.length > 0 && (
                   <div className="flex gap-1.5 flex-wrap">
                     {savedViews.views.map(v => (
                       <div key={v.id} className="flex items-center gap-0.5">
                         <button type="button" onClick={() => applySavedView(v.id)}
-                          className="px-3 py-2 rounded-l-full text-[13px] bg-white/[0.06] text-white/75 active:bg-white/10">
+                          className="px-3 py-2 rounded-l-full text-sm bg-white/[0.06] text-white/75 active:bg-white/10">
                           {v.name}
                         </button>
                         <button type="button" onClick={() => savedViews.deleteView(v.id)}
@@ -696,31 +696,31 @@ export default function DatabaseView({ dbId, client, onTitle }: { dbId: string; 
                   </div>
                 ) : (
                   <button type="button" onClick={() => setSaveOpen(true)}
-                    className="self-start px-4 py-2 rounded-full text-[13px] font-medium bg-green-500/20 text-green-200 active:bg-green-500/35">
+                    className="self-start px-4 py-2 rounded-full text-sm font-medium bg-green-500/20 text-green-200 active:bg-green-500/35">
                     + Save current view
                   </button>
                 )}
               </div>
 
               <div className="flex flex-col gap-2">
-                <span className="text-xs text-white/45 uppercase tracking-wider">Filter</span>
+                <span className="text-sm text-white/45 uppercase tracking-wider">Filter</span>
                 <FilterTree schema={schema} model={filter} onChange={setFilter} />
               </div>
 
               <div className="flex flex-col gap-2">
-                <span className="text-xs text-white/45 uppercase tracking-wider">Sort</span>
+                <span className="text-sm text-white/45 uppercase tracking-wider">Sort</span>
                 <MultiSort schema={schema} sorts={sorts} onChange={setSorts} />
               </div>
 
               {view === 'list' && groupCandidates.length > 0 && (
                 <div className="flex flex-col gap-2">
-                  <span className="text-xs text-white/45 uppercase tracking-wider">Group by</span>
+                  <span className="text-sm text-white/45 uppercase tracking-wider">Group by</span>
                   <div className="flex flex-wrap gap-1.5">
                     <button type="button" onClick={() => setGroupBy(null)}
-                      className={`px-3 py-2 rounded-full text-[13px] ${groupBy === null ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>None</button>
+                      className={`px-3 py-2 rounded-full text-sm ${groupBy === null ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>None</button>
                     {groupCandidates.map(([name, p]) => (
                       <button key={name} type="button" onClick={() => setGroupBy(name)}
-                        className={`px-3 py-2 rounded-full text-[13px] ${groupBy === name ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
+                        className={`px-3 py-2 rounded-full text-sm ${groupBy === name ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
                         {name} <span className="opacity-50">·{p.type}</span>
                       </button>
                     ))}
@@ -833,25 +833,25 @@ function AddPropertySheet({
 
           <div className="flex flex-col gap-4">
             <label className="flex flex-col gap-2">
-              <span className="text-[13px] text-white/35 uppercase tracking-wider">Name</span>
+              <span className="text-sm text-white/35 uppercase tracking-wider">Name</span>
               <TouchInput value={name} onChange={setName} commitOn="change"
                 placeholder="Property name…"
                 ariaLabel="Property name"
                 className="bg-white/10 text-white rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-green-400" />
             </label>
             <div className="flex flex-col gap-2">
-              <span className="text-[13px] text-white/35 uppercase tracking-wider">Type</span>
+              <span className="text-sm text-white/35 uppercase tracking-wider">Type</span>
               <div className="flex flex-wrap gap-1.5">
                 {TYPES.map(t => (
                   <button key={t.id} type="button" onClick={() => setType(t.id)}
-                    className={`px-3 py-1.5 rounded-full text-xs font-medium ${type === t.id ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/50 active:bg-white/10'}`}>
+                    className={`px-3 py-1.5 rounded-full text-sm font-medium ${type === t.id ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/50 active:bg-white/10'}`}>
                     {t.label}
                   </button>
                 ))}
               </div>
             </div>
 
-            {err && <p className="text-xs text-red-400">{err}</p>}
+            {err && <p className="text-sm text-red-400">{err}</p>}
 
             <div className="grid grid-cols-2 gap-2">
               <button type="button" onClick={onClose}

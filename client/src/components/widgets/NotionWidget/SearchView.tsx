@@ -48,14 +48,14 @@ export default function SearchView({ client }: { client: NotionClient }) {
         />
         {client.query && (
           <button type="button" onClick={() => client.setQuery('')}
-            className="text-xs text-white/40 active:text-white/70 px-2">clear</button>
+            className="text-sm text-white/40 active:text-white/70 px-2">clear</button>
         )}
       </div>
 
       <div className="flex gap-1.5">
         {(['all', 'page', 'database'] as const).map(f => (
           <button key={f} type="button" onClick={() => setFilter(f)}
-            className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors
+            className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors
               ${filter === f ? 'bg-green-500 text-black' : 'bg-white/[0.07] text-white/45 active:bg-white/15'}`}>
             {f === 'all' ? 'All' : f === 'page' ? 'Pages' : 'Databases'}
           </button>

@@ -41,7 +41,7 @@ export default function MentionPicker({
         <div className="flex gap-1.5 bg-white/[0.04] rounded-lg p-1 mb-3">
           {(['page', 'date', 'user'] as const).map(t => (
             <button key={t} type="button" onClick={() => setTab(t)}
-              className={`flex-1 py-1.5 rounded-md text-xs font-medium transition-colors
+              className={`flex-1 py-1.5 rounded-md text-sm font-medium transition-colors
                 ${tab === t ? 'bg-white/15 text-white' : 'text-white/45 active:bg-white/[0.07]'}`}>
               {t === 'page' ? '📄 Page' : t === 'date' ? '📅 Date' : '👤 User'}
             </button>
@@ -63,7 +63,7 @@ export default function MentionPicker({
               onChange={iso => { if (iso) onPick({ kind: 'date', iso }); onClose() }} />
             <button type="button"
               onClick={() => { onPick({ kind: 'date', iso: new Date().toISOString().slice(0, 10) }); onClose() }}
-              className="self-start text-xs text-white/55 active:text-white/85 px-1">
+              className="self-start text-sm text-white/55 active:text-white/85 px-1">
               📍 Today
             </button>
           </div>
@@ -72,7 +72,7 @@ export default function MentionPicker({
         {tab === 'user' && (
           <div className="flex flex-col gap-1.5 max-h-[55vh] overflow-y-auto">
             {users.length === 0 && (
-              <p className="text-xs text-white/35 italic text-center py-4">Loading users…</p>
+              <p className="text-sm text-white/35 italic text-center py-4">Loading users…</p>
             )}
             {users.map(u => (
               <button key={u.id} type="button"
@@ -80,7 +80,7 @@ export default function MentionPicker({
                 className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-white/[0.04] active:bg-white/[0.09]">
                 {u.avatarUrl
                   ? <img src={u.avatarUrl} alt="" className="w-7 h-7 rounded-full" />
-                  : <span className="w-7 h-7 rounded-full bg-white/10 flex items-center justify-center text-xs text-white/65">{u.name?.[0] ?? '?'}</span>}
+                  : <span className="w-7 h-7 rounded-full bg-white/10 flex items-center justify-center text-sm text-white/65">{u.name?.[0] ?? '?'}</span>}
                 <span className="text-sm text-white truncate">{u.name}</span>
               </button>
             ))}

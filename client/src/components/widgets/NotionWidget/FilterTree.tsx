@@ -162,7 +162,7 @@ export default function FilterTree({
   }
 
   if (filterable.length === 0) {
-    return <p className="text-xs text-white/40 italic px-1">No filterable properties.</p>
+    return <p className="text-sm text-white/40 italic px-1">No filterable properties.</p>
   }
 
   return (
@@ -170,9 +170,9 @@ export default function FilterTree({
       {model.conditions.length > 1 && (
         <div className="flex gap-1 self-start">
           <button type="button" onClick={() => onChange({ ...model, combinator: 'and' })}
-            className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ${model.combinator === 'and' ? 'bg-blue-500/40 text-blue-100' : 'bg-white/[0.06] text-white/45 active:bg-white/10'}`}>AND</button>
+            className={`px-2.5 py-1 rounded-full text-sm font-semibold ${model.combinator === 'and' ? 'bg-blue-500/40 text-blue-100' : 'bg-white/[0.06] text-white/45 active:bg-white/10'}`}>AND</button>
           <button type="button" onClick={() => onChange({ ...model, combinator: 'or' })}
-            className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ${model.combinator === 'or'  ? 'bg-blue-500/40 text-blue-100' : 'bg-white/[0.06] text-white/45 active:bg-white/10'}`}>OR</button>
+            className={`px-2.5 py-1 rounded-full text-sm font-semibold ${model.combinator === 'or'  ? 'bg-blue-500/40 text-blue-100' : 'bg-white/[0.06] text-white/45 active:bg-white/10'}`}>OR</button>
         </div>
       )}
 
@@ -186,7 +186,7 @@ export default function FilterTree({
       ))}
 
       <button type="button" onClick={addCondition}
-        className="self-start px-3 py-1.5 rounded-full text-[11px] font-medium bg-white/[0.06] text-white/55 active:bg-white/10">
+        className="self-start px-3 py-1.5 rounded-full text-sm font-medium bg-white/[0.06] text-white/55 active:bg-white/10">
         + Add condition
       </button>
     </div>
@@ -224,7 +224,7 @@ function ConditionRow({
   // with the rest of the widget.
   let valueUi: React.ReactNode = null
   if (op.valueless) {
-    valueUi = <span className="text-[11px] text-white/30 italic">no value</span>
+    valueUi = <span className="text-sm text-white/30 italic">no value</span>
   } else if (condition.type === 'select' || condition.type === 'status' || condition.type === 'multi_select') {
     const propSchema = schema.properties[condition.property]
     const opts: { id: string; name: string; color: string }[] =
@@ -236,7 +236,7 @@ function ConditionRow({
         {opts.map(o => (
           <button key={o.id} type="button"
             onClick={() => onChange({ value: o.name })}
-            className="px-2 py-0.5 rounded-full text-[11px] border"
+            className="px-2 py-0.5 rounded-full text-sm border"
             style={{
               background:  condition.value === o.name ? colorBg(o.color, 0.3) : 'rgba(255,255,255,0.04)',
               color:       condition.value === o.name ? colorFg(o.color)       : 'rgba(255,255,255,0.45)',
@@ -251,7 +251,7 @@ function ConditionRow({
     valueUi = (
       <div className="flex flex-col gap-1.5">
         <button type="button" onClick={() => setShowCal(v => !v)}
-          className="self-start px-2.5 py-1 rounded-full text-[11px] bg-white/[0.06] text-white/65 active:bg-white/10">
+          className="self-start px-2.5 py-1 rounded-full text-sm bg-white/[0.06] text-white/65 active:bg-white/10">
           📅 {condition.value || 'pick a date'}
         </button>
         {showCal && <MiniCalendar value={condition.value ?? ''} onChange={v => { onChange({ value: v }); setShowCal(false) }} />}
@@ -262,7 +262,7 @@ function ConditionRow({
       <TouchInput value={String(condition.value ?? '')} onChange={v => onChange({ value: v })} commitOn="change"
         placeholder="number"
         ariaLabel="Filter value"
-        className="bg-white/[0.06] text-white text-xs rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-white/20 w-28" />
+        className="bg-white/[0.06] text-white text-sm rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-white/20 w-28" />
     )
   } else if (condition.type === 'people') {
     valueUi = <PeopleValue value={condition.value} onChange={v => onChange({ value: v })} />
@@ -271,7 +271,7 @@ function ConditionRow({
       <TouchInput value={String(condition.value ?? '')} onChange={v => onChange({ value: v })} commitOn="change"
         placeholder="value…"
         ariaLabel="Filter value"
-        className="bg-white/[0.06] text-white text-xs rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-white/20 flex-1 min-w-[8rem]" />
+        className="bg-white/[0.06] text-white text-sm rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-white/20 flex-1 min-w-[8rem]" />
     )
   }
 
@@ -279,23 +279,23 @@ function ConditionRow({
     <div className="flex flex-col gap-1.5 bg-white/[0.02] border border-white/[0.05] rounded-xl p-2">
       <div className="flex items-center gap-1.5 flex-wrap">
         <button type="button" onClick={() => setPropPick(o => !o)}
-          className="px-2.5 py-1 rounded-full text-[11px] bg-white/[0.06] text-white/75 active:bg-white/10">
+          className="px-2.5 py-1 rounded-full text-sm bg-white/[0.06] text-white/75 active:bg-white/10">
           {condition.property}
         </button>
         <button type="button" onClick={() => setOpPick(o => !o)}
-          className="px-2.5 py-1 rounded-full text-[11px] bg-white/[0.06] text-white/55 active:bg-white/10">
+          className="px-2.5 py-1 rounded-full text-sm bg-white/[0.06] text-white/55 active:bg-white/10">
           {op.label}
         </button>
         <button type="button" onClick={onRemove}
           aria-label="Remove condition"
-          className="ml-auto w-6 h-6 rounded-full bg-red-500/20 text-red-300 text-xs active:bg-red-500/40">×</button>
+          className="ml-auto w-6 h-6 rounded-full bg-red-500/20 text-red-300 text-sm active:bg-red-500/40">×</button>
       </div>
 
       {propPick && (
         <div className="flex flex-wrap gap-1 bg-white/[0.025] rounded-lg p-2">
           {properties.map(p => (
             <button key={p.name} type="button" onClick={() => pickProperty(p.name, p.type)}
-              className={`px-2.5 py-1 rounded-full text-[11px] ${condition.property === p.name ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
+              className={`px-2.5 py-1 rounded-full text-sm ${condition.property === p.name ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
               {p.name} <span className="opacity-50">·{p.type}</span>
             </button>
           ))}
@@ -305,7 +305,7 @@ function ConditionRow({
         <div className="flex flex-wrap gap-1 bg-white/[0.025] rounded-lg p-2">
           {ops.map(o => (
             <button key={o.id} type="button" onClick={() => { onChange({ operator: o.id }); setOpPick(false) }}
-              className={`px-2.5 py-1 rounded-full text-[11px] ${condition.operator === o.id ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
+              className={`px-2.5 py-1 rounded-full text-sm ${condition.operator === o.id ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
               {o.label}
             </button>
           ))}
@@ -328,15 +328,15 @@ function PeopleValue({ value, onChange }: { value: string | null; onChange: (id:
       <div className="flex flex-wrap gap-1 items-center">
         {meId && (
           <button type="button" onClick={() => onChange(meId)}
-            className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${value === meId ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/70 active:bg-white/10'}`}>
+            className={`px-2 py-0.5 rounded-full text-sm font-semibold ${value === meId ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/70 active:bg-white/10'}`}>
             🙋 Me
           </button>
         )}
-        {loading && users.length === 0 && <span className="text-[11px] text-white/30 italic">loading users…</span>}
+        {loading && users.length === 0 && <span className="text-sm text-white/30 italic">loading users…</span>}
         {users.map(u => (
           <span key={u.id} className="flex items-center rounded-full overflow-hidden">
             <button type="button" onClick={() => onChange(u.id)}
-              className={`flex items-center gap-1 pl-1.5 pr-2 py-0.5 text-[11px] ${value === u.id ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
+              className={`flex items-center gap-1 pl-1.5 pr-2 py-0.5 text-sm ${value === u.id ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
               {u.avatarUrl
                 ? <img src={u.avatarUrl} alt="" className="w-4 h-4 rounded-full" />
                 : <span className="w-4 h-4 rounded-full bg-white/15 flex items-center justify-center text-[8px]">{u.name?.[0] ?? '?'}</span>}
@@ -344,11 +344,11 @@ function PeopleValue({ value, onChange }: { value: string | null; onChange: (id:
             </button>
             <button type="button" aria-label={meId === u.id ? `Unset ${u.name} as me` : `Set ${u.name} as me`}
               onClick={() => setMe(meId === u.id ? null : u.id)}
-              className={`px-1.5 py-0.5 text-[11px] ${meId === u.id ? 'text-yellow-300 bg-white/[0.06]' : 'text-white/25 bg-white/[0.03] active:bg-white/10'}`}>★</button>
+              className={`px-1.5 py-0.5 text-sm ${meId === u.id ? 'text-yellow-300 bg-white/[0.06]' : 'text-white/25 bg-white/[0.03] active:bg-white/10'}`}>★</button>
           </span>
         ))}
       </div>
-      <span className="text-[10px] text-white/25">★ marks who you are — enables the “Only mine” shortcut.</span>
+      <span className="text-sm text-white/25">★ marks who you are — enables the “Only mine” shortcut.</span>
     </div>
   )
 }

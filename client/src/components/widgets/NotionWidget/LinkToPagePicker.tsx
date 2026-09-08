@@ -59,12 +59,12 @@ export default function LinkToPagePicker({
             </span>
             <div className="flex-1 min-w-0">
               <p className="text-sm text-white truncate">{r.title}</p>
-              <p className="text-[10px] text-white/35 uppercase tracking-wider">{r.object}</p>
+              <p className="text-sm text-white/35 uppercase tracking-wider">{r.object}</p>
             </div>
           </button>
         ))}
         {!loading && results.length === 0 && (
-          <p className="text-xs text-white/35 italic text-center py-4">
+          <p className="text-sm text-white/35 italic text-center py-4">
             {query ? 'No matches.' : 'Type to search.'}
           </p>
         )}

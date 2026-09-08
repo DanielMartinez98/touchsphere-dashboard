@@ -83,7 +83,7 @@ function GroupSettings({
             placeholder="Group name" ariaLabel="Group name"
             className="flex-1 bg-white/10 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-green-400" />
           <button type="button" onClick={() => { if (draft.trim()) { void api.renameGroup(group.id, draft.trim()); setRenaming(false) } }}
-            className="px-3 rounded-lg bg-green-500 text-black text-xs font-bold active:bg-green-400">Save</button>
+            className="px-3 rounded-lg bg-green-500 text-black text-sm font-bold active:bg-green-400">Save</button>
         </div>
       ) : (
         <button type="button" onClick={() => { setDraft(group.name); setRenaming(true) }}
@@ -94,7 +94,7 @@ function GroupSettings({
         className="flex items-center gap-2 text-left text-sm text-white/80 px-3 py-2.5 rounded-lg active:bg-white/[0.06]"><Palette size={15} /> Change icon</button>
 
       <div className="flex flex-col gap-1.5 px-1">
-        <span className="text-xs text-white/45 uppercase tracking-wider">Color</span>
+        <span className="text-sm text-white/45 uppercase tracking-wider">Color</span>
         <div className="flex flex-wrap gap-1.5">
           {PALETTE.map(c => (
             <button key={c} type="button" onClick={() => void api.setColor(group.id, c)}
@@ -104,7 +104,7 @@ function GroupSettings({
           ))}
           <button type="button" onClick={() => void api.setColor(group.id, null)}
             aria-label="no color"
-            className="w-7 h-7 rounded-full border-2 border-white/20 bg-transparent text-white/40 text-[10px] active:scale-90">none</button>
+            className="w-7 h-7 rounded-full border-2 border-white/20 bg-transparent text-white/40 text-sm active:scale-90">none</button>
         </div>
       </div>
 
@@ -159,7 +159,7 @@ function GroupSection({
           className="flex-1 flex items-center gap-2 py-2 active:opacity-70">
           <span className="text-base flex-shrink-0">{group.icon ?? '📁'}</span>
           <span className="text-[15px] font-semibold flex-1 text-left truncate" style={{ color: fg }}>{group.name}</span>
-          <span className="text-xs text-white/40 tabular-nums">{group.items.length}</span>
+          <span className="text-sm text-white/40 tabular-nums">{group.items.length}</span>
           <span className="text-white/40">{group.collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}</span>
         </button>
         <button type="button" onClick={() => setMenuOpen(o => !o)}
@@ -175,7 +175,7 @@ function GroupSection({
       {!group.collapsed && (
         <div className="flex flex-col gap-1.5">
           {group.items.length === 0 ? (
-            <p className="text-[13px] text-white/45 italic px-3 py-2">No items. Long-press tiles in Browse to add.</p>
+            <p className="text-sm text-white/45 italic px-3 py-2">No items. Long-press tiles in Browse to add.</p>
           ) : group.items.map((it, idx) => (
             <div key={it.refId} className="flex items-stretch gap-1.5">
               <button type="button"
@@ -185,7 +185,7 @@ function GroupSection({
                 <span className="text-lg flex-shrink-0 text-white/60">{it.icon ?? (it.kind === 'database' ? <Database size={18} /> : <FileText size={18} />)}</span>
                 <div className="flex-1 min-w-0">
                   <p className="text-[15px] text-white truncate">{it.title}</p>
-                  <p className="text-xs text-white/40 uppercase tracking-wider">{it.kind}</p>
+                  <p className="text-sm text-white/40 uppercase tracking-wider">{it.kind}</p>
                 </div>
                 <ChevronRight size={16} className="text-white/30 flex-shrink-0" />
               </button>
@@ -255,7 +255,7 @@ export default function GroupsView({ client }: { client: NotionClient }) {
         ))}
       </div>
 
-      {api.error && <p className="text-xs text-red-400 px-2">{api.error}</p>}
+      {api.error && <p className="text-sm text-red-400 px-2">{api.error}</p>}
 
       {creating ? (
         <NewGroupForm

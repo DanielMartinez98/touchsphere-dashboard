@@ -538,6 +538,146 @@ async function addNotionTask(title: string, due: string): Promise<string> {
   }
 }
 
+// ── The rest of the task list by voice ───────────────────────────────────────
+// add_notion_task was the only task tool for a year: the list could be added
+// to by asking and read only by looking. These read and tick it through the
+// same routes the panel uses, so a task completed out loud is the same PATCH a
+// tap makes and the same `notion` SSE frame follows it to every screen.
+
+interface VoiceTask {
+  id: string; title: string; status: string | null; priority: string | null
+  due: string | null; done: boolean; projectIds: string[]; dbId: string
+}
+interface VoiceTasks {
+  tasks: VoiceTask[]
+  projects: Record<string, { id: string; title: string }>
+  schemas: Record<string, { doneStatusNames: string[]; todoStatusNames: string[]; dueKey: string | null }>
+}
+
+async function fetchTasks(): Promise<VoiceTasks | { error: string }> {
+  const res = await fetch(`${LOOPBACK}/api/notion/tasks`)
+  if (res.status === 503) return { error: "Notion tasks aren't configured on this device." }
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({})) as { error?: string }
+    return { error: j.error ?? `the task list could not be loaded (${res.status})` }
+  }
+  return res.json() as Promise<VoiceTasks>
+}
+
+function dueWords(due: string | null): string {
+  if (!due) return ''
+  const d = new Date(due + 'T00:00')
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  const diff = Math.round((d.getTime() - today.getTime()) / 86_400_000)
+  if (diff < -1) return ` (${-diff} days overdue)`
+  if (diff === -1) return ' (due yesterday)'
+  if (diff === 0) return ' (due today)'
+  if (diff === 1) return ' (due tomorrow)'
+  if (diff < 7) return ` (due ${d.toLocaleDateString('en-US', { weekday: 'long' })})`
+  return ` (due ${d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })})`
+}
+
+async function listTasks(which: string, project: string): Promise<string> {
+  const data = await fetchTasks()
+  if ('error' in data) return `Error: ${data.error}`
+  const today = ymdKey(new Date())
+  const week  = ymdKey(new Date(Date.now() + 7 * 86_400_000))
+  const scope = (which || 'all').toLowerCase()
+  let list = data.tasks.filter(t => scope === 'done' ? t.done : !t.done)
+  if (scope === 'overdue') list = list.filter(t => t.due && t.due < today)
+  if (scope === 'today')   list = list.filter(t => t.due && t.due <= today)
+  if (scope === 'week')    list = list.filter(t => t.due && t.due <= week)
+  const proj = project.trim().toLowerCase()
+  if (proj) {
+    const ids = Object.values(data.projects).filter(p => p.title.toLowerCase().includes(proj)).map(p => p.id)
+    if (ids.length === 0) return `No project called "${project}" on the task list.`
+    list = list.filter(t => t.projectIds.some(id => ids.includes(id)))
+  }
+  // Overdue first, then by due date, undated last — the order someone
+  // listening can act on.
+  list.sort((a, b) => {
+    if (a.due && b.due) return a.due.localeCompare(b.due)
+    if (a.due) return -1
+    if (b.due) return 1
+    return 0
+  })
+  const label = scope === 'overdue' ? 'overdue tasks' : scope === 'today' ? 'tasks due today or earlier'
+    : scope === 'week' ? 'tasks due this week' : scope === 'done' ? 'completed tasks' : 'open tasks'
+  if (list.length === 0) return `No ${label}${proj ? ` in ${project}` : ''}.`
+  const shown = list.slice(0, 15)
+  const lines = shown.map(t => {
+    const p = t.projectIds.map(id => data.projects[id]?.title).filter(Boolean)[0]
+    return `- ${t.title}${dueWords(t.due)}${p ? ` [${p}]` : ''}`
+  })
+  const more = list.length > shown.length ? `\n…and ${list.length - shown.length} more.` : ''
+  return `${list.length} ${label}${proj ? ` in ${project}` : ''}:\n${lines.join('\n')}${more}`
+}
+
+// Match a spoken title to one task. A voice transcript is never the exact
+// title, so this is a case-insensitive containment either way, and when
+// several match the caller is told which so it can ask rather than guess —
+// ticking the wrong task is worse than a question.
+function matchTask(tasks: VoiceTask[], spoken: string): { task?: VoiceTask; options?: VoiceTask[]; none?: true } {
+  const q = spoken.trim().toLowerCase()
+  if (!q) return { none: true }
+  const exact = tasks.filter(t => t.title.toLowerCase() === q)
+  if (exact.length === 1) return { task: exact[0] }
+  const contains = tasks.filter(t => t.title.toLowerCase().includes(q) || q.includes(t.title.toLowerCase()))
+  if (contains.length === 1) return { task: contains[0] }
+  if (contains.length > 1) return { options: contains.slice(0, 5) }
+  // Every significant word of the request appears in the title.
+  const words = q.split(/\s+/).filter(w => w.length > 2)
+  const loose = tasks.filter(t => words.length > 0 && words.every(w => t.title.toLowerCase().includes(w)))
+  if (loose.length === 1) return { task: loose[0] }
+  if (loose.length > 1) return { options: loose.slice(0, 5) }
+  return { none: true }
+}
+
+async function patchTask(task: VoiceTask, fields: Record<string, unknown>): Promise<string | null> {
+  const res = await fetch(`${LOOPBACK}/api/notion/tasks/${task.id}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...fields, dbId: task.dbId }),
+  })
+  if (res.ok) return null
+  const j = await res.json().catch(() => ({})) as { error?: string }
+  return j.error ?? `Notion answered ${res.status}`
+}
+
+async function completeTask(title: string, undone: boolean): Promise<string> {
+  const data = await fetchTasks()
+  if ('error' in data) return `Error: ${data.error}`
+  const pool = data.tasks.filter(t => (undone ? t.done : !t.done))
+  const m = matchTask(pool, title)
+  if (m.none) return `I couldn't find ${undone ? 'a completed' : 'an open'} task like "${title}". Ask me to list the tasks to hear what is there.`
+  if (m.options) return `Several tasks match "${title}" — which one? ${m.options.map(t => `"${t.title}"`).join(', ')}.`
+  const task = m.task!
+  const sch = data.schemas[task.dbId]
+  const status = undone ? (sch?.todoStatusNames[0] ?? 'Not started') : (sch?.doneStatusNames[0] ?? 'Done')
+  const err = await patchTask(task, { status })
+  if (err) return `Error: couldn't update "${task.title}" — ${err}`
+  console.log(`[chat:tool] complete_task → "${task.title}" ${undone ? 'reopened' : 'done'}`)
+  return undone ? `Reopened "${task.title}".` : `Marked "${task.title}" as done.`
+}
+
+async function setTaskDue(title: string, due: string): Promise<string> {
+  const data = await fetchTasks()
+  if ('error' in data) return `Error: ${data.error}`
+  const m = matchTask(data.tasks.filter(t => !t.done), title)
+  if (m.none) return `I couldn't find an open task like "${title}".`
+  if (m.options) return `Several tasks match "${title}" — which one? ${m.options.map(t => `"${t.title}"`).join(', ')}.`
+  const task = m.task!
+  if (!data.schemas[task.dbId]?.dueKey) return `The list "${task.title}" is in has no due-date field.`
+  const clear = /^(none|clear|remove|no date)$/i.test(due.trim())
+  const date = clear ? null : parseDateInput(due)
+  if (!clear && !date) return `Error: I couldn't understand the due date "${due}". Try "today", "tomorrow", a weekday, or YYYY-MM-DD.`
+  const err = await patchTask(task, { due: date ? ymdKey(date) : null })
+  if (err) return `Error: couldn't update "${task.title}" — ${err}`
+  console.log(`[chat:tool] set_task_due → "${task.title}" ${date ? ymdKey(date) : 'cleared'}`)
+  if (!date) return `Cleared the due date on "${task.title}".`
+  return `"${task.title}" is now due ${date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}.`
+}
+
 interface CalEvent { id?: string; title: string; start: string; end: string; allDay: boolean }
 
 // Parse a date the model may pass us. Accepts:
@@ -1395,6 +1535,56 @@ export const DASHBOARD_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'list_tasks',
+      description:
+        "Read the user's Notion task list. Use it for \"what's on my list\", \"what do I have to do\", \"what's overdue\", " +
+        '"anything due today", "what did I finish". Returns the tasks with their due dates and projects; read them back briefly.',
+      parameters: {
+        type: 'object',
+        properties: {
+          which:   { type: 'string', enum: ['all', 'overdue', 'today', 'week', 'done'], description: 'Which tasks: all open ones (default), only overdue, due today or earlier, due within a week, or completed ones.' },
+          project: { type: 'string', description: 'Optional project name to narrow to, when the user names one.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'complete_task',
+      description:
+        'Mark a task on the Notion list as done — "tick off X", "I did X", "X is done", "cross off X". Matched by title, ' +
+        'so pass the words the user said; if several match you will be told which, so ask. Pass undone=true to reopen one.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title:  { type: 'string', description: 'The task, as the user said it.' },
+          undone: { type: 'boolean', description: 'true to reopen a completed task instead.' },
+        },
+        required: ['title'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_task_due',
+      description:
+        'Change when a task on the Notion list is due — "move X to friday", "X is due tomorrow", "push X back a week". ' +
+        'Pass "none" as the date to clear it.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'The task, as the user said it.' },
+          due:   { type: 'string', description: '"today", "tomorrow", a weekday like "next friday", "+3", YYYY-MM-DD, or "none" to clear.' },
+        },
+        required: ['title', 'due'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'get_weather_forecast',
       description:
         'Get the upcoming weather forecast for the dashboard\'s location. Returns a temperature range, peak ' +
@@ -1657,6 +1847,9 @@ export async function runDashboardTool(
     case 'recommend_media_item': return recommendMedia(str('type'))
     case 'set_app_mode':         return setAppMode(str('mode'))
     case 'add_notion_task':      return addNotionTask(str('title'), str('due'))
+    case 'list_tasks':           return listTasks(str('which'), str('project'))
+    case 'complete_task':        return completeTask(str('title'), args['undone'] === true)
+    case 'set_task_due':         return setTaskDue(str('title'), str('due'))
     case 'get_weather':        return getWeather(str('location'))
     case 'get_weather_forecast': {
       const h = typeof args['hours'] === 'number' ? String(args['hours']) : str('hours')
@@ -1700,6 +1893,8 @@ export const MUTATING_TOOLS = new Set([
   'star_media_item',
   'set_app_mode',
   'add_notion_task',
+  'complete_task',
+  'set_task_due',
   'remember',
   'remember_preference',
   'forget',
@@ -1716,6 +1911,8 @@ export const MUTATING_TOOLS = new Set([
 export const TOOL_SLICE: Record<string, string | string[]> = {
   set_app_mode:        'mode',
   add_notion_task:     'notion',
+  complete_task:       'notion',
+  set_task_due:        'notion',
   set_timer:           'timers',
   set_alarm:           'timers',
   cancel_timer:        'timers',

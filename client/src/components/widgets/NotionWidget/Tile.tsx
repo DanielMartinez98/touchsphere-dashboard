@@ -79,10 +79,10 @@ export default function Tile({
       </span>
       <div className="flex-1 min-w-0">
         <p className="text-[15px] text-white truncate">{title}</p>
-        <p className="text-xs text-white/40 uppercase tracking-wider">{subtitle ?? kind}</p>
+        <p className="text-sm text-white/40 uppercase tracking-wider">{subtitle ?? kind}</p>
       </div>
       {inGroupCount !== undefined && inGroupCount > 0 && (
-        <span className="flex items-center gap-1 text-xs text-yellow-300/80 bg-yellow-500/10 rounded-full px-2 py-1 mr-1 tabular-nums" title={`In ${inGroupCount} group${inGroupCount === 1 ? '' : 's'}`}>
+        <span className="flex items-center gap-1 text-sm text-yellow-300/80 bg-yellow-500/10 rounded-full px-2 py-1 mr-1 tabular-nums" title={`In ${inGroupCount} group${inGroupCount === 1 ? '' : 's'}`}>
           <Folder size={12} /> {inGroupCount}
         </span>
       )}

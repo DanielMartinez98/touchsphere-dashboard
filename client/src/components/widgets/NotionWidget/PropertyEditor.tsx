@@ -37,12 +37,12 @@ export function PropertyValue({ schema, value }: { schema: any; value: any }) {
     case 'select': {
       const v = value.select
       if (!v) return <span className="text-white/30 italic">—</span>
-      return <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: colorBg(v.color, 0.2), color: colorFg(v.color) }}>{v.name}</span>
+      return <span className="text-sm px-2 py-0.5 rounded-full" style={{ background: colorBg(v.color, 0.2), color: colorFg(v.color) }}>{v.name}</span>
     }
     case 'status': {
       const v = value.status
       if (!v) return <span className="text-white/30 italic">—</span>
-      return <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: colorBg(v.color, 0.2), color: colorFg(v.color) }}>{v.name}</span>
+      return <span className="text-sm px-2 py-0.5 rounded-full" style={{ background: colorBg(v.color, 0.2), color: colorFg(v.color) }}>{v.name}</span>
     }
     case 'multi_select': {
       const items = (value.multi_select ?? []) as any[]
@@ -50,7 +50,7 @@ export function PropertyValue({ schema, value }: { schema: any; value: any }) {
       return (
         <span className="flex flex-wrap gap-1">
           {items.map(o => (
-            <span key={o.id} className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: colorBg(o.color, 0.2), color: colorFg(o.color) }}>{o.name}</span>
+            <span key={o.id} className="text-sm px-2 py-0.5 rounded-full" style={{ background: colorBg(o.color, 0.2), color: colorFg(o.color) }}>{o.name}</span>
           ))}
         </span>
       )
@@ -89,12 +89,12 @@ export function PropertyValue({ schema, value }: { schema: any; value: any }) {
       if (r.type === 'array')  return <span className="text-white/70 italic">{r.array.length} items</span>
       return <span className="text-white/70 italic">—</span>
     }
-    case 'created_time':       return <span className="text-white/60 text-xs">{new Date(value.created_time).toLocaleString()}</span>
-    case 'last_edited_time':   return <span className="text-white/60 text-xs">{new Date(value.last_edited_time).toLocaleString()}</span>
-    case 'created_by':         return <span className="text-white/60 text-xs">{value.created_by?.name ?? value.created_by?.id?.slice(0, 8)}</span>
-    case 'last_edited_by':     return <span className="text-white/60 text-xs">{value.last_edited_by?.name ?? value.last_edited_by?.id?.slice(0, 8)}</span>
+    case 'created_time':       return <span className="text-white/60 text-sm">{new Date(value.created_time).toLocaleString()}</span>
+    case 'last_edited_time':   return <span className="text-white/60 text-sm">{new Date(value.last_edited_time).toLocaleString()}</span>
+    case 'created_by':         return <span className="text-white/60 text-sm">{value.created_by?.name ?? value.created_by?.id?.slice(0, 8)}</span>
+    case 'last_edited_by':     return <span className="text-white/60 text-sm">{value.last_edited_by?.name ?? value.last_edited_by?.id?.slice(0, 8)}</span>
     case 'unique_id':          return <span className="text-white/80 tabular-nums">{value.unique_id?.prefix ? `${value.unique_id.prefix}-` : ''}{value.unique_id?.number}</span>
-    default:                   return <span className="text-white/40 italic text-xs">[{type}]</span>
+    default:                   return <span className="text-white/40 italic text-sm">[{type}]</span>
   }
 }
 
@@ -118,7 +118,7 @@ export default function PropertyEditor({ name, schema, value, onSave }: EditProp
   if (READ_ONLY_TYPES.has(type)) {
     return (
       <div className="flex flex-col gap-1">
-        <span className="text-[11px] text-white/35 uppercase tracking-wider">{name}</span>
+        <span className="text-sm text-white/35 uppercase tracking-wider">{name}</span>
         <div className="text-sm py-2"><PropertyValue schema={schema} value={value} /></div>
       </div>
     )
@@ -126,7 +126,7 @@ export default function PropertyEditor({ name, schema, value, onSave }: EditProp
 
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-[11px] text-white/35 uppercase tracking-wider">{name}</span>
+      <span className="text-sm text-white/35 uppercase tracking-wider">{name}</span>
       <Inner schema={schema} value={value} onSave={onSave} />
     </div>
   )
@@ -159,7 +159,7 @@ function Inner({ schema, value, onSave }: { schema: any; value: any; onSave: (p:
   if (type === 'date') {
     return <DateProp value={value?.date} onSave={d => onSave({ date: d })} />
   }
-  return <p className="text-xs text-white/40 italic py-2">Editing {type} is not supported here.</p>
+  return <p className="text-sm text-white/40 italic py-2">Editing {type} is not supported here.</p>
 }
 
 // ── Per-type editors ─────────────────────────────────────────────────────────
@@ -197,7 +197,7 @@ function NumberProp({ value, schema, onSave }: { value: any; schema: any; onSave
         ariaLabel="Number"
         className="flex-1 bg-white/[0.05] text-white text-sm rounded-lg px-3 py-2 outline-none focus:ring-1 focus:ring-white/20"
       />
-      {fmt && fmt !== 'number' && <span className="text-xs text-white/35">{fmt}</span>}
+      {fmt && fmt !== 'number' && <span className="text-sm text-white/35">{fmt}</span>}
     </div>
   )
 }
@@ -241,13 +241,13 @@ function SelectProp({
   return (
     <div className="flex flex-wrap gap-1.5">
       <button type="button" onClick={() => onSave(null)}
-        className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all
+        className={`px-3 py-1.5 rounded-full text-sm font-medium transition-all
           ${!value ? 'bg-white/20 text-white' : 'bg-white/[0.04] text-white/35 active:bg-white/10'}`}>None</button>
       {options.map(o => {
         const active = value?.name === o.name
         return (
           <button key={o.id} onClick={() => onSave(o.name)}
-            className="px-3 py-1.5 rounded-full text-xs font-medium border transition-all"
+            className="px-3 py-1.5 rounded-full text-sm font-medium border transition-all"
             style={{
               background:   active ? colorBg(o.color, 0.25) : 'rgba(255,255,255,0.04)',
               color:        active ? colorFg(o.color)        : 'rgba(255,255,255,0.4)',
@@ -281,7 +281,7 @@ function MultiSelectProp({
         const active = selected.has(o.name)
         return (
           <button key={o.id} onClick={() => toggle(o.name)}
-            className="px-3 py-1.5 rounded-full text-xs font-medium border transition-all"
+            className="px-3 py-1.5 rounded-full text-sm font-medium border transition-all"
             style={{
               background:   active ? colorBg(o.color, 0.25) : 'rgba(255,255,255,0.04)',
               color:        active ? colorFg(o.color)        : 'rgba(255,255,255,0.4)',
@@ -336,10 +336,10 @@ function DateProp({ value, onSave }: { value: any; onSave: (d: any) => void }) {
           className="flex-1 flex items-center gap-2 bg-white/[0.05] rounded-lg px-3 py-2 text-sm active:bg-white/10">
           <span>📅</span>
           <span className={start ? 'text-white' : 'text-white/30'}>{fmt(start)}</span>
-          <span className="ml-auto text-white/20 text-xs">{picking === 'start' ? '▲' : '▼'}</span>
+          <span className="ml-auto text-white/20 text-sm">{picking === 'start' ? '▲' : '▼'}</span>
         </button>
         {start && (
-          <button type="button" onClick={() => onSave(null)} className="text-xs text-red-400/60 px-2 active:text-red-400">Clear</button>
+          <button type="button" onClick={() => onSave(null)} className="text-sm text-red-400/60 px-2 active:text-red-400">Clear</button>
         )}
       </div>
 
@@ -356,10 +356,10 @@ function DateProp({ value, onSave }: { value: any; onSave: (d: any) => void }) {
             className="flex-1 flex items-center gap-2 bg-white/[0.05] rounded-lg px-3 py-2 text-sm active:bg-white/10">
             <span className="text-white/40">→</span>
             <span className={end ? 'text-white' : 'text-white/30'}>{end ? fmt(end) : 'No end'}</span>
-            <span className="ml-auto text-white/20 text-xs">{picking === 'end' ? '▲' : '▼'}</span>
+            <span className="ml-auto text-white/20 text-sm">{picking === 'end' ? '▲' : '▼'}</span>
           </button>
           {end && (
-            <button type="button" onClick={() => setEnd('', '')} className="text-xs text-red-400/60 px-2 active:text-red-400">Clear end</button>
+            <button type="button" onClick={() => setEnd('', '')} className="text-sm text-red-400/60 px-2 active:text-red-400">Clear end</button>
           )}
         </div>
       )}
@@ -389,14 +389,14 @@ function TimePicker({ value, onChange }: { value: string; onChange: (t: string) 
   function pickMinute(m: string) { onChange(`${hh || '12'}:${m}`) }
   return (
     <div className="flex flex-col gap-1.5">
-      <div className="flex items-center justify-between text-[10px] text-white/35 uppercase tracking-wider">
+      <div className="flex items-center justify-between text-sm text-white/35 uppercase tracking-wider">
         <span>Time</span>
         {value && <button type="button" onClick={() => onChange('')} className="text-red-400/60 active:text-red-400">Clear</button>}
       </div>
       <div className="flex gap-1 overflow-x-auto scrollbar-hide">
         {hours.map(h => (
           <button key={h} type="button" onClick={() => pickHour(h)}
-            className={`flex-shrink-0 w-9 h-8 rounded-md text-xs tabular-nums
+            className={`flex-shrink-0 w-9 h-8 rounded-md text-sm tabular-nums
               ${hh === h ? 'bg-green-500 text-black' : 'bg-white/[0.05] text-white/70 active:bg-white/10'}`}>
             {h}
           </button>
@@ -405,7 +405,7 @@ function TimePicker({ value, onChange }: { value: string; onChange: (t: string) 
       <div className="flex gap-1 overflow-x-auto scrollbar-hide">
         {mins.map(m => (
           <button key={m} type="button" onClick={() => pickMinute(m)}
-            className={`flex-shrink-0 w-9 h-8 rounded-md text-xs tabular-nums
+            className={`flex-shrink-0 w-9 h-8 rounded-md text-sm tabular-nums
               ${mm === m ? 'bg-green-500 text-black' : 'bg-white/[0.05] text-white/70 active:bg-white/10'}`}>
             {m}
           </button>

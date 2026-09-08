@@ -72,7 +72,7 @@ export default function AddToGroupSheet({ item, kind, groups, onClose }: Props) 
         <div className="px-5 pt-3 pb-8">
           <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-3" />
           <h3 className="text-sm font-bold text-white mb-1">Add to group</h3>
-          <p className="text-xs text-white/45 mb-4 truncate">{item.title}</p>
+          <p className="text-sm text-white/45 mb-4 truncate">{item.title}</p>
 
           {/* Databases only: toggle whether this DB feeds the Home task list. */}
           {kind === 'database' && (
@@ -83,7 +83,7 @@ export default function AddToGroupSheet({ item, kind, groups, onClose }: Props) 
                   : 'bg-white/[0.04] border-transparent active:bg-white/[0.08]'}`}>
               <ListChecks size={18} className={inTasks ? 'text-green-300' : 'text-white/55'} />
               <span className="flex-1 text-left text-sm text-white">Show in Tasks</span>
-              <span className={`flex-shrink-0 w-6 h-6 rounded-md border-2 flex items-center justify-center text-xs
+              <span className={`flex-shrink-0 w-6 h-6 rounded-md border-2 flex items-center justify-center text-sm
                 ${inTasks ? 'bg-green-500/30 border-green-500/60 text-green-300' : 'border-white/30'}`}>
                 {inTasks && '✓'}
               </span>
@@ -92,7 +92,7 @@ export default function AddToGroupSheet({ item, kind, groups, onClose }: Props) 
 
           <div className="flex flex-col gap-1.5 mb-4">
             {groups.groups.length === 0 && !creating && (
-              <p className="text-xs text-white/40 italic py-3 text-center">No groups yet. Create one below.</p>
+              <p className="text-sm text-white/40 italic py-3 text-center">No groups yet. Create one below.</p>
             )}
             {groups.groups.map(g => {
               const isMember = g.items.some(it => it.refId === item.id)
@@ -101,8 +101,8 @@ export default function AddToGroupSheet({ item, kind, groups, onClose }: Props) 
                   className="flex items-center gap-3 px-3 py-3 rounded-xl bg-white/[0.04] active:bg-white/[0.08]">
                   <span className="text-lg flex-shrink-0">{g.icon ?? '📁'}</span>
                   <span className="flex-1 text-left text-sm text-white truncate">{g.name}</span>
-                  <span className="text-[10px] text-white/30 mr-1">{g.items.length}</span>
-                  <span className={`flex-shrink-0 w-6 h-6 rounded-md border-2 flex items-center justify-center text-xs
+                  <span className="text-sm text-white/30 mr-1">{g.items.length}</span>
+                  <span className={`flex-shrink-0 w-6 h-6 rounded-md border-2 flex items-center justify-center text-sm
                     ${isMember ? 'bg-green-500/30 border-green-500/60 text-green-300' : 'border-white/30'}`}>
                     {isMember && '✓'}
                   </span>

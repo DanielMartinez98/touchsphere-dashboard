@@ -95,7 +95,7 @@ function TaskRow({
           : 'bg-white/[0.05] border-white/[0.08] active:bg-white/[0.09] active:scale-[0.985]'}`}>
       <button type="button"
         onClick={e => { e.stopPropagation(); onToggleDone() }}
-        className={`flex-shrink-0 w-8 h-8 mt-0.5 rounded-full border-2 flex items-center justify-center text-sm
+        className={`flex-shrink-0 w-10 h-10 mt-0 rounded-full border-2 flex items-center justify-center text-sm
                     active:scale-90 transition-all
           ${task.done
             ? 'bg-green-500/25 border-green-500/50 text-green-400'
@@ -109,24 +109,24 @@ function TaskRow({
         </p>
         <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
           {sourceTitle && (
-            <span className="text-[13px] font-medium px-2 py-0.5 rounded-full bg-white/[0.06] text-white/45 max-w-[9rem] truncate">
+            <span className="text-sm font-medium px-2 py-0.5 rounded-full bg-white/[0.06] text-white/45 max-w-[9rem] truncate">
               {sourceTitle}
             </span>
           )}
           {statusOpt && (
-            <span className="text-[13px] font-medium px-2 py-0.5 rounded-full"
+            <span className="text-sm font-medium px-2 py-0.5 rounded-full"
               style={{ color: colorFg(statusOpt.color), background: colorBg(statusOpt.color, 0.25) }}>
               {statusOpt.name}
             </span>
           )}
           {priOpt && (
-            <span className="text-[13px] font-medium px-2 py-0.5 rounded-full"
+            <span className="text-sm font-medium px-2 py-0.5 rounded-full"
               style={{ color: colorFg(priOpt.color), background: colorBg(priOpt.color, 0.25) }}>
               {priOpt.name}
             </span>
           )}
           {due && (
-            <span className={`text-[13px] px-2 py-0.5 rounded-full
+            <span className={`text-sm px-2 py-0.5 rounded-full
               ${due.overdue ? 'text-red-400 bg-red-500/15' : 'text-white/35 bg-white/[0.06]'}`}>
               {due.label}
             </span>
@@ -134,12 +134,12 @@ function TaskRow({
           {taskProjects.slice(0, 2).map(p => (
             <button key={p.id} type="button"
               onClick={e => { e.stopPropagation(); onTapProject(p.id) }}
-              className="text-[13px] px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-200/85 active:bg-blue-500/30 max-w-[10rem] truncate">
+              className="text-sm px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-200/85 active:bg-blue-500/30 max-w-[10rem] truncate">
               {p.icon ? `${p.icon} ` : '📁 '}{p.title}
             </button>
           ))}
           {taskProjects.length > 2 && (
-            <span className="text-xs text-white/30">+{taskProjects.length - 2}</span>
+            <span className="text-sm text-white/30">+{taskProjects.length - 2}</span>
           )}
         </div>
       </div>
@@ -161,11 +161,11 @@ function ChipRow({
 }) {
   return (
     <div className="flex flex-col gap-2">
-      <span className="text-[13px] text-white/35 uppercase tracking-wider font-medium">{label}</span>
+      <span className="text-sm text-white/35 uppercase tracking-wider font-medium">{label}</span>
       <div className="flex gap-2 overflow-x-auto pb-0.5 scrollbar-hide">
         {allowNone && (
           <button type="button" onClick={() => onChange(null)}
-            className={`flex-shrink-0 px-3 py-2 rounded-xl text-xs font-semibold border transition-all active:scale-95
+            className={`flex-shrink-0 px-3 py-2 rounded-xl text-sm font-semibold border transition-all active:scale-95
               ${value === null
                 ? 'bg-white/20 text-white border-white/30'
                 : 'bg-white/[0.05] text-white/35 border-transparent active:bg-white/10'}`}>
@@ -174,7 +174,7 @@ function ChipRow({
         )}
         {options.map(opt => (
           <button type="button" key={opt.id} onClick={() => onChange(opt.name)}
-            className="flex-shrink-0 px-3 py-2 rounded-xl text-xs font-semibold border transition-all active:scale-95"
+            className="flex-shrink-0 px-3 py-2 rounded-xl text-sm font-semibold border transition-all active:scale-95"
             style={{
               background:   value === opt.name ? colorBg(opt.color, 0.2) : 'rgba(255,255,255,0.04)',
               color:        value === opt.name ? colorFg(opt.color)       : 'rgba(255,255,255,0.35)',
@@ -236,11 +236,11 @@ function CreateTaskSheet({
           <div className="flex flex-col gap-5">
             {taskDbs.length > 1 && (
               <div className="flex flex-col gap-2">
-                <span className="text-[13px] text-white/35 uppercase tracking-wider font-medium">List</span>
+                <span className="text-sm text-white/35 uppercase tracking-wider font-medium">List</span>
                 <div className="flex gap-2 overflow-x-auto pb-0.5 scrollbar-hide">
                   {taskDbs.map(db => (
                     <button type="button" key={db.id} onClick={() => pickDb(db.id)}
-                      className={`flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-all active:scale-95
+                      className={`flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold border transition-all active:scale-95
                         ${dbId === db.id
                           ? 'bg-green-500/20 text-green-200 border-green-500/40'
                           : 'bg-white/[0.04] text-white/40 border-transparent active:bg-white/10'}`}>
@@ -252,7 +252,7 @@ function CreateTaskSheet({
               </div>
             )}
             <label className="flex flex-col gap-2">
-              <span className="text-[13px] text-white/35 uppercase tracking-wider font-medium">Title</span>
+              <span className="text-sm text-white/35 uppercase tracking-wider font-medium">Title</span>
               <TouchInput value={title} onChange={setTitle} commitOn="change"
                 placeholder="Task name…"
                 ariaLabel="Task title"
@@ -266,7 +266,7 @@ function CreateTaskSheet({
             )}
             {activeSchema.dueKey && (
               <div className="flex flex-col gap-2">
-                <span className="text-[13px] text-white/35 uppercase tracking-wider font-medium">Due date</span>
+                <span className="text-sm text-white/35 uppercase tracking-wider font-medium">Due date</span>
                 <div className="flex gap-2">
                   {[{ label: 'Today', days: 0 }, { label: 'Tomorrow', days: 1 }, { label: 'Next week', days: 7 }].map(({ label, days }) => {
                     const iso = isoInDays(days)
@@ -347,11 +347,11 @@ function GroupsAndRecents({
               <div key={g.id} className="flex flex-col gap-1">
                 <div className="flex items-center gap-2 px-1">
                   <span className="text-base">{g.icon ?? '📁'}</span>
-                  <span className="text-[13px] font-semibold uppercase tracking-wider truncate flex-1" style={{ color: fg }}>{g.name}</span>
-                  <span className="text-xs text-white/25 tabular-nums">{g.items.length}</span>
+                  <span className="text-sm font-semibold uppercase tracking-wider truncate flex-1" style={{ color: fg }}>{g.name}</span>
+                  <span className="text-sm text-white/25 tabular-nums">{g.items.length}</span>
                 </div>
                 {g.items.length === 0 ? (
-                  <p className="text-[13px] text-white/25 italic px-2">empty</p>
+                  <p className="text-sm text-white/25 italic px-2">empty</p>
                 ) : (
                   <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
                     {g.items.slice(0, 8).map(it => (
@@ -360,7 +360,7 @@ function GroupsAndRecents({
                         className="flex-shrink-0 flex items-center gap-2 rounded-lg px-3 py-2 max-w-[180px] active:scale-[0.97]"
                         style={{ background: colorBg(g.color ?? 'default', 0.15) }}>
                         <span className="text-base flex-shrink-0">{it.icon ?? (it.kind === 'database' ? '🗄️' : '📄')}</span>
-                        <span className="text-xs text-white/85 truncate">{it.title}</span>
+                        <span className="text-sm text-white/85 truncate">{it.title}</span>
                       </button>
                     ))}
                   </div>
@@ -369,27 +369,27 @@ function GroupsAndRecents({
             )
           })}
           <button type="button" onClick={() => client.replace({ kind: 'groups' })}
-            className="self-start text-[13px] text-white/45 active:text-white/80 px-1 py-1">
+            className="self-start text-sm text-white/45 active:text-white/80 px-1 py-1">
             {groups.groups.length > 2 ? `More groups (${groups.groups.length - 2}) →` : 'Manage groups →'}
           </button>
         </div>
       )}
       {groups.groups.length === 0 && (
         <button type="button" onClick={() => client.replace({ kind: 'groups' })}
-          className="self-start text-[13px] text-white/35 active:text-white/70 px-1">
+          className="self-start text-sm text-white/35 active:text-white/70 px-1">
           + Create your first group
         </button>
       )}
       {pins.recents.length > 0 && (
         <div className="flex flex-col gap-1">
-          <span className="text-xs uppercase tracking-wider text-white/30 px-1">Recent</span>
+          <span className="text-sm uppercase tracking-wider text-white/30 px-1">Recent</span>
           <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
             {pins.recents.slice(0, 6).map(r => (
               <button key={r.id} type="button"
                 onClick={() => client.navigate(r.kind === 'database' ? { kind: 'database', id: r.id } : { kind: 'page', id: r.id })}
                 className="flex-shrink-0 flex items-center gap-2 bg-white/[0.03] active:bg-white/[0.07] rounded-lg px-3 py-2 max-w-[180px]">
                 <span className="text-base flex-shrink-0">{r.icon ?? (r.kind === 'database' ? '🗄️' : '📄')}</span>
-                <span className="text-xs text-white/65 truncate">{r.title}</span>
+                <span className="text-sm text-white/65 truncate">{r.title}</span>
               </button>
             ))}
           </div>
@@ -515,7 +515,7 @@ export default function HomeView({ schema, schemas, taskDbs, tasks, projects, lo
               : 'bg-red-500/10 border-red-500/25 text-red-300/90 active:bg-red-500/20'}`}>
           <TriangleAlert size={16} className="shrink-0" />
           <span className="flex-1 text-left tabular-nums">{overdueCount} task{overdueCount === 1 ? '' : 's'} overdue</span>
-          <span className="text-xs font-medium opacity-70">{overdueOnly ? 'Show all' : 'Show'}</span>
+          <span className="text-sm font-medium opacity-70">{overdueOnly ? 'Show all' : 'Show'}</span>
         </button>
       )}
 
@@ -544,14 +544,14 @@ export default function HomeView({ schema, schemas, taskDbs, tasks, projects, lo
       {(showProjects || projectFilter !== null) && schema?.projectKey && (projectsInUse.list.length > 0 || projectsInUse.unassigned > 0) && (
         <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
           <button type="button" onClick={() => setProjectFilter(null)}
-            className={`flex-shrink-0 px-3 py-1.5 rounded-full text-[13px] font-medium
+            className={`flex-shrink-0 px-3 py-1.5 rounded-full text-sm font-medium
               ${projectFilter === null ? 'bg-blue-500/40 text-blue-100' : 'bg-white/[0.05] text-white/40 active:bg-white/[0.1]'}`}>
             All projects
           </button>
           {projectsInUse.list.map(({ project, count, id }) => (
             <button key={id} type="button"
               onClick={() => setProjectFilter(projectFilter === id ? null : id)}
-              className={`flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[13px] font-medium
+              className={`flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium
                 ${projectFilter === id ? 'bg-blue-500/40 text-blue-100' : 'bg-white/[0.05] text-white/55 active:bg-white/[0.1]'}`}>
               {project.icon ? <span>{project.icon}</span> : <span>📁</span>}
               <span className="truncate max-w-[7rem]">{project.title}</span>
@@ -561,7 +561,7 @@ export default function HomeView({ schema, schemas, taskDbs, tasks, projects, lo
           {projectsInUse.unassigned > 0 && (
             <button type="button"
               onClick={() => setProjectFilter(projectFilter === '__none__' ? null : '__none__')}
-              className={`flex-shrink-0 px-3 py-1.5 rounded-full text-[13px] font-medium
+              className={`flex-shrink-0 px-3 py-1.5 rounded-full text-sm font-medium
                 ${projectFilter === '__none__' ? 'bg-blue-500/40 text-blue-100' : 'bg-white/[0.05] text-white/45 active:bg-white/[0.1]'}`}>
               No project · <span className="opacity-60 tabular-nums">{projectsInUse.unassigned}</span>
             </button>
@@ -632,8 +632,8 @@ export default function HomeView({ schema, schemas, taskDbs, tasks, projects, lo
             <button type="button" onClick={() => setShowDone(v => !v)}
               className="flex items-center gap-2 px-1 pt-3 pb-1 active:opacity-70">
               {showDone ? <ChevronDown size={15} className="text-white/40" /> : <ChevronRight size={15} className="text-white/40" />}
-              <span className="text-xs font-medium uppercase tracking-[0.14em] text-white/50">Done</span>
-              <span className="text-xs text-white/35 tabular-nums">{done.length}</span>
+              <span className="text-sm font-medium uppercase tracking-[0.14em] text-white/50">Done</span>
+              <span className="text-sm text-white/35 tabular-nums">{done.length}</span>
             </button>
             {showDone && done.map(task => (
               <TaskRow
@@ -674,7 +674,7 @@ export default function HomeView({ schema, schemas, taskDbs, tasks, projects, lo
 
       {voice.listening && voice.interim && (
         <div className="sticky bottom-20 z-10 mx-1 -mt-2 bg-blue-500/20 backdrop-blur-md border border-blue-500/40 rounded-xl px-3 py-2">
-          <p className="text-xs text-blue-200 uppercase tracking-wider">Listening…</p>
+          <p className="text-sm text-blue-200 uppercase tracking-wider">Listening…</p>
           <p className="text-sm text-white">{voice.interim}</p>
         </div>
       )}

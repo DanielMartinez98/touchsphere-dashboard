@@ -156,6 +156,9 @@ const SYSTEM_PROMPT_BODY =
   "add_notion_task (add an actionable to-do to the user's Notion task list \u2014 errands, work items, reminders, chores, follow-ups; " +
   "pass an optional natural-language due date like \"today\", \"tomorrow\", or \"next friday\". " +
   "IMPORTANT: use add_notion_task for things the user needs to DO, and add_media_item only for games, shows, or movies to play or watch \u2014 never mix them up), " +
+  "list_tasks / complete_task / set_task_due (the same task list: list_tasks for 'what is on my list' / 'what is overdue' / 'what is due today', " +
+  "complete_task when they say something is done or to tick it off, set_task_due to move a due date. All three match the words they said, " +
+  "and when several tasks match you are told which, so ask rather than guess), " +
   "set_timer / set_alarm / list_timers / cancel_timer " +
   "(set_timer for relative countdowns \u2014 \"timer for 10 minutes\", pass the duration in the hours/minutes/seconds fields; " +
   "set_alarm for an absolute clock time \u2014 \"wake me at 7:30 am\"; the dashboard rings and shows the countdown automatically, " +

@@ -73,7 +73,7 @@ export default function BrowseView({ client }: { client: NotionClient }) {
 
       {showDbs && ws.databases.length > 0 && (
         <div className="flex flex-col gap-1.5">
-          {tab === 'all' && <p className="text-xs font-medium text-white/45 uppercase tracking-[0.14em] px-1 mt-2">Databases</p>}
+          {tab === 'all' && <p className="text-sm font-medium text-white/45 uppercase tracking-[0.14em] px-1 mt-2">Databases</p>}
           {ws.databases.map(d => (
             <Tile key={d.id} title={d.title} icon={d.icon} kind="database"
                   inGroupCount={groups.groupsContaining(d.id).length}
@@ -85,7 +85,7 @@ export default function BrowseView({ client }: { client: NotionClient }) {
 
       {showPages && rootPages.length > 0 && (
         <div className="flex flex-col gap-1.5">
-          {tab === 'all' && <p className="text-xs font-medium text-white/45 uppercase tracking-[0.14em] px-1 mt-2">Pages</p>}
+          {tab === 'all' && <p className="text-sm font-medium text-white/45 uppercase tracking-[0.14em] px-1 mt-2">Pages</p>}
           {rootPages.map(p => (
             <Tile key={p.id} title={p.title} icon={p.icon} kind="page"
                   inGroupCount={groups.groupsContaining(p.id).length}
@@ -99,7 +99,7 @@ export default function BrowseView({ client }: { client: NotionClient }) {
         <p className="text-base text-white/45 italic text-center py-6">No top-level pages shared with this integration.</p>
       )}
 
-      <p className="text-xs text-white/35 text-center pt-3">
+      <p className="text-sm text-white/35 text-center pt-3">
         Share more pages or databases with your integration in Notion to see them here.
       </p>
 

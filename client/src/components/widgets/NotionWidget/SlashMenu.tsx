@@ -28,14 +28,14 @@ export default function SlashMenu({
           className="bg-white/[0.06] text-white rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-1 focus:ring-white/20 placeholder-white/30 mb-3" />
         <div className="flex-1 overflow-y-auto -mx-1 px-1">
           {list.length === 0 && (
-            <p className="text-xs text-white/40 italic text-center py-6">No match for "{query}".</p>
+            <p className="text-sm text-white/40 italic text-center py-6">No match for "{query}".</p>
           )}
           <div className="grid grid-cols-3 gap-2">
             {list.map(k => (
               <button key={k.type} type="button" onClick={() => { onPick(k); onClose() }}
                 className="flex flex-col items-center gap-1.5 py-3 rounded-xl bg-white/[0.05] active:bg-white/[0.12] active:scale-95 transition-all">
                 <span className="text-lg text-white/85">{k.icon}</span>
-                <span className="text-[11px] text-white/55">{k.label}</span>
+                <span className="text-sm text-white/55">{k.label}</span>
               </button>
             ))}
           </div>

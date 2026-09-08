@@ -42,7 +42,7 @@ export default function DatabaseSettingsSheet({
 
           <div className="border-t border-white/[0.06] my-5" />
 
-          <h4 className="text-xs font-semibold uppercase tracking-wider text-white/40 mb-3">Properties</h4>
+          <h4 className="text-sm font-semibold uppercase tracking-wider text-white/40 mb-3">Properties</h4>
           <div className="flex flex-col gap-2">
             {Object.entries(schema.properties).map(([name, p]) => (
               <PropertyRow key={name}
@@ -56,8 +56,8 @@ export default function DatabaseSettingsSheet({
             ))}
           </div>
 
-          {err && <p className="text-xs text-red-400 mt-3">{err}</p>}
-          {busy && <p className="text-xs text-white/40 mt-3">Saving…</p>}
+          {err && <p className="text-sm text-red-400 mt-3">{err}</p>}
+          {busy && <p className="text-sm text-white/40 mt-3">Saving…</p>}
 
           <button type="button" onClick={onClose}
             className="mt-6 w-full h-11 rounded-xl bg-white/[0.04] text-white/65 text-sm font-semibold active:bg-white/10">
@@ -104,7 +104,7 @@ function TitleAndIcon({
           ariaLabel="Database name"
           className="flex-1 bg-white/10 text-white rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-green-400" />
         <button type="button" onClick={saveTitle} disabled={!name.trim() || name.trim() === schema.title}
-          className="px-3 h-11 rounded-lg bg-green-500 text-black text-xs font-bold disabled:opacity-30 active:bg-green-400">
+          className="px-3 h-11 rounded-lg bg-green-500 text-black text-sm font-bold disabled:opacity-30 active:bg-green-400">
           Save
         </button>
       </div>
@@ -172,7 +172,7 @@ function PropertyRow({
       <button type="button" onClick={() => setExpanded(o => !o)}
         className="w-full flex items-center gap-2 text-left active:opacity-70">
         <span className="text-sm text-white truncate flex-1">{name}</span>
-        <span className="text-[10px] text-white/35 uppercase tracking-wider">{type}</span>
+        <span className="text-sm text-white/35 uppercase tracking-wider">{type}</span>
         <span className="text-white/35 text-sm">{expanded ? '▾' : '▸'}</span>
       </button>
 
@@ -184,9 +184,9 @@ function PropertyRow({
               <TouchInput value={draft} onChange={setDraft} commitOn="change"
                 placeholder="Rename property"
                 ariaLabel="Property name"
-                className="flex-1 bg-white/10 text-white rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-green-400" />
+                className="flex-1 bg-white/10 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-green-400" />
               <button type="button" onClick={rename} disabled={!draft.trim() || draft.trim() === name}
-                className="px-3 rounded-lg bg-green-500 text-black text-xs font-bold disabled:opacity-30 active:bg-green-400">Rename</button>
+                className="px-3 rounded-lg bg-green-500 text-black text-sm font-bold disabled:opacity-30 active:bg-green-400">Rename</button>
             </div>
           )}
 
@@ -199,28 +199,28 @@ function PropertyRow({
                     <TouchInput value={o.name} onChange={v => editOptionName(i, v)} commitOn="change"
                       placeholder="Option name"
                       ariaLabel="Option name"
-                      className="flex-1 bg-white/10 text-white rounded-md px-2 py-1.5 text-[11px] outline-none focus:ring-1 focus:ring-white/30" />
+                      className="flex-1 bg-white/10 text-white rounded-md px-2 py-1.5 text-sm outline-none focus:ring-1 focus:ring-white/30" />
                     <ColorDot color={o.color} onClick={() => {
                       const cycle = ['default','gray','brown','orange','yellow','green','blue','purple','pink','red']
                       const idx = cycle.indexOf(o.color)
                       setOptionColor(i, cycle[(idx + 1) % cycle.length]!)
                     }} />
                     <button type="button" onClick={() => removeOption(i)}
-                      className="w-6 h-6 rounded-full bg-red-500/20 text-red-300 text-[10px] active:bg-red-500/40">×</button>
+                      className="w-6 h-6 rounded-full bg-red-500/20 text-red-300 text-sm active:bg-red-500/40">×</button>
                   </div>
                 ))}
                 <button type="button" onClick={addOption}
-                  className="self-start px-2.5 py-1 rounded-full text-[10px] bg-white/[0.06] text-white/55 active:bg-white/10">+ Add option</button>
+                  className="self-start px-2.5 py-1 rounded-full text-sm bg-white/[0.06] text-white/55 active:bg-white/10">+ Add option</button>
                 <div className="grid grid-cols-2 gap-1.5 mt-1">
                   <button type="button" onClick={() => { setOpts(options); setEditingOptions(false) }}
-                    className="h-8 rounded-md bg-white/10 text-white/60 text-[11px] active:bg-white/15">Cancel</button>
+                    className="h-8 rounded-md bg-white/10 text-white/60 text-sm active:bg-white/15">Cancel</button>
                   <button type="button" onClick={saveOptions}
-                    className="h-8 rounded-md bg-green-500 text-black text-[11px] font-bold active:bg-green-400">Save options</button>
+                    className="h-8 rounded-md bg-green-500 text-black text-sm font-bold active:bg-green-400">Save options</button>
                 </div>
               </div>
             ) : (
               <button type="button" onClick={() => setEditingOptions(true)}
-                className="self-start px-2.5 py-1.5 rounded-full text-[11px] bg-white/[0.06] text-white/55 active:bg-white/10">
+                className="self-start px-2.5 py-1.5 rounded-full text-sm bg-white/[0.06] text-white/55 active:bg-white/10">
                 Edit {options.length} option{options.length === 1 ? '' : 's'}
               </button>
             )
@@ -231,13 +231,13 @@ function PropertyRow({
             confirm ? (
               <div className="grid grid-cols-2 gap-1.5">
                 <button type="button" onClick={() => setConfirm(false)}
-                  className="h-8 rounded-md bg-white/10 text-white/60 text-[11px] active:bg-white/15">Cancel</button>
+                  className="h-8 rounded-md bg-white/10 text-white/60 text-sm active:bg-white/15">Cancel</button>
                 <button type="button" onClick={remove}
-                  className="h-8 rounded-md bg-red-500 text-white text-[11px] font-bold active:bg-red-600">Delete property</button>
+                  className="h-8 rounded-md bg-red-500 text-white text-sm font-bold active:bg-red-600">Delete property</button>
               </div>
             ) : (
               <button type="button" onClick={() => setConfirm(true)}
-                className="self-start px-2.5 py-1.5 rounded-full text-[11px] bg-red-500/10 text-red-300/70 active:bg-red-500/20">
+                className="self-start px-2.5 py-1.5 rounded-full text-sm bg-red-500/10 text-red-300/70 active:bg-red-500/20">
                 Delete property…
               </button>
             )

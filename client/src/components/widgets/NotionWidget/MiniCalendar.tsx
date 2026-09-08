@@ -31,7 +31,7 @@ export default function MiniCalendar({
         <button type="button" onClick={next} className="w-9 h-9 rounded-full bg-white/10 text-white text-xl flex items-center justify-center active:scale-90">›</button>
       </div>
       <div className="grid grid-cols-7 text-center mb-1">
-        {['S','M','T','W','T','F','S'].map((d, i) => <span key={i} className="text-[10px] text-white/20">{d}</span>)}
+        {['S','M','T','W','T','F','S'].map((d, i) => <span key={i} className="text-sm text-white/20">{d}</span>)}
       </div>
       <div className="grid grid-cols-7 gap-0.5">
         {Array.from({ length: first }).map((_, i) => <div key={i} />)}
@@ -41,7 +41,7 @@ export default function MiniCalendar({
           const isT   = day === today.getDate() && pm === today.getMonth() && py === today.getFullYear()
           return (
             <button type="button" key={day} onClick={() => pick(day)}
-              className={`aspect-square rounded-lg text-xs font-medium flex items-center justify-center min-h-[34px]
+              className={`aspect-square rounded-lg text-sm font-medium flex items-center justify-center min-h-[34px]
                 ${isSel ? 'bg-green-500 text-black' : isT ? 'bg-white/20 text-white' : 'text-white/60 active:bg-white/20'}`}>
               {day}
             </button>

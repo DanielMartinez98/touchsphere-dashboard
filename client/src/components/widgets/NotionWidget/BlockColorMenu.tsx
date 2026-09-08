@@ -31,11 +31,11 @@ export default function BlockColorMenu({
           <h3 className="text-sm font-bold text-white mb-3">Block color</h3>
 
           <div className="mb-4">
-            <p className="text-[10px] text-white/35 uppercase tracking-wider mb-2">Text color</p>
+            <p className="text-sm text-white/35 uppercase tracking-wider mb-2">Text color</p>
             <div className="flex flex-wrap gap-2">
               {FOREGROUND_COLORS.map(c => (
                 <button key={c} type="button" onClick={() => { onPick(c); onClose() }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border min-w-[64px]
+                  className={`px-3 py-1.5 rounded-lg text-sm font-semibold border min-w-[64px]
                     ${current === c ? 'border-white/40' : 'border-transparent'}`}
                   style={{ background: 'rgba(255,255,255,0.04)', color: colorFg(c) }}>
                   Aa
@@ -45,11 +45,11 @@ export default function BlockColorMenu({
           </div>
 
           <div>
-            <p className="text-[10px] text-white/35 uppercase tracking-wider mb-2">Background</p>
+            <p className="text-sm text-white/35 uppercase tracking-wider mb-2">Background</p>
             <div className="flex flex-wrap gap-2">
               {BACKGROUND_COLORS.map(c => (
                 <button key={c} type="button" onClick={() => { onPick(c); onClose() }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border min-w-[64px]
+                  className={`px-3 py-1.5 rounded-lg text-sm font-semibold border min-w-[64px]
                     ${current === c ? 'border-white/40' : 'border-transparent'}`}
                   style={{ background: colorBg(c, 0.25), color: 'rgba(255,255,255,0.85)' }}>
                   Aa

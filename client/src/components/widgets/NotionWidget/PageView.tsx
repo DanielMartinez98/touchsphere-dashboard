@@ -139,15 +139,15 @@ export default function PageView({ pageId, client, onTitle }: { pageId: string; 
 
       <div className="flex gap-1.5 px-1">
         <button type="button" onClick={() => setShowGroups(true)}
-          className={`px-3 py-1.5 rounded-full text-xs font-medium ${groupCount > 0 ? 'bg-yellow-500/25 text-yellow-300' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
+          className={`px-3 py-1.5 rounded-full text-sm font-medium ${groupCount > 0 ? 'bg-yellow-500/25 text-yellow-300' : 'bg-white/[0.06] text-white/55 active:bg-white/10'}`}>
           {groupCount > 0 ? `📁 In ${groupCount} group${groupCount === 1 ? '' : 's'}` : '📁 Add to group'}
         </button>
         <button type="button" onClick={() => setShowComments(true)}
-          className="px-3 py-1.5 rounded-full bg-white/[0.06] text-white/55 text-xs font-medium active:bg-white/10">
+          className="px-3 py-1.5 rounded-full bg-white/[0.06] text-white/55 text-sm font-medium active:bg-white/10">
           💬 Comments
         </button>
         <button type="button" onClick={() => setMoreOpen(o => !o)}
-          className="px-3 py-1.5 rounded-full bg-white/[0.06] text-white/55 text-xs font-medium active:bg-white/10">
+          className="px-3 py-1.5 rounded-full bg-white/[0.06] text-white/55 text-sm font-medium active:bg-white/10">
           More…
         </button>
       </div>
@@ -167,7 +167,7 @@ export default function PageView({ pageId, client, onTitle }: { pageId: string; 
       {propEntries.length > 0 && (
         <div className="px-1">
           <button type="button" onClick={() => setPropsOpen(o => !o)}
-            className="text-xs text-white/45 active:text-white flex items-center gap-1.5">
+            className="text-sm text-white/45 active:text-white flex items-center gap-1.5">
             {propsOpen ? '▾' : '▸'} {propsOpen ? 'Hide' : 'Show'} {propEntries.length} propert{propEntries.length === 1 ? 'y' : 'ies'}
           </button>
           {propsOpen && (

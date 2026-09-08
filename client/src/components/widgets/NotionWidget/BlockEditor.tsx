@@ -327,7 +327,7 @@ function BlockView({
       body = (
         <div className="flex items-start gap-2">
           <button type="button" onClick={() => saveCheck(!checked)}
-            className={`flex-shrink-0 w-6 h-6 mt-0.5 rounded-md border-2 flex items-center justify-center text-xs transition-all
+            className={`flex-shrink-0 w-8 h-8 mt-0 rounded-md border-2 flex items-center justify-center text-sm transition-all
               ${checked ? 'bg-green-500/30 border-green-500/60 text-green-300' : 'border-white/30 active:bg-white/10'}`}>
             {checked && '✓'}
           </button>
@@ -354,7 +354,7 @@ function BlockView({
               {renderBlockList(children, childCtx, depth + 1)}
             </div>
           )}
-          {toggleOpen && children === null && <p className="ml-7 text-xs text-white/30 mt-1">Loading…</p>}
+          {toggleOpen && children === null && <p className="ml-7 text-sm text-white/30 mt-1">Loading…</p>}
         </div>
       )
       break
@@ -391,9 +391,9 @@ function BlockView({
       const lang = data.language ?? 'plain'
       body = (
         <div className="bg-black/40 rounded-lg p-3 border border-white/[0.06]">
-          <div className="text-[10px] text-white/35 mb-1 uppercase tracking-wider">{lang}</div>
+          <div className="text-sm text-white/35 mb-1 uppercase tracking-wider">{lang}</div>
           <EditableLine value={text} placeholder="Code" multiline onSave={saveText}
-            className="font-mono text-xs text-white/85" />
+            className="font-mono text-sm text-white/85" />
         </div>
       )
       break
@@ -406,9 +406,9 @@ function BlockView({
       body = src ? (
         <figure>
           <img src={src} alt={caption || 'Image'} className="rounded-lg max-h-72 w-auto" />
-          {caption && <figcaption className="text-xs text-white/40 mt-1">{caption}</figcaption>}
+          {caption && <figcaption className="text-sm text-white/40 mt-1">{caption}</figcaption>}
         </figure>
-      ) : <p className="text-xs text-white/30 italic">[image]</p>
+      ) : <p className="text-sm text-white/30 italic">[image]</p>
       break
     }
 
@@ -425,7 +425,7 @@ function BlockView({
           <span>📎</span>
           <span className="text-sm text-blue-400 underline truncate">{name}</span>
         </a>
-      ) : <p className="text-xs text-white/30 italic">[{type}]</p>
+      ) : <p className="text-sm text-white/30 italic">[{type}]</p>
       break
     }
 
@@ -440,7 +440,7 @@ function BlockView({
            className="block p-2 bg-white/[0.05] rounded-lg active:bg-white/10 text-sm text-blue-400 underline truncate">
           {typeof url === 'string' ? url : 'Link'}
         </a>
-      ) : <p className="text-xs text-white/30 italic">[link]</p>
+      ) : <p className="text-sm text-white/30 italic">[link]</p>
       break
     }
 
@@ -472,21 +472,21 @@ function BlockView({
       // them side-by-side (would be unreadable at 720px).
       body = children
         ? <div className="space-y-2">{renderBlockList(children, childCtx, depth + 1)}</div>
-        : <p className="text-xs text-white/30 italic">Loading columns…</p>
+        : <p className="text-sm text-white/30 italic">Loading columns…</p>
       break
 
     case 'column':
       editable = false
       body = children
         ? <div className="space-y-1">{renderBlockList(children, childCtx, depth + 1)}</div>
-        : <p className="text-xs text-white/30 italic">Loading…</p>
+        : <p className="text-sm text-white/30 italic">Loading…</p>
       break
 
     case 'synced_block':
       editable = false
       body = children
         ? <div className="space-y-1 border-l-2 border-blue-500/30 pl-2">{renderBlockList(children, childCtx, depth + 1)}</div>
-        : <p className="text-xs text-white/30 italic">Loading synced block…</p>
+        : <p className="text-sm text-white/30 italic">Loading synced block…</p>
       break
 
     case 'equation':
@@ -494,7 +494,7 @@ function BlockView({
       // pass will plug KaTeX in for proper math rendering.
       body = (
         <div className="bg-white/[0.06] rounded-lg p-2 border border-white/[0.06]">
-          <div className="text-[10px] text-white/35 mb-1 uppercase tracking-wider">LaTeX</div>
+          <div className="text-sm text-white/35 mb-1 uppercase tracking-wider">LaTeX</div>
           <EditableLine value={data.expression ?? ''} placeholder="\\frac{a}{b}" multiline
             onSave={v => onUpdate(block.id, { equation: { expression: v } })}
             className="font-mono text-sm text-white/85" />
@@ -507,7 +507,7 @@ function BlockView({
       // PageView is going to render it above the title in a later phase. For
       // now show a clear marker so the block is visible.
       editable = false
-      body = <p className="text-xs text-white/45 italic">📍 breadcrumb (parent chain rendered above the page)</p>
+      body = <p className="text-sm text-white/45 italic">📍 breadcrumb (parent chain rendered above the page)</p>
       break
 
     case 'table_of_contents':
@@ -515,16 +515,16 @@ function BlockView({
       // heading level so the visual nesting matches the document outline.
       editable = false
       if (!headings || headings.length === 0) {
-        body = <p className="text-xs text-white/30 italic">📋 No headings yet — add a heading to populate the table of contents.</p>
+        body = <p className="text-sm text-white/30 italic">📋 No headings yet — add a heading to populate the table of contents.</p>
       } else {
         body = (
           <div className="flex flex-col gap-0.5 bg-white/[0.03] rounded-lg p-2 border border-white/[0.05]">
-            <div className="text-[10px] text-white/35 mb-1 uppercase tracking-wider">Contents</div>
+            <div className="text-sm text-white/35 mb-1 uppercase tracking-wider">Contents</div>
             {headings.map(h => {
               const indent = h.type === 'heading_2' ? 'pl-3' : h.type === 'heading_3' ? 'pl-6' : ''
               return (
                 <a key={h.id} href={`#${h.id}`}
-                  className={`text-xs text-blue-300/85 active:text-blue-200 truncate ${indent}`}>
+                  className={`text-sm text-blue-300/85 active:text-blue-200 truncate ${indent}`}>
                   {h.text || '—'}
                 </a>
               )
@@ -537,8 +537,8 @@ function BlockView({
     case 'table':
       editable = false
       body = children
-        ? <div className="space-y-1 text-xs">{renderBlockList(children, childCtx, depth + 1)}</div>
-        : <p className="text-xs text-white/30 italic">Loading table…</p>
+        ? <div className="space-y-1 text-sm">{renderBlockList(children, childCtx, depth + 1)}</div>
+        : <p className="text-sm text-white/30 italic">Loading table…</p>
       break
 
     case 'table_row': {
@@ -556,7 +556,7 @@ function BlockView({
 
     default:
       body = (
-        <div className="text-xs text-white/40 italic">
+        <div className="text-sm text-white/40 italic">
           [{type}{text && `: ${text.slice(0, 40)}`}]
         </div>
       )
@@ -618,38 +618,38 @@ function BlockView({
           <div className="flex gap-0.5 flex-wrap justify-end">
             <button type="button" onClick={() => onMove(block.id, 'up')} disabled={!canMoveUp}
               aria-label="Move up"
-              className="w-6 h-6 rounded-full bg-white/10 text-white/55 text-xs active:bg-white/20 disabled:opacity-25">↑</button>
+              className="w-9 h-9 rounded-full bg-white/10 text-white/55 text-sm active:bg-white/20 disabled:opacity-25">↑</button>
             <button type="button" onClick={() => onMove(block.id, 'down')} disabled={!canMoveDown}
               aria-label="Move down"
-              className="w-6 h-6 rounded-full bg-white/10 text-white/55 text-xs active:bg-white/20 disabled:opacity-25">↓</button>
+              className="w-9 h-9 rounded-full bg-white/10 text-white/55 text-sm active:bg-white/20 disabled:opacity-25">↓</button>
             <button type="button" onClick={() => onIndent(block.id)}
               aria-label="Indent"
-              className="w-6 h-6 rounded-full bg-white/10 text-white/55 text-xs active:bg-white/20">⇥</button>
+              className="w-9 h-9 rounded-full bg-white/10 text-white/55 text-sm active:bg-white/20">⇥</button>
             <button type="button" onClick={() => onOutdent(block.id)} disabled={!canOutdent}
               aria-label="Outdent"
-              className="w-6 h-6 rounded-full bg-white/10 text-white/55 text-xs active:bg-white/20 disabled:opacity-25">⇤</button>
+              className="w-9 h-9 rounded-full bg-white/10 text-white/55 text-sm active:bg-white/20 disabled:opacity-25">⇤</button>
             {editable && (
               <button type="button" onClick={() => setConvertOpen(true)}
                 aria-label="Turn into"
-                className="w-6 h-6 rounded-full bg-white/10 text-white/55 text-xs active:bg-white/20">⇄</button>
+                className="w-9 h-9 rounded-full bg-white/10 text-white/55 text-sm active:bg-white/20">⇄</button>
             )}
             {editable && (
               <button type="button" onClick={() => setMentionOpen(true)}
                 aria-label="Mention"
-                className="w-6 h-6 rounded-full bg-white/10 text-white/55 text-xs active:bg-white/20">@</button>
+                className="w-9 h-9 rounded-full bg-white/10 text-white/55 text-sm active:bg-white/20">@</button>
             )}
             {editable && voice.supported && (
               <button type="button" onClick={() => void dictate()}
                 aria-label="Dictate"
-                className={`w-6 h-6 rounded-full text-xs active:scale-95
+                className={`w-9 h-9 rounded-full text-sm active:scale-95
                   ${voice.listening ? 'bg-red-500 text-white animate-pulse' : 'bg-white/10 text-white/55 active:bg-white/20'}`}>🎤</button>
             )}
             <button type="button" onClick={() => onInsertAfter(block.id)}
               aria-label="Insert below"
-              className="w-6 h-6 rounded-full bg-green-500/30 text-green-200 text-xs active:bg-green-500/50">+</button>
+              className="w-9 h-9 rounded-full bg-green-500/30 text-green-200 text-sm active:bg-green-500/50">+</button>
             <button type="button" onClick={() => onDelete(block.id)}
               aria-label="Delete block"
-              className="w-6 h-6 rounded-full bg-red-500/20 text-red-300 text-xs active:bg-red-500/40">×</button>
+              className="w-9 h-9 rounded-full bg-red-500/20 text-red-300 text-sm active:bg-red-500/40">×</button>
           </div>
         </div>
       )}
@@ -687,7 +687,7 @@ function FormatActions({
   onColor:     () => void
 }) {
   const cls = (active: boolean) =>
-    `w-6 h-6 rounded-full text-[11px] flex items-center justify-center
+    `w-9 h-9 rounded-full text-sm flex items-center justify-center
      ${active ? 'bg-blue-500/40 text-white' : 'bg-white/10 text-white/55 active:bg-white/20'}`
   return (
     <>
@@ -695,7 +695,7 @@ function FormatActions({
       <button type="button" onClick={() => onToggle('italic')}        aria-label="Italic"        className={`${cls(!!annotations.italic)} italic`}>I</button>
       <button type="button" onClick={() => onToggle('strikethrough')} aria-label="Strikethrough" className={`${cls(!!annotations.strikethrough)} line-through`}>S</button>
       <button type="button" onClick={() => onToggle('underline')}     aria-label="Underline"     className={`${cls(!!annotations.underline)} underline`}>U</button>
-      <button type="button" onClick={() => onToggle('code')}          aria-label="Code"          className={`${cls(!!annotations.code)} font-mono text-[10px]`}>{'</>'}</button>
+      <button type="button" onClick={() => onToggle('code')}          aria-label="Code"          className={`${cls(!!annotations.code)} font-mono text-sm`}>{'</>'}</button>
       <button type="button" onClick={onColor}                          aria-label="Color"         className={`${cls(false)}`}>🎨</button>
     </>
   )
@@ -987,7 +987,7 @@ export default function BlockEditor({
       <div className="flex flex-col gap-2 px-1">
         <p className="text-sm text-red-400">{error}</p>
         <button type="button" onClick={() => { setError(null); void load(false) }}
-          className="self-start text-xs text-white/55 active:text-white/85">Retry</button>
+          className="self-start text-sm text-white/55 active:text-white/85">Retry</button>
       </div>
     )
   }
@@ -1014,7 +1014,7 @@ export default function BlockEditor({
 
       {hasMore && (
         <button type="button" onClick={() => load(true)}
-          className="w-full text-xs text-white/40 py-2 active:text-white/70">
+          className="w-full text-sm text-white/40 py-2 active:text-white/70">
           Load more blocks…
         </button>
       )}

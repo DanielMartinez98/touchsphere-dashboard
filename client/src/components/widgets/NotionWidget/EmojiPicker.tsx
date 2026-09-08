@@ -55,7 +55,7 @@ export default function EmojiPicker({
             />
             {current && (
               <button type="button" onClick={() => { onClear(); onClose() }}
-                className="px-3 py-2 rounded-lg bg-red-500/15 text-red-400/70 text-xs active:bg-red-500/25">
+                className="px-3 py-2 rounded-lg bg-red-500/15 text-red-400/70 text-sm active:bg-red-500/25">
                 Remove
               </button>
             )}
@@ -64,7 +64,7 @@ export default function EmojiPicker({
           <div className="flex gap-1 mb-3 overflow-x-auto scrollbar-hide">
             {CATEGORIES.map(c => (
               <button key={c.name} type="button" onClick={() => setTab(c.name)}
-                className={`flex-shrink-0 px-3 py-1.5 rounded-full text-[11px] font-medium transition-colors
+                className={`flex-shrink-0 px-3 py-1.5 rounded-full text-sm font-medium transition-colors
                   ${tab === c.name ? 'bg-green-500 text-black' : 'bg-white/[0.05] text-white/45 active:bg-white/10'}`}>
                 {c.name}
               </button>

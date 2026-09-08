@@ -38,7 +38,7 @@ export default function RowContextSheet({
       <div className="relative bg-[#0e1117] border-t border-white/10 rounded-t-3xl px-4 pt-3 pb-8 z-50"
            onClick={e => e.stopPropagation()}>
         <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-3" />
-        <p className="text-xs text-white/45 mb-3 px-1 truncate">{rowTitle}</p>
+        <p className="text-sm text-white/45 mb-3 px-1 truncate">{rowTitle}</p>
 
         <div className="flex flex-col gap-1.5">
           <button type="button" onClick={() => { client.navigate({ kind: 'page', id: rowId }); onClose() }}

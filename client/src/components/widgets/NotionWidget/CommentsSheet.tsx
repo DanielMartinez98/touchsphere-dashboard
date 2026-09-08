@@ -75,10 +75,10 @@ export default function CommentsSheet({
           {comments.map(c => (
             <div key={c.id} className="bg-white/[0.04] rounded-xl p-3">
               <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs font-medium text-white/70">
+                <span className="text-sm font-medium text-white/70">
                   {c.createdBy?.name ?? c.createdBy?.id?.slice(0, 8) ?? 'Unknown'}
                 </span>
-                <span className="text-[10px] text-white/30">{fmtDate(c.createdAt)}</span>
+                <span className="text-sm text-white/30">{fmtDate(c.createdAt)}</span>
               </div>
               <p className="text-sm text-white/85 whitespace-pre-wrap">{c.text}</p>
             </div>
