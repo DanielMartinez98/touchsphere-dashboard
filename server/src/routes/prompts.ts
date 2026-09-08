@@ -19,7 +19,8 @@ import { Router, type Request, type Response } from 'express'
 import { assistantSystemPrompt } from './chat'
 import { plannerSystemPrompt } from '../image-plan'
 import { imagesEnabled, selectedModel, styleLabel, stylePromptGuide } from '../image'
-import { buildSystemPrompt, readPrompter, prompterModel, visionModel, visionUserMessage } from '../image-prompt'
+import { buildSystemPrompt, readPrompter, prompterModel, visionModel, visionUserMessage, editModel, editUserMessage,
+} from '../image-prompt'
 
 const router = Router()
 
@@ -67,6 +68,18 @@ router.get('/', async (_req: Request, res: Response) => {
         model: visionModel(),
         text: buildSystemPrompt(prompter.visionTemplate, facts),
         followedBy: visionUserMessage('<what you typed>'),
+        editable: true,
+        editIn: 'Drawing',
+      },
+      {
+        id: 'edit',
+        label: 'Rewriting an edit that did nothing',
+        what: 'The only model call in the FLUX Kontext path. When an edit comes back having ' +
+              'changed almost nothing, this is shown the picture and asked to say the same ' +
+              'change the way an editor can act on it, and the edit is drawn once more.',
+        model: editModel(),
+        text: buildSystemPrompt(prompter.editTemplate, facts),
+        followedBy: editUserMessage('<what you typed>'),
         editable: true,
         editIn: 'Drawing',
       },

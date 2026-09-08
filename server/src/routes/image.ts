@@ -69,6 +69,9 @@ import {
   buildSystemPrompt,
   DEFAULT_TEMPLATE,
   DEFAULT_VISION_TEMPLATE,
+  DEFAULT_EDIT_TEMPLATE,
+  editModel,
+  editUserMessage,
   readPrompter,
   visionModel,
   visionUserMessage,
@@ -514,6 +517,15 @@ router.get('/prompter', (_req: Request, res: Response) => {
     }),
     visionUserMessage: visionUserMessage('<what you typed>'),
     visionModel: visionModel(),
+    // The instruction rewriter: the one model call in the editing path. It
+    // runs only when an edit came back having changed almost nothing.
+    defaultEditTemplate: DEFAULT_EDIT_TEMPLATE,
+    editPreview: buildSystemPrompt(settings.editTemplate, {
+      label:    styleLabel(style),
+      guidance: stylePromptGuide(style),
+    }),
+    editUserMessage: editUserMessage('<what you typed>'),
+    editModel: editModel(),
   })
 })
 
@@ -608,16 +620,23 @@ router.post('/structure', (req: Request, res: Response) => {
 // POST /api/image/prompter — patch one or more of its settings.
 router.post('/prompter', (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown> | undefined
-  const patch: { enabled?: boolean; template?: string; model?: string; visionTemplate?: string } = {}
+  const patch: {
+    enabled?: boolean; template?: string; model?: string
+    visionTemplate?: string; editTemplate?: string; editModel?: string
+  } = {}
   if (typeof body?.['enabled']  === 'boolean') patch.enabled  = body['enabled']
   if (typeof body?.['template'] === 'string')  patch.template = body['template']
   if (typeof body?.['model']    === 'string')  patch.model    = body['model']
   if (typeof body?.['visionTemplate'] === 'string') patch.visionTemplate = body['visionTemplate']
+  if (typeof body?.['editTemplate'] === 'string') patch.editTemplate = body['editTemplate']
+  if (typeof body?.['editModel']    === 'string') patch.editModel    = body['editModel']
   const saved = writePrompter(patch)
   console.log(
     `[image] prompt improver ${saved.enabled ? 'on' : 'off'}` +
     `${patch.template !== undefined ? ', template edited' : ''}` +
     `${patch.visionTemplate !== undefined ? ', redraw template edited' : ''}` +
+    `${patch.editTemplate !== undefined ? ', edit-instruction template edited' : ''}` +
+    `${patch.editModel !== undefined ? `, editModel=${saved.editModel || '(follows the vision model)'}` : ''}` +
     `${patch.model !== undefined ? `, model=${saved.model || '(default)'}` : ''}`,
   )
   res.json(saved)

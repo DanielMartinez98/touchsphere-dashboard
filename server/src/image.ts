@@ -1839,7 +1839,11 @@ async function run(job: ImageJob): Promise<void> {
           // failure here keeps the unchanged result and says so.
           let better: Awaited<ReturnType<typeof composeKontextInstruction>>
           try {
-            better = await composeKontextInstruction(fs.readFileSync(path.join(imagesDir(), job.sourceFile)), job.prompt)
+            better = await composeKontextInstruction(
+              fs.readFileSync(path.join(imagesDir(), job.sourceFile)),
+              job.prompt,
+              { label: styleLabel(job.model), guidance: stylePromptGuide(job.model) },
+            )
           } catch (err) {
             better = { prompt: job.prompt, original: job.prompt, changed: false, model: '', ms: 0, why: err instanceof Error ? err.message : String(err) }
           }

@@ -1693,8 +1693,12 @@ function DrawingTab() {
   // one shared one because the two are saved separately and a half-typed edit
   // in one must not be lost by saving the other.
   const [visionDraft, setVisionDraft] = useState<{ text: string; seeded: boolean }>({ text: '', seeded: false })
+  const [editDraft, setEditDraft] = useState<{ text: string; seeded: boolean }>({ text: '', seeded: false })
+  const [editModelDraft, setEditModelDraft] = useState<{ text: string; seeded: boolean }>({ text: '', seeded: false })
   if (!visionDraft.seeded && prompter) setVisionDraft({ text: prompter.visionTemplate, seeded: true })
   const visionDirty = prompter !== null && visionDraft.text !== prompter.visionTemplate
+  if (!editDraft.seeded && prompter) setEditDraft({ text: prompter.editTemplate, seeded: true })
+  const editDirty = prompter !== null && editDraft.text !== prompter.editTemplate
 
   if (!prompter) {
     return (
@@ -1941,6 +1945,93 @@ function DrawingTab() {
                         text-white/60 bg-black/30 border border-hairline rounded-2xl p-3
                         max-h-72 overflow-y-auto">
           {prompter.visionPreview}
+        </pre>
+      </div>
+
+      {/* The editing path's only model call. Kontext itself reads no LLM
+          output — it is a diffusion model handed an instruction — so this is
+          the one place a language model touches an edit, and it runs only
+          when an edit came back having changed almost nothing. */}
+      <div className="border-t border-hairline pt-5">
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          Rewriting an edit that did nothing
+        </span>
+        <p className="text-[12px] text-white/45 leading-relaxed mb-2">
+          FLUX Kontext is an editor, and it is literal: it returns the picture untouched when
+          the subject is not named the way it appears, or the change is vague. When an edit
+          changes less than 5% of the picture, a model that can see it is asked to say the same
+          change the way the editor can act on it, and the edit is drawn once more. This is what
+          that model is told. The picture's details panel then shows the instruction it wrote.
+        </p>
+        <TouchInput
+          value={editDraft.text}
+          onChange={text => setEditDraft({ text, seeded: true })}
+          multiline
+          rows={10}
+          ariaLabel="Instructions for the model that rewrites a failed edit"
+          className="w-full bg-white/10 text-white rounded-2xl px-4 py-3 text-[13px] leading-relaxed
+                     placeholder:text-white/30 border border-hairline font-mono"
+        />
+        <div className="flex gap-2 mt-2">
+          <button
+            type="button"
+            disabled={!editDirty}
+            onClick={() => {
+              void setPrompter({ editTemplate: editDraft.text })
+              setEditDraft({ text: editDraft.text, seeded: true })
+            }}
+            className={`flex-1 h-12 rounded-xl text-sm font-semibold transition ${
+              editDirty ? 'bg-violet-500/80 text-white active:scale-95' : 'bg-white/5 text-white/30'
+            }`}
+          >
+            {editDirty ? 'Save' : 'Saved'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setEditDraft({ text: prompter.defaultEditTemplate, seeded: true })}
+            className="px-4 h-12 rounded-xl bg-white/10 text-white/70 text-sm font-semibold active:scale-95"
+          >
+            Reset
+          </button>
+        </div>
+        <label className="block mt-3">
+          <span className="text-[12px] text-white/45 leading-relaxed block mb-1">
+            The model that does it. Leave empty to follow the one above (
+            <code className="text-white/60">{prompter.visionModel}</code>). It must be one that
+            can see a picture.
+          </span>
+          <TouchInput
+            value={editModelDraft.seeded ? editModelDraft.text : prompter.editModel}
+            onChange={text => setEditModelDraft({ text, seeded: true })}
+            commitOn="done"
+            placeholder={prompter.visionModel}
+            ariaLabel="Model for rewriting a failed edit"
+            className="w-full h-12 rounded-xl bg-white/10 border border-hairline px-3 text-[14px]"
+          />
+        </label>
+        <button
+          type="button"
+          disabled={!editModelDraft.seeded || editModelDraft.text === prompter.editModel}
+          onClick={() => {
+            void setPrompter({ editModel: editModelDraft.text })
+            setEditModelDraft({ text: editModelDraft.text, seeded: true })
+          }}
+          className={`w-full h-11 mt-2 rounded-xl text-sm font-semibold transition ${
+            editModelDraft.seeded && editModelDraft.text !== prompter.editModel
+              ? 'bg-violet-500/80 text-white active:scale-95' : 'bg-white/5 text-white/30'
+          }`}
+        >
+          Save the model
+        </button>
+        <p className="text-[12px] text-white/45 leading-relaxed mt-3 mb-2">
+          Right now <code className="text-white/60">{prompter.editModel}</code> is told this,
+          then shown the picture with the message{' '}
+          <code className="text-violet-300">{prompter.editUserMessage}</code>.
+        </p>
+        <pre className="selectable-text whitespace-pre-wrap break-words text-[11px] leading-relaxed
+                        text-white/60 bg-black/30 border border-hairline rounded-2xl p-3
+                        max-h-72 overflow-y-auto">
+          {prompter.editPreview}
         </pre>
       </div>
 

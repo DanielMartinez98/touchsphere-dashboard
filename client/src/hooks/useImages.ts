@@ -83,6 +83,12 @@ export interface PrompterSettings {
   visionPreview:         string
   visionUserMessage:     string
   visionModel:           string
+  /** The instruction rewriter — the one model call in the editing path. */
+  editTemplate:          string
+  defaultEditTemplate:   string
+  editPreview:           string
+  editUserMessage:       string
+  editModel:             string
 }
 
 export interface StoredImage {

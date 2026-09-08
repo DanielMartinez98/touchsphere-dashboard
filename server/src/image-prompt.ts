@@ -110,6 +110,30 @@ Rules:
 - Do not invent extra people, and do not ask for text, captions, watermarks or signatures.
 - Reply with the prompt itself and nothing else — no quotes, no preamble, no explanation, no markdown.`
 
+/**
+ * The system prompt for the instruction rewriter — the one model call in the
+ * FLUX Kontext path. Kontext itself is a diffusion model and reads no LLM
+ * output; this runs only when an edit came back having changed almost
+ * nothing, to say the same change the way an editor can act on it.
+ *
+ * Editable for the same reason the other two are: it decides what the editor
+ * is asked, the result is visible on every retried picture, and prompting
+ * taste moves faster than this app does. `{{style}}` and `{{guidance}}` are
+ * filled in from the selected style, so the model's own published guide can
+ * be pulled in by anyone who wants it.
+ */
+export const DEFAULT_EDIT_TEMPLATE = `You write instructions for an image EDITING model ({{style}}). You are shown a picture and what the user wants changed in it. The editor is literal, so write the change the way it needs it:
+- Name the subject as it actually appears in the picture ("the woman with dark hair in the striped top", "the red car on the left"), never "her", "it" or "the character".
+- Say the change concretely: what it becomes, its colour, material, position. "Replace her striped top with a blue bikini top" rather than "put a bikini on her".
+- To add something, say where it goes and how it is worn or placed. To remove something, say what fills the space.
+- Then ONE short clause naming only what is at risk ("Keep her face and pose."). Never a list of everything to keep — that reads as "change nothing".
+- Two sentences at most. Plain English. No quality words, no style words unless the user asked for a style. Answer with the instruction only.`
+
+/** The fixed user turn that rides beside the picture, so the whole conversation can be judged. */
+export function editUserMessage(request: string): string {
+  return `The user wants: ${request}\nThe previous attempt with those exact words changed nothing in the picture. Write the instruction that will.`
+}
+
 export interface PrompterSettings {
   /** Whether the Draw panel's toggle starts on. The panel can still override per render. */
   enabled:  boolean
@@ -122,6 +146,10 @@ export interface PrompterSettings {
    * placeholders, same "cleared means reset" rule as `template`.
    */
   visionTemplate: string
+  /** The system prompt for the instruction rewriter. Same rules again. */
+  editTemplate:   string
+  /** Overrides the vision model for the instruction rewriter alone. '' follows it. */
+  editModel:      string
 }
 
 const DEFAULTS: PrompterSettings = {
@@ -129,6 +157,8 @@ const DEFAULTS: PrompterSettings = {
   template: DEFAULT_TEMPLATE,
   model:    '',
   visionTemplate: DEFAULT_VISION_TEMPLATE,
+  editTemplate:   DEFAULT_EDIT_TEMPLATE,
+  editModel:      '',
 }
 
 function storePath(): string {
@@ -156,6 +186,10 @@ export function readPrompter(): PrompterSettings {
       visionTemplate: typeof raw.visionTemplate === 'string' && raw.visionTemplate.trim()
         ? raw.visionTemplate.slice(0, 8000)
         : DEFAULTS.visionTemplate,
+      editTemplate: typeof raw.editTemplate === 'string' && raw.editTemplate.trim()
+        ? raw.editTemplate.slice(0, 8000)
+        : DEFAULTS.editTemplate,
+      editModel: typeof raw.editModel === 'string' ? raw.editModel.trim().slice(0, 120) : '',
     }
   } catch {
     return { ...DEFAULTS }
@@ -173,6 +207,10 @@ export function writePrompter(patch: Partial<PrompterSettings>): PrompterSetting
   if (typeof patch.visionTemplate === 'string') {
     next.visionTemplate = patch.visionTemplate.trim() ? patch.visionTemplate.slice(0, 8000) : DEFAULTS.visionTemplate
   }
+  if (typeof patch.editTemplate === 'string') {
+    next.editTemplate = patch.editTemplate.trim() ? patch.editTemplate.slice(0, 8000) : DEFAULTS.editTemplate
+  }
+  if (typeof patch.editModel === 'string') next.editModel = patch.editModel.trim().slice(0, 120)
 
   const p = storePath()
   const tmp = `${p}.tmp-${process.pid}`
@@ -440,6 +478,16 @@ export function visionModel(): string {
 }
 
 /**
+ * The model that rewrites a failed edit instruction. Its own setting because
+ * it is the only LLM in the editing path and worth being able to change
+ * without moving the redraw composer with it; falls back to the vision model,
+ * since it is shown a picture and must be able to see.
+ */
+export function editModel(): string {
+  return readPrompter().editModel || visionModel()
+}
+
+/**
  * The user turn that rides beside the picture. Exported so the settings screen
  * can show the whole conversation rather than just the system half — a
  * template is judged against what follows it.
@@ -551,26 +599,15 @@ export async function composeRedrawPrompt(
  * concrete, one short clause on what is at risk — and it never throws: a
  * failure hands the user's words back with the reason.
  */
-export async function composeKontextInstruction(image: Buffer, request: string): Promise<Improvement> {
+export async function composeKontextInstruction(
+  image: Buffer, request: string, style: StyleFacts,
+): Promise<Improvement> {
   const started = Date.now()
-  const model = visionModel()
+  const model = editModel()
   const give = (changed: boolean, text: string, why: string): Improvement => ({
     prompt: text, original: request, changed, model, ms: Date.now() - started, why,
   })
-  const system =
-    'You write instructions for an image EDITING model (FLUX Kontext). You are shown a picture and ' +
-    'what the user wants changed in it. The editor is literal, so write the change the way it ' +
-    'needs it:\n' +
-    '- Name the subject as it actually appears in the picture ("the woman with dark hair in the ' +
-    'striped top", "the red car on the left"), never "her", "it" or "the character".\n' +
-    '- Say the change concretely: what it becomes, its colour, material, position. "Replace her ' +
-    'striped top with a blue bikini top" rather than "put a bikini on her".\n' +
-    '- To add something, say where it goes and how it is worn or placed. To remove something, say ' +
-    'what fills the space.\n' +
-    '- Then ONE short clause naming only what is at risk ("Keep her face and pose."). Never a list ' +
-    'of everything to keep — that reads as "change nothing".\n' +
-    '- Two sentences at most. Plain English. No quality words, no style words unless the user asked ' +
-    'for a style. Answer with the instruction only.'
+  const system = buildSystemPrompt(readPrompter().editTemplate, style)
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
   try {
@@ -586,28 +623,27 @@ export async function composeKontextInstruction(image: Buffer, request: string):
         think: false,
         messages: [
           { role: 'system', content: system },
-          { role: 'user', content: `The user wants: ${request}\nThe previous attempt with those exact words changed nothing in the picture. Write the instruction that will.`, images: [image.toString('base64')] },
+          { role: 'user', content: editUserMessage(request), images: [image.toString('base64')] },
         ],
-        // Unloaded the moment it answers: this model shares the card with ComfyUI,
-        // and a render that starts while 5 GB of language model is still resident
-        // runs in paged mode — a 53 s edit took 6 minutes that way.
+        // Unloaded the moment it answers: this model shares the card with
+        // ComfyUI, and the render it is about to trigger needs the VRAM.
         keep_alive: 0,
         options: { num_ctx: 8192, temperature: 0.3, num_predict: 200 },
       }),
     })
     if (!res.ok) {
       const body = await res.text().catch(() => '')
-      return give(false, request, `the vision model answered ${res.status}: ${body.slice(0, 80)}`)
+      return give(false, request, `the ${model} model answered ${res.status}: ${body.slice(0, 80)}`)
     }
     const json = (await res.json()) as { message?: { content?: string }; response?: string }
     const text = unwrap(json.message?.content ?? json.response ?? '').replace(/\s+/g, ' ').trim()
-    if (!text) return give(false, request, 'the vision model returned nothing')
+    if (!text) return give(false, request, `${model} returned nothing`)
     if (text.length > 600) return give(false, request, `the instruction came back ${text.length} characters long`)
-    if (text.toLowerCase() === request.toLowerCase()) return give(false, request, 'the vision model gave the same words back')
+    if (text.toLowerCase() === request.toLowerCase()) return give(false, request, `${model} gave the same words back`)
     return give(true, text, '')
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    return give(false, request, `the vision model could not be reached (${msg.slice(0, 80)})`)
+    return give(false, request, `${model} could not be reached (${msg.slice(0, 80)})`)
   } finally {
     clearTimeout(timer)
   }
