@@ -1783,7 +1783,14 @@ async function run(job: ImageJob): Promise<void> {
             `The editor changed only ${(changed * 100).toFixed(1)}% of the picture with "${job.prompt.slice(0, 80)}" — ` +
             'it found nothing to do with those words. Asking a model that can see the picture to write the ' +
             'same change the way the editor needs it, then drawing once more.')
-          const better = await composeKontextInstruction(fs.readFileSync(job.sourceFile), job.prompt)
+          // The rewrite must never cost the picture that was just drawn: a
+          // failure here keeps the unchanged result and says so.
+          let better: Awaited<ReturnType<typeof composeKontextInstruction>>
+          try {
+            better = await composeKontextInstruction(fs.readFileSync(path.join(imagesDir(), job.sourceFile)), job.prompt)
+          } catch (err) {
+            better = { prompt: job.prompt, original: job.prompt, changed: false, model: '', ms: 0, why: err instanceof Error ? err.message : String(err) }
+          }
           if (better.changed) {
             console.log(`[image] ${job.id} retrying with the rewritten instruction: "${better.prompt.slice(0, 160)}" (${better.model}, ${better.ms}ms)`)
             job.promptOriginal = job.promptOriginal || job.prompt
