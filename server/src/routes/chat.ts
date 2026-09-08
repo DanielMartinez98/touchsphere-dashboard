@@ -885,6 +885,13 @@ router.post('/', async (req: Request, res: Response) => {
    * talking, so a reply with no tool call at all is a failure however it is
    * worded.
    */
+  // The words that mean "put something on screen or look something up" — the
+  // only requests the server-side screen fallback may act on. "Remember that
+  // my colour is teal" is an action too, but opening a web page about it is
+  // not the answer, and that is what happened when the fallback keyed on
+  // every verb.
+  const wantsLookup = /\b(search|look ?up|google|find (me |out )?|open|pull up|bring up|show me|put .* on (the )?screen|play|watch)\b/i
+    .test(last.content)
   const wantsAction = new RegExp(
     String.raw`\b(search|look ?up|google|find (me |out )?|open|pull up|bring up|show me|put .* on (the )?screen|play|watch|draw|paint|generate|make me a picture` +
     // Every dashboard verb, not only the screen ones: the fallback model answered
@@ -1002,7 +1009,7 @@ router.post('/', async (req: Request, res: Response) => {
         const askedAndDidNothing = (wantsScreen && !display) || ((wantsAction || claimsAction(text)) && !didSomething)
 
         // The nudge has been spent and it STILL called nothing. Do it here.
-        if (nudged && askedAndDidNothing && !display) {
+        if (nudged && askedAndDidNothing && !display && (wantsScreen || wantsLookup)) {
           const fallback = fallbackScreenAction(last.content)
           if (fallback) {
             console.warn(`[chat] the model would not call a tool — doing it here: ${fallback.tool}("${fallback.query}")`)
@@ -1030,10 +1037,13 @@ router.post('/', async (req: Request, res: Response) => {
             role: 'user',
             content:
               'STOP — nothing actually happened. You described an action instead of performing it: ' +
-              'no page opened, no search ran, nothing was drawn. Saying it, or writing a tool name or ' +
-              'a query in your reply, does NOT run anything. Do it now by CALLING the right tool ' +
-              'through the tool interface. If no tool can do what was asked, say so plainly in one ' +
-              'short sentence and do not pretend it is done.',
+              'nothing was saved to memory, nothing was forgotten, nothing was added, renamed, marked ' +
+              'or removed, no timer was set, no page opened, no search ran, nothing was drawn. Saying ' +
+              'it, or writing a tool name or a query in your reply, does NOT run anything — you have ' +
+              'NO memory and NO hands except the tools. Do it now by CALLING the right tool (for ' +
+              '"remember …" that is the remember tool; for "forget …" the forget tool) through the ' +
+              'tool interface. If no tool can do what was asked, say so plainly in one short sentence ' +
+              'and do not pretend it is done.',
           })
           continue
         }
