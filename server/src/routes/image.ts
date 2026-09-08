@@ -22,6 +22,9 @@ import {
   structureAvailable,
   holdModes,
   safeTagsOn,
+  fidelitySettings,
+  setFidelity,
+  type FidelitySettings,
   setSafeTags,
   comfyStats,
   comfyUrl,
@@ -559,6 +562,17 @@ router.get('/lineage/:id', (req: Request, res: Response) => {
 })
 
 // ── Safety tags ──────────────────────────────────────────────────────────────
+
+// GET/POST /api/image/fidelity — what is added for a named character on Anima:
+// the creator's @ tag, the meta tag, the user's own tags.
+router.get('/fidelity', (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store')
+  res.json(fidelitySettings())
+})
+router.post('/fidelity', (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Partial<FidelitySettings>
+  res.json(setFidelity(body))
+})
 
 // GET/POST /api/image/safety { safeTags } — whether the built-in `safe` prefix
 // tag and `nsfw` negative tag are added for every style.

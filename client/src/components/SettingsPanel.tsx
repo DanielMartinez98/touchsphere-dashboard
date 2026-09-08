@@ -1774,6 +1774,8 @@ function DrawingTab() {
         </button>
       </div>
 
+      <FidelityCard />
+
       {/* The template itself */}
       <div>
         <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
@@ -4031,6 +4033,133 @@ function VTuberPreview({ spec, enabled, zoom, offsetY }: VTuberPreviewProps) {
       {showModel && status === 'ready' && (
         <span className="absolute bottom-2 right-3 text-[10px] font-mono text-white/35">{fps} fps</span>
       )}
+    </div>
+  )
+}
+
+
+// ── Characters look like the series ──────────────────────────────────────────
+// What the dashboard adds on its own for a named character on an Anima style,
+// with the user's say over each part: the creator's @ tag (the strongest lever
+// the model card names), the meta tag, and any tags of their own. The improver
+// is told the same goal as a short guide; these are the parts that are applied
+// whether or not the improver is on.
+interface FidelitySettings { creator: boolean; meta: string; extra: string }
+const META_CHOICES: Array<{ value: string; label: string; what: string }> = [
+  { value: 'official style',  label: 'Official style',  what: 'drawn the way the source draws it' },
+  { value: 'anime screencap', label: 'Anime screencap', what: 'a frame of the show' },
+  { value: 'official art',    label: 'Official art',    what: 'a key visual' },
+  { value: '',                label: 'None',            what: 'add no meta tag' },
+]
+
+function FidelityCard() {
+  const [f, setF] = useState<FidelitySettings | null>(null)
+  const [extra, setExtra] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/image/fidelity').then(r => r.json()).then((j: FidelitySettings) => {
+      if (cancelled) return
+      setF(j); setExtra(j.extra ?? '')
+    }).catch(() => { if (!cancelled) setF({ creator: true, meta: 'official style', extra: '' }) })
+    return () => { cancelled = true }
+  }, [])
+
+  const save = async (patch: Partial<FidelitySettings>) => {
+    setF(prev => (prev ? { ...prev, ...patch } : prev))
+    try {
+      const r = await fetch('/api/image/fidelity', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+      })
+      if (r.ok) setF(await r.json() as FidelitySettings)
+    } catch { /* the next open tells the truth */ }
+  }
+
+  return (
+    <div>
+      <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+        Characters look like the series
+      </span>
+      <p className="text-[12px] text-white/45 leading-relaxed mb-3">
+        On the Anima styles a named character is meant to come out as in its own series. The
+        improver is told so in a short guide: the Danbooru character tag with the series tag after
+        it, no guessed hair or eye colours, the signature outfit unless the scene says otherwise.
+        The three levers below are added by the dashboard itself, whether or not the improver is on.
+      </p>
+      <div className="flex flex-col gap-2">
+        <button
+          type="button"
+          role="switch"
+          aria-checked={f?.creator !== false}
+          disabled={!f}
+          onClick={() => { if (f) void save({ creator: !f.creator }) }}
+          className={`w-full flex items-center gap-3 rounded-2xl px-3 py-3 border text-left transition-colors
+                      active:scale-[0.99] disabled:opacity-50 ${
+            f?.creator !== false ? 'bg-violet-500/15 border-violet-400/40' : 'bg-white/5 border-hairline'}`}
+        >
+          <span className={`w-11 h-6 shrink-0 rounded-full p-0.5 flex transition-colors ${
+            f?.creator !== false ? 'bg-violet-400/80 justify-end' : 'bg-white/15 justify-start'}`}>
+            <span className="w-5 h-5 rounded-full bg-white shadow" />
+          </span>
+          <span className="min-w-0">
+            <span className="block text-[13px] font-semibold text-white/85">
+              {!f ? 'Loading…' : f.creator ? "The series' creator as an @artist tag" : 'No creator tag'}
+            </span>
+            <span className="block text-[11px] text-white/40 leading-snug">
+              "@masashi kishimoto" after "naruto", for the series the dashboard knows. Skipped when
+              the prompt already carries any @ tag of your own.
+            </span>
+          </span>
+        </button>
+
+        <div className="rounded-2xl bg-white/5 border border-hairline px-3 py-3">
+          <span className="block text-[12px] font-semibold text-white/70 mb-2">Meta tag on every Anima prompt</span>
+          <div className="flex flex-wrap gap-2">
+            {META_CHOICES.map(c => (
+              <button
+                key={c.value || 'none'}
+                type="button"
+                disabled={!f}
+                onClick={() => void save({ meta: c.value })}
+                className={`h-10 px-3 rounded-xl text-[12px] font-semibold border transition-colors ${
+                  f?.meta === c.value ? 'bg-violet-500/25 text-white border-violet-400/40' : 'bg-white/5 text-white/50 border-transparent'}`}
+                title={c.what}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-white/40 mt-2 leading-snug">
+            {META_CHOICES.find(c => c.value === f?.meta)?.what ?? ''}. Shown as the style's booster below; a booster you typed there wins.
+          </p>
+        </div>
+
+        <div className="rounded-2xl bg-white/5 border border-hairline px-3 py-3">
+          <span className="block text-[12px] font-semibold text-white/70 mb-2">Your own tags for named characters</span>
+          <TouchInput
+            value={extra}
+            onChange={setExtra}
+            commitOn="done"
+            placeholder="e.g. anime coloring, detailed face"
+            ariaLabel="Extra tags for named characters"
+            className="w-full h-11 rounded-xl bg-white/10 border border-hairline px-3 text-[14px]"
+          />
+          <div className="flex items-center gap-2 mt-2">
+            <button
+              type="button"
+              disabled={!f || extra === (f.extra ?? '')}
+              onClick={() => void save({ extra })}
+              className="h-10 px-4 rounded-xl bg-violet-500/25 border border-violet-400/40 text-white text-[12px]
+                         font-semibold active:scale-95 disabled:opacity-40"
+            >
+              Save
+            </button>
+            <span className="text-[11px] text-white/40 leading-snug">
+              Added after a known series tag, never twice. Leave empty to add nothing.
+            </span>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

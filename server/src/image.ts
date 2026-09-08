@@ -2155,91 +2155,32 @@ const ANIMA_AES_NEGATIVE =
  * how you talk to it.
  */
 const ANIMA_PROMPT_GUIDE =
-  'FOR A NAMED CHARACTER, USE BOORU TAGS AND ALWAYS PUT THE SERIES TAG RIGHT AFTER THE ' +
-  'CHARACTER TAG — "1girl, sakura haruno, naruto, ..." — never the character alone. That ' +
-  'pairing is what reaches the character; a character tag on its own is the most common ' +
-  'reason a picture from this model looks like a generic anime girl instead. This is measured ' +
-  'on this box, in a blind comparison, and it beats writing the same request as prose. ' +
-  'Prose is not wrong — the model was trained on Danbooru tags, natural-language captions AND ' +
-  'mixtures — and it is the better register for a scene with no named character, or for ' +
-  'describing lighting and composition after the tags. But when prose names a character it ' +
-  'must still name the series, or it has the same failure as a lone character tag. ' +
-  'NEVER GUESS A CHARACTER\'S APPEARANCE. Hair and eye tags OVERRIDE the character tag: get ' +
-  'the colour wrong and you get a different person wearing that colour, which is worse than ' +
-  'saying nothing. So add hair and eye tags ONLY when you are certain of them — if there is ' +
-  'any doubt at all, write the character and series tags alone and let them carry the face. ' +
-  'Do not infer a look from the series, from the name, or from another character in it. ' +
-  'Never repeat the user\'s own words back as appearance tags if they did not give any. ' +
-  'CLOTHES ARE SEPARATE FROM IDENTITY and are the thing this model most often gets wrong. ' +
-  'Do NOT describe a signature outfit that the scene contradicts: a character swimming is not ' +
-  'wearing her plugsuit or her kimono, and asking for both at once gets you neither. Name the ' +
-  'garment the scene actually calls for, as its own tag ("blue one-piece swimsuit", "white ' +
-  'sundress"), and let the character tag carry the face. Name the signature outfit only when ' +
-  'the character is plausibly wearing it. ' +
-  'Tag hygiene: lowercase, and SPACES rather than underscores (score_* tags are the only ones ' +
-  'that keep underscores). An artist tag MUST be written with an @ in front of it — ' +
-  '"@artist name" — or its effect is very weak. Tag order is quality/meta/year/safety, then ' +
-  'subject count (1girl, 1boy), then character, then series, then artist, then hair and eyes, ' +
-  'then clothing, then pose, then setting. Prompt weighting works but needs higher weights ' +
-  'than SDXL, e.g. (chibi:2). NEVER write quality tags yourself — no "masterpiece", "best ' +
-  'quality", "high resolution", "absurdres" — they are prepended for you, and repeating them ' +
-  'spends the most heavily weighted tokens in the prompt on words that are already there. ' +
-  'CHARACTER TAGS ARE DANBOORU\u2019S, NOT THE SPOKEN NAME: for Japanese characters Danbooru puts ' +
-  'the FAMILY NAME FIRST and romanises long vowels — "haruno sakura", "hyuuga hinata", "uzumaki ' +
-  'naruto", "hatsune miku", "kamado nezuko", "souryuu asuka langley" — and that exact form is ' +
-  'what the model learned, so "hinata hyuga" reaches it far more weakly than "hyuuga hinata". ' +
-  'Western-named characters keep their natural order ("power (chainsaw man)", "ochako uraraka" ' +
-  'is "uraraka ochako"). When you know the Danbooru tag, use it; when you do not, family name ' +
-  'first is the better guess for a Japanese name. ' +
-  'PROSE, when you use it: at least two sentences — a one-line caption is the "short or vague ' +
-  'prompt" the card warns produces unwanted content — and Capitalize character and series ' +
-  'names properly in a sentence ("Sakura Haruno from Naruto"), where tags stay lowercase. Tags ' +
-  'and sentences may be mixed freely in one prompt; a common good shape is the identity and ' +
-  'setting as tags followed by one or two sentences on lighting, mood and composition. ' +
-  'For SEVERAL named characters, tell them apart: each with its own character and series tags, ' +
-  'plus what is certain about each (clothing, pose, position), so the model does not blend them. ' +
-  'NEVER ASK THIS MODEL FOR REALISM. Its card says outright that it "doesn\'t do realism well" ' +
-  'and that this is intended — so never add photorealistic, realistic, photo, 3d render or ' +
-  'raw-photo tags, and when the user asks for something realistic, write it as detailed ' +
-  'illustration instead (fine linework, painterly shading, cinematic lighting). Text in the ' +
-  'picture is limited to a single word or a very short phrase; do not ask for more. ' +
-  'A NAMED CHARACTER MUST LOOK EXACTLY AS IN THE OFFICIAL SERIES — that is the whole point of ' +
-  'naming one, and everything else in the prompt bends to it. The card gives four levers for ' +
-  'that, in its own tag order [quality] [count] [character] [series] [artist] [general]: ' +
-  '(1) the character tag with its SERIES tag right after it, both at the front where the model ' +
-  'weights hardest; (2) an ARTIST TAG FOR THE SERIES’ OWN CREATOR — the card says an artist ' +
-  'tag is one of the strongest things in a prompt and MUST be written with @ in front, so write ' +
-  'the mangaka, illustrator or character designer of that series as "@first last" in lowercase ' +
-  '("@masashi kishimoto" for Naruto, "@koyoharu gotouge" for Demon Slayer, "@tatsuki fujimoto" ' +
-  'for Chainsaw Man, "@yoshiyuki sadamoto" for Evangelion, "@eiichiro oda" for One Piece, ' +
-  '"@akira toriyama" for Dragon Ball) or the studio when the look is the anime’s rather than ' +
-  'the manga’s ("@kyoto animation", "@ufotable") — ONLY when you are certain who made the ' +
-  'series; a wrong creator drags the face toward the wrong series, so with any doubt use no ' +
-  'artist tag at all; (3) the meta tag "official style" (drawn the way the source draws it) ' +
-  'after the artist tag, or "anime screencap" when the user wants it to look like a frame of the ' +
-  'show, or "official art" when they want a key visual; (4) the canonical appearance, which the ' +
-  'card itself recommends ("name a character, then describe their basic appearance") — hair ' +
-  'colour and style, eye colour, and signature marks (whisker marks, a forehead seal, a scar, ' +
-  'the hair ornament) — but ONLY the details you are certain of, because a wrong colour ' +
-  'overrides the character tag and produces a stranger; when unsure, leave the face to the ' +
-  'character and series tags. NEVER add any OTHER artist tag, a "style of", a medium (watercolor, ' +
-  'oil painting, sketch, chibi, pixel art) or an era tag unless the user asked for that look, ' +
-  'since each pulls the face and proportions away from the series design; keep the canonical ' +
-  'hairstyle and body proportions and only change what the scene changes (clothes, pose, place, ' +
-  'lighting). If the user says a previous picture did not look like the character, raise the ' +
-  'weight on the character tag the way the card shows — "(sakura haruno:1.4)" — and on the ' +
-  'creator tag, since this model wants higher weights than SDXL. When the user asks for a style ' +
-  'change ON a character ("Naruto as a cyberpunk"), keep the character, series and creator tags ' +
-  'in front and put the new style after them, so identity still wins. ' +
-  'WORKED EXAMPLES — copy this shape exactly: ' +
-  '"Hinata Hyuga from Naruto sitting in a pool" \u2192 "1girl, hyuuga hinata, naruto, @masashi ' +
-  'kishimoto, official style, blue one-piece swimsuit, sitting in a swimming pool, wet hair, ' +
-  'looking at viewer, bright sunlight, clear blue water, summer" \u2014 ' +
-  '"nezuko in a bamboo forest at night" \u2192 "1girl, kamado nezuko, kimetsu no yaiba, ' +
-  '@koyoharu gotouge, official style, pink kimono, bamboo muzzle, bamboo forest, night, ' +
-  'moonlight, mist. She stands between the tall stalks with the moon behind her." \u2014 ' +
-  '"sakura from naruto pink bikini poolside" \u2192 "1girl, haruno sakura, naruto, @masashi ' +
-  'kishimoto, official style, pink bikini, poolside, sitting, bright daylight, soft shadows".'
+  'GOAL: a named character must look exactly as in the official series — like a screenshot of it. ' +
+  'Everything else in the prompt bends to that.\n' +
+  'REGISTER: booru tags and plain English mix freely (the model was trained on both). Tags are ' +
+  'lowercase with spaces, not underscores. A sentence, when you write one, is at least two sentences ' +
+  'long and Capitalises character and series names.\n' +
+  'ORDER: [count] [character] [series] [artist] [meta] [appearance] [clothes] [pose] [setting] [lighting].\n' +
+  'CHARACTER: the Danbooru character tag, family name first for Japanese names ("haruno sakura", ' +
+  '"hyuuga hinata", "uzumaki naruto"), immediately followed by the SERIES tag ("naruto"). Never the ' +
+  'character alone, never a description in place of the tag.\n' +
+  'ARTIST: the series\' own creator as an @ tag ("@masashi kishimoto") — the card says an artist tag ' +
+  'is one of the strongest levers and MUST carry the @ — but ONLY when you are certain who made it; ' +
+  'a wrong creator is a wrong series. No other artist, "style of", medium (watercolor, chibi, sketch, ' +
+  'pixel art) or era tag unless the user asked for that look.\n' +
+  'META: "official style" (drawn the way the source draws it) by default; "anime screencap" when the ' +
+  'user wants a frame of the show; "official art" for a key visual.\n' +
+  'APPEARANCE: only what you are certain of — hair colour and style, eye colour, signature marks. A ' +
+  'wrong colour overrides the character tag and produces a stranger, so when unsure write nothing ' +
+  'and let the character and series tags carry the face. Never guess from the series or the name.\n' +
+  'CLOTHES: keep the signature outfit unless the scene contradicts it; when it does, name the garment ' +
+  'the scene calls for as its own plain tag and nothing more. Do not invent details of clothing.\n' +
+  'STYLE CHANGES on a character ("as a cyberpunk"): character, series and creator tags first, the ' +
+  'new style after them, so identity wins.\n' +
+  'NEVER: quality tags (masterpiece, best quality, absurdres — they are added for you), realism or ' +
+  'photo tags (this is an illustration model and its card says so), text longer than one word.\n' +
+  'IF A PICTURE MISSED: raise the weight on the character and creator tags — "(haruno sakura:1.4)" — ' +
+  'this model wants higher weights than SDXL.'
 
 /**
  * The series a prompt names \u2192 the artist tag Anima should carry for it.
@@ -2293,17 +2234,85 @@ const ANIMA_CREATORS: Array<[RegExp, string]> = [
  * no-op for prompts with no known series or with an @ tag already in them.
  */
 export function applyAnimaFidelity(prompt: string): { prompt: string; added: string } {
-  if (/(^|[,\s])@/.test(prompt)) return { prompt, added: '' }
-  for (const [series, creator] of ANIMA_CREATORS) {
-    const m = series.exec(prompt)
-    if (!m) continue
-    // Insert after the tag the series name sits in — up to the next comma.
-    const tagEnd = prompt.indexOf(',', m.index)
-    const at = tagEnd === -1 ? prompt.length : tagEnd
-    const out = `${prompt.slice(0, at)}, ${creator}${prompt.slice(at)}`
-    return { prompt: out, added: creator }
+  const f = fidelitySettings()
+  let out = prompt
+  const added: string[] = []
+  if (f.creator && !/(^|[,\s])@/.test(out)) {
+    for (const [series, creator] of ANIMA_CREATORS) {
+      const m = series.exec(out)
+      if (!m) continue
+      // Insert after the tag the series name sits in — up to the next comma.
+      const tagEnd = out.indexOf(',', m.index)
+      const at = tagEnd === -1 ? out.length : tagEnd
+      out = `${out.slice(0, at)}, ${creator}${out.slice(at)}`
+      added.push(creator)
+      break
+    }
   }
-  return { prompt, added: '' }
+  // The user's own extra tags for named characters, when the prompt names one
+  // this file knows — and never twice.
+  if (f.extra.trim() && ANIMA_CREATORS.some(([series]) => series.test(out))) {
+    const have = new Set(out.toLowerCase().split(',').map(t => t.trim()))
+    const fresh = f.extra.split(',').map(t => t.trim()).filter(t => t && !have.has(t.toLowerCase()))
+    if (fresh.length > 0) { out = joinPrompt(out, fresh.join(', ')); added.push(...fresh) }
+  }
+  return { prompt: out, added: added.join(', ') }
+}
+
+/**
+ * The user's say over what is added for a named character on an Anima style:
+ * the creator's @ tag, the meta tag, and any tags of their own. Settings →
+ * Drawing → "Characters look like the series". Read per call, like the
+ * safety switch, so a change reaches the next picture.
+ */
+export interface FidelitySettings {
+  /** Put the series' creator in as an @artist tag when the prompt names a known series. */
+  creator: boolean
+  /** The meta tag appended to every Anima prompt: 'official style' | 'anime screencap' | 'official art' | ''. */
+  meta: string
+  /** Tags of the user's own, added when a prompt names a known series. */
+  extra: string
+}
+export const DEFAULT_FIDELITY: FidelitySettings = { creator: true, meta: 'official style', extra: '' }
+const FIDELITY_META = new Set(['official style', 'anime screencap', 'official art', ''])
+
+function fidelityFile(): string {
+  return path.join(process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache', 'image-fidelity.json')
+}
+
+export function fidelitySettings(): FidelitySettings {
+  try {
+    const raw = JSON.parse(fs.readFileSync(fidelityFile(), 'utf8')) as Partial<FidelitySettings>
+    return {
+      creator: raw.creator !== false,
+      meta: typeof raw.meta === 'string' && FIDELITY_META.has(raw.meta) ? raw.meta : DEFAULT_FIDELITY.meta,
+      extra: typeof raw.extra === 'string' ? raw.extra.slice(0, 300) : '',
+    }
+  } catch {
+    return { ...DEFAULT_FIDELITY }
+  }
+}
+
+export function setFidelity(patch: Partial<FidelitySettings>): FidelitySettings {
+  const next: FidelitySettings = {
+    ...fidelitySettings(),
+    ...(typeof patch.creator === 'boolean' ? { creator: patch.creator } : {}),
+    ...(typeof patch.meta === 'string' && FIDELITY_META.has(patch.meta) ? { meta: patch.meta } : {}),
+    ...(typeof patch.extra === 'string' ? { extra: patch.extra.slice(0, 300) } : {}),
+  }
+  const dir = path.dirname(fidelityFile())
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  const p = fidelityFile()
+  const tmp = `${p}.tmp-${process.pid}`
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf8')
+    fs.renameSync(tmp, p)
+    console.log(`[image] character fidelity: creator=${next.creator} meta="${next.meta}" extra="${next.extra}"`)
+  } catch (err) {
+    try { fs.unlinkSync(tmp) } catch { /* nothing */ }
+    console.error('[image] failed to save the fidelity settings:', err)
+  }
+  return next
 }
 
 /**
@@ -2316,7 +2325,7 @@ export function applyAnimaFidelity(prompt: string): { prompt: string; added: str
  * off, a voice prompt, and a redraw alike. Harmless on a prompt with no
  * character in it.
  */
-const ANIMA_OPTIMIZATIONS = 'official style'
+const ANIMA_OPTIMIZATIONS = 'official style'   // the default; styleOptimizations() reads the user's choice
 
 /** The text encoder and VAE every Anima variant shares. */
 const ANIMA_SHARED = [
@@ -2815,7 +2824,10 @@ export function styleNegativePrefixFor(style: string): string {
 
 export function styleOptimizations(style: string): string {
   if (!style.startsWith(WORKFLOW_PREFIX)) return ''
-  return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.optimizations ?? ''
+  const wf = BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]
+  // Anima's booster is the meta tag the user chose for character fidelity.
+  if (wf?.promptStyle === 'mixed') return fidelitySettings().meta
+  return wf?.optimizations ?? ''
 }
 
 /**
@@ -2828,12 +2840,15 @@ export function styleOptimizations(style: string): string {
  */
 export function joinPrompt(base: string, extra: string): string {
   // Commas AND the whitespace around them, from both ends of both halves. The
-  // first version stripped a leading comma but left the space behind it, so
+  // first version stripped a leading comma but left its space behind it, so
   // ", cinematic lighting" appended as "a red fox,  cinematic lighting" — a
   // double space that a tag parser reads as an empty tag.
   const strip = (t: string) => t.replace(/^[\s,]+/, '').replace(/[\s,]+$/, '')
   const a = strip(base)
-  const b = strip(extra)
+  // A booster tag the prompt already carries is not added twice: the improver
+  // is told to write "official style" and the booster is "official style".
+  const have = new Set(a.toLowerCase().split(',').map(t => t.trim()))
+  const b = strip(extra).split(',').map(t => t.trim()).filter(t => t && !have.has(t.toLowerCase())).join(', ')
   if (!b) return a
   if (!a) return b
   return `${a}, ${b}`

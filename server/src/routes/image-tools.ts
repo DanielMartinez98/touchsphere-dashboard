@@ -77,18 +77,13 @@ function baseImagePromptGuidance(): string {
   if (register === 'mixed') {
     // Anima: a language-model encoder trained on tags, captions and mixtures.
     // What is measured to matter is the series tag beside the character tag.
-    return ' DRAWING STYLE: the current picture model (Anima) reads booru tags AND plain ' +
-      'English, mixed freely. For a NAMED CHARACTER write its booru tag with the SERIES tag ' +
-      'right after it, lowercase with spaces and Danbooru\u2019s family-name-first form \u2014 ' +
-      '"1girl, haruno sakura, naruto" \u2014 never the ' +
-      'character alone and never a description in place of the tag; then the scene as tags or ' +
-      'as one or two sentences (lighting, mood, composition). Do not guess hair or eye colours. ' +
-      'A named character must look EXACTLY as in the official series: after the series tag add ' +
-      'the series’ own creator as an artist tag with @ in front ("@masashi kishimoto" for ' +
-      'Naruto) when you are certain who made it, then "official style"; never any other artist ' +
-      'tag, "style of", medium (watercolor, chibi, sketch) or era unless the user asked for it. ' +
-      'Never ask it for realism or photos — it is an illustration model — and never write ' +
-      'quality tags ("masterpiece", "best quality"); those are added for you.'
+    return ' DRAWING STYLE: the current picture model (Anima) reads booru tags and plain ' +
+      'English, mixed freely. Goal: a named character looks exactly as in its series. Write the ' +
+      'Danbooru character tag (family name first: "haruno sakura") followed by the series tag ' +
+      '("naruto"); the dashboard adds the creator’s @ tag and the meta tag itself. Do not guess ' +
+      'hair or eye colours; keep the signature outfit unless the scene contradicts it. No artist, ' +
+      '"style of", medium or era tags unless asked; no realism or photo tags; no quality tags ' +
+      '("masterpiece", "best quality") — those are added for you.'
   }
   if (register !== 'tags') {
     return ' DRAWING STYLE: the current picture model reads plain English, so write ' +
