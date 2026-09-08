@@ -359,15 +359,22 @@ class SttError extends Error {
 }
 
 /** Turn a transcription failure into something readable at arm's length. The
- *  server passes ElevenLabs' own error body through in `detail`, so the common
- *  misconfigurations can each say what to actually go fix. */
+ *  server passes each provider's own error through in `detail` — the local
+ *  Whisper's and ElevenLabs' alike, since /api/stt tries them in turn — so the
+ *  common misconfigurations can each say what to actually go fix. */
 function describeSttError(err: unknown): string {
   if (!(err instanceof SttError)) {
     // Never reached the server at all — network down, container stopped.
     return 'Couldn’t reach the server to transcribe what you said.'
   }
-  if (/ELEVENLABS_API_KEY/i.test(err.detail)) {
-    return 'Speech-to-text isn’t set up — the server has no ElevenLabs API key.'
+  if (/no speech-to-text provider|ELEVENLABS_API_KEY/i.test(err.detail)) {
+    return 'Speech-to-text isn’t set up — the server needs WHISPER_URL (local) or an ElevenLabs key.'
+  }
+  // Every provider in the chain failed, and the local one was among them.
+  // Name it: a Whisper container that is down or still loading its model is
+  // the likeliest single cause on a box that runs its speech locally.
+  if (/whisper: .*(fetch failed|ECONNREFUSED|ENOTFOUND|aborted|timeout)/i.test(err.detail) && !/elevenlabs: /i.test(err.detail)) {
+    return 'Couldn’t reach the local speech-to-text server (WHISPER_URL) — is the whisper container up?'
   }
   if (err.status === 401 || /invalid_api_key|unauthor/i.test(err.detail)) {
     return 'Speech-to-text rejected the server’s API key — check ELEVENLABS_API_KEY.'

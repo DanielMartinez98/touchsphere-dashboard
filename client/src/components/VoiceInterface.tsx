@@ -116,8 +116,9 @@ export function VoiceInterface({ voice, typing = false }: Props) {
       {/* ── Text overlay (transcript + reply) ── */}
       {(transcript || reply || isTranscribing || isThinking) && (
         <div className="absolute left-1/2 -translate-x-1/2 bottom-28 z-30 w-[min(88vw,500px)] flex flex-col items-center gap-3 pointer-events-none">
-          {/* Transcript from ElevenLabs Scribe — distinct violet color so it
-              reads as "what you said" vs. the amber AI reply below. */}
+          {/* Transcript from /api/stt (the local Whisper, or ElevenLabs Scribe
+              behind it) — distinct violet color so it reads as "what you said"
+              vs. the amber AI reply below. */}
           {isTranscribing && !transcript && (
             <div className="bg-black/65 backdrop-blur-md rounded-2xl px-5 py-3 border border-violet-500/25 w-full">
               <p className="text-violet-300/70 text-[15px] text-center leading-relaxed tracking-wide italic">

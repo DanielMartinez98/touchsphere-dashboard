@@ -61,6 +61,10 @@ client/public/vrma/
 # docker-compose.voice.yml, same arrangement as /rvc-models above.
 /comfy/
 
+# Whisper weights the speaches container downloads on first use — bind-mounted
+# by docker-compose.voice.yml (the local variant uses a named volume instead).
+/whisper-models/
+
 # Live2D Cubism Core — proprietary redistributable from Live2D Inc, fetched from
 # cubism.live2d.com. Not ours to commit. See:
 # https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html

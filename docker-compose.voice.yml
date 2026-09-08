@@ -1,4 +1,4 @@
-# ── Remote GPU services (Kokoro TTS + RVC conversion + ComfyUI images) ───────
+# ── Remote GPU services (Kokoro TTS + Whisper STT + RVC conversion + ComfyUI) ─
 # Run this on a machine that can afford the compute — typically the same box
 # that already runs Ollama. The dashboard app talks to these containers over
 # plain HTTP, so where they run is purely a .env decision:
@@ -12,6 +12,7 @@
 #
 #   On the dashboard machine (.env):
 #     KOKORO_URL=http://<llm-box-ip>:8880
+#     WHISPER_URL=http://<llm-box-ip>:8000
 #     RVC_URL=http://<llm-box-ip>:5050
 #     COMFYUI_URL=http://<llm-box-ip>:8188
 #     # then restart WITHOUT the local voice containers:
@@ -43,6 +44,38 @@ services:
     restart: unless-stopped
     ports:
       - "8880:8880"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ── Whisper — speech-to-text (hears the words) ────────────────────────────
+  # Same image contract as the local variant in docker-compose.yml. On the
+  # GPU profile it is worth pointing WHISPER_MODEL at a bigger model — e.g.
+  # Systran/faster-distil-whisper-large-v3 — since on CUDA even that answers
+  # a sentence in well under a second, and it mishears far less than `small`.
+  whisper:
+    image: ghcr.io/speaches-ai/speaches:latest-cpu
+    container_name: touchsphere-whisper
+    profiles: ["cpu"]
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./whisper-models:/home/ubuntu/.cache/huggingface/hub
+
+  whisper-gpu:
+    image: ghcr.io/speaches-ai/speaches:latest-cuda
+    container_name: touchsphere-whisper
+    profiles: ["gpu"]
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./whisper-models:/home/ubuntu/.cache/huggingface/hub
     deploy:
       resources:
         reservations:

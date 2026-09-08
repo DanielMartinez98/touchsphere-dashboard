@@ -357,16 +357,19 @@ async function youtubeViaResultsPage(query: string): Promise<VideoHit | null> {
 }
 
 /**
- * YouTube through Ollama's hosted web search: `site:youtube.com <query>`, and
- * the first result whose URL carries a video id. No key beyond the one the
+ * YouTube through the search chain — Ollama's hosted web search or the
+ * SearXNG box, whichever research.ts puts first: `site:youtube.com <query>`,
+ * and the first result whose URL carries a video id. No key beyond what the
  * server already has, and no scraping. The results-page scrape stays as the
- * last resort for a box with no key at all, because it is the same kind of
- * scrape DuckDuckGo started answering with a bot challenge, and one day
- * YouTube's will too.
+ * last resort for a box with no search provider at all, because it is the
+ * same kind of scrape DuckDuckGo started answering with a bot challenge, and
+ * one day YouTube's will too. Gated on a REAL provider being configured so a
+ * keyless box doesn't spend a paced DuckDuckGo scrape on a `site:` query it
+ * is about to answer with the results page anyway.
  */
 async function youtubeViaHostedSearch(query: string): Promise<VideoHit | null> {
-  const { searchWeb, SEARCH_PROVIDER } = await import('../research')
-  if (SEARCH_PROVIDER !== 'ollama') return null
+  const { searchWeb, SEARCH_AVAILABLE } = await import('../research')
+  if (!SEARCH_AVAILABLE) return null
   const hits = await searchWeb(`site:youtube.com ${query}`, 5)
   for (const h of hits) {
     const m = /(?:youtube\.com\/watch\?(?:.*&)?v=|youtu\.be\/|youtube\.com\/shorts\/)([\w-]{11})/.exec(h.url)

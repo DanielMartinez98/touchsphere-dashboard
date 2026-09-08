@@ -18,8 +18,10 @@ import { getSelectedProfile, ASSISTANT_PROFILES, type AssistantId } from '../con
 //      Returns audio/wav.
 //
 // Selection is driven by env:
-//   TTS_PROVIDER=elevenlabs|espeak   (default: elevenlabs if API key present,
-//                                     else espeak)
+//   TTS_PROVIDER=elevenlabs|kokoro|rvc|espeak   pins one provider (espeak floor)
+//   TTS_PROVIDER=local                          local voices first, cloud kept
+//                                               as the fallback — see providerChain
+//   unset                                       the per-assistant chain below
 //
 // We do TTS server-side because TouchKio is built on Electron, which does
 // NOT implement the Web Speech API (`speechSynthesis.speak()` is a silent
@@ -36,6 +38,8 @@ const SYNTH_TIMEOUT_MS = 15_000     // kill runaway processes / slow API calls
 
 // ── Config ───────────────────────────────────────────────────────────────────
 const EL_KEY      = process.env['ELEVENLABS_API_KEY'] ?? ''
+// Where ElevenLabs is — overridable for the same reason as in stt.ts.
+const EL_API      = (process.env['ELEVENLABS_API_URL'] ?? 'https://api.elevenlabs.io').replace(/\/+$/, '')
 // A global voice override. When set it wins for every assistant profile;
 // when unset, each assistant uses the voice from its profile (config/assistant.ts).
 const EL_VOICE_ENV = process.env['ELEVENLABS_VOICE_ID']?.trim() || ''
@@ -123,7 +127,17 @@ type Provider = 'rvc' | 'kokoro' | 'elevenlabs' | 'espeak'
 //   • Kokoro therefore sits BEHIND ElevenLabs as the fallback: it's what keeps
 //     the dashboard talking when the network or the API key is unavailable,
 //     which is a far better floor than espeak's robot.
+//
+//   • TTS_PROVIDER=local flips exactly that taste call: Kokoro speaks for
+//     everyone, ElevenLabs is kept BEHIND it as the fallback, and Miku's
+//     kokoro→rvc pipeline is unchanged. It exists for a box that is meant to
+//     run every AI tool on its own hardware — the voice IS the one place the
+//     cloud was preferred over a working local option, so it needs a switch
+//     rather than a forced provider: pinning `kokoro` would cost Miku her
+//     conversion and everyone the ElevenLabs fallback, which is not "local
+//     first", it is "local only".
 const FORCED = process.env['TTS_PROVIDER']?.trim().toLowerCase()
+const PREFER_LOCAL = FORCED === 'local'
 
 function providerChain(profile: { rvcModel?: string }): Provider[] {
   if (FORCED === 'elevenlabs' || FORCED === 'espeak' || FORCED === 'kokoro' || FORCED === 'rvc') {
@@ -132,15 +146,41 @@ function providerChain(profile: { rvcModel?: string }): Provider[] {
   const chain: Provider[] = []
   // RVC needs Kokoro to produce the source audio, so it's only viable with both.
   if (profile.rvcModel && RVC_URL && KOKORO_URL) chain.push('rvc')
-  if (EL_KEY) chain.push('elevenlabs')
-  if (KOKORO_URL) chain.push('kokoro')
+  if (PREFER_LOCAL) {
+    if (KOKORO_URL) chain.push('kokoro')
+    if (EL_KEY) chain.push('elevenlabs')
+  } else {
+    if (EL_KEY) chain.push('elevenlabs')
+    if (KOKORO_URL) chain.push('kokoro')
+  }
   chain.push('espeak')
   return chain
 }
 
+/**
+ * One line for the startup log and the Debug tab: the chain a plain
+ * assistant gets, and Miku's when it differs — "kokoro (local) → elevenlabs
+ * → espeak; Miku: rvc (local) → …". Which link is local is spelled out because
+ * that is the question this line exists to answer.
+ */
+export function ttsChainSummary(): string {
+  const label = (p: Provider) => p === 'elevenlabs' ? 'elevenlabs (cloud)' : `${p} (local)`
+  const plain = providerChain({}).map(label).join(' → ')
+  const rvcProfile = Object.values(ASSISTANT_PROFILES).find(p => p.rvcModel)
+  const withRvc = rvcProfile ? providerChain(rvcProfile) : []
+  const note = FORCED ? ` (TTS_PROVIDER=${FORCED})` : ''
+  if (withRvc.length > 0 && withRvc[0] === 'rvc') {
+    return `${plain}; ${rvcProfile!.name}: ${withRvc.map(label).join(' → ')}${note}`
+  }
+  return plain + note
+}
+
+if (FORCED && !PREFER_LOCAL && !['elevenlabs', 'espeak', 'kokoro', 'rvc'].includes(FORCED)) {
+  console.warn(`[tts] unrecognised TTS_PROVIDER="${FORCED}" — using the per-assistant chain`)
+}
 console.log(
   `[tts] forced=${FORCED ?? 'no (per-assistant chain)'} kokoro=${KOKORO_URL || 'no'} ` +
-  `rvc=${RVC_URL || 'no'} elevenlabs=${EL_KEY ? 'yes' : 'no'}`,
+  `rvc=${RVC_URL || 'no'} elevenlabs=${EL_KEY ? 'yes' : 'no'} → ${ttsChainSummary()}`,
 )
 
 // ── Stage directions vs. spelled-out sounds ──────────────────────────────────
@@ -296,7 +336,7 @@ router.get('/', async (req, res) => {
 
 // ── ElevenLabs ───────────────────────────────────────────────────────────────
 async function synthesizeElevenLabs(text: string, voiceId: string, res: import('express').Response) {
-  const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`
+  const url = `${EL_API}/v1/text-to-speech/${encodeURIComponent(voiceId)}`
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), SYNTH_TIMEOUT_MS)
 
