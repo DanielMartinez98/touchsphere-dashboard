@@ -1775,7 +1775,7 @@ async function runSection(itemId: string, title: string, sectionId: string): Pro
       webFirst: WEB_FIRST,
       requireGameMention: true,
     })
-    await fillSection(itemId, title, sectionId, 0, 1, fallback, {
+    const filled = await fillSection(itemId, title, sectionId, 0, 1, fallback, {
       wider: true,
       phase: `Rewriting ${section.title}…`,
     })
@@ -1792,8 +1792,12 @@ async function runSection(itemId: string, title: string, sectionId: string): Pro
     const steps = done?.sections.find(s => s.id === sectionId)?.steps.length ?? 0
     note({
       itemId, title, section: section.title, stage: 'rewrite',
-      level: steps > 0 ? 'good' : 'error',
-      message: `Rewritten in ${Math.round((Date.now() - started) / 1000)}s — ${steps} steps`,
+      level: filled.steps > 0 ? 'good' : steps > 0 ? 'warn' : 'error',
+      message: filled.steps > 0
+        ? `Rewritten in ${Math.round((Date.now() - started) / 1000)}s — ${steps} steps`
+        : steps > 0
+          ? `Nothing better could be found in ${Math.round((Date.now() - started) / 1000)}s — the chapter is unchanged (${steps} steps)`
+          : `Nothing could be found for this chapter in ${Math.round((Date.now() - started) / 1000)}s`,
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
