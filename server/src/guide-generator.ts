@@ -381,7 +381,9 @@ function outlinePrompt(
         `sequence the walkthrough lists them. Do not rename, merge, split or reorder them, and do not add ` +
         `a progression chapter the walkthrough does not have. Overworld travel between two dungeons ` +
         `belongs to whichever walkthrough section covers it, not to a chapter of its own. ` +
-        `Then add the collectible and side-content lists as their own chapters after the progression.\n\n`
+        `Then add the collectible and side-content lists as their own chapters after the progression — ` +
+        `one chapter per KIND of thing, named after the thing ("Heart Containers", "Pieces of Heart", ` +
+        `"Masks", "Golden Skulltulas"), never one chapter called "Collectibles" or "Items".\n\n`
       : '') +
     (retryWith.length > 0
       ? `YOUR PREVIOUS ANSWER USED CHAPTER NAMES THAT APPEAR NOWHERE IN THE SOURCES, so they were ` +

@@ -576,7 +576,7 @@ export async function findWalkthroughs(gameTitle: string, limit = 3, maxChars = 
     if (wrongSibling(hit.title, gameTitle)) continue
     const page = await pageFromHit(hit, maxChars)
     if (!page) continue
-    if (!mentionsGame(`${page.title}\n${page.text}`, gameTitle, 2) || wrongSibling(page.title, gameTitle)) {
+    if (!mentionsGame(`${page.title}\n${page.text}`, gameTitle, 2) || wrongSibling(page.title, gameTitle) || siblingHeavy(page.text, gameTitle)) {
       console.warn(`[research] walkthrough candidate ${host} "${page.title.slice(0, 50)}" is not about "${qualifier}" — skipped`)
       continue
     }
@@ -625,7 +625,7 @@ export async function researchWalkthrough(
       const page = await pageFromHit(hit, maxChars)
       if (!page) continue
       const body = `${page.title}\n${page.text}`
-      if (!mentionsGame(body, gameTitle) || wrongSibling(page.title, gameTitle) || share(body) < 0.5) continue
+      if (!mentionsGame(body, gameTitle) || wrongSibling(page.title, gameTitle) || siblingHeavy(page.text, gameTitle) || share(body) < 0.5) continue
       pages.push(page)
       console.log(`[research] walkthrough for "${chapter.slice(0, 40)}": ${host} "${page.title.slice(0, 50)}" (${page.text.length} chars)`)
     }
@@ -805,6 +805,24 @@ export function wrongSibling(pageTitle: string, gameTitle: string): boolean {
   if (i < 0) return false
   const rest = got.slice(i + want.length)
   return /^\s*[:\-–—]\s*\S/.test(rest) || /^\s+(ii|iii|iv|2|3|4|[a-z]+'s\b)/.test(rest)
+}
+
+/**
+ * Is this page mostly about a sibling, whatever its title says? IGN's
+ * "Collectibles" page carries no subtitle in its title and is Breath of the
+ * Wild's from the first line. When the text names the wanted title with a
+ * subtitle after it ("The Legend of Zelda: Breath of the Wild") more often
+ * than it names the bare title, the page is the sibling's.
+ */
+export function siblingHeavy(text: string, gameTitle: string): boolean {
+  const norm = (s: string) => s.replace(/['’]/g, '').replace(/\s+/g, ' ')
+  const want = norm(gameTitle)
+  if (/[:\-–—]\s*\S/.test(want.replace(/^the\s+/i, ''))) return false
+  const esc = want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const body = norm(text)
+  const all = (body.match(new RegExp(esc, 'gi')) ?? []).length
+  const withSubtitle = (body.match(new RegExp(`${esc}\\s*[:\\-–—]\\s*[A-Z]`, 'g')) ?? []).length
+  return withSubtitle >= 3 && withSubtitle > all - withSubtitle
 }
 
 export function mentionsGame(text: string, gameTitle: string, minMentions = 1): boolean {
@@ -1694,7 +1712,7 @@ export async function researchGame(
         )
         continue
       }
-      if (wrongSibling(p.title, gameTitle)) {
+      if (wrongSibling(p.title, gameTitle) || siblingHeavy(p.text, gameTitle)) {
         console.warn(`[research] rejected ${p.site} "${p.title.slice(0, 60)}" (${why}) — a different game in the same series`)
         continue
       }
