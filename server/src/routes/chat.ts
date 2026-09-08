@@ -709,14 +709,21 @@ async function callOllama(messages: ChatMessage[]): Promise<OllamaResponse> {
     `${first.detail ? ` (${first.detail.slice(0, 120).replace(/\s+/g, ' ')})` : ''} — ` +
     `retrying on ${OLLAMA_FALLBACK_MODEL} at ${OLLAMA_FALLBACK_URL}`,
   )
-  const second = await callOllamaAt(OLLAMA_FALLBACK_URL, OLLAMA_FALLBACK_MODEL, messages)
+  // The fallback is the last resort, and a local model that was evicted from
+  // VRAM by a render or a guide takes 20-40 s to come back before it reads a
+  // 14k-token prompt — well past the 30 s a cloud reply gets. It waits longer,
+  // and asks Ollama to keep the model loaded so the next turn is warm.
+  const second = await callOllamaAt(OLLAMA_FALLBACK_URL, OLLAMA_FALLBACK_MODEL, messages, Math.max(TIMEOUT_MS, 120_000))
+  if (second.status !== 200) {
+    console.warn(`[chat] the fallback ${OLLAMA_FALLBACK_MODEL} at ${OLLAMA_FALLBACK_URL} answered ${second.status || 'nothing'}${second.detail ? ` (${second.detail.slice(0, 160).replace(/\s+/g, ' ')})` : ''} — nothing left to try`)
+  }
   if (second.status === 200) answeredBy = `${OLLAMA_FALLBACK_MODEL} (fallback)`
   return second.status === 200 ? second : first
 }
 
-async function callOllamaAt(url: string, model: string, messages: ChatMessage[]): Promise<OllamaResponse> {
+async function callOllamaAt(url: string, model: string, messages: ChatMessage[], timeoutMs = TIMEOUT_MS): Promise<OllamaResponse> {
   const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
@@ -730,6 +737,8 @@ async function callOllamaAt(url: string, model: string, messages: ChatMessage[])
     if (OLLAMA_THINK !== null) body['think'] = OLLAMA_THINK
     // See NUM_CTX. Without this the tools are silently truncated away.
     body['options'] = { num_ctx: NUM_CTX }
+    // A local model stays loaded between turns; the cloud ignores this.
+    if (!/ollama\.com/i.test(url)) body['keep_alive'] = '30m'
 
     const upstream = await fetch(`${url.replace(/\/$/, '')}/api/chat`, {
       method: 'POST',
