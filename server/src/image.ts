@@ -2184,8 +2184,9 @@ const ANIMA_PROMPT_GUIDE =
   'new style after them, so identity wins.\n' +
   'NEVER: quality tags (masterpiece, best quality, absurdres — they are added for you), realism or ' +
   'photo tags (this is an illustration model and its card says so), text longer than one word.\n' +
-  'IF A PICTURE MISSED: raise the weight on the character and creator tags — "(haruno sakura:1.4)" — ' +
-  'this model wants higher weights than SDXL.'
+  'IF A PICTURE MISSED: raise the weight on the character tag with the (tag:1.4) syntax, on the ' +
+  'character the USER named and no other — this model wants higher weights than SDXL. Never add a ' +
+  'second character the user did not ask for.'
 
 /**
  * The series a prompt names \u2192 the artist tag Anima should carry for it.

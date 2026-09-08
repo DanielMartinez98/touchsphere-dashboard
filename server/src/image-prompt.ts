@@ -415,6 +415,12 @@ export function stripInvented(original: string, rewrite: string): string {
   const kept = tags.filter(t => {
     const l = t.toLowerCase().replace(/[.!]+$/, '')
     if (!saidLook && /\b(hair|eyes?)\b/.test(l) && !/\bwet hair\b|\bhair ornament\b|\bhairband\b|\bhair ribbon\b/.test(l)) return false
+    // "by masashi kishimoto" is not a tag, and a dangling "by" is the model
+    // reaching for one; the creator arrives as an @ tag from the dashboard.
+    if (/^by(\s|$)/.test(l)) return false
+    // A weighted tag the user did not write — "(haruno sakura:1.4)" copied
+    // from the guide's own syntax, on a character nobody asked for.
+    if (/:\s*\d+(\.\d+)?\)?$/.test(l) && !o.includes(l.replace(/[():]|\d+(\.\d+)?/g, '').trim())) return false
     // The same tag twice ("boa hancock, one piece, …, boa hancock, one piece") is
     // the model padding, and a repeated tag is a doubled weight.
     if (seen.has(l)) return false
