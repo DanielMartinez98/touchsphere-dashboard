@@ -1740,7 +1740,8 @@ async function run(job: ImageJob): Promise<void> {
     fs.renameSync(tmp, dest)
 
     job.file = file
-    job.status = 'ready'
+    // Not 'ready' yet: an edit that changed nothing may be drawn again below,
+    // and a watcher that sees 'ready' stops watching.
     job.endedAt = Date.now()
     took = job.endedAt - job.startedAt
     // Filed against the style, the workload and the warmth, so the NEXT render
@@ -1808,6 +1809,7 @@ async function run(job: ImageJob): Promise<void> {
     }
     break
     }
+    job.status = 'ready'
 
     remember({
       id: job.id, prompt: job.prompt, file,
