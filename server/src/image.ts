@@ -2268,6 +2268,9 @@ export function applyAnimaFidelity(prompt: string, original = ''): { prompt: str
   for (const [alias, tag] of CHARACTER_ALIASES) {
     if (alias.test(out) && !out.toLowerCase().includes(tag)) { out = out.replace(alias, tag); added.push(tag) }
   }
+  // "lunch (dragon ball) (dragon ball)": the model had already written the
+  // bracketed series after the dub name the alias replaced.
+  out = out.replace(/(\([^)]+\))\s*\1/g, '$1')
   if (f.creator && !/(^|[,\s])@/.test(out)) {
     for (const [series, creator] of ANIMA_CREATORS) {
       const m = series.exec(out)

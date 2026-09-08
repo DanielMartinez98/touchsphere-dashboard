@@ -367,7 +367,9 @@ export function missingWords(original: string, rewrite: string): string[] {
   // is asked for ("hyuuga", "joutarou") still counts as the name the user
   // typed ("hyuga", "jotaro").
   const fold = (s: string) => s.replace(/ou/g, 'o').replace(/([aeiou])\1/g, '$1')
-  const norm = (s: string) => fold(s.toLowerCase().replace(/['’]s\b/g, '').replace(/[^a-z0-9\s-]/g, ' '))
+  const norm = (s: string) => fold(
+    s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/['’]s\b/g, '').replace(/[^a-z0-9\s-]/g, ' '),
+  )
   const have = norm(rewrite)
   const words = [...new Set(norm(original).split(/[\s-]+/).filter(w => w.length >= 4 && !KEEP_STOPWORDS.has(w) && !/^\d+$/.test(w)))]
   return words.filter(w => !have.includes(w) && !have.includes(w.replace(/s$/, '')))
@@ -387,9 +389,14 @@ export function stripInvented(original: string, rewrite: string): string {
     // An artist the user did not type, wherever it sits in the text.
     .replace(ARTIST_TAG, a => (ownArtists.has(a.trim().toLowerCase()) ? a : ' '))
   const tags = text.split(',').map(t => t.trim().replace(/\s{2,}/g, ' ')).filter(Boolean)
+  const seen = new Set<string>()
   const kept = tags.filter(t => {
-    const l = t.toLowerCase()
+    const l = t.toLowerCase().replace(/[.!]+$/, '')
     if (!saidLook && /\b(hair|eyes?)\b/.test(l) && !/\bwet hair\b|\bhair ornament\b|\bhairband\b|\bhair ribbon\b/.test(l)) return false
+    // The same tag twice ("boa hancock, one piece, …, boa hancock, one piece") is
+    // the model padding, and a repeated tag is a doubled weight.
+    if (seen.has(l)) return false
+    seen.add(l)
     return true
   })
   return kept.join(', ').replace(/\s+,/g, ',').trim()
