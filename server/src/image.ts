@@ -1820,17 +1820,20 @@ async function run(job: ImageJob): Promise<void> {
       try { changed = imageDifference(job.sourceFile, file) } catch { changed = null }
       if (changed !== null) {
         const edit = styleEdits(job.model)
-        const verdict = changed < 0.05 ? (edit ? 'the editor found nothing to do' : 'essentially unchanged')
-          : changed < 0.12 ? 'changed only a little' : 'changed'
+        // No verdict in the log: the number is the peak-cell difference and a
+        // real small edit can sit under any line drawn through it. A retry
+        // happens only when the user has set a floor (Settings → Drawing).
+        const floor = readPrompter().retryBelow
         console.log(
-          `[image] ${job.id} ${verdict}: ${(changed * 100).toFixed(1)}% of the source — ` +
+          `[image] ${job.id} changed ${(changed * 100).toFixed(1)}% of the source` +
+          `${floor > 0 && changed < floor ? ` (under the ${Math.round(floor * 100)}% retry floor)` : ''} — ` +
           `${styleLabel(job.model)}, ${edit ? 'instruction' : 'prompt'}="${job.prompt.slice(0, 140)}"` +
           `${job.promptOriginal && job.promptOriginal !== job.prompt ? ` (typed: "${job.promptOriginal.slice(0, 80)}")` : ''}` +
           `, source ${job.sourceWidth ?? '?'}×${job.sourceHeight ?? '?'} → ${job.width}×${job.height}` +
           `${edit ? '' : `, strength ${Math.round((job.denoise ?? 1) * 100)}%`}${job.mask ? ', masked' : ''}` +
           `${job.controlnet ? `, pose held by ${job.controlnet}` : ''}, attempt ${attempt}`,
         )
-        if (edit && changed < 0.05 && attempt === 1 && !job.mask) {
+        if (edit && floor > 0 && changed < floor && attempt === 1 && !job.mask) {
           push(job, 'rewriting the instruction',
             `The editor changed only ${(changed * 100).toFixed(1)}% of the picture with "${job.prompt.slice(0, 80)}" — ` +
             'it found nothing to do with those words. Asking a model that can see the picture to write the ' +

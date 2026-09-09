@@ -33,7 +33,7 @@ import {
   segmentationAvailable, inpaintAvailable,
   type ImageJob,
 } from './image'
-import { visionModel } from './image-prompt'
+import { visionModel, readPrompter} from './image-prompt'
 import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
@@ -97,7 +97,10 @@ export interface PlanStep {
  * Kontext output peaks at 1.7%, the smallest real edit so far (a recoloured
  * fringe, 1% of the picture) at 14%, a background swap at 31%.
  */
-const NO_CHANGE = 0.05
+// The change below which an edit step is redrawn harder and then fails the
+// plan. Read per run from the same setting the single-render retry uses; 0
+// (the default) means a step's result is taken as it is, whatever it measured.
+const noChangeFloor = (): number => readPrompter().retryBelow
 
 export type PlanStatus = 'planning' | 'ready' | 'running' | 'done' | 'failed' | 'cancelled'
 
@@ -590,7 +593,8 @@ async function execute(plan: EditPlan, editor: string): Promise<void> {
       const outEntry = listImages().find(e => e.id === done!.id)
       const diff = srcEntry && outEntry ? imageDifference(srcEntry.file, outEntry.file) : null
       if (diff !== null) step.change = diff
-      if (diff === null || diff >= NO_CHANGE) break
+      const floor = noChangeFloor()
+      if (diff === null || floor <= 0 || diff >= floor) break
       console.log(`[image-plan] ${plan.id} step ${step.n} changed ${(diff * 100).toFixed(1)}% of the picture — ${attempt === 1 ? 'retrying harder' : 'giving up'}`)
       if (attempt === 2) {
         step.status = 'failed'

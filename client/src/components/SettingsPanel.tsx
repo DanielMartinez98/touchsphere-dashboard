@@ -1706,6 +1706,7 @@ function DrawingTab() {
   const [visionDraft, setVisionDraft] = useState<{ text: string; seeded: boolean }>({ text: '', seeded: false })
   const [editDraft, setEditDraft] = useState<{ text: string; seeded: boolean }>({ text: '', seeded: false })
   const [editModelDraft, setEditModelDraft] = useState<{ text: string; seeded: boolean }>({ text: '', seeded: false })
+  const [retryDraft, setRetryDraft] = useState<{ text: string; seeded: boolean }>({ text: '', seeded: false })
   if (!visionDraft.seeded && prompter) setVisionDraft({ text: prompter.visionTemplate, seeded: true })
   const visionDirty = prompter !== null && visionDraft.text !== prompter.visionTemplate
   if (!editDraft.seeded && prompter) setEditDraft({ text: prompter.editTemplate, seeded: true })
@@ -1969,11 +1970,46 @@ function DrawingTab() {
         </span>
         <p className="text-[12px] text-white/45 leading-relaxed mb-2">
           FLUX Kontext is an editor, and it is literal: it returns the picture untouched when
-          the subject is not named the way it appears, or the change is vague. When an edit
-          changes less than 5% of the picture, a model that can see it is asked to say the same
-          change the way the editor can act on it, and the edit is drawn once more. This is what
-          that model is told. The picture's details panel then shows the instruction it wrote.
+          the subject is not named the way it appears, or the change is vague. With a floor set
+          below, an edit that changes less than that share of the picture is handed to a model
+          that can see it, which says the same change the way the editor can act on it, and the
+          edit is drawn once more. This is what that model is told. Off by default: the change
+          is measured and shown on every picture, and nothing is judged from it.
         </p>
+        <label className="block mb-3">
+          <span className="text-[12px] text-white/45 leading-relaxed block mb-1">
+            Draw again when an edit changes less than this much of the picture. 0 is never.
+            Measured as the brightest-moving 2% of a 64-wide grid, so a small real edit can
+            read as 3–10%; 5 was the old built-in.
+          </span>
+          <div className="flex items-center gap-2">
+            <TouchInput
+              value={retryDraft.seeded ? retryDraft.text : String(Math.round((prompter.retryBelow ?? 0) * 100))}
+              onChange={text => setRetryDraft({ text, seeded: true })}
+              commitOn="done"
+              numeric
+              placeholder="0"
+              ariaLabel="Redraw an edit that changed less than this percent"
+              className="w-28 h-12 rounded-xl bg-white/10 border border-hairline px-3 text-[14px] tabular-nums"
+            />
+            <span className="text-sm text-white/50">%</span>
+            <button
+              type="button"
+              disabled={!retryDraft.seeded || String(Math.round((prompter.retryBelow ?? 0) * 100)) === retryDraft.text}
+              onClick={() => {
+                const n = Math.min(50, Math.max(0, Number(retryDraft.text) || 0))
+                void setPrompter({ retryBelow: n / 100 })
+                setRetryDraft({ text: String(n), seeded: true })
+              }}
+              className={`flex-1 h-12 rounded-xl text-sm font-semibold transition ${
+                retryDraft.seeded && String(Math.round((prompter.retryBelow ?? 0) * 100)) !== retryDraft.text
+                  ? 'bg-violet-500/80 text-white active:scale-95' : 'bg-white/5 text-white/30'
+              }`}
+            >
+              {(prompter.retryBelow ?? 0) > 0 ? `Floor is ${Math.round(prompter.retryBelow * 100)}%` : 'Floor is off'}
+            </button>
+          </div>
+        </label>
         <TouchInput
           value={editDraft.text}
           onChange={text => setEditDraft({ text, seeded: true })}

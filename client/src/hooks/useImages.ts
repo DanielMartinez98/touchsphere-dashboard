@@ -89,6 +89,8 @@ export interface PrompterSettings {
   editPreview:           string
   editUserMessage:       string
   editModel:             string
+  /** Redraw an edit that changed less than this fraction; 0 = never. */
+  retryBelow:            number
 }
 
 export interface StoredImage {

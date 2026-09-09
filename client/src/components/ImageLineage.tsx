@@ -31,10 +31,6 @@ interface Link {
   sourceMissing: boolean
 }
 
-/** Below this the picture is, to the eye, the one it started from. Matches NO_CHANGE on the server. */
-const UNCHANGED = 0.05
-/** Below this it changed, but barely — worth flagging without calling it a failure. */
-const BARELY = 0.12
 
 /** What kind of step this was, in the words the Draw panel uses. */
 function toolOf(st: ImageSettings | null, origin: string): { label: string; icon: React.ReactNode } {
@@ -55,12 +51,14 @@ function toolOf(st: ImageSettings | null, origin: string): { label: string; icon
  */
 function verdict(st: ImageSettings | null): { tone: 'bad' | 'warn'; text: string } | null {
   if (!st?.source || typeof st.changed !== 'number') return null
+  // No line is drawn through the number here: a real small edit measures
+  // low, and calling it "unchanged" was a judgement the user asked to remove.
+  // A verdict appears only when the server itself acted on a floor the user
+  // set — it drew the picture again, or tried to and could not.
+  if (!st.retriedWith && !st.retryFailed) return null
   const pct = Math.round(st.changed * 100)
-  if (st.changed >= BARELY) return null
-  const tone = st.changed < UNCHANGED ? 'bad' : 'warn'
-  const lead = st.changed < UNCHANGED
-    ? 'This came back essentially unchanged.'
-    : `This changed very little (${pct}% of the picture).`
+  const tone = 'warn' as const
+  const lead = `This measured ${pct}% change.`
   const causes: string[] = []
   const isEdit = /kontext/i.test(st.styleLabel ?? '')
   const prompt = (st.promptOriginal ?? st.fullPrompt ?? '').toLowerCase()
@@ -144,13 +142,14 @@ function Facts({ st, origin }: { st: ImageSettings | null; origin: string }) {
 
 function ChangeBar({ changed }: { changed: number }) {
   const pct = Math.round(changed * 100)
-  const tone = changed < UNCHANGED ? 'bg-red-400' : changed < BARELY ? 'bg-amber-400' : 'bg-emerald-400'
+  // One colour: the bar reports, it does not grade.
+  const tone = 'bg-emerald-400'
   return (
     <div className="mt-2">
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-[10px] uppercase tracking-widest text-white/30 font-semibold">Changed</span>
         <span className={`text-[11px] tabular-nums font-semibold ${
-          changed < UNCHANGED ? 'text-red-300' : changed < BARELY ? 'text-amber-300' : 'text-emerald-300'}`}>
+          'text-emerald-300'}`}>
           {pct < 1 ? '<1' : pct}% of the picture
         </span>
       </div>

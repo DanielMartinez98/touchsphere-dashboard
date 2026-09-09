@@ -150,6 +150,15 @@ export interface PrompterSettings {
   editTemplate:   string
   /** Overrides the vision model for the instruction rewriter alone. '' follows it. */
   editModel:      string
+  /**
+   * Draw an edit again, with the instruction rewritten, when it changed less
+   * than this fraction of the picture (the peak-cell measure, see
+   * imageChange()). 0 means never: the measured change is shown and nothing
+   * is judged. It shipped at 0.05 and was turned off on request — a tiny real
+   * edit (an eye colour, a small logo) sits under any floor, and a redraw that
+   * the user did not ask for costs a minute of GPU.
+   */
+  retryBelow:     number
 }
 
 const DEFAULTS: PrompterSettings = {
@@ -159,6 +168,7 @@ const DEFAULTS: PrompterSettings = {
   visionTemplate: DEFAULT_VISION_TEMPLATE,
   editTemplate:   DEFAULT_EDIT_TEMPLATE,
   editModel:      '',
+  retryBelow:     0,
 }
 
 function storePath(): string {
@@ -190,6 +200,8 @@ export function readPrompter(): PrompterSettings {
         ? raw.editTemplate.slice(0, 8000)
         : DEFAULTS.editTemplate,
       editModel: typeof raw.editModel === 'string' ? raw.editModel.trim().slice(0, 120) : '',
+      retryBelow: typeof raw.retryBelow === 'number' && Number.isFinite(raw.retryBelow)
+        ? Math.min(0.5, Math.max(0, raw.retryBelow)) : 0,
     }
   } catch {
     return { ...DEFAULTS }
@@ -211,6 +223,9 @@ export function writePrompter(patch: Partial<PrompterSettings>): PrompterSetting
     next.editTemplate = patch.editTemplate.trim() ? patch.editTemplate.slice(0, 8000) : DEFAULTS.editTemplate
   }
   if (typeof patch.editModel === 'string') next.editModel = patch.editModel.trim().slice(0, 120)
+  if (typeof patch.retryBelow === 'number' && Number.isFinite(patch.retryBelow)) {
+    next.retryBelow = Math.min(0.5, Math.max(0, patch.retryBelow))
+  }
 
   const p = storePath()
   const tmp = `${p}.tmp-${process.pid}`
