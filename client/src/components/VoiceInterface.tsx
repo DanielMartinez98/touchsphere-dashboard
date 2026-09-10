@@ -28,7 +28,12 @@ function TypeSheet({ onSend, onClose, busy }: { onSend: (t: string) => void; onC
   }
   return (
     <div
-      className="fixed left-0 right-0 z-[9050] px-3 pb-3 kb-room"
+      // Its bottom edge sits on the keyboard's top edge, and that is the whole
+      // of the arrangement: it carried `kb-room` as well, which pads a scroll
+      // container by the board's height, and on a sheet already offset by that
+      // height the card ended up two boards up — above the top of the kiosk's
+      // 720px screen, so typing showed the keyboard and nothing else.
+      className="fixed left-0 right-0 z-[9050] px-3 pb-3"
       style={{ bottom: 'var(--ts-keyboard-h, 0px)' }}
       onPointerDown={e => e.stopPropagation()}
     >

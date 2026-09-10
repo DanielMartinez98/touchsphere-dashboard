@@ -232,7 +232,12 @@ export default function MaskEditor({ source, initial, canFind, onDone, onClose }
   const marked = strokes > 0
 
   return createPortal(
-    <div className="fixed inset-0 z-[9450] bg-black/95 flex flex-col text-white">
+    // `kb-room`: the on-screen keyboard is a fixed strip over the bottom of the
+    // screen, and this column is not a scroll container, so nothing could move
+    // the find field out from under it — you typed blind. Padding the column
+    // by the board's height puts the tools row on the board's top edge and
+    // lets the picture shrink to what is left.
+    <div className="fixed inset-0 z-[9450] bg-black/95 flex flex-col text-white kb-room">
       {/* Header */}
       <div className="flex items-center gap-3 px-4 pt-3 pb-2 shrink-0">
         <div className="min-w-0 flex-1">
@@ -264,7 +269,7 @@ export default function MaskEditor({ source, initial, canFind, onDone, onClose }
             crossOrigin="anonymous"
             onLoad={onImageLoad}
             draggable={false}
-            className="block max-w-full max-h-[calc(100dvh-230px)] select-none"
+            className="block max-w-full max-h-[calc(100dvh-230px-var(--ts-keyboard-h,0px))] select-none"
           />
           <canvas
             ref={maskRef}
