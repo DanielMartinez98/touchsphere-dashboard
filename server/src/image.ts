@@ -223,8 +223,15 @@ async function loaderOptions(nodeClass: string, input: string): Promise<string[]
   const j = await res.json() as Record<string, {
     input?: { required?: Record<string, unknown[]> }
   }>
-  const raw = j[nodeClass]?.input?.required?.[input]?.[0]
-  return Array.isArray(raw) ? raw.filter((n): n is string => typeof n === 'string') : []
+  const spec = j[nodeClass]?.input?.required?.[input]
+  // Two shapes. The classic one is `[[...names], {}]`; nodes on ComfyUI's newer
+  // schema answer `["COMBO", { options: [...names] }]` instead — which is how
+  // an upscaler that ComfyUI plainly listed was reported as "not installed".
+  const raw = Array.isArray(spec?.[0]) ? spec[0]
+    : spec?.[0] === 'COMBO' && Array.isArray((spec[1] as { options?: unknown[] } | undefined)?.options)
+      ? (spec[1] as { options: unknown[] }).options
+      : []
+  return raw.filter((n): n is string => typeof n === 'string')
 }
 
 /** Which checkpoints the server actually has installed. */
