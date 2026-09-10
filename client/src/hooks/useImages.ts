@@ -174,6 +174,41 @@ export interface ImageStyle {
    * no strength to pick — the panel changes shape around all three.
    */
   edits?: boolean
+  /** True for an upscaler (UltraSharp): a picture in, a sharper ×4 picture out. Never a drawing style. */
+  upscales?: boolean
+}
+
+/**
+ * Is there an installed upscaler to offer? Asked once and remembered: the
+ * viewer opens from three places and none of them has the style list.
+ */
+let upscalerPromise: Promise<string | null> | null = null
+export function upscalerStyle(): Promise<string | null> {
+  if (!upscalerPromise) {
+    upscalerPromise = fetch('/api/image/models')
+      .then(r => (r.ok ? r.json() : null))
+      .then((j: { styles?: ImageStyle[] } | null) => {
+        const s = (j?.styles ?? []).find(st => st.upscales && !(st.missing?.length))
+        return s?.id ?? null
+      })
+      .catch(() => null)
+  }
+  return upscalerPromise
+}
+
+/** Queue a sharpen-and-enlarge of a gallery picture; returns the job id. */
+export async function enhanceImage(sourceId: string, prompt: string, style: string): Promise<string> {
+  const res = await fetch('/api/image/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt: prompt || 'sharpened and enlarged', source: sourceId, model: style }),
+  })
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({})) as { error?: string }
+    throw new Error(j.error ?? `HTTP ${res.status}`)
+  }
+  const j = await res.json() as { id: string }
+  return j.id
 }
 
 interface StylesResponse {

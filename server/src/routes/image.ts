@@ -60,7 +60,7 @@ import {
   styleNegativePrefixFor,
   supersededCheckpoints,
   WORKFLOW_PREFIX,
-  clearImages,
+  clearImages, styleUpscales,
 } from '../image'
 import { cancelPlan, createPlan, getPlan, runPlan } from '../image-plan'
 import { findAndFetch } from '../image-web'
@@ -171,6 +171,9 @@ router.get('/models', async (_req: Request, res: Response) => {
         // An editor rather than a painter: the panel hides the strength chips,
         // relabels the button and refuses to offer "Draw it" with no source.
         ...(styleEdits(w.id) ? { edits: true } : {}),
+        // An upscaler: the panel keeps it out of the Style row (it cannot draw)
+        // and the viewer offers it as a button on a finished picture.
+        ...(styleUpscales(w.id) ? { upscales: true } : {}),
       })),
     ]
     // What the GPU box can do to PART of a picture. Asked of ComfyUI itself, so
@@ -447,7 +450,7 @@ router.post('/generate', (req: Request, res: Response) => {
   // Same reasoning as the queue-full check above: startImage() refuses this
   // too, but the panel wants a status it can print under the button.
   const style = typeof body?.['model'] === 'string' && body['model'] ? body['model'] : selectedModel()
-  if (styleEdits(style) && !source) {
+  if ((styleEdits(style) || styleUpscales(style)) && !source) {
     res.status(400).json({
       error: 'This style changes an existing picture rather than drawing one — tap "Change this" ' +
              'on a picture first, or pick a different style.',

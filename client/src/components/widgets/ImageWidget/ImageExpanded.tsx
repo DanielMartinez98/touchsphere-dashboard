@@ -358,7 +358,7 @@ export default function ImageExpanded({
       return
     }
     if (editStyle) {
-      const back = lastDrawStyle.current || styles.find(st => !st.edits && styleUsable(st))?.id
+      const back = lastDrawStyle.current || styles.find(st => !st.edits && !st.upscales && styleUsable(st))?.id
       if (back) onModel(back)
     }
     setPickedMode(m)
@@ -1062,7 +1062,9 @@ export default function ImageExpanded({
               kiosk opens an OS popup that TouchKio renders badly, and these are
               a handful of options, not a hundred. */}
           <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
-            {styles.map(st => {
+            {/* An upscaler is not a way to draw, so it is not a style here; it
+                lives on the finished picture as "Sharpen ×4". */}
+            {styles.filter(st => !st.upscales).map(st => {
               // A style whose files aren't on the GPU box can't draw. Shown but
               // not selectable, because hiding it would leave someone who read
               // about "Anima Turbo" wondering where it went — and the row is
@@ -1102,7 +1104,7 @@ export default function ImageExpanded({
               <span className="text-[11px] uppercase tracking-widest text-white/35 font-semibold">
                 Not installed on the image server
               </span>
-              {styles.filter(st => !styleUsable(st)).map(st => (
+              {styles.filter(st => !styleUsable(st) && !st.upscales).map(st => (
                 <span key={st.id} className="text-[11px] text-white/40 leading-snug">
                   <span className="text-white/60">{st.label}</span>
                   {' needs '}

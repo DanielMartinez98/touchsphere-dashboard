@@ -32,11 +32,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  X, AlertTriangle, RefreshCw, ChevronLeft, ChevronRight, Copy, Check, Wand2, Brush, Info, Lasso, GitBranch } from 'lucide-react'
+  X, AlertTriangle, RefreshCw, ChevronLeft, ChevronRight, Copy, Check, Wand2, Brush, Info, Lasso, GitBranch, Sparkles} from 'lucide-react'
 import { closeImage, openImage, useImageJob, useImageTarget, type ImageJobState } from '../hooks/useImageOverlay'
 import { usePlan, type EditPlan } from '../hooks/useEditPlan'
 import ImageLineage from './ImageLineage'
 import { redrawImage, reuseImagePrompt } from '../hooks/useImagePrompt'
+import { enhanceImage, upscalerStyle } from '../hooks/useImages'
 import { onServerEvent } from '../hooks/useServerEvents'
 import type { StoredImage } from '../hooks/useImages'
 
@@ -410,6 +411,22 @@ function PromptActions({
       .then(() => setCopied('yes'))
       .catch(() => setCopied('no'))
   }, [prompt])
+  // "Sharpen ×4": offered only when an upscaler is installed on the GPU box,
+  // absent rather than disabled otherwise. Queues a job on this picture and
+  // re-targets the frame to it, so the enlargement fills in where the
+  // original was.
+  const [upscaler, setUpscaler] = useState<string | null>(null)
+  useEffect(() => { let on = true; void upscalerStyle().then(s => { if (on) setUpscaler(s) }); return () => { on = false } }, [])
+  const [enhancing, setEnhancing] = useState(false)
+  const enhance = useCallback(async () => {
+    if (!source || !upscaler || enhancing) return
+    setEnhancing(true)
+    try {
+      const id = await enhanceImage(source.id, source.prompt, upscaler)
+      openImage(id, source.prompt)
+    } catch { /* the queue strip and the frame report the failure */ }
+    finally { setEnhancing(false) }
+  }, [source, upscaler, enhancing])
 
   return (
     // Wraps rather than scrolls: on a 390px phone three pills and a counter do
@@ -442,6 +459,19 @@ function PromptActions({
         >
           <Lasso size={16} />
           Change a part
+        </button>
+      )}
+      {source && upscaler && (
+        <button
+          type="button"
+          onClick={() => { void enhance() }}
+          disabled={enhancing}
+          className="h-11 px-4 rounded-full bg-white/10 border border-hairline text-white/70
+                     text-[13px] font-semibold flex items-center gap-2
+                     active:scale-95 active:bg-white/20 transition disabled:opacity-50"
+        >
+          <Sparkles size={16} />
+          {enhancing ? 'Queuing…' : 'Sharpen ×4'}
         </button>
       )}
 

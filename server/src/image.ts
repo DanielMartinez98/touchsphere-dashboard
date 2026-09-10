@@ -315,6 +315,7 @@ const NEEDS_LOADER: Record<string, [node: string, input: string]> = {
   vae:              ['VAELoader', 'vae_name'],
   checkpoints:      ['CheckpointLoaderSimple', 'ckpt_name'],
   loras:            ['LoraLoaderModelOnly', 'lora_name'],
+  upscale_models:   ['UpscaleModelLoader', 'model_name'],
 }
 
 /**
@@ -1281,10 +1282,10 @@ export function startImage(req: ImageRequest): ImageJob {
   // A mask only means anything over a source, and an editor takes none — it
   // decides what to keep from the instruction. A described region is kept as
   // words here and turned into a mask in run(), where the GPU is.
-  const maskId = source && !styleEdits(style) ? (req.mask ?? '').trim() : ''
+  const maskId = source && !styleEdits(style) && !styleUpscales(style) ? (req.mask ?? '').trim() : ''
   const maskFile = maskId && /^[a-f0-9]{32}$/.test(maskId) && fs.existsSync(path.join(masksDir(), `${maskId}.png`))
     ? `${maskId}.png` : ''
-  const region = source && !styleEdits(style) && !maskFile ? (req.region ?? '').trim().slice(0, 120) : ''
+  const region = source && !styleEdits(style) && !styleUpscales(style) && !maskFile ? (req.region ?? '').trim().slice(0, 120) : ''
   // The pose-hold settings, read now so a change reaches the next picture and
   // a picture already waiting keeps the settings it was queued with.
   const hold = readStructure()
@@ -1312,9 +1313,15 @@ export function startImage(req: ImageRequest): ImageJob {
   // inserts the resize. An edit style has its own idea of the size — Kontext
   // snaps the source to one of its published resolutions — and that is
   // mirrored here so the frame's size text is right before the render starts.
-  const edits = styleEdits(style)
+  // An upscaler is treated as an editor by every gate below: it needs a
+  // source, takes no strength, no mask, no pose hold and no prompt rewrite.
+  // Its size is its own — the source's, four times over.
+  const upscales = styleUpscales(style)
+  const edits = styleEdits(style) || upscales
   const size = source
-    ? edits
+    ? upscales
+      ? { width: source.width * 4, height: source.height * 4 }
+      : edits
       ? kontextSize(source.width, source.height)
       : sizeForMegapixels(source.width, source.height, p.megapixels > 0 ? p.megapixels : 1, p.multipleOf)
     : p.megapixels > 0
@@ -1464,7 +1471,7 @@ export function startImage(req: ImageRequest): ImageJob {
   // still under the finger.
   if (edits && !source) {
     job.status = 'failed'
-    job.error = `${styleLabel(style)} edits a picture rather than drawing one — pick one to change first`
+    job.error = `${styleLabel(style)} ${upscales ? 'sharpens' : 'edits'} a picture rather than drawing one — pick one first`
     job.endedAt = Date.now()
     console.warn(`[image] refused ${job.id}: edit style with no source`)
     push(job, 'failed',
@@ -1538,7 +1545,7 @@ async function run(job: ImageJob): Promise<void> {
   // "it drew what I typed" and "it silently couldn't reach the model" look
   // identical from the outside otherwise.
   let improveNote = ''
-  const edits = styleEdits(job.model)
+  const edits = styleEdits(job.model) || styleUpscales(job.model)
   // ── A redraw needs a description of the whole picture, and usually hasn't one ──
   //
   // img2img repaints the source's layout from the PROMPT, and the prompt is
@@ -2215,6 +2222,21 @@ function kontextGraph(): ComfyGraph {
 }
 
 /**
+ * A picture in, a sharper picture four times the size out. Two core nodes —
+ * no sampler, no encoder, no prompt — which is exactly why it cannot share
+ * the txt2img graph's patching and is flagged `upscales` instead.
+ */
+function upscaleGraph(modelName: string): ComfyGraph {
+  return {
+    // Filled in by buildGraph with the uploaded source's name, as for Kontext.
+    '1': { class_type: 'LoadImage', inputs: { image: '' } },
+    '2': { class_type: 'UpscaleModelLoader', inputs: { model_name: modelName } },
+    '3': { class_type: 'ImageUpscaleWithModel', inputs: { upscale_model: ['2', 0], image: ['1', 0] } },
+    '4': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['3', 0] } },
+  }
+}
+
+/**
  * The resolutions Kontext was trained at, as ComfyUI's FluxKontextImageScale
  * node lists them. The node picks the one whose aspect is closest to the
  * source's; this does the same sum at queue time so the job carries the size
@@ -2586,6 +2608,14 @@ const BUILTIN_WORKFLOWS: Record<string, {
    * with no source, and the Draw panel says so instead of offering "Draw it".
    */
   edits?: boolean
+  /**
+   * True for a style that UPSCALES a picture — no prompt, no sampler, no
+   * strength: the source goes in, a sharper picture four times the size comes
+   * out. Everything the engine normally patches by node class (prompt, steps,
+   * seed, size) has nowhere to go in such a graph, so buildGraph returns it
+   * with only the source's filename filled in, the way it does for an editor.
+   */
+  upscales?: boolean
 }> = {
   'flux1-dev': {
     label: 'FLUX.1 dev',
@@ -2642,6 +2672,22 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'text_encoders/t5xxl_fp8_e4m3fn.safetensors',
       'vae/ae.safetensors',
     ],
+  },
+  'ultrasharp-v2': {
+    label: 'UltraSharp V2 (sharpen ×4)',
+    graph: upscaleGraph('4x-UltraSharpV2.safetensors'),
+    upscales: true,
+    // No steps to preset and no prompt to guide: the quality row and the
+    // improvers have nothing to act on.
+    ignoresQuality: true,
+    promptStyle: 'prose',
+    promptGuide: 'This is an upscaler, not a painter: it reads no prompt.',
+    // Kim2091/UltraSharpV2 on Hugging Face, CC BY-NC-SA 4.0 — non-commercial,
+    // which is what this kiosk is. DAT2 architecture, 4×, and the author's own
+    // word is that it handles "realistic images, anime, cartoons" and
+    // "illustrations and artwork" alike, cleaning JPEG artefacts and halos on
+    // the way. Goes in ComfyUI's models/upscale_models/.
+    needs: ['upscale_models/4x-UltraSharpV2.safetensors'],
   },
   'animagine-xl-4': {
     label: 'Animagine XL 4.0',
@@ -3074,6 +3120,12 @@ function turboHints(style: string): string[] {
   return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.turboHints ?? []
 }
 
+/** True for a style that upscales a picture: source in, no prompt, ×4 out. */
+export function styleUpscales(style: string): boolean {
+  if (!style.startsWith(WORKFLOW_PREFIX)) return false
+  return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.upscales === true
+}
+
 /** True for a style that edits an existing picture rather than drawing one. */
 export function styleEdits(style: string): boolean {
   if (!style.startsWith(WORKFLOW_PREFIX)) return false
@@ -3245,6 +3297,16 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
     ? workflowGraph(job.model.slice(WORKFLOW_PREFIX.length))
     : baseGraph()
   if (!graph) throw new Error(`the "${job.model}" style is not installed on this server`)
+
+  // An upscaler: two nodes and a save. No sampler to seed, no text to write,
+  // no size to set — the only patch is the picture going in.
+  if (styleUpscales(job.model)) {
+    if (!sourceName) throw new Error('an upscaler needs a picture to work from')
+    const loadId = findNode(graph, ['LoadImage'])
+    if (!loadId) throw new Error("this upscaling style's workflow has no LoadImage node")
+    graph[loadId]!.inputs['image'] = sourceName
+    return graph
+  }
 
   const samplerId = findNode(graph, ['KSampler', 'KSamplerAdvanced', 'SamplerCustom'])
   if (!samplerId) throw new Error('workflow has no KSampler node')
