@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { TouchKeyboard, type KeyboardTarget } from './TouchKeyboard'
 
 // Drop-in replacement for <input> / <textarea> that opens the on-screen
@@ -158,7 +159,18 @@ export function TouchInput({
             // flicker between a keystroke and the resize.
             style={{ overflow: 'hidden', resize: 'none' }} />
         : <input    {...shared} ref={ref as React.RefObject<HTMLInputElement>} type="text" />}
-      {open && (
+      {/* Portaled to the document body, not rendered beside the field. The
+          board is `position: fixed` and means "the bottom of the SCREEN" —
+          but fixed positioning is relative to the nearest ancestor with a
+          transform, filter or backdrop-filter, and half the surfaces here have
+          one: the typing sheet's card is backdrop-blurred, so its keyboard came
+          up fixed to the bottom of a 640×170 card, floating mid-screen over
+          the very field being typed into; the Settings panel is blurred too.
+          At the body there is no such ancestor, so bottom-0 is the screen and
+          --ts-keyboard-h means what every consumer assumes it means. Nothing
+          about the board depends on DOM adjacency: it edits through
+          `targetRef` and closes only from its own Done key. */}
+      {open && createPortal(
         <TouchKeyboard
           value={draft}
           onChange={handleKeyboardChange}
@@ -166,7 +178,8 @@ export function TouchInput({
           multiline={multiline}
           numeric={numeric}
           targetRef={ref}
-        />
+        />,
+        document.body,
       )}
     </>
   )
