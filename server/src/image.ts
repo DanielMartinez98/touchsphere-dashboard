@@ -258,6 +258,16 @@ export async function listControlNets(): Promise<string[]> {
 }
 
 /**
+ * Model-patch files on the box (ComfyUI/models/model_patches) — where a
+ * ControlNet-LLLite such as Anima's inpainting patch lives. Empty when none,
+ * when the box is down, or on a ComfyUI old enough not to have the loader:
+ * every one of those means "draw without it", never "fail".
+ */
+export async function listModelPatches(): Promise<string[]> {
+  return loaderOptions('ModelPatchLoader', 'name').catch(() => [])
+}
+
+/**
  * The ControlNet to hold a redraw's lines: an SDXL "union" model if there is
  * one (it takes canny, lineart, depth and pose in one file), else anything
  * whose name says canny or lineart. Nothing at all rather than a guess — a
@@ -323,6 +333,7 @@ const NEEDS_LOADER: Record<string, [node: string, input: string]> = {
   checkpoints:      ['CheckpointLoaderSimple', 'ckpt_name'],
   loras:            ['LoraLoaderModelOnly', 'lora_name'],
   upscale_models:   ['UpscaleModelLoader', 'model_name'],
+  model_patches:    ['ModelPatchLoader', 'name'],
 }
 
 /**
@@ -445,6 +456,8 @@ export interface ImageSettings {
   region?:  string
   /** The ControlNet that held the source's lines in place during a redraw, if one did. */
   controlnet?: string
+  /** The model's own inpainting patch that shaped a masked edit, when one was installed (Anima's LLLite file). */
+  inpaintPatch?: string
   /**
    * HOW MUCH THE PICTURE ACTUALLY CHANGED, 0-1, against the source it was
    * redrawn from — the mean of the top 2% of grid cells, the same measure the
@@ -803,6 +816,15 @@ export interface ImageJob {
    */
   structure:  boolean
   controlnet: string
+  /**
+   * THE MODEL'S OWN INPAINTING PATCH for a masked edit — Anima's ControlNet-
+   * LLLite file (see ANIMA_INPAINT_PATCH), resolved in run() from what the
+   * box lists, the way the LoRA and the ControlNet are. '' when the style has
+   * none or the file is not installed. Optional by design: the masked edit
+   * works without it, as it did before the patch existed; with it the part is
+   * painted knowing what surrounds it.
+   */
+  inpaintPatch: string
   /** How it is held, resolved from the settings (or the request) at queue time. */
   hold:         HoldMode
   holdStrength: number
@@ -1408,6 +1430,7 @@ export function startImage(req: ImageRequest): ImageJob {
     region,
     structure: !!source && !edits && (req.structure ?? hold.enabled),
     controlnet: '',
+    inpaintPatch: '',
     // Per request first, then the saved setting. The Draw panel sends these
     // so one picture can be tried a different way without changing the
     // default everything else uses.
@@ -1678,6 +1701,30 @@ async function run(job: ImageJob): Promise<void> {
       }
     }
 
+    // Change-only-a-part on a style that has its own inpainting patch: name
+    // the file now, for the same reason the LoRA and the ControlNet are named
+    // here — it lives on the GPU box's disk and only the box knows whether it
+    // is there. A miss does NOT fail the render: the masked edit works without
+    // the patch, exactly as it did before the patch existed, so this is a
+    // default nobody switched on rather than a setting someone chose. The
+    // miss is logged with the file to go and download, and the picture's
+    // details record which way the part was painted (`inpaintPatch` on
+    // ImageSettings; the lineage view says "Inpainting patch: no"), so "why
+    // doesn't the part match its surroundings" has a durable answer.
+    if (job.source && (job.maskFile || job.region) && !edits) {
+      const want = styleInpaintPatch(job.model)
+      if (want) {
+        const have = await listModelPatches()
+        job.inpaintPatch = have.find(f => f.split(/[\\/]/).pop() === want) ?? ''
+        if (!job.inpaintPatch) {
+          console.log(
+            `[image] ${job.id} ${styleLabel(job.model)}'s inpainting patch (${want}) is not on the image server — ` +
+            'the part is repainted without it; put the file in ComfyUI/models/model_patches to enable it',
+          )
+        }
+      }
+    }
+
     if (job.turbo && !job.lora) {
       const installed = await listLoras()      // a dead box throws, and should
       job.lora = pickLora(installed, turboHints(job.model))
@@ -1845,7 +1892,7 @@ async function run(job: ImageJob): Promise<void> {
           `${job.promptOriginal && job.promptOriginal !== job.prompt ? ` (typed: "${job.promptOriginal.slice(0, 80)}")` : ''}` +
           `, source ${job.sourceWidth ?? '?'}×${job.sourceHeight ?? '?'} → ${job.width}×${job.height}` +
           `${edit ? '' : `, strength ${Math.round((job.denoise ?? 1) * 100)}%`}${job.mask ? ', masked' : ''}` +
-          `${job.controlnet ? `, pose held by ${job.controlnet}` : ''}, attempt ${attempt}`,
+          `${job.controlnet ? `, pose held by ${job.controlnet}` : ''}${job.inpaintPatch ? `, part painted with ${job.inpaintPatch}` : ''}, attempt ${attempt}`,
         )
         if (edit && floor > 0 && changed < floor && attempt === 1 && !job.mask) {
           push(job, 'rewriting the instruction',
@@ -1997,8 +2044,11 @@ const BUILTIN_GRAPH: ComfyGraph = {
  * box turns out not to have is swapped for euler at queue time by
  * ensureSamplers(), so the card's pick can never fail a render as a bare
  * "value not in list" naming a sampler the user never chose.
+ *
+ * The scheduler is a parameter too, since the 2.9B expansion's card asks for
+ * `sgm_uniform` where the originals ship `simple`; both are core ComfyUI.
  */
-function animaGraph(unet: string, steps: number, cfg: number, sampler = 'euler'): ComfyGraph {
+function animaGraph(unet: string, steps: number, cfg: number, sampler = 'euler', scheduler = 'simple'): ComfyGraph {
   return {
     '1': { class_type: 'UNETLoader', inputs: { unet_name: unet, weight_dtype: 'default' } },
     '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen_3_06b_base.safetensors', type: 'stable_diffusion', device: 'default' } },
@@ -2009,7 +2059,7 @@ function animaGraph(unet: string, steps: number, cfg: number, sampler = 'euler')
     '7': {
       class_type: 'KSampler',
       inputs: {
-        seed: 0, steps, cfg, sampler_name: sampler, scheduler: 'simple', denoise: 1,
+        seed: 0, steps, cfg, sampler_name: sampler, scheduler, denoise: 1,
         model: ['1', 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0],
       },
     },
@@ -2577,6 +2627,25 @@ const ANIMA_SHARED = [
 ]
 
 /**
+ * Anima's own inpainting patch — the nearest thing to an "Anima Edit" there is
+ * (checked 2026-09-10: circlestone-labs publishes no editor, and no newer
+ * diffusion model than the turbo v1.1 of 2026-08-24).
+ *
+ * A ControlNet-LLLite trained by kohya-ss against Anima-Base v1.0 on "the
+ * source with the part blacked out + the mask" (4-channel conditioning) and
+ * repackaged for ComfyUI by Comfy-Org, 66 MB, loaded by core ComfyUI's
+ * ModelPatchLoader and applied by AnimaLLLiteApply — no node pack. Spliced
+ * into a masked edit on every Anima style by buildGraph when run() finds the
+ * file on the box; absent, the masked edit works the generic way. It lives in
+ * `model_patches/`, NOT in a style's `needs`, because it is an improvement
+ * rather than a requirement and a greyed-out Anima over an optional file
+ * would be the wrong answer.
+ *
+ *   https://huggingface.co/Comfy-Org/Anima-LLLite/resolve/main/model_patches/anima-lllite-inpainting-v2.safetensors
+ */
+const ANIMA_INPAINT_PATCH = 'anima-lllite-inpainting-v2.safetensors'
+
+/**
  * Styles that are a whole graph rather than a checkpoint name.
  *
  * Keyed by the id used on the wire as `wf:<id>`. A user-supplied API-format
@@ -2683,6 +2752,13 @@ const BUILTIN_WORKFLOWS: Record<string, {
    * with only the source's filename filled in, the way it does for an editor.
    */
   upscales?: boolean
+  /**
+   * A ControlNet-LLLite inpainting patch trained for this model, by filename
+   * under ComfyUI/models/model_patches. Spliced onto the model for a masked
+   * edit when the file is on the box (run() checks ModelPatchLoader's list);
+   * never required, so it is not in `needs`.
+   */
+  inpaintPatch?: string
 }> = {
   'flux1-dev': {
     label: 'FLUX.1 dev',
@@ -2874,6 +2950,9 @@ const BUILTIN_WORKFLOWS: Record<string, {
     graph: animaGraph('anima-aesthetic-v1.1.safetensors', 30, 4),
     turboHints: ['anima', 'turbo'],
     needs: ['diffusion_models/anima-aesthetic-v1.1.safetensors', ...ANIMA_SHARED],
+    // Trained against Base v1.0; Aesthetic is a fine-tune of the same model
+    // and Comfy-Org ships one patch for the family, so all three carry it.
+    inpaintPatch: ANIMA_INPAINT_PATCH,
   },
   'anima-turbo-v1-1': {
     label: 'Anima Turbo v1.1',
@@ -2893,6 +2972,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
     graph: animaGraph('anima-turbo-v1.1.safetensors', 10, 1),
     ignoresQuality: true,
     needs: ['diffusion_models/anima-turbo-v1.1.safetensors', ...ANIMA_SHARED],
+    inpaintPatch: ANIMA_INPAINT_PATCH,
   },
   'anima-base-v1': {
     label: 'Anima Base v1',
@@ -2921,6 +3001,43 @@ const BUILTIN_WORKFLOWS: Record<string, {
     // render that fails with a bare "value not in list" naming a file the user
     // has never heard of.
     needs: ['diffusion_models/anima-base-v1.0.safetensors', ...ANIMA_SHARED],
+    // The model the patch was actually trained on.
+    inpaintPatch: ANIMA_INPAINT_PATCH,
+  },
+  /**
+   * Anima 2.9B preview v1 — a COMMUNITY expansion of Anima, not a circlestone
+   * release (Gazingstars123 on Hugging Face, 2026-08-28). Anima Base's 28
+   * transformer layers with twelve more interleaved between them (~2.9B
+   * parameters, functionally identical to base at initialisation), then only
+   * the new layers trained on a further 1.7M anime/illustration samples with a
+   * knowledge cutoff of July 2026 — which at the time of adding it makes it
+   * the most current anime model here by a year. Same Qwen-3 0.6B encoder and
+   * Qwen-Image VAE as the originals, loaded natively by ComfyUI ≥ 0.33.1 (the
+   * card's custom node is only for older builds), so it is one 5.8 GB file
+   * beside the other Anima checkpoints.
+   *
+   * From the card: no score tags in its captions ("you can still use them" —
+   * but a prefix the model was not trained on is a prefix doing nothing, so
+   * the aesthetic pair without them is the honest one); euler / res_multistep
+   * / er_sde with sgm_uniform / beta / linear_quadratic; 28-50 steps at cfg
+   * 3.5-5; 812×1216 and 1152×1536 are its named resolutions, which the
+   * megapixel budget covers. Prompting is Anima's, so the guide, the creator
+   * tags and the meta tag all carry over.
+   */
+  'anima-2-9b-preview-v1': {
+    label: 'Anima 2.9B preview v1',
+    promptStyle: 'mixed',
+    promptGuide: ANIMA_PROMPT_GUIDE,
+    prefixes: ANIMA_AES_PREFIX,
+    optimizations: ANIMA_OPTIMIZATIONS,
+    negative: ANIMA_AES_NEGATIVE,
+    graph: animaGraph('Anima-2.9B-preview-v1.safetensors', 30, 4, 'euler', 'sgm_uniform'),
+    // No turboHints and no inpaintPatch, deliberately: the turbo LoRA and the
+    // LLLite inpainting patch address Anima's 28 layers by index, and this
+    // model interleaved twelve new ones between them, so neither lines up with
+    // the layers it was trained against. Masked edits still work the generic
+    // way; Turbo stays hidden in Advanced.
+    needs: ['diffusion_models/Anima-2.9B-preview-v1.safetensors', ...ANIMA_SHARED],
   },
 }
 
@@ -3210,6 +3327,12 @@ export function supersededCheckpoints(): Set<string> {
 function turboHints(style: string): string[] {
   if (!style.startsWith(WORKFLOW_PREFIX)) return []
   return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.turboHints ?? []
+}
+
+/** The inpainting patch a style was trained with, by filename; '' for a style without one. */
+function styleInpaintPatch(style: string): string {
+  if (!style.startsWith(WORKFLOW_PREFIX)) return ''
+  return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.inpaintPatch ?? ''
 }
 
 /** True for a style that upscales a picture: source in, no prompt, ×4 out. */
@@ -3587,6 +3710,39 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
         graph['touchsphere_diff'] = { class_type: 'DifferentialDiffusion', inputs: { model: modelLink } }
         sampler.inputs['model'] = ['touchsphere_diff', 0]
       }
+      //   4. The model's OWN inpainting patch, on a style that has one and a
+      //      box that has the file (run() resolved `job.inpaintPatch`). The
+      //      three additions above only tell the sampler WHERE it may paint;
+      //      what it paints there is guessed from the prompt and whatever of
+      //      the surroundings leaks through the latent. Anima's ControlNet-
+      //      LLLite inpainting patch shows the model the source with the part
+      //      blacked out plus the mask, so the new pixels are drawn to fit
+      //      their neighbours. Wired as ComfyUI's own
+      //      image_anima_lllite_image_inpainting template does — ModelPatchLoader
+      //      → AnimaLLLiteApply on the model — and fed the render-size source
+      //      and the GROWN mask, so the patch and the latent mask agree on where
+      //      the edge is. The node blacks out the region itself (the file's
+      //      `lllite.inpaint_masked_input` metadata) and scales both inputs to
+      //      the latent's size, so nothing is pre-cropped here. Kept on the
+      //      img2img latent rather than the template's empty one: the model
+      //      card recommends img2img with a mask, "otherwise the colors may
+      //      shift". Goes on AFTER DifferentialDiffusion and BEFORE the turbo
+      //      LoRA splice further down, which wraps whatever is on the model
+      //      link — the template's own order (UNET → LLLite → LoRA).
+      if (job.inpaintPatch && Array.isArray(sampler.inputs['model'])) {
+        graph['touchsphere_inpaint_patch'] = { class_type: 'ModelPatchLoader', inputs: { name: job.inpaintPatch } }
+        graph['touchsphere_inpaint_apply'] = {
+          class_type: 'AnimaLLLiteApply',
+          inputs: {
+            model: sampler.inputs['model'],
+            model_patch: ['touchsphere_inpaint_patch', 0],
+            image: pixels,
+            mask: ['touchsphere_mask_soft', 0],
+            strength: 1, start_percent: 0, end_percent: 1,
+          },
+        }
+        sampler.inputs['model'] = ['touchsphere_inpaint_apply', 0]
+      }
       graph['touchsphere_masked_latent'] = {
         class_type: 'SetLatentNoiseMask',
         inputs: { samples: [encId, 0], mask: ['touchsphere_mask_soft', 0] },
@@ -3795,6 +3951,7 @@ function renderedWith(job: ImageJob, graph: ComfyGraph, changed?: number | null)
     ...(job.source ? { source: job.source, denoise: job.denoise } : {}),
     ...(job.maskFile ? { mask: true, ...(job.region ? { region: job.region } : {}) } : {}),
     ...(job.controlnet ? { controlnet: `${job.controlnet} · ${job.hold} ${Math.round(job.holdStrength * 100)}% to ${Math.round(job.holdEnd * 100)}%` } : {}),
+    ...(job.inpaintPatch ? { inpaintPatch: job.inpaintPatch } : {}),
     ...(typeof changed === 'number' ? { changed } : {}),
     ...(job.retriedWith ? { retriedWith: job.retriedWith } : {}),
     ...(job.retryFailed ? { retryFailed: job.retryFailed } : {}),

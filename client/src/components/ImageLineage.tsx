@@ -124,6 +124,10 @@ function Facts({ st, origin }: { st: ImageSettings | null; origin: string }) {
   } else if (st?.source) {
     rows.push(['Pose held', 'no'])
   }
+  // Only for a masked edit: whether the model's own inpainting patch was
+  // there. The file name means nothing here either; that it was used does.
+  if (st?.inpaintPatch) rows.push(['Inpainting patch', 'yes'])
+  else if (st?.mask) rows.push(['Inpainting patch', 'no'])
   if (st?.steps) rows.push(['Steps', String(st.steps)])
   if (st?.cfg) rows.push(['Guidance', String(st.cfg)])
   if (st?.improvedBy) rows.push(['Prompt rewritten by', st.improvedBy])

@@ -604,6 +604,13 @@ function ImageDetails({
   if (st?.controlnet) {
     rows.push({ label: 'Pose held by', value: `ControlNet · ${st.controlnet}` })
   }
+  // The model's own inpainting patch, when the masked part was painted with
+  // one. Named for the same reason the ControlNet is: two masked edits of the
+  // same picture can come back very differently depending on whether the
+  // file was on the box that day.
+  if (st?.inpaintPatch) {
+    rows.push({ label: 'Part painted with', value: `inpainting patch · ${st.inpaintPatch}` })
+  }
   // The prompt improver, when it ran. Named rather than implied: two models
   // write very different prompts, and "why does this look nothing like what I
   // typed" has exactly one answer and it is this row.

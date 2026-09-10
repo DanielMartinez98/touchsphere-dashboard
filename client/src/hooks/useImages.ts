@@ -37,6 +37,8 @@ export interface ImageSettings {
   region?:  string
   /** The ControlNet that held the pose during a redraw, when one did. */
   controlnet?: string
+  /** The model's own inpainting patch that shaped a masked edit, when one was installed (Anima's LLLite file). */
+  inpaintPatch?: string
   /** How much of the source actually changed, 0-1. Absent for a fresh render or an older picture. */
   changed?:    number
   maskFile?:   string
