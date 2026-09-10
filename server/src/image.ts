@@ -1329,7 +1329,7 @@ export function startImage(req: ImageRequest): ImageJob {
     ? upscales
       ? { width: source.width * 4, height: source.height * 4 }
       : edits
-      ? kontextSize(source.width, source.height)
+      ? editSize(style, source.width, source.height)
       : sizeForMegapixels(source.width, source.height, p.megapixels > 0 ? p.megapixels : 1, p.multipleOf)
     : p.megapixels > 0
       ? sizeForMegapixels(asked.width, asked.height, p.megapixels, p.multipleOf)
@@ -2196,6 +2196,17 @@ function fluxGraph(unet: string, weightDtype: string, t5: string): ComfyGraph {
  * It reuses FLUX dev's own encoder and VAE files, so a box with dev installed
  * needs exactly one more download.
  */
+/**
+ * The size an editor will hand back, for the frame's size text before the
+ * render starts (the PNG header has the final say once it lands). Kontext
+ * snaps to its published list; every other editor here fits the source to one
+ * megapixel at its own shape, in multiples of eight.
+ */
+function editSize(style: string, w: number, h: number): { width: number; height: number } {
+  if (style === `${WORKFLOW_PREFIX}flux-kontext-dev`) return kontextSize(w, h)
+  return sizeForMegapixels(w, h, 1, 8)
+}
+
 function kontextGraph(): ComfyGraph {
   return {
     '1': { class_type: 'UNETLoader', inputs: { unet_name: 'flux1-dev-kontext_fp8_scaled.safetensors', weight_dtype: 'default' } },
@@ -2240,6 +2251,55 @@ function upscaleGraph(modelName: string): ComfyGraph {
     '2': { class_type: 'UpscaleModelLoader', inputs: { model_name: modelName } },
     '3': { class_type: 'ImageUpscaleWithModel', inputs: { upscale_model: ['2', 0], image: ['1', 0] } },
     '4': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['3', 0] } },
+  }
+}
+
+/**
+ * Qwen-Image-Edit 2511 — the second EDITOR, and the one to reach for on anime.
+ *
+ * Transcribed from ComfyUI's own Qwen image-edit template with the second and
+ * third reference images dropped. Same contract as Kontext (`edits: true`):
+ * the source goes into this graph's own LoadImage, the prompt is an
+ * INSTRUCTION, the sampler runs denoise 1 over the encoded source. Three
+ * differences that matter:
+ *
+ *   • The text encoder is Qwen2.5-VL 7B — a vision-language model that is
+ *     shown the picture (`TextEncodeQwenImageEditPlus` takes `image1`) and
+ *     writes `prompt`, not `text`, which is why conditioningText() and the
+ *     prompt writer accept either key.
+ *   • The picture is fitted to one megapixel first (`ImageScaleToTotalPixels`),
+ *     keeping its shape, rather than snapped to a fixed list of sizes.
+ *   • The weights are the Lightning-fused fp8 file from lightx2v: the 4-step
+ *     distillation is baked in, so it runs 4 steps at cfg 1 with
+ *     ModelSamplingAuraFlow shift 3, and the quality row has no say.
+ *
+ * Why it is here at all: Kontext was trained overwhelmingly on photographs and
+ * is weak on drawn characters — "add a jacket" over an anime still mangled
+ * the pose — while Qwen-Image-Edit's card names anime among the styles it
+ * handles and its encoder knows the characters by name. Placed BEFORE Kontext
+ * in the table so the planner and the "Edit it with … instead" chip prefer
+ * it when both are installed.
+ */
+function qwenEditGraph(): ComfyGraph {
+  return {
+    '1': { class_type: 'UNETLoader', inputs: { unet_name: 'qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_comfyui_4steps_v1.0.safetensors', weight_dtype: 'default' } },
+    '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen_2.5_vl_7b_fp8_scaled.safetensors', type: 'qwen_image', device: 'default' } },
+    '3': { class_type: 'VAELoader', inputs: { vae_name: 'qwen_image_vae.safetensors' } },
+    '4': { class_type: 'LoadImage', inputs: { image: '' } },
+    '5': { class_type: 'ImageScaleToTotalPixels', inputs: { image: ['4', 0], upscale_method: 'lanczos', megapixels: 1.0, resolution_steps: 8 } },
+    '6': { class_type: 'ModelSamplingAuraFlow', inputs: { model: ['1', 0], shift: 3.0 } },
+    '7': { class_type: 'TextEncodeQwenImageEditPlus', inputs: { clip: ['2', 0], prompt: '', vae: ['3', 0], image1: ['5', 0] } },
+    '8': { class_type: 'TextEncodeQwenImageEditPlus', inputs: { clip: ['2', 0], prompt: '', vae: ['3', 0], image1: ['5', 0] } },
+    '9': { class_type: 'VAEEncode', inputs: { pixels: ['5', 0], vae: ['3', 0] } },
+    '10': {
+      class_type: 'KSampler',
+      inputs: {
+        seed: 0, steps: 4, cfg: 1, sampler_name: 'euler', scheduler: 'simple', denoise: 1,
+        model: ['6', 0], positive: ['7', 0], negative: ['8', 0], latent_image: ['9', 0],
+      },
+    },
+    '11': { class_type: 'VAEDecode', inputs: { samples: ['10', 0], vae: ['3', 0] } },
+    '12': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['11', 0] } },
   }
 }
 
@@ -2650,6 +2710,31 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'text_encoders/clip_l.safetensors',
       'text_encoders/t5xxl_fp8_e4m3fn.safetensors',
       'vae/ae.safetensors',
+    ],
+  },
+  'qwen-image-edit': {
+    label: 'Qwen Image Edit (edit)',
+    graph: qwenEditGraph(),
+    edits: true,
+    // Lightning-fused: 4 steps at cfg 1 are the model, not a preference.
+    ignoresQuality: true,
+    promptStyle: 'prose',
+    promptGuide:
+      'This model EDITS the picture it is shown, so the prompt is an instruction, not a ' +
+      'description of a scene. Its text encoder is a vision-language model that looks at the ' +
+      'picture while reading the instruction, so name the subject as it appears ("the girl with ' +
+      'pink hair", "the man on the left") and say the change concretely: "change her jacket to ' +
+      'red leather", "make it night with rain", "give him sunglasses". It knows anime and its ' +
+      'characters: a named character or series may be used as-is ("draw her in Sakura Haruno\'s ' +
+      'outfit"). Keep it to one or two sentences. Do not describe what is not changing and never ' +
+      'write a full scene description. Text to add goes in quotes.',
+    // No negative worth writing: the Lightning distillation runs at cfg 1,
+    // where the negative encode is computed and ignored.
+    negative: '',
+    needs: [
+      'diffusion_models/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_comfyui_4steps_v1.0.safetensors',
+      'text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors',
+      'vae/qwen_image_vae.safetensors',
     ],
   },
   'flux-kontext-dev': {
@@ -3249,7 +3334,8 @@ function conditioningText(graph: ComfyGraph, startId: string | null): string | n
   for (let hop = 0; id && hop < 8; hop++) {
     const node = graph[id]
     if (!node) return null
-    if ('text' in node.inputs) return id
+    // CLIPTextEncode says `text`; Qwen's image-edit encoder says `prompt`.
+    if ('text' in node.inputs || 'prompt' in node.inputs) return id
     // Every conditioning passthrough names its upstream input `conditioning`.
     const up = node.inputs['conditioning']
     id = Array.isArray(up) && typeof up[0] === 'string' ? up[0] : null
@@ -3356,14 +3442,17 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
   // No style lookup here any more: startImage() resolved the four text fields
   // against the user's overrides when the job was queued, and re-deriving them
   // from the style at render time would quietly ignore every one of them.
-  if (posId && graph[posId] && 'text' in graph[posId]!.inputs) {
+  const textKey = (id: string): 'text' | 'prompt' | null =>
+    graph[id] ? ('text' in graph[id]!.inputs ? 'text' : 'prompt' in graph[id]!.inputs ? 'prompt' : null) : null
+  const posKey = posId ? textKey(posId) : null
+  if (posId && posKey) {
     // prefix + what was asked for + booster, in that order. The booster goes
     // LAST rather than into the prefix because the prefix is where a model's
     // card puts its own documented lead-in — Lumina's instruction line has to
     // be first, and NoobAI's quality ladder is specified as a prefix — so the
     // user's "always add this" has to be a third position, not a fight with
     // either of them.
-    graph[posId]!.inputs['text'] = joinPrefix(job.prefix, joinPrompt(job.prompt, job.optimizations))
+    graph[posId]!.inputs[posKey] = joinPrefix(job.prefix, joinPrompt(job.prompt, job.optimizations))
   } else {
     throw new Error("workflow's positive prompt does not reach a text node")
   }
@@ -3372,8 +3461,9 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
   // text node, and writing the negative there would replace the prompt with the
   // negative and draw a picture of everything the user didn't want. A negative
   // that is inert in the graph stays inert.
-  if (negId && negId !== posId && graph[negId] && 'text' in graph[negId]!.inputs) {
-    graph[negId]!.inputs['text'] = joinPrefix(job.negativePrefix, job.negative)
+  const negKey = negId ? textKey(negId) : null
+  if (negId && negId !== posId && negKey) {
+    graph[negId]!.inputs[negKey] = joinPrefix(job.negativePrefix, job.negative)
   }
 
   const latentId = findNode(graph, ['EmptyLatentImage', 'EmptySD3LatentImage', 'EmptyLatentImageAdvanced'])

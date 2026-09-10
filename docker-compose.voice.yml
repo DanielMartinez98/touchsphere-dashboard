@@ -142,7 +142,11 @@ services:
     ports:
       - "8188:8188"
     volumes:
-      - ./comfy/models:/root/ComfyUI/models
+      # Where the weights live. Overridable because they are now ~115 GB and the
+      # checkout is inside OneDrive on a system drive with no room left: set
+      # COMFY_MODELS_DIR in a .env beside this file (e.g. D:/touchsphere/comfy/models)
+      # and the folder stays out of the sync client and off the boot drive.
+      - ${COMFY_MODELS_DIR:-./comfy/models}:/root/ComfyUI/models
       - ./comfy/output:/root/ComfyUI/output
       - ./comfy/input:/root/ComfyUI/input
       # NOTE: custom_nodes is deliberately NOT mounted. Bind-mounting an empty
