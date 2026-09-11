@@ -44,8 +44,35 @@ function cacheDir(): string {
   return dir
 }
 
+// Notion ids come in two spellings — dashed (what search and the API return)
+// and bare 32-hex (what the URL bar shows and what people paste) — and the
+// same database under both spellings was two entries in the set. Everything
+// is normalised to the dashed form on the way in; Notion accepts either.
+function normId(raw: string): string {
+  const s = raw.trim()
+  const hex = s.replace(/-/g, '')
+  if (/^[0-9a-f]{32}$/i.test(hex)) {
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`.toLowerCase()
+  }
+  return s
+}
+
+// A pasted Notion link → the database id in it. The id is the last 32-hex
+// run in the PATH ("…/Tasks-<id>"); the `?v=` in the query is a view id and
+// must not win. Anything that is not a link goes through normId() as an id.
+function idFromLink(raw: string): string {
+  const s = raw.trim()
+  if (!/^https?:\/\//i.test(s)) return normId(s)
+  try {
+    const runs = new URL(s).pathname.match(/[0-9a-f]{32}/gi) ?? []
+    return runs.length ? normId(runs[runs.length - 1]!) : s
+  } catch {
+    return normId(s)
+  }
+}
+
 const clean = (arr: unknown): string[] =>
-  Array.isArray(arr) ? Array.from(new Set(arr.map(String).map(s => s.trim()).filter(Boolean))) : []
+  Array.isArray(arr) ? Array.from(new Set(arr.map(String).map(s => normId(s)).filter(Boolean))) : []
 
 // ── "Me" — whose tasks the widget shows ───────────────────────────────────────
 // Task databases are often shared, so an unfiltered query returns the whole
@@ -94,27 +121,33 @@ function envTaskDbIds(): string[] {
 // integration can see) plus the env seed, minus anything the user has hidden
 // via the Browse "Show in Tasks" toggle, plus anything they've explicitly added
 // that discovery didn't catch. Only these two overrides are persisted.
-interface TaskDbStore { included: string[]; excluded: string[] }
+// `defaultId` is the board new tasks land in (Settings → Notion). '' means
+// "whichever comes first" — the env-named one, as it always was.
+interface TaskDbStore { included: string[]; excluded: string[]; defaultId: string }
 
 function readStore(): TaskDbStore {
   const p = path.join(cacheDir(), TASK_DBS_FILE)
   try {
     if (fs.existsSync(p)) {
-      const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as { included?: unknown; excluded?: unknown; ids?: unknown }
+      const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as { included?: unknown; excluded?: unknown; ids?: unknown; defaultId?: unknown }
       // Migrate the earlier `{ ids }` shape → explicit includes.
-      return { included: clean(parsed.included ?? parsed.ids), excluded: clean(parsed.excluded) }
+      return {
+        included:  clean(parsed.included ?? parsed.ids),
+        excluded:  clean(parsed.excluded),
+        defaultId: typeof parsed.defaultId === 'string' ? normId(parsed.defaultId) : '',
+      }
     }
   } catch (err) {
     console.error('[notion] failed to read task-db store:', err)
   }
-  return { included: [], excluded: [] }
+  return { included: [], excluded: [], defaultId: '' }
 }
 
 function writeStore(store: TaskDbStore): void {
   try {
     fs.writeFileSync(
       path.join(cacheDir(), TASK_DBS_FILE),
-      JSON.stringify({ included: clean(store.included), excluded: clean(store.excluded) }, null, 2),
+      JSON.stringify({ included: clean(store.included), excluded: clean(store.excluded), defaultId: normId(store.defaultId) }, null, 2),
       'utf8',
     )
   } catch (err) {
@@ -166,7 +199,12 @@ async function getTaskDbIds(): Promise<string[]> {
   const auto  = await discoverTaskDbIds().catch(() => [])   // tolerate search failure
   const set   = new Set<string>([...envTaskDbIds(), ...store.included, ...auto])
   for (const ex of store.excluded) set.delete(ex)
-  return Array.from(set)
+  const out = Array.from(set)
+  // The board picked as default in Settings → Notion goes first, because
+  // "first" is what resolveTaskDb() and the create sheet both mean by default.
+  const d = store.defaultId
+  if (d && out.includes(d)) { out.splice(out.indexOf(d), 1); out.unshift(d) }
+  return out
 }
 
 function tasksConfigured(): boolean {
@@ -645,36 +683,108 @@ router.get('/tasks/:id/content', async (req, res) => {
 })
 
 // ── Task database management ──────────────────────────────────────────────────
-// Which databases feed the aggregated task widget. The list is user-editable
-// from the Browse view ("Show in Tasks") and persisted server-side.
+// Which databases ("boards") feed the aggregated task widget. Editable from
+// Settings → Notion and from the Browse view ("Show in Tasks"), persisted
+// server-side, shared by every device.
+
+interface TaskDbView {
+  id: string; title: string; icon: string | null
+  /** A task can be created here: the database has a Status (or done checkbox). */
+  hasStatus: boolean
+  /** Where this board came from — the env var, the user, or discovery. */
+  source: 'env' | 'added' | 'discovered'
+  /** New tasks land here. Explicit when set in Settings, else the first board with a Status. */
+  isDefault: boolean
+  /** Notion would not hand it over (deleted, or unshared from the integration). */
+  unavailable: boolean
+}
+
+// The whole picture for the Settings tab in one answer: the boards in effect
+// (in the order that decides where a new task goes), the ones hidden, and
+// which is the default. Every mutation below answers with the same shape so
+// the screen never has to guess what a change did.
+async function taskDbsView() {
+  const store = readStore()
+  const ids   = await getTaskDbIds()
+  const env   = new Set(envTaskDbIds())
+  const dbs: TaskDbView[] = await Promise.all(ids.map(async id => {
+    const source: TaskDbView['source'] = env.has(id) ? 'env' : store.included.includes(id) ? 'added' : 'discovered'
+    try {
+      const e = await getDb(id)
+      return { id, title: e.title, icon: e.icon, hasStatus: !!e.schema.statusKey, source, isDefault: false, unavailable: false }
+    } catch {
+      return { id, title: 'Unavailable', icon: null, hasStatus: false, source, isDefault: false, unavailable: true }
+    }
+  }))
+  // The effective default is what resolveTaskDb() would choose: the explicit
+  // pick if it can take a task, else the first board that can.
+  const explicit = store.defaultId && dbs.find(d => d.id === store.defaultId && d.hasStatus)
+  const effective = explicit || dbs.find(d => d.hasStatus)
+  if (effective) effective.isDefault = true
+  const hidden = await Promise.all(store.excluded.map(async id => {
+    try { const e = await getDb(id); return { id, title: e.title, icon: e.icon } }
+    catch { return { id, title: 'Unavailable', icon: null } }
+  }))
+  return { ids, dbs, hidden, defaultId: effective?.id ?? '', defaultExplicit: !!explicit }
+}
+
+// Other devices' task lists and settings tabs follow this frame (useNotion
+// listens on `notion`), the same one every task edit through this app sends.
+function announceTaskDbs(): void {
+  broadcast('notion', { kind: 'task-dbs' })
+}
 
 // GET → the effective task databases (auto-discovered + overrides) with fresh
-// title/icon for the UI.
+// title/icon for the UI, plus the hidden ones and the default.
 router.get('/task-dbs', async (_req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   try {
-    const ids = await getTaskDbIds()
-    const dbs = await Promise.all(ids.map(async id => {
-      try { const e = await getDb(id); return { id, title: e.title, icon: e.icon } }
-      catch { return { id, title: 'Unavailable', icon: null } }
-    }))
-    res.json({ ids, dbs })
+    res.json(await taskDbsView())
   } catch (err) { notionError(res, err, 'Failed to list task databases') }
 })
 
-// POST { id } → force a database into the task set (un-exclude / include).
+// POST { id, makeDefault? } → force a database into the task set (un-exclude /
+// include). `id` may be a pasted Notion link; the database id is taken from it.
 router.post('/task-dbs', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
-  const { id } = req.body as { id?: string }
-  const target = id?.trim()
+  const body = req.body as { id?: unknown; makeDefault?: unknown }
+  const target = typeof body?.id === 'string' ? idFromLink(body.id) : ''
   if (!target) { res.status(400).json({ error: 'id is required' }); return }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(target)) {
+    res.status(400).json({ error: 'That is not a Notion database link or id' }); return
+  }
+  // Prove the integration can see it before remembering it: a typo, or a
+  // database never shared with the integration, would otherwise sit in the
+  // list as "Unavailable" with nothing saying which of the two it is.
+  try { dbCache.delete(target); await getDb(target, true) }
+  catch (err) { notionError(res, err, 'Cannot add that database'); return }
   try {
     const store = readStore()
     store.excluded = store.excluded.filter(x => x !== target)
     if (!store.included.includes(target)) store.included.push(target)
+    if (body.makeDefault === true) store.defaultId = target
     writeStore(store)
-    dbCache.delete(target)
-    res.status(201).json({ ids: await getTaskDbIds() })
+    announceTaskDbs()
+    res.status(201).json(await taskDbsView())
+  } catch { res.status(500).json({ error: 'Failed to persist task databases' }) }
+})
+
+// POST /task-dbs/default { id } → the board new tasks land in. '' clears the
+// choice (back to "the first one"). Must be a board currently in the set.
+router.post('/task-dbs/default', async (req, res) => {
+  if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
+  const raw = (req.body as { id?: unknown })?.id
+  const target = typeof raw === 'string' ? idFromLink(raw) : ''
+  try {
+    if (target && !(await getTaskDbIds()).includes(target)) {
+      res.status(400).json({ error: 'That database is not one of the task boards' }); return
+    }
+    const store = readStore()
+    store.defaultId = target
+    writeStore(store)
+    console.log(`[notion] default task board → ${target || '(first)'}`)
+    announceTaskDbs()
+    res.json(await taskDbsView())
   } catch { res.status(500).json({ error: 'Failed to persist task databases' }) }
 })
 
@@ -682,13 +792,15 @@ router.post('/task-dbs', async (req, res) => {
 // would otherwise auto-include it).
 router.delete('/task-dbs/:id', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
-  const target = req.params['id']!
+  const target = normId(req.params['id']!)
   try {
     const store = readStore()
     store.included = store.included.filter(x => x !== target)
     if (!store.excluded.includes(target)) store.excluded.push(target)
+    if (store.defaultId === target) store.defaultId = ''
     writeStore(store)
-    res.json({ ids: await getTaskDbIds() })
+    announceTaskDbs()
+    res.json(await taskDbsView())
   } catch { res.status(500).json({ error: 'Failed to persist task databases' }) }
 })
 
@@ -730,6 +842,9 @@ router.get('/workspace', async (_req, res) => {
         icon:  iconOf(d),
         url:   d.url,
         parent: d.parent,
+        // Whether it looks like a task list (Status or done checkbox) — the
+        // Settings tab says so beside each board it offers to add.
+        taskLike: isTaskDb(d.properties ?? {}),
       })),
       pages: pages.map(p => ({
         id:     p.id,

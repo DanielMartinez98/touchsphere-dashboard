@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, lazy, Suspense, type ReactNode } from 'react'
-import { Check, X as XIcon, RotateCw, ClipboardCopy, MessageSquare, Trash2, Volume2, Download, Pin, ChevronDown, ChevronRight } from 'lucide-react'
+import { Check, X as XIcon, RotateCw, ClipboardCopy, MessageSquare, Trash2, Volume2, Download, Pin, ChevronDown, ChevronRight, Star, Plus, Eye, EyeOff } from 'lucide-react'
 import { useAudioDevices } from '../hooks/useAudioDevices'
 import { useDevice } from '../hooks/useDevice'
 import { playSound, playRecordChime } from '../utils/sound'
@@ -21,9 +21,10 @@ import { useGuideActivity, type ActivityLevel } from '../hooks/useGuideActivity'
 import { useHost, useHostEnabled, type HostTask } from '../hooks/useHost'
 import { usePresence, useLiveReadings } from '../hooks/usePresence'
 import { useMailSettings } from '../hooks/useMail'
+import { useTaskDbs, type TaskBoard } from '../hooks/useTaskDbs'
 import { TouchInput } from './TouchInput'
 
-type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'prompts' | 'mail' | 'system' | 'server' | 'debug'
+type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'prompts' | 'mail' | 'notion' | 'system' | 'server' | 'debug'
 
 // The preview reuses the dashboard's own renderers. Lazy, same chunks App
 // splits out — opening the VTuber tab is what pulls in the heavy deps, and
@@ -409,6 +410,7 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
     { id: 'memory',    label: 'Memory'    },
     { id: 'guides',    label: 'Guides'    },
     { id: 'mail',      label: 'Mail'      },
+    { id: 'notion',    label: 'Notion'    },
     { id: 'drawing',   label: 'Drawing'   },
     { id: 'prompts',   label: 'Prompts'   },
     { id: 'system',    label: 'System'    },
@@ -1319,8 +1321,6 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
             {/* System tab */}
             {tab === 'system' && (
               <div className="space-y-4 max-w-lg mx-auto">
-                <NotionMePicker />
-
                 <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Actions</span>
 
                 <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden">
@@ -1370,6 +1370,9 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
             {/* Guides tab — what the guide researcher is doing, and why */}
             {tab === 'guides' && <GuidesTab />}
             {tab === 'mail' && <MailTab />}
+
+            {/* Notion tab — which boards feed the Tasks list, and who you are */}
+            {tab === 'notion' && <NotionTab />}
 
             {/* Drawing tab — how the prompt improver is told to rewrite prompts */}
             {tab === 'drawing' && <DrawingTab />}
@@ -3389,6 +3392,251 @@ interface VolumeSliderProps {
   track:    string  // Tailwind accent-* class for the native slider thumb/track
 }
 
+// ── Notion tab ────────────────────────────────────────────────────────────────
+// Everything about Notion in one place. It used to be one picker inside the
+// System tab, and the boards feeding the Tasks list could only be changed from
+// a toggle inside Browse → "Add to group", which nobody found. A board is a
+// Notion database: the Tasks list aggregates every board that is on, a new
+// task lands in the one marked default, and a hidden board stays hidden even
+// when discovery would bring it back. The server owns the list
+// (/api/notion/task-dbs), so every device sees the same boards.
+
+interface WorkspaceDb { id: string; title: string; icon: { type: 'emoji' | 'url'; value: string } | null; taskLike?: boolean }
+
+/** A board's icon: an emoji, an image URL, or the generic one. */
+function BoardIcon({ icon }: { icon: string | null }) {
+  if (icon && /^https?:\/\//.test(icon)) return <img src={icon} alt="" className="w-6 h-6 rounded shrink-0 object-cover" />
+  return <span className="w-6 h-6 flex items-center justify-center text-base shrink-0">{icon || '📋'}</span>
+}
+
+function BoardRow({ board, onDefault, onHide }: { board: TaskBoard; onDefault: () => void; onHide: () => void }) {
+  const from = board.source === 'env' ? 'from the .env' : board.source === 'added' ? 'added here' : 'found in the workspace'
+  return (
+    <div className={`flex items-center gap-3 px-3 py-2.5 rounded-xl border ${
+      board.isDefault ? 'bg-green-500/10 border-green-400/30' : 'bg-white/[0.04] border-transparent'
+    }`}>
+      <BoardIcon icon={board.icon} />
+      <div className="flex-1 min-w-0">
+        <p className={`text-sm font-medium truncate ${board.unavailable ? 'text-white/40' : 'text-white/85'}`}>{board.title}</p>
+        <p className="text-[11px] text-white/35 truncate">
+          {board.isDefault ? 'New tasks go here · ' : ''}{from}
+          {!board.hasStatus && !board.unavailable && <span className="text-amber-300/80"> · no Status, tasks can't be created here</span>}
+          {board.unavailable && <span className="text-red-300/80"> · Notion won't hand it over (deleted, or unshared from the integration)</span>}
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={onDefault}
+        disabled={!board.hasStatus || board.isDefault}
+        title={board.hasStatus ? 'Make this the board new tasks go to' : 'Needs a Status property first'}
+        aria-label="Default board"
+        className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 transition-colors disabled:opacity-40 ${
+          board.isDefault ? 'text-green-300' : 'text-white/45 active:bg-white/10'
+        }`}
+      >
+        <Star size={18} fill={board.isDefault ? 'currentColor' : 'none'} />
+      </button>
+      <button
+        type="button"
+        onClick={onHide}
+        title="Hide from Tasks"
+        aria-label="Hide from Tasks"
+        className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0 text-white/45 active:bg-white/10"
+      >
+        <EyeOff size={18} />
+      </button>
+    </div>
+  )
+}
+
+function NotionTab() {
+  const boards = useTaskDbs()
+  const [workspace, setWorkspace] = useState<WorkspaceDb[] | null>(null)
+  const [wsError,   setWsError]   = useState<string | null>(null)
+  const [wsTick,    setWsTick]    = useState(0)
+  const [link,      setLink]      = useState('')
+  const [adding,    setAdding]    = useState(false)
+  const [addError,  setAddError]  = useState<string | null>(null)
+
+  // Every database the integration can see, for the "add a board" list. A
+  // workspace search, so it is fetched once per open and on demand, not on
+  // every change to the set.
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${DEBUG_API}/api/notion/workspace`)
+      .then(async r => {
+        if (!r.ok) throw new Error(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `HTTP ${r.status}`)
+        return r.json() as Promise<{ databases: WorkspaceDb[] }>
+      })
+      .then(j => { if (!cancelled) { setWorkspace(j.databases); setWsError(null) } })
+      .catch(err => { if (!cancelled) setWsError(String(err.message ?? err)) })
+    return () => { cancelled = true }
+  }, [wsTick])
+
+  const hiddenIds = new Set(boards.hidden.map(h => h.id))
+  const candidates = (workspace ?? []).filter(d => !boards.has(d.id) && !hiddenIds.has(d.id))
+
+  async function addLink() {
+    const v = link.trim()
+    if (!v) return
+    setAdding(true); setAddError(null)
+    try { await boards.add(v); setLink('') }
+    catch (err) { setAddError(String((err as Error).message ?? err)) }
+    finally { setAdding(false) }
+  }
+
+  if (boards.error?.kind === 'unconfigured') {
+    return (
+      <div className="space-y-5 max-w-lg mx-auto pb-4">
+        <div>
+          <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Notion</span>
+          <p className="text-[12px] text-white/45 leading-relaxed">
+            Notion is not set up on this server. Create an integration at{' '}
+            <span className="text-white/70">notion.so/my-integrations</span>, put its secret in the
+            dashboard's .env as <code className="text-white/60">NOTION_API_KEY</code>, restart the app,
+            then share each database you want here with the integration (··· → Connections in Notion).
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-6 max-w-lg mx-auto pb-4">
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Notion</span>
+        <p className="text-[12px] text-white/45 leading-relaxed">
+          The Tasks corner shows every board below in one list. A board is a Notion database; add
+          as many as you like. New tasks, typed or spoken, go to the board marked with the star.
+        </p>
+      </div>
+
+      {boards.error && (
+        <p className="text-[12px] text-red-300 leading-snug rounded-xl bg-red-500/10 border border-red-400/30 px-3 py-2">
+          {boards.error.message}
+        </p>
+      )}
+
+      {/* The boards in effect, in the order that decides where a new task goes. */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Task boards</span>
+          <button
+            type="button"
+            onClick={() => { void boards.refresh(); setWsTick(t => t + 1) }}
+            className="h-9 px-3 rounded-lg text-[12px] text-white/50 active:bg-white/10 flex items-center gap-1.5"
+          >
+            <RotateCw size={13} /> Refresh
+          </button>
+        </div>
+        {boards.loading && boards.boards.length === 0 && <p className="text-white/40 text-sm py-2">Loading…</p>}
+        {!boards.loading && boards.boards.length === 0 && (
+          <p className="text-white/40 text-sm py-2">
+            No boards yet. Add one below — any database shared with the integration that has a Status
+            property is found on its own.
+          </p>
+        )}
+        <div className="flex flex-col gap-1.5">
+          {boards.boards.map(b => (
+            <BoardRow
+              key={b.id}
+              board={b}
+              onDefault={() => void boards.setDefault(b.id)}
+              onHide={() => void boards.remove(b.id)}
+            />
+          ))}
+        </div>
+        {boards.defaultExplicit && (
+          <button
+            type="button"
+            onClick={() => void boards.setDefault('')}
+            className="mt-2 text-[12px] text-white/40 underline underline-offset-2 active:text-white/70"
+          >
+            Stop choosing — let the first board take new tasks
+          </button>
+        )}
+      </div>
+
+      {/* Boards that could be added: the rest of the workspace, then a link. */}
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Add a board</span>
+        {wsError && <p className="text-[12px] text-amber-300/80 mb-2">Could not list the workspace: {wsError}</p>}
+        {workspace === null && !wsError && <p className="text-white/40 text-sm py-1">Looking through the workspace…</p>}
+        {workspace !== null && candidates.length === 0 && !wsError && (
+          <p className="text-[12px] text-white/35 mb-2">
+            Every database the integration can see is already a board. To add another, share it with the
+            integration in Notion first, or paste its link below.
+          </p>
+        )}
+        <div className="flex flex-col gap-1.5 mb-3">
+          {candidates.map(d => (
+            <div key={d.id} className="flex items-center gap-3 px-3 py-2 rounded-xl bg-white/[0.04]">
+              <BoardIcon icon={d.icon?.value ?? null} />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-white/80 truncate">{d.title}</p>
+                <p className="text-[11px] text-white/35">{d.taskLike ? 'Has a Status — tasks can be created here' : 'No Status — its rows are listed, tasks are created elsewhere'}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void boards.add(d.id).catch(err => setAddError(String((err as Error).message ?? err)))}
+                className="h-10 px-3 rounded-xl bg-green-500/15 border border-green-400/30 text-green-200 text-[12px] font-semibold flex items-center gap-1 active:scale-95 shrink-0"
+              >
+                <Plus size={14} /> Add
+              </button>
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          <TouchInput
+            value={link}
+            onChange={setLink}
+            commitOn="done"
+            placeholder="Paste a Notion database link or id"
+            ariaLabel="Notion database link"
+            className="flex-1 min-w-0 bg-white/10 text-white rounded-xl px-4 py-3 text-[13px] placeholder:text-white/30 border border-hairline"
+          />
+          <button
+            type="button"
+            disabled={adding || !link.trim()}
+            onClick={() => void addLink()}
+            className="h-11 px-4 rounded-xl bg-white/10 border border-hairline text-white/80 text-[12px] font-semibold active:scale-95 disabled:opacity-40 shrink-0"
+          >
+            {adding ? 'Adding…' : 'Add'}
+          </button>
+        </div>
+        {addError && <p className="text-[12px] text-red-300 mt-2">{addError}</p>}
+        <p className="text-[11px] text-white/30 leading-snug mt-2">
+          The database has to be shared with the integration in Notion (··· → Connections) or it cannot be read.
+        </p>
+      </div>
+
+      {/* Hidden boards: kept out even when discovery would bring them back. */}
+      {boards.hidden.length > 0 && (
+        <div>
+          <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Hidden boards</span>
+          <div className="flex flex-col gap-1.5">
+            {boards.hidden.map(h => (
+              <div key={h.id} className="flex items-center gap-3 px-3 py-2 rounded-xl bg-white/[0.03]">
+                <BoardIcon icon={h.icon} />
+                <p className="flex-1 min-w-0 text-sm text-white/55 truncate">{h.title}</p>
+                <button
+                  type="button"
+                  onClick={() => void boards.add(h.id).catch(() => {})}
+                  className="h-10 px-3 rounded-xl bg-white/10 border border-hairline text-white/70 text-[12px] font-semibold flex items-center gap-1 active:scale-95 shrink-0"
+                >
+                  <Eye size={14} /> Show
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <NotionMePicker />
+    </div>
+  )
+}
+
 // ── Notion "who am I" picker ──────────────────────────────────────────────────
 // Task databases are often shared, so without this the widget lists the whole
 // team's rows. Notion's /users/me returns the integration bot rather than the
@@ -3444,7 +3692,7 @@ function NotionMePicker() {
 
   return (
     <div className="mb-6">
-      <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Notion tasks</span>
+      <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Who you are</span>
       <div className="bg-white/5 rounded-2xl border border-white/8 p-5 space-y-3">
         <div>
           <p className="text-white/80 text-sm font-medium">Show only my tasks</p>
