@@ -18,6 +18,8 @@ export interface TaskBoard {
   /** New tasks land here. */
   isDefault:   boolean
   unavailable: boolean
+  /** The Notion workspace (connection) it belongs to, once the server knows. */
+  conn:        { id: string; name: string } | null
 }
 
 export interface HiddenBoard { id: string; title: string; icon: string | null }

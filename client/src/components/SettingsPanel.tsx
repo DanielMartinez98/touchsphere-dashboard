@@ -3401,7 +3401,176 @@ interface VolumeSliderProps {
 // when discovery would bring it back. The server owns the list
 // (/api/notion/task-dbs), so every device sees the same boards.
 
-interface WorkspaceDb { id: string; title: string; icon: { type: 'emoji' | 'url'; value: string } | null; taskLike?: boolean }
+interface WorkspaceDb { id: string; title: string; icon: { type: 'emoji' | 'url'; value: string } | null; taskLike?: boolean; conn?: { id: string; name: string } }
+
+// ── Notion connections (workspaces) ──────────────────────────────────────────
+// One integration token per workspace. A Notion integration lives inside one
+// workspace and its token sees nothing outside it, so a second team means a
+// second token — added here, checked against Notion before it is kept, stored
+// on the server's cache volume and never sent back to a browser. The .env
+// token, when set, is the first connection and can only be changed in .env.
+
+interface NotionConnection {
+  id: string; name: string; source: 'env' | 'added'
+  workspace: string; bot: string; tokenTail: string
+  ok: boolean; error: string | null
+}
+
+function NotionConnections({ onChanged }: { onChanged: () => void }) {
+  const [conns,     setConns]     = useState<NotionConnection[] | null>(null)
+  const [error,     setError]     = useState<string | null>(null)
+  const [tick,      setTick]      = useState(0)
+  const [name,      setName]      = useState('')
+  const [token,     setToken]     = useState('')
+  const [busy,      setBusy]      = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
+  const [confirm,   setConfirm]   = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${DEBUG_API}/api/notion/connections`)
+      .then(async r => {
+        if (!r.ok) throw new Error(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `HTTP ${r.status}`)
+        return r.json() as Promise<{ connections: NotionConnection[] }>
+      })
+      .then(j => { if (!cancelled) { setConns(j.connections); setError(null) } })
+      .catch(err => { if (!cancelled) setError(String(err.message ?? err)) })
+    return () => { cancelled = true }
+  }, [tick])
+
+  const changed = () => {
+    window.dispatchEvent(new CustomEvent('ts:task-dbs-changed'))
+    onChanged()
+  }
+
+  async function add() {
+    const t = token.trim()
+    if (!t) return
+    setBusy(true); setFormError(null)
+    try {
+      const r = await fetch(`${DEBUG_API}/api/notion/connections`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: t, name: name.trim() }),
+      })
+      const j = (await r.json().catch(() => ({}))) as { error?: string; connections?: NotionConnection[] }
+      if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`)
+      setConns(j.connections ?? null)
+      setToken(''); setName('')
+      changed()
+    } catch (err) {
+      setFormError(String((err as Error).message ?? err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function remove(id: string) {
+    if (confirm !== id) { setConfirm(id); return }
+    setConfirm(null); setBusy(true); setFormError(null)
+    try {
+      const r = await fetch(`${DEBUG_API}/api/notion/connections/${id}`, { method: 'DELETE' })
+      const j = (await r.json().catch(() => ({}))) as { error?: string; connections?: NotionConnection[] }
+      if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`)
+      setConns(j.connections ?? null)
+      changed()
+    } catch (err) {
+      setFormError(String((err as Error).message ?? err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Workspaces</span>
+        <button
+          type="button"
+          onClick={() => setTick(t => t + 1)}
+          className="h-9 px-3 rounded-lg text-[12px] text-white/50 active:bg-white/10 flex items-center gap-1.5"
+        >
+          <RotateCw size={13} /> Refresh
+        </button>
+      </div>
+      <p className="text-[12px] text-white/45 leading-relaxed mb-3">
+        Each Notion workspace, or each team with its own workspace, connects through its own
+        integration token. Boards from every workspace here land in the same Tasks list.
+      </p>
+
+      {error && <p className="text-[12px] text-red-300 mb-2">{error}</p>}
+      {conns === null && !error && <p className="text-white/40 text-sm py-1">Loading…</p>}
+      {conns !== null && conns.length === 0 && (
+        <p className="text-[12px] text-white/35 mb-3">No workspace connected yet. Add a token below.</p>
+      )}
+
+      <div className="flex flex-col gap-1.5 mb-3">
+        {(conns ?? []).map(c => (
+          <div key={c.id} className={`flex items-center gap-3 px-3 py-2.5 rounded-xl border ${
+            c.ok ? 'bg-white/[0.04] border-transparent' : 'bg-red-500/10 border-red-400/30'
+          }`}>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-white/85 truncate">
+                {c.name}{c.workspace && c.workspace !== c.name ? <span className="text-white/40"> · {c.workspace}</span> : null}
+              </p>
+              <p className="text-[11px] text-white/35 truncate">
+                {c.source === 'env' ? 'From the .env file' : 'Added here'}
+                {c.bot ? ` · integration "${c.bot}"` : ''} · token …{c.tokenTail}
+                {c.error && <span className="text-red-300/80"> · {c.error}</span>}
+              </p>
+            </div>
+            {c.source === 'added' && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void remove(c.id)}
+                className={`h-10 px-3 rounded-xl text-[12px] font-semibold shrink-0 active:scale-95 disabled:opacity-40 ${
+                  confirm === c.id ? 'bg-red-500/25 border border-red-400/40 text-red-200' : 'bg-white/10 border border-hairline text-white/60'
+                }`}
+              >
+                {confirm === c.id ? 'Remove?' : 'Remove'}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div className="space-y-2">
+        <TouchInput
+          value={name}
+          onChange={setName}
+          commitOn="done"
+          placeholder="Name for this workspace (optional, e.g. Design team)"
+          ariaLabel="Workspace name"
+          className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px] placeholder:text-white/30 border border-hairline"
+        />
+        <div className="flex items-center gap-2">
+          <TouchInput
+            value={token}
+            onChange={setToken}
+            commitOn="done"
+            placeholder="Integration token — starts with ntn_"
+            ariaLabel="Notion integration token"
+            className="flex-1 min-w-0 bg-white/10 text-white rounded-xl px-4 py-3 text-[13px] placeholder:text-white/30 border border-hairline font-mono"
+          />
+          <button
+            type="button"
+            disabled={busy || !token.trim()}
+            onClick={() => void add()}
+            className="h-11 px-4 rounded-xl bg-green-500/15 border border-green-400/30 text-green-200 text-[12px] font-semibold active:scale-95 disabled:opacity-40 shrink-0"
+          >
+            {busy ? 'Checking…' : 'Connect'}
+          </button>
+        </div>
+        {formError && <p className="text-[12px] text-red-300">{formError}</p>}
+        <p className="text-[11px] text-white/30 leading-snug">
+          Make the token at <span className="text-white/50">notion.so/profile/integrations</span> (New integration → the
+          workspace → copy its secret), then in that workspace share each database with the integration
+          (··· → Connections). The token is checked against Notion before it is kept, and is never shown again.
+        </p>
+      </div>
+    </div>
+  )
+}
 
 /** A board's icon: an emoji, an image URL, or the generic one. */
 function BoardIcon({ icon }: { icon: string | null }) {
@@ -3419,7 +3588,7 @@ function BoardRow({ board, onDefault, onHide }: { board: TaskBoard; onDefault: (
       <div className="flex-1 min-w-0">
         <p className={`text-sm font-medium truncate ${board.unavailable ? 'text-white/40' : 'text-white/85'}`}>{board.title}</p>
         <p className="text-[11px] text-white/35 truncate">
-          {board.isDefault ? 'New tasks go here · ' : ''}{from}
+          {board.isDefault ? 'New tasks go here · ' : ''}{board.conn ? `${board.conn.name} · ` : ''}{from}
           {!board.hasStatus && !board.unavailable && <span className="text-amber-300/80"> · no Status, tasks can't be created here</span>}
           {board.unavailable && <span className="text-red-300/80"> · Notion won't hand it over (deleted, or unshared from the integration)</span>}
         </p>
@@ -3485,18 +3654,20 @@ function NotionTab() {
     finally { setAdding(false) }
   }
 
+  const reloadAll = () => { void boards.refresh(); setWsTick(t => t + 1) }
+
   if (boards.error?.kind === 'unconfigured') {
     return (
-      <div className="space-y-5 max-w-lg mx-auto pb-4">
+      <div className="space-y-6 max-w-lg mx-auto pb-4">
         <div>
           <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Notion</span>
           <p className="text-[12px] text-white/45 leading-relaxed">
-            Notion is not set up on this server. Create an integration at{' '}
-            <span className="text-white/70">notion.so/my-integrations</span>, put its secret in the
-            dashboard's .env as <code className="text-white/60">NOTION_API_KEY</code>, restart the app,
-            then share each database you want here with the integration (··· → Connections in Notion).
+            No Notion workspace is connected yet. Connect one below with an integration token,
+            and its task boards appear here. (A token in the dashboard's .env as{' '}
+            <code className="text-white/60">NOTION_API_KEY</code> works too, after a restart.)
           </p>
         </div>
+        <NotionConnections onChanged={reloadAll} />
       </div>
     )
   }
@@ -3506,10 +3677,13 @@ function NotionTab() {
       <div>
         <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Notion</span>
         <p className="text-[12px] text-white/45 leading-relaxed">
-          The Tasks corner shows every board below in one list. A board is a Notion database; add
-          as many as you like. New tasks, typed or spoken, go to the board marked with the star.
+          The Tasks corner shows every board below in one list. A board is a Notion database, from
+          any connected workspace; add as many as you like. New tasks, typed or spoken, go to the
+          board marked with the star.
         </p>
       </div>
+
+      <NotionConnections onChanged={reloadAll} />
 
       {boards.error && (
         <p className="text-[12px] text-red-300 leading-snug rounded-xl bg-red-500/10 border border-red-400/30 px-3 py-2">
@@ -3523,7 +3697,7 @@ function NotionTab() {
           <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Task boards</span>
           <button
             type="button"
-            onClick={() => { void boards.refresh(); setWsTick(t => t + 1) }}
+            onClick={reloadAll}
             className="h-9 px-3 rounded-lg text-[12px] text-white/50 active:bg-white/10 flex items-center gap-1.5"
           >
             <RotateCw size={13} /> Refresh
@@ -3574,7 +3748,7 @@ function NotionTab() {
               <BoardIcon icon={d.icon?.value ?? null} />
               <div className="flex-1 min-w-0">
                 <p className="text-sm text-white/80 truncate">{d.title}</p>
-                <p className="text-[11px] text-white/35">{d.taskLike ? 'Has a Status — tasks can be created here' : 'No Status — its rows are listed, tasks are created elsewhere'}</p>
+                <p className="text-[11px] text-white/35">{d.conn ? `${d.conn.name} · ` : ''}{d.taskLike ? 'Has a Status — tasks can be created here' : 'No Status — its rows are listed, tasks are created elsewhere'}</p>
               </div>
               <button
                 type="button"
@@ -3643,11 +3817,13 @@ function NotionTab() {
 // human, so the user has to point at themselves once. The choice is persisted
 // server-side (notion-me.json) and shared across devices.
 
-interface NotionUser { id: string; name: string; type: string; avatarUrl: string | null }
+interface NotionUser { id: string; name: string; type: string; avatarUrl: string | null; conn?: { id: string; name: string } }
 
 function NotionMePicker() {
   const [users, setUsers]   = useState<NotionUser[] | null>(null)
-  const [meId, setMeId]     = useState<string | null>(null)
+  // One "me" per connection: a Notion user id is a workspace's id for a
+  // person, so the same human is picked once per workspace.
+  const [meByConn, setMeByConn] = useState<Record<string, string>>({})
   const [error, setError]   = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -3657,31 +3833,40 @@ function NotionMePicker() {
       fetch(`${DEBUG_API}/api/notion/users`).then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))),
       fetch(`${DEBUG_API}/api/notion/me`).then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))),
     ])
-      .then(([u, m]: [{ users: NotionUser[] }, { me: { id: string } | null }]) => {
+      .then(([u, m]: [{ users: NotionUser[] }, { me: { id: string } | null; byConn?: Record<string, { id: string }> }]) => {
         if (cancelled) return
         // Bot users are integrations, not people — never a valid "me".
         setUsers(u.users.filter(x => x.type === 'person'))
-        setMeId(m.me?.id ?? null)
+        const by: Record<string, string> = {}
+        for (const [conn, me] of Object.entries(m.byConn ?? {})) if (me?.id) by[conn] = me.id
+        // A server that predates connections answers `me` alone; it is the first connection's.
+        if (!m.byConn && m.me?.id) by[u.users[0]?.conn?.id ?? 'env'] = m.me.id
+        setMeByConn(by)
       })
       .catch(err => { if (!cancelled) setError(String(err.message ?? err)) })
     return () => { cancelled = true }
   }, [])
 
-  function pick(user: NotionUser | null) {
+  function pick(connId: string, user: NotionUser | null) {
     setSaving(true)
-    const prev = meId
-    setMeId(user?.id ?? null)
+    const prev = meByConn
+    setMeByConn(cur => {
+      const next = { ...cur }
+      if (user) next[connId] = user.id
+      else delete next[connId]
+      return next
+    })
     fetch(`${DEBUG_API}/api/notion/me`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(user ? { id: user.id, name: user.name } : { id: null }),
+      body: JSON.stringify(user ? { conn: connId, id: user.id, name: user.name } : { conn: connId, id: null }),
     })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) })
       // The task list filters server-side, so it has to refetch to reflect this.
       .then(() => window.dispatchEvent(new CustomEvent('ts:task-dbs-changed')))
       .catch(err => {
         console.error('[Settings] failed to set Notion user:', err)
-        setMeId(prev)
+        setMeByConn(prev)
       })
       .finally(() => setSaving(false))
   }
@@ -3689,6 +3874,15 @@ function NotionMePicker() {
   // Notion isn't configured on this server — say nothing rather than show a
   // broken control.
   if (error) return null
+
+  // Users grouped by the workspace they belong to; one group when there is one.
+  const groups = new Map<string, { name: string; users: NotionUser[] }>()
+  for (const u of users ?? []) {
+    const key = u.conn?.id ?? 'env'
+    const g = groups.get(key) ?? { name: u.conn?.name ?? '', users: [] }
+    g.users.push(u)
+    groups.set(key, g)
+  }
 
   return (
     <div className="mb-6">
@@ -3698,7 +3892,7 @@ function NotionMePicker() {
           <p className="text-white/80 text-sm font-medium">Show only my tasks</p>
           <p className="text-white/40 text-xs mt-0.5">
             Pick yourself and the task widget lists only rows assigned to you. Databases with no
-            assignee property stay fully visible.
+            assignee property stay fully visible. Once per workspace, since each has its own members.
           </p>
         </div>
 
@@ -3708,37 +3902,42 @@ function NotionMePicker() {
           <p className="text-white/40 text-sm py-2">No workspace members visible to the integration.</p>
         )}
 
-        {users && users.length > 0 && (
-          <div className="flex flex-col gap-2">
-            {users.map(u => (
-              <button
-                key={u.id}
-                type="button"
-                disabled={saving}
-                onClick={() => pick(u.id === meId ? null : u)}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors disabled:opacity-50 ${
-                  u.id === meId
-                    ? 'bg-[var(--accent,#06b6d4)]/20 text-[var(--accent,#06b6d4)] ring-1 ring-[var(--accent,#06b6d4)]/40'
-                    : 'bg-white/[0.06] text-white/70 active:bg-white/10'
-                }`}
-              >
-                {u.avatarUrl
-                  ? <img src={u.avatarUrl} alt="" className="w-7 h-7 rounded-full shrink-0" />
-                  : <span className="w-7 h-7 rounded-full bg-white/10 flex items-center justify-center text-xs shrink-0">
-                      {u.name?.[0]?.toUpperCase() ?? '?'}
-                    </span>}
-                <span className="truncate">{u.name || 'Unnamed'}</span>
-                {u.id === meId && <span className="ml-auto text-xs opacity-70">That’s me</span>}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {meId === null && users && users.length > 0 && (
-          <p className="text-amber-300/70 text-xs">
-            Nobody selected — the widget is showing everyone’s tasks.
-          </p>
-        )}
+        {Array.from(groups.entries()).map(([connId, g]) => {
+          const meId = meByConn[connId] ?? null
+          return (
+            <div key={connId} className="flex flex-col gap-2">
+              {groups.size > 1 && (
+                <span className="text-[11px] text-white/35 uppercase tracking-widest">{g.name || 'Workspace'}</span>
+              )}
+              {g.users.map(u => (
+                <button
+                  key={u.id}
+                  type="button"
+                  disabled={saving}
+                  onClick={() => pick(connId, u.id === meId ? null : u)}
+                  className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors disabled:opacity-50 ${
+                    u.id === meId
+                      ? 'bg-[var(--accent,#06b6d4)]/20 text-[var(--accent,#06b6d4)] ring-1 ring-[var(--accent,#06b6d4)]/40'
+                      : 'bg-white/[0.06] text-white/70 active:bg-white/10'
+                  }`}
+                >
+                  {u.avatarUrl
+                    ? <img src={u.avatarUrl} alt="" className="w-7 h-7 rounded-full shrink-0" />
+                    : <span className="w-7 h-7 rounded-full bg-white/10 flex items-center justify-center text-xs shrink-0">
+                        {u.name?.[0]?.toUpperCase() ?? '?'}
+                      </span>}
+                  <span className="truncate">{u.name || 'Unnamed'}</span>
+                  {u.id === meId && <span className="ml-auto text-xs opacity-70">That’s me</span>}
+                </button>
+              ))}
+              {meId === null && g.users.length > 0 && (
+                <p className="text-amber-300/70 text-xs">
+                  Nobody selected{groups.size > 1 ? ` in ${g.name || 'this workspace'}` : ''} — its boards show everyone’s tasks.
+                </p>
+              )}
+            </div>
+          )
+        })}
       </div>
     </div>
   )

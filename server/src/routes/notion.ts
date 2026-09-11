@@ -4,6 +4,10 @@ import fs from 'fs'
 import path from 'path'
 import { broadcast } from './system'
 import { isPublicHttpUrl } from './browse'
+import {
+  ENV_CONN_ID, addConnection, connById, connIdFor, forgetConnection, headersFor,
+  listConnections, remember, rememberMany, removeConnection, renameConnection, type NotionConn,
+} from '../notion-connections'
 
 const router = Router()
 
@@ -14,19 +18,60 @@ const router = Router()
 // API that answers in under one; the embed proxy sets its own, shorter.
 const axios = axiosLib.create({ timeout: 10_000 })
 
-const NOTION_API     = 'https://api.notion.com/v1'
-const NOTION_VERSION = '2022-06-28'
+const NOTION_API = 'https://api.notion.com/v1'
 
-function notionHeaders() {
-  return {
-    Authorization:    `Bearer ${process.env['NOTION_API_KEY']}`,
-    'Notion-Version': NOTION_VERSION,
-    'Content-Type':   'application/json',
-  }
-}
+// ── Connections ───────────────────────────────────────────────────────────────
+// One token per workspace, kept in notion-connections.ts. Every route below
+// resolves the connection for the id it is given (`connFor`) and uses that
+// connection's headers (`hdr`); the aggregate routes (workspace, search,
+// users, discovery) walk every connection and tag what each one returned.
 
 function configured(): boolean {
-  return !!process.env['NOTION_API_KEY']
+  return listConnections().length > 0
+}
+
+/** The error the resolver throws when no connection can see an id — shaped like Notion's own 404 so classifyNotionError() calls it "access". */
+function unseen(id: string): Error {
+  const err = new Error('None of the connected Notion workspaces can see this') as Error & { response?: { status: number; data: { message: string } } }
+  err.response = { status: 404, data: { message: `None of the connected Notion workspaces can see ${id} — share it with one of their integrations` } }
+  return err
+}
+
+/**
+ * Which connection can see this page, database or block.
+ *
+ * Remembered from the listing that produced the id, nearly always. One
+ * connection means no question. Otherwise the id is probed as a page, a
+ * database and a block against each connection in turn — a 401 disqualifies
+ * that connection outright (its token is bad), anything else moves on — and
+ * the first hit is remembered so it is never asked again.
+ */
+async function connFor(id: string): Promise<NotionConn> {
+  const conns = listConnections()
+  if (conns.length === 0) throw unseen(id)
+  const known = connIdFor(id)
+  if (known) {
+    const c = conns.find(x => x.id === known)
+    if (c) return c
+  }
+  if (conns.length === 1) { remember(id, conns[0]!.id); return conns[0]! }
+  for (const c of conns) {
+    for (const kind of ['pages', 'databases', 'blocks'] as const) {
+      try {
+        await axios.get(`${NOTION_API}/${kind}/${id}`, { headers: headersFor(c) })
+        remember(id, c.id)
+        return c
+      } catch (err: any) {
+        if (err?.response?.status === 401) break   // this token is dead; do not try it twice more
+      }
+    }
+  }
+  throw unseen(id)
+}
+
+/** Headers for the connection that can see `id`. */
+async function hdr(id: string): Promise<Record<string, string>> {
+  return headersFor(await connFor(id))
 }
 
 // ── Task database list ────────────────────────────────────────────────────────
@@ -80,33 +125,47 @@ const clean = (arr: unknown): string[] =>
 // persist the Notion user id here; /tasks then filters every DB that has a
 // people property down to rows assigned to them. With nobody picked the widget
 // behaves as before (everyone's tasks) rather than showing an empty list.
+//
+// PER CONNECTION, because a Notion user id is a workspace's id for that
+// person: the same human is a different id in each workspace. The file holds
+// one entry per connection; the pre-connections shape ({ id, name }) is read
+// as the env connection's entry.
 const ME_FILE = 'notion-me.json'
 
 interface NotionMe { id: string; name: string }
 
-function readMe(): NotionMe | null {
+function readAllMe(): Record<string, NotionMe> {
   const p = path.join(cacheDir(), ME_FILE)
   try {
-    if (!fs.existsSync(p)) return null
-    const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as Partial<NotionMe>
-    if (!parsed.id) return null
-    return { id: String(parsed.id), name: String(parsed.name ?? '') }
+    if (!fs.existsSync(p)) return {}
+    const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as Partial<NotionMe> & { byConn?: Record<string, Partial<NotionMe>> }
+    const out: Record<string, NotionMe> = {}
+    if (parsed.byConn && typeof parsed.byConn === 'object') {
+      for (const [conn, me] of Object.entries(parsed.byConn)) if (me?.id) out[conn] = { id: String(me.id), name: String(me.name ?? '') }
+    } else if (parsed.id) {
+      out[ENV_CONN_ID] = { id: String(parsed.id), name: String(parsed.name ?? '') }
+    }
+    return out
   } catch (err) {
     console.error('[notion] failed to read me store:', err)
-    return null
+    return {}
   }
 }
 
-function writeMe(me: NotionMe | null): void {
+function readMe(connId: string): NotionMe | null {
+  return readAllMe()[connId] ?? null
+}
+
+function writeMe(connId: string, me: NotionMe | null): void {
   const p = path.join(cacheDir(), ME_FILE)
   try {
-    if (me === null) {
-      if (fs.existsSync(p)) fs.unlinkSync(p)
-      console.log('[notion] cleared "me" — task widget will show everyone\'s tasks')
-      return
-    }
-    fs.writeFileSync(p, JSON.stringify(me, null, 2), 'utf8')
-    console.log(`[notion] set "me" → ${me.name} (${me.id})`)
+    const all = readAllMe()
+    if (me === null) delete all[connId]
+    else all[connId] = me
+    fs.writeFileSync(p, JSON.stringify({ byConn: all }, null, 2), 'utf8')
+    console.log(me
+      ? `[notion] set "me" for ${connId} → ${me.name} (${me.id})`
+      : `[notion] cleared "me" for ${connId} — its task boards will show everyone's tasks`)
   } catch (err) {
     console.error('[notion] failed to write me store:', err)
     throw err
@@ -170,20 +229,30 @@ let discoverCache: { ids: string[]; ts: number } | null = null
 async function discoverTaskDbIds(force = false): Promise<string[]> {
   if (!force && discoverCache && Date.now() - discoverCache.ts < SCHEMA_TTL) return discoverCache.ids
   const ids: string[] = []
-  let cursor: string | undefined
-  let safety = 0
-  do {
-    const { data } = await axios.post(
-      `${NOTION_API}/search`,
-      { page_size: 100, filter: { property: 'object', value: 'database' }, ...(cursor ? { start_cursor: cursor } : {}) },
-      { headers: notionHeaders() },
-    )
-    for (const r of data.results as any[]) {
-      if (!r.archived && isTaskDb(r.properties ?? {})) ids.push(r.id)
+  // Every connection is searched; one whose token has died is skipped with a
+  // line in the log rather than taking the other workspaces' boards with it.
+  for (const conn of listConnections()) {
+    let cursor: string | undefined
+    let safety = 0
+    try {
+      do {
+        const { data } = await axios.post(
+          `${NOTION_API}/search`,
+          { page_size: 100, filter: { property: 'object', value: 'database' }, ...(cursor ? { start_cursor: cursor } : {}) },
+          { headers: headersFor(conn) },
+        )
+        for (const r of data.results as any[]) {
+          remember(r.id, conn.id)
+          if (!r.archived && isTaskDb(r.properties ?? {})) ids.push(r.id)
+        }
+        cursor = data.has_more ? data.next_cursor : undefined
+        safety++
+      } while (cursor && safety < 10)
+    } catch (err: any) {
+      console.error(`[notion] discovery failed for connection "${conn.name}":`, err?.response?.data?.message ?? err?.message)
+      if (listConnections().length === 1) throw err
     }
-    cursor = data.has_more ? data.next_cursor : undefined
-    safety++
-  } while (cursor && safety < 10)
+  }
   discoverCache = { ids, ts: Date.now() }
   return ids
 }
@@ -208,7 +277,7 @@ async function getTaskDbIds(): Promise<string[]> {
 }
 
 function tasksConfigured(): boolean {
-  return !!process.env['NOTION_API_KEY']
+  return configured()
 }
 
 // Centralised error response. Notion's API errors carry useful messages we surface.
@@ -328,7 +397,7 @@ async function getDb(dbId: string, force = false): Promise<DbEntry> {
   if (!force && hit && Date.now() - hit.ts < SCHEMA_TTL) return hit
   const { data } = await axios.get(
     `${NOTION_API}/databases/${dbId}`,
-    { headers: notionHeaders() },
+    { headers: await hdr(dbId) },
   )
   const entry: DbEntry = {
     schema: buildSchema(data.properties as Record<string, any>),
@@ -505,7 +574,8 @@ router.get('/schema', async (_req, res) => {
 // filter is pushed down to Notion so a shared board only ever returns their
 // rows — cheaper than fetching the team's tasks and discarding them here.
 async function queryTaskPages(dbId: string, schema: NotionSchema): Promise<any[]> {
-  const me = readMe()
+  const conn = await connFor(dbId)
+  const me = readMe(conn.id)
   const mineOnly = me && schema.peopleKey
     ? { filter: { property: schema.peopleKey, people: { contains: me.id } } }
     : {}
@@ -524,9 +594,9 @@ async function queryTaskPages(dbId: string, schema: NotionSchema): Promise<any[]
         ...mineOnly,
         ...(cursor ? { start_cursor: cursor } : {}),
       },
-      { headers: notionHeaders() },
+      { headers: headersFor(conn) },
     )
-    for (const r of data.results as any[]) if (!r.archived) pages.push(r)
+    for (const r of data.results as any[]) { remember(r.id, conn.id); if (!r.archived) pages.push(r) }
     cursor = data.has_more ? data.next_cursor : undefined
     safety++
   } while (cursor && safety < 10)
@@ -562,17 +632,24 @@ router.get('/tasks', async (_req, res) => {
     // without an N+1 round-trip. Tolerant of failures (a stale relation just
     // produces a missing title).
     const projects: Record<string, { id: string; title: string; icon: string | null }> = {}
+    // A project page lives in the same workspace as the task that points at
+    // it, so it is remembered under that task's connection before the fetch
+    // rather than probed.
+    for (const t of tasks) { const cid = connIdFor(t.dbId); if (cid) rememberMany(t.projectIds, cid) }
     const uniqueIds = Array.from(new Set(tasks.flatMap(t => t.projectIds)))
     await Promise.all(uniqueIds.map(async id => {
       try {
-        const { data } = await axios.get(`${NOTION_API}/pages/${id}`, { headers: notionHeaders() })
+        const { data } = await axios.get(`${NOTION_API}/pages/${id}`, { headers: await hdr(id) })
         projects[id] = { id, title: pageTitle(data), icon: iconOf(data)?.value ?? null }
       } catch { /* tolerate */ }
     }))
 
     // `me` rides along so the screen can say "everyone's tasks" when nobody
-    // is picked and a database has an assignee property to filter on.
-    res.json({ tasks, projects, schemas, dbs, merged: mergeSchemas(Object.values(schemas)), me: readMe() })
+    // is picked and a database has an assignee property to filter on. With
+    // several connections it is the first one's; `mes` has them all.
+    const mes = readAllMe()
+    const firstConn = listConnections()[0]
+    res.json({ tasks, projects, schemas, dbs, merged: mergeSchemas(Object.values(schemas)), me: firstConn ? (mes[firstConn.id] ?? null) : null, mes })
   } catch (err) { notionError(res, err, 'Failed to fetch tasks') }
 })
 
@@ -608,14 +685,16 @@ router.post('/tasks', async (req, res) => {
     const properties = buildTaskProperties(schema, { title: title.trim(), status, priority, due: due ?? null })
     // Assign new tasks to the user. Without this the row comes back unassigned
     // and the "only my tasks" filter would hide it the moment the list refreshes
-    // — the task would look like it failed to save.
-    const me = readMe()
+    // — the task would look like it failed to save. "Me" is per workspace.
+    const conn = await connFor(targetDb)
+    const me = readMe(conn.id)
     if (me && schema.peopleKey) properties[schema.peopleKey] = { people: [{ object: 'user', id: me.id }] }
     const { data }   = await axios.post(
       `${NOTION_API}/pages`,
       { parent: { database_id: targetDb }, properties },
-      { headers: notionHeaders() },
+      { headers: headersFor(conn) },
     )
+    remember(data.id, conn.id)
     console.log(`[notion] created task "${title.trim().slice(0, 60)}" in ${schema.titleKey ? (await getDb(targetDb)).title : targetDb}${due ? ` due ${due}` : ''}`)
     broadcast('notion', { kind: 'task', op: 'create', id: data.id })
     res.status(201).json(extractTask(data, schema, targetDb))
@@ -630,14 +709,14 @@ router.patch('/tasks/:id', async (req, res) => {
     // client sends (it has it on the task), else look up the page's parent DB.
     let schemaDbId = dbId
     if (!schemaDbId) {
-      const { data: page } = await axios.get(`${NOTION_API}/pages/${req.params['id']}`, { headers: notionHeaders() })
+      const { data: page } = await axios.get(`${NOTION_API}/pages/${req.params['id']}`, { headers: await hdr(req.params['id']!) })
       schemaDbId = page.parent?.database_id
     }
     if (!schemaDbId) { res.status(400).json({ error: 'could not resolve task database' }); return }
     const schema     = await getSchema(schemaDbId)
     const properties = buildTaskProperties(schema, fields)
     if (Object.keys(properties).length > 0)
-      await axios.patch(`${NOTION_API}/pages/${req.params['id']}`, { properties }, { headers: notionHeaders() })
+      await axios.patch(`${NOTION_API}/pages/${req.params['id']}`, { properties }, { headers: await hdr(req.params['id']!) })
     broadcast('notion', { kind: 'task', op: 'update', id: req.params['id'] })
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to update task') }
@@ -646,7 +725,7 @@ router.patch('/tasks/:id', async (req, res) => {
 router.delete('/tasks/:id', async (req, res) => {
   if (!tasksConfigured()) { res.status(503).json({ error: 'Notion task DB not configured' }); return }
   try {
-    await axios.patch(`${NOTION_API}/pages/${req.params['id']}`, { archived: true }, { headers: notionHeaders() })
+    await axios.patch(`${NOTION_API}/pages/${req.params['id']}`, { archived: true }, { headers: await hdr(req.params['id']!) })
     broadcast('notion', { kind: 'task', op: 'archive', id: req.params['id'] })
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to archive task') }
@@ -659,7 +738,7 @@ router.get('/tasks/:id/content', async (req, res) => {
   try {
     const { data } = await axios.get(
       `${NOTION_API}/blocks/${req.params['id']}/children?page_size=100`,
-      { headers: notionHeaders() },
+      { headers: await hdr(req.params['id']!) },
     )
     const lines = (data.results as any[]).map((block: any) => {
       const type = block.type as string
@@ -697,6 +776,8 @@ interface TaskDbView {
   isDefault: boolean
   /** Notion would not hand it over (deleted, or unshared from the integration). */
   unavailable: boolean
+  /** The workspace (connection) it belongs to, once known. */
+  conn: { id: string; name: string } | null
 }
 
 // The whole picture for the Settings tab in one answer: the boards in effect
@@ -709,11 +790,14 @@ async function taskDbsView() {
   const env   = new Set(envTaskDbIds())
   const dbs: TaskDbView[] = await Promise.all(ids.map(async id => {
     const source: TaskDbView['source'] = env.has(id) ? 'env' : store.included.includes(id) ? 'added' : 'discovered'
+    // Which workspace the board is in, for the label beside it — known after
+    // getDb() at the latest, since fetching it resolves the connection.
+    const connOf = () => { const k = connIdFor(id); const c = k ? connById(k) : undefined; return c ? { id: c.id, name: c.name } : null }
     try {
       const e = await getDb(id)
-      return { id, title: e.title, icon: e.icon, hasStatus: !!e.schema.statusKey, source, isDefault: false, unavailable: false }
+      return { id, title: e.title, icon: e.icon, hasStatus: !!e.schema.statusKey, source, isDefault: false, unavailable: false, conn: connOf() }
     } catch {
-      return { id, title: 'Unavailable', icon: null, hasStatus: false, source, isDefault: false, unavailable: true }
+      return { id, title: 'Unavailable', icon: null, hasStatus: false, source, isDefault: false, unavailable: true, conn: connOf() }
     }
   }))
   // The effective default is what resolveTaskDb() would choose: the explicit
@@ -812,28 +896,45 @@ router.delete('/task-dbs/:id', async (req, res) => {
 // every database and page the integration has access to. We split into two
 // lists for the UI and add lightweight metadata (title, icon, parent kind).
 router.get('/workspace', async (_req, res) => {
-  if (!configured()) { res.status(503).json({ error: 'Notion not configured — set NOTION_API_KEY' }); return }
+  if (!configured()) { res.status(503).json({ error: 'Notion not configured — add a workspace in Settings → Notion or set NOTION_API_KEY' }); return }
   try {
     const databases: any[] = []
     const pages:     any[] = []
-    let cursor: string | undefined
-    let safety = 0
+    const conns = listConnections()
+    const failures: string[] = []
 
-    // Walk pagination — capped to avoid abusing the API on giant workspaces.
-    do {
-      const { data } = await axios.post(
-        `${NOTION_API}/search`,
-        { page_size: 100, ...(cursor ? { start_cursor: cursor } : {}) },
-        { headers: notionHeaders() },
-      )
-      for (const r of data.results as any[]) {
-        if (r.archived) continue
-        if (r.object === 'database') databases.push(r)
-        else if (r.object === 'page') pages.push(r)
+    // Every workspace, one after the other; each result carries which one it
+    // came from, and is remembered under it so every later call on that id
+    // goes straight to the right token.
+    for (const conn of conns) {
+      let cursor: string | undefined
+      let safety = 0
+      try {
+        // Walk pagination — capped to avoid abusing the API on giant workspaces.
+        do {
+          const { data } = await axios.post(
+            `${NOTION_API}/search`,
+            { page_size: 100, ...(cursor ? { start_cursor: cursor } : {}) },
+            { headers: headersFor(conn) },
+          )
+          for (const r of data.results as any[]) {
+            remember(r.id, conn.id)
+            if (r.archived) continue
+            r.__conn = { id: conn.id, name: conn.name }
+            if (r.object === 'database') databases.push(r)
+            else if (r.object === 'page') pages.push(r)
+          }
+          cursor = data.has_more ? data.next_cursor : undefined
+          safety++
+        } while (cursor && safety < 10)
+      } catch (err) {
+        // One dead token must not blank the other workspaces. With a single
+        // connection the error is the answer, as before.
+        if (conns.length === 1) throw err
+        failures.push(conn.name)
+        console.error(`[notion] workspace listing failed for "${conn.name}":`, classifyNotionError(err).message)
       }
-      cursor = data.has_more ? data.next_cursor : undefined
-      safety++
-    } while (cursor && safety < 10)
+    }
 
     res.json({
       databases: databases.map(d => ({
@@ -845,6 +946,7 @@ router.get('/workspace', async (_req, res) => {
         // Whether it looks like a task list (Status or done checkbox) — the
         // Settings tab says so beside each board it offers to add.
         taskLike: isTaskDb(d.properties ?? {}),
+        conn:  d.__conn,
       })),
       pages: pages.map(p => ({
         id:     p.id,
@@ -852,7 +954,10 @@ router.get('/workspace', async (_req, res) => {
         icon:   iconOf(p),
         url:    p.url,
         parent: p.parent,
+        conn:   p.__conn,
       })),
+      // Workspaces that did not answer, by name, so the screen can say so.
+      failed: failures,
     })
   } catch (err) { notionError(res, err, 'Failed to fetch workspace') }
 })
@@ -864,25 +969,38 @@ router.get('/search', async (req, res) => {
   const kind = req.query['type']  as 'page' | 'database' | undefined
 
   try {
-    const { data } = await axios.post(
-      `${NOTION_API}/search`,
-      {
-        query: q,
-        page_size: 30,
-        ...(kind ? { filter: { property: 'object', value: kind } } : {}),
-      },
-      { headers: notionHeaders() },
-    )
+    // All workspaces at once; a workspace that fails drops out of this one
+    // answer rather than failing the search (unless it is the only one).
+    const conns = listConnections()
+    const perConn = await Promise.all(conns.map(async conn => {
+      try {
+        const { data } = await axios.post(
+          `${NOTION_API}/search`,
+          {
+            query: q,
+            page_size: 30,
+            ...(kind ? { filter: { property: 'object', value: kind } } : {}),
+          },
+          { headers: headersFor(conn) },
+        )
+        return (data.results as any[]).map(r => { remember(r.id, conn.id); return { r, conn } })
+      } catch (err) {
+        if (conns.length === 1) throw err
+        console.error(`[notion] search failed for "${conn.name}":`, classifyNotionError(err).message)
+        return []
+      }
+    }))
     res.json({
-      results: (data.results as any[])
-        .filter(r => !r.archived)
-        .map(r => ({
+      results: perConn.flat()
+        .filter(({ r }) => !r.archived)
+        .map(({ r, conn }) => ({
           id:     r.id,
           object: r.object,
           title:  r.object === 'database' ? dbTitle(r) : pageTitle(r),
           icon:   iconOf(r),
           parent: r.parent,
           url:    r.url,
+          conn:   { id: conn.id, name: conn.name },
         })),
     })
   } catch (err) { notionError(res, err, 'Search failed') }
@@ -895,7 +1013,7 @@ router.get('/databases/:id', async (req, res) => {
   try {
     const { data } = await axios.get(
       `${NOTION_API}/databases/${req.params['id']}`,
-      { headers: notionHeaders() },
+      { headers: await hdr(req.params['id']!) },
     )
     res.json({
       id:          data.id,
@@ -913,11 +1031,15 @@ router.get('/databases/:id', async (req, res) => {
 router.post('/databases/:id/query', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   try {
+    const conn = await connFor(req.params['id']!)
     const { data } = await axios.post(
       `${NOTION_API}/databases/${req.params['id']}/query`,
       { page_size: 100, ...req.body },
-      { headers: notionHeaders() },
+      { headers: headersFor(conn) },
     )
+    // Rows of a database are in its workspace; remembered so opening one is
+    // never a probe.
+    rememberMany((data.results as any[]).map(p => p.id), conn.id)
     res.json({
       results: (data.results as any[]).filter(p => !p.archived),
       has_more:    data.has_more,
@@ -933,7 +1055,7 @@ router.get('/pages/:id', async (req, res) => {
   try {
     const { data } = await axios.get(
       `${NOTION_API}/pages/${req.params['id']}`,
-      { headers: notionHeaders() },
+      { headers: await hdr(req.params['id']!) },
     )
     res.json({
       id:           data.id,
@@ -956,11 +1078,17 @@ router.get('/pages/:id', async (req, res) => {
 router.post('/pages', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   try {
+    // A page is created in its parent's workspace, whichever kind of parent.
+    const parent = (req.body as { parent?: { database_id?: string; page_id?: string } })?.parent
+    const parentId = parent?.database_id ?? parent?.page_id
+    if (!parentId) { res.status(400).json({ error: 'parent.database_id or parent.page_id is required' }); return }
+    const conn = await connFor(parentId)
     const { data } = await axios.post(
       `${NOTION_API}/pages`,
       req.body,
-      { headers: notionHeaders() },
+      { headers: headersFor(conn) },
     )
+    remember(data.id, conn.id)
     broadcast('notion', { kind: 'page', op: 'create', id: data.id })
     res.status(201).json({ id: data.id, title: pageTitle(data) })
   } catch (err) { notionError(res, err, 'Failed to create page') }
@@ -970,7 +1098,7 @@ router.post('/pages', async (req, res) => {
 router.patch('/pages/:id', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   try {
-    await axios.patch(`${NOTION_API}/pages/${req.params['id']}`, req.body, { headers: notionHeaders() })
+    await axios.patch(`${NOTION_API}/pages/${req.params['id']}`, req.body, { headers: await hdr(req.params['id']!) })
     broadcast('notion', { kind: 'page', op: 'update', id: req.params['id'] })
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to update page') }
@@ -979,7 +1107,7 @@ router.patch('/pages/:id', async (req, res) => {
 router.delete('/pages/:id', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   try {
-    await axios.patch(`${NOTION_API}/pages/${req.params['id']}`, { archived: true }, { headers: notionHeaders() })
+    await axios.patch(`${NOTION_API}/pages/${req.params['id']}`, { archived: true }, { headers: await hdr(req.params['id']!) })
     broadcast('notion', { kind: 'page', op: 'archive', id: req.params['id'] })
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to archive page') }
@@ -995,10 +1123,14 @@ router.get('/blocks/:id/children', async (req, res) => {
   try {
     const params = new URLSearchParams({ page_size: String(pageSize) })
     if (cursor) params.set('start_cursor', cursor)
+    const conn = await connFor(req.params['id']!)
     const { data } = await axios.get(
       `${NOTION_API}/blocks/${req.params['id']}/children?${params}`,
-      { headers: notionHeaders() },
+      { headers: headersFor(conn) },
     )
+    // Children are in their parent's workspace: remembered, so editing one
+    // later is never a probe.
+    rememberMany((data.results as any[]).map(b => b.id), conn.id)
     res.json({
       results:     (data.results as any[]).filter(b => !b.archived),
       has_more:    data.has_more,
@@ -1011,11 +1143,13 @@ router.get('/blocks/:id/children', async (req, res) => {
 router.post('/blocks/:id/children', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   try {
+    const conn = await connFor(req.params['id']!)
     const { data } = await axios.patch(
       `${NOTION_API}/blocks/${req.params['id']}/children`,
       req.body,
-      { headers: notionHeaders() },
+      { headers: headersFor(conn) },
     )
+    rememberMany(((data.results ?? []) as any[]).map(b => b.id), conn.id)
     res.status(201).json({ results: data.results ?? [] })
   } catch (err) { notionError(res, err, 'Failed to append blocks') }
 })
@@ -1026,7 +1160,7 @@ router.post('/blocks/:id/children', async (req, res) => {
 router.patch('/blocks/:id', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   try {
-    await axios.patch(`${NOTION_API}/blocks/${req.params['id']}`, req.body, { headers: notionHeaders() })
+    await axios.patch(`${NOTION_API}/blocks/${req.params['id']}`, req.body, { headers: await hdr(req.params['id']!) })
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to update block') }
 })
@@ -1034,7 +1168,7 @@ router.patch('/blocks/:id', async (req, res) => {
 router.delete('/blocks/:id', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   try {
-    await axios.delete(`${NOTION_API}/blocks/${req.params['id']}`, { headers: notionHeaders() })
+    await axios.delete(`${NOTION_API}/blocks/${req.params['id']}`, { headers: await hdr(req.params['id']!) })
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to delete block') }
 })
@@ -1044,18 +1178,26 @@ router.delete('/blocks/:id', async (req, res) => {
 // POST /api/notion/me { id, name } → pin the user; { id: null } → clear it.
 // Notion's own /users/me returns the *integration bot*, not the human, so the
 // user has to tell us which workspace member they are.
+// One "me" per connection (`byConn`); `me` alone is the first connection's,
+// for clients that predate connections.
 router.get('/me', (_req: Request, res: Response) => {
-  const me = readMe()
-  console.log(`[notion] GET me → ${me ? `${me.name} (${me.id})` : 'not set'}`)
-  res.json({ me })
+  const byConn = readAllMe()
+  const first = listConnections()[0]
+  const me = first ? (byConn[first.id] ?? null) : null
+  console.log(`[notion] GET me → ${Object.keys(byConn).length} set`)
+  res.json({ me, byConn })
 })
 
+// POST { conn?, id, name } — `conn` defaults to the first connection, which
+// is what the old single-token picker meant.
 router.post('/me', (req: Request, res: Response) => {
-  const { id, name } = (req.body ?? {}) as { id?: string | null; name?: string }
+  const { id, name, conn } = (req.body ?? {}) as { id?: string | null; name?: string; conn?: string }
+  const connId = typeof conn === 'string' && conn ? conn : (listConnections()[0]?.id ?? ENV_CONN_ID)
+  if (!connById(connId)) { res.status(400).json({ error: 'no such Notion connection' }); return }
   try {
     if (id === null || id === '') {
-      writeMe(null)
-      res.json({ me: null })
+      writeMe(connId, null)
+      res.json({ me: null, conn: connId, byConn: readAllMe() })
       return
     }
     if (!id || typeof id !== 'string') {
@@ -1063,32 +1205,126 @@ router.post('/me', (req: Request, res: Response) => {
       return
     }
     const me: NotionMe = { id, name: typeof name === 'string' ? name : '' }
-    writeMe(me)
+    writeMe(connId, me)
     // Task rows are filtered per-DB using the cached schema; the schema itself
     // is unaffected by who "me" is, so there's no cache to bust here.
-    res.json({ me })
+    res.json({ me, conn: connId, byConn: readAllMe() })
   } catch {
     res.status(500).json({ error: 'Failed to persist Notion user' })
   }
 })
 
-// List workspace users — needed for people-property pickers.
+// List workspace users — needed for people-property pickers. Every
+// connection's members, each tagged with the connection, because a user id
+// only means something inside its own workspace.
 router.get('/users', async (_req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   try {
-    const { data } = await axios.get(
-      `${NOTION_API}/users?page_size=100`,
-      { headers: notionHeaders() },
-    )
-    res.json({
-      users: (data.results as any[]).map(u => ({
-        id:        u.id,
-        name:      u.name,
-        type:      u.type,
-        avatarUrl: u.avatar_url,
-      })),
-    })
+    const conns = listConnections()
+    const perConn = await Promise.all(conns.map(async conn => {
+      try {
+        const { data } = await axios.get(`${NOTION_API}/users?page_size=100`, { headers: headersFor(conn) })
+        return (data.results as any[]).map(u => ({
+          id:        u.id,
+          name:      u.name,
+          type:      u.type,
+          avatarUrl: u.avatar_url,
+          conn:      { id: conn.id, name: conn.name },
+        }))
+      } catch (err) {
+        if (conns.length === 1) throw err
+        console.error(`[notion] users failed for "${conn.name}":`, classifyNotionError(err).message)
+        return []
+      }
+    }))
+    res.json({ users: perConn.flat() })
   } catch (err) { notionError(res, err, 'Failed to fetch users') }
+})
+
+// ── Connections (workspaces) ─────────────────────────────────────────────────
+// GET    /connections            → every connection, tokens stripped, with what Notion says about each.
+// POST   /connections {token,name?} → prove the token against /users/me, then keep it.
+// PATCH  /connections/:id {name} → rename.
+// DELETE /connections/:id        → forget it (not the env one — that lives in .env).
+
+interface BotInfo { workspace: string; bot: string }
+const botCache = new Map<string, { info: BotInfo | null; error: string | null; ts: number }>()
+
+/** What a token is: the workspace it belongs to and the integration's name, from Notion's /users/me. */
+async function describeToken(token: string): Promise<BotInfo> {
+  const { data } = await axios.get(`${NOTION_API}/users/me`, {
+    headers: { Authorization: `Bearer ${token}`, 'Notion-Version': '2022-06-28' },
+  })
+  return { workspace: String(data?.bot?.workspace_name ?? ''), bot: String(data?.name ?? '') }
+}
+
+async function connectionsView() {
+  return Promise.all(listConnections().map(async c => {
+    const hit = botCache.get(c.id)
+    let info = hit?.info ?? null
+    let error = hit?.error ?? null
+    if (!hit || Date.now() - hit.ts > 5 * 60_000) {
+      try { info = await describeToken(c.token); error = null }
+      catch (err) { info = null; error = classifyNotionError(err).message }
+      botCache.set(c.id, { info, error, ts: Date.now() })
+    }
+    return {
+      id: c.id, name: c.name, source: c.source,
+      workspace: info?.workspace || c.workspace, bot: info?.bot ?? '',
+      // The token's last four characters, so two connections can be told
+      // apart by someone holding the real thing — never more than that.
+      tokenTail: c.token.slice(-4),
+      ok: !error, error,
+      me: readMe(c.id),
+    }
+  }))
+}
+
+router.get('/connections', async (_req, res) => {
+  try { res.json({ connections: await connectionsView() }) }
+  catch (err) { notionError(res, err, 'Failed to list connections') }
+})
+
+router.post('/connections', async (req, res) => {
+  const body = req.body as { token?: unknown; name?: unknown }
+  const token = typeof body?.token === 'string' ? body.token.trim() : ''
+  const name  = typeof body?.name  === 'string' ? body.name.trim()  : ''
+  if (!token) { res.status(400).json({ error: 'token is required' }); return }
+  if (!/^(ntn_|secret_)[A-Za-z0-9]{20,}$/.test(token)) {
+    res.status(400).json({ error: 'That is not a Notion integration token (they start with ntn_ or secret_)' }); return
+  }
+  let info: BotInfo
+  try { info = await describeToken(token) }
+  catch (err) { notionError(res, err, 'Notion rejected that token'); return }
+  try {
+    const c = addConnection({ name: name || info.workspace || info.bot, token, workspace: info.workspace })
+    botCache.set(c.id, { info, error: null, ts: Date.now() })
+    discoverCache = null
+    announceTaskDbs()
+    res.status(201).json({ connections: await connectionsView(), added: c.id })
+  } catch { res.status(500).json({ error: 'Failed to save the connection' }) }
+})
+
+router.patch('/connections/:id', (req, res) => {
+  const name = (req.body as { name?: unknown })?.name
+  if (typeof name !== 'string' || !name.trim()) { res.status(400).json({ error: 'name is required' }); return }
+  if (req.params['id'] === ENV_CONN_ID) { res.status(400).json({ error: 'the .env connection is named in .env' }); return }
+  if (!renameConnection(req.params['id']!, name)) { res.status(404).json({ error: 'no such connection' }); return }
+  announceTaskDbs()
+  res.json({ ok: true })
+})
+
+router.delete('/connections/:id', async (req, res) => {
+  const id = req.params['id']!
+  if (id === ENV_CONN_ID) { res.status(400).json({ error: 'The .env connection is removed by clearing NOTION_API_KEY in .env' }); return }
+  if (!removeConnection(id)) { res.status(404).json({ error: 'no such connection' }); return }
+  try { writeMe(id, null) } catch { /* nothing to clear */ }
+  botCache.delete(id)
+  forgetConnection(id)
+  discoverCache = null
+  dbCache.clear()
+  announceTaskDbs()
+  res.json({ connections: await connectionsView() })
 })
 
 // ── Comments ────────────────────────────────────────────────────────────────
@@ -1103,7 +1339,7 @@ router.get('/comments', async (req, res) => {
   try {
     const { data } = await axios.get(
       `${NOTION_API}/comments?block_id=${blockId}`,
-      { headers: notionHeaders() },
+      { headers: await hdr(blockId) },
     )
     res.json({
       comments: (data.results as any[]).map(c => ({
@@ -1127,7 +1363,7 @@ router.post('/comments', async (req, res) => {
         parent:    { page_id: pageId },
         rich_text: [{ type: 'text', text: { content: text.trim() } }],
       },
-      { headers: notionHeaders() },
+      { headers: await hdr(pageId) },
     )
     res.status(201).json({ id: data.id })
   } catch (err) { notionError(res, err, 'Failed to post comment') }
@@ -1141,7 +1377,8 @@ router.post('/pages/:id/duplicate', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   try {
     const sourceId = req.params['id']!
-    const { data: src } = await axios.get(`${NOTION_API}/pages/${sourceId}`, { headers: notionHeaders() })
+    const conn = await connFor(sourceId)
+    const { data: src } = await axios.get(`${NOTION_API}/pages/${sourceId}`, { headers: headersFor(conn) })
 
     // Strip computed properties — only writable types may appear in the create
     // payload, and the title needs a copy suffix.
@@ -1168,7 +1405,7 @@ router.post('/pages/:id/duplicate', async (req, res) => {
     // payload. Nested children aren't copied — we'd need recursive walk.
     const { data: blockPage } = await axios.get(
       `${NOTION_API}/blocks/${sourceId}/children?page_size=100`,
-      { headers: notionHeaders() },
+      { headers: headersFor(conn) },
     )
     const children = (blockPage.results as any[])
       .filter(b => !b.archived)
@@ -1187,8 +1424,9 @@ router.post('/pages/:id/duplicate', async (req, res) => {
         properties: writable,
         children,
       },
-      { headers: notionHeaders() },
+      { headers: headersFor(conn) },
     )
+    remember(created.id, conn.id)
     res.status(201).json({ id: created.id, title: pageTitle(created) })
   } catch (err) { notionError(res, err, 'Failed to duplicate page') }
 })
@@ -1205,14 +1443,15 @@ router.post('/blocks/:id/move', async (req, res) => {
   try {
     // Resolve the block and its parent. The parent might be a page or another
     // block; both expose children via /blocks/:parent/children.
-    const { data: block } = await axios.get(`${NOTION_API}/blocks/${id}`, { headers: notionHeaders() })
+    const conn = await connFor(id)
+    const { data: block } = await axios.get(`${NOTION_API}/blocks/${id}`, { headers: headersFor(conn) })
     const parentType = block.parent?.type as string
     const parentId   = block.parent?.page_id ?? block.parent?.block_id
     if (!parentId) { res.status(400).json({ error: 'Could not resolve block parent' }); return }
 
     const { data: page } = await axios.get(
       `${NOTION_API}/blocks/${parentId}/children?page_size=100`,
-      { headers: notionHeaders() },
+      { headers: headersFor(conn) },
     )
     const siblings = (page.results as any[]).filter(b => !b.archived)
     const myIdx     = siblings.findIndex(b => b.id === id)
@@ -1254,9 +1493,9 @@ router.post('/blocks/:id/move', async (req, res) => {
     await axios.patch(
       `${NOTION_API}/blocks/${parentId}/children`,
       afterId ? { children: [cloned], after: afterId } : { children: [cloned] },
-      { headers: notionHeaders() },
+      { headers: headersFor(conn) },
     )
-    await axios.delete(`${NOTION_API}/blocks/${id}`, { headers: notionHeaders() })
+    await axios.delete(`${NOTION_API}/blocks/${id}`, { headers: headersFor(conn) })
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to move block') }
 })
@@ -1270,12 +1509,13 @@ router.post('/blocks/:id/indent', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   const id = req.params['id']!
   try {
-    const { data: block } = await axios.get(`${NOTION_API}/blocks/${id}`, { headers: notionHeaders() })
+    const conn = await connFor(id)
+    const { data: block } = await axios.get(`${NOTION_API}/blocks/${id}`, { headers: headersFor(conn) })
     const parentId = block.parent?.page_id ?? block.parent?.block_id
     if (!parentId) { res.status(400).json({ error: 'No parent' }); return }
     const { data: page } = await axios.get(
       `${NOTION_API}/blocks/${parentId}/children?page_size=100`,
-      { headers: notionHeaders() },
+      { headers: headersFor(conn) },
     )
     const siblings = (page.results as any[]).filter(b => !b.archived)
     const myIdx    = siblings.findIndex(b => b.id === id)
@@ -1286,9 +1526,9 @@ router.post('/blocks/:id/indent', async (req, res) => {
     await axios.patch(
       `${NOTION_API}/blocks/${prev.id}/children`,
       { children: [cloned] },
-      { headers: notionHeaders() },
+      { headers: headersFor(conn) },
     )
-    await axios.delete(`${NOTION_API}/blocks/${id}`, { headers: notionHeaders() })
+    await axios.delete(`${NOTION_API}/blocks/${id}`, { headers: headersFor(conn) })
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to indent block') }
 })
@@ -1297,14 +1537,15 @@ router.post('/blocks/:id/outdent', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   const id = req.params['id']!
   try {
-    const { data: block } = await axios.get(`${NOTION_API}/blocks/${id}`, { headers: notionHeaders() })
+    const conn = await connFor(id)
+    const { data: block } = await axios.get(`${NOTION_API}/blocks/${id}`, { headers: headersFor(conn) })
     // We need the parent block (so we can move into its parent) — only works
     // when the parent is a block (not a top-level page).
     if (block.parent?.type !== 'block_id') {
       res.status(400).json({ error: 'Already at top level' }); return
     }
     const parentBlockId = block.parent.block_id as string
-    const { data: parentBlock } = await axios.get(`${NOTION_API}/blocks/${parentBlockId}`, { headers: notionHeaders() })
+    const { data: parentBlock } = await axios.get(`${NOTION_API}/blocks/${parentBlockId}`, { headers: headersFor(conn) })
     const grandparentId = parentBlock.parent?.page_id ?? parentBlock.parent?.block_id
     if (!grandparentId) { res.status(400).json({ error: 'No grandparent' }); return }
     const t = block.type
@@ -1312,9 +1553,9 @@ router.post('/blocks/:id/outdent', async (req, res) => {
     await axios.patch(
       `${NOTION_API}/blocks/${grandparentId}/children`,
       { children: [cloned], after: parentBlockId },
-      { headers: notionHeaders() },
+      { headers: headersFor(conn) },
     )
-    await axios.delete(`${NOTION_API}/blocks/${id}`, { headers: notionHeaders() })
+    await axios.delete(`${NOTION_API}/blocks/${id}`, { headers: headersFor(conn) })
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to outdent block') }
 })
@@ -1383,7 +1624,7 @@ router.patch('/databases/:id', async (req, res) => {
     await axios.patch(
       `${NOTION_API}/databases/${req.params['id']}`,
       req.body,
-      { headers: notionHeaders() },
+      { headers: await hdr(req.params['id']!) },
     )
     // Invalidate the legacy schema cache in case the task DB was edited.
     dbCache.clear()
@@ -1414,7 +1655,7 @@ router.patch('/databases/:id/properties/:name', async (req, res) => {
     await axios.patch(
       `${NOTION_API}/databases/${req.params['id']}`,
       { properties: { [req.params['name']!]: propBody } },
-      { headers: notionHeaders() },
+      { headers: await hdr(req.params['id']!) },
     )
     dbCache.clear()
     res.json({ ok: true })
@@ -1427,7 +1668,7 @@ router.delete('/databases/:id/properties/:name', async (req, res) => {
     await axios.patch(
       `${NOTION_API}/databases/${req.params['id']}`,
       { properties: { [req.params['name']!]: null } },
-      { headers: notionHeaders() },
+      { headers: await hdr(req.params['id']!) },
     )
     dbCache.clear()
     res.json({ ok: true })
@@ -1454,7 +1695,7 @@ router.post('/databases/:id/properties', async (req, res) => {
     await axios.patch(
       `${NOTION_API}/databases/${req.params['id']}`,
       { properties: { [name.trim()]: propDef } },
-      { headers: notionHeaders() },
+      { headers: await hdr(req.params['id']!) },
     )
     dbCache.clear()  // task-schema cache invalidate
     res.json({ ok: true })
