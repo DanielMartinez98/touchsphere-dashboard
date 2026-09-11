@@ -43,6 +43,7 @@ export const HOST_TASKS = {
   'tailscale-update': 'Update Tailscale',
   'containers':       'Update containers',
   'self-update':      'Update the dashboard',
+  'calendar-update':  'Update the calendar app',
   'disk-clean':       'Free up disk space',
   'reboot':           'Reboot the server',
 } as const

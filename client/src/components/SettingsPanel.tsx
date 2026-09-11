@@ -2408,6 +2408,45 @@ function ServerTab() {
         dash.commit ? taskButton('self-update', 'Update the dashboard') : undefined,
       )}
 
+      {/* The calendar app on the same box (Smart Calendar, the Pi 4 kiosk's
+          page). Its own checkout and compose file; updated in place, and unlike
+          the dashboard it does not take this screen down, so the log streams.
+          A host script older than this build has no `calendar` block and no
+          verb for it, and says so rather than hiding the card. */}
+      {status && card(
+        'Smart Calendar',
+        !status.calendar ? (
+          <p className="text-white/40 text-xs leading-relaxed">
+            The host script on the server predates this build. On the server, in the dashboard folder, re-run{' '}
+            <code className="text-white/60">sudo bash scripts/host/install.sh '&lt;the key above&gt;'</code> and this card fills in.
+          </p>
+        ) : !status.calendar.present ? (
+          <p className="text-white/40 text-xs leading-relaxed">
+            No calendar checkout was found when the installer ran. Re-run it with{' '}
+            <code className="text-white/60">CALENDAR_DIR=/path/to/smart-calendar</code> in front of the command.
+          </p>
+        ) : (
+          <>
+            <p className="text-white/80 text-sm">
+              {status.calendar.commit ? `Checkout at ${status.calendar.commit}` : 'Checkout is not a git repository'}
+              {status.calendar.behind != null && status.calendar.behind > 0
+                ? <span className="text-cyan-200"> · {status.calendar.behind} commit{status.calendar.behind === 1 ? '' : 's'} behind</span>
+                : status.calendar.behind === 0 ? <span className="text-white/40"> · up to date with the last fetch</span> : ''}
+            </p>
+            {status.calendar.services.length > 0 && (
+              <p className="text-white/30 text-xs leading-relaxed truncate">
+                {status.calendar.services.map(s => `${s.name} · ${s.state}`).join(', ')}
+              </p>
+            )}
+            <p className="text-white/25 text-xs leading-relaxed">
+              Pulls the newest code (when the checkout has a remote) and rebuilds and restarts the container in place.
+              The kiosk reloads on its own.{status.calendar.lastUpdate ? ` Last done ${ago(status.calendar.lastUpdate)}.` : ''}
+            </p>
+          </>
+        ),
+        status.calendar?.present ? taskButton('calendar-update', 'Update the calendar app') : undefined,
+      )}
+
       {status && !rebootNeeded && card(
         'Power',
         <p className="text-white/40 text-xs leading-relaxed">Restarts the whole server, every container included. Plex, downloads and the assistant are back once it is.</p>,

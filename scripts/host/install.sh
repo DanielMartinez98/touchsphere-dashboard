@@ -67,14 +67,28 @@ echo "installed /usr/local/bin/touchsphere-host"
 #    because a container can't watch itself being replaced.
 COMPOSE=$(docker ps --format '{{.Label "com.docker.compose.project.config_files"}}' 2>/dev/null \
   | tr ',' '\n' | grep -v '^$' | grep -v "^$DASH/" | sort -u | tr '\n' ' ' | sed 's/ $//' || true)
+# The calendar app's checkout, for Settings → Server → "Update the calendar
+# app": CALENDAR_DIR=/path in front of the command names it; otherwise the
+# usual place (~/smart-calendar) is used when it exists. Kept OUT of
+# COMPOSE_FILES: that list is pulled from a registry, this one is rebuilt.
+CAL="${CALENDAR_DIR:-}"
+if [[ -z "$CAL" && -d "$HOME_DIR/smart-calendar" ]]; then CAL="$HOME_DIR/smart-calendar"; fi
+if [[ -n "$CAL" && ! -d "$CAL" ]]; then echo "CALENDAR_DIR=$CAL is not a directory" >&2; exit 78; fi
+if [[ -n "$CAL" ]]; then
+  CAL_FILES=$(docker ps --format '{{.Label "com.docker.compose.project.config_files"}}' 2>/dev/null \
+    | tr ',' '\n' | grep "^$CAL/" || true)
+  for f in $CAL_FILES; do COMPOSE=${COMPOSE//"$f"/}; done
+  COMPOSE=$(echo "$COMPOSE" | tr -s ' ' | sed 's/^ //;s/ $//')
+fi
 cat > /etc/touchsphere-host.conf <<EOF
 # Written by scripts/host/install.sh — edit freely, re-running the installer rewrites it.
 DASHBOARD_DIR=$DASH
 DASHBOARD_USER=$USER_NAME
 COMPOSE_FILES="$COMPOSE"
+CALENDAR_DIR=$CAL
 EOF
 chmod 0644 /etc/touchsphere-host.conf
-echo "wrote /etc/touchsphere-host.conf (compose files: ${COMPOSE:-none found})"
+echo "wrote /etc/touchsphere-host.conf (compose files: ${COMPOSE:-none found}; calendar: ${CAL:-none found})"
 
 # 3. sudo for exactly these verbs — the list is the script's, not a wildcard.
 VERBS=$(grep -m1 '^VERBS=' "$HERE/touchsphere-host" | cut -d'"' -f2)

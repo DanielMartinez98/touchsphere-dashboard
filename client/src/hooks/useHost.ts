@@ -13,7 +13,7 @@ import { onServerEvent } from './useServerEvents'
 
 export type HostTask =
   | 'apt-refresh' | 'apt-upgrade' | 'firmware-check' | 'firmware-update'
-  | 'tailscale-update' | 'containers' | 'self-update' | 'disk-clean' | 'reboot'
+  | 'tailscale-update' | 'containers' | 'self-update' | 'calendar-update' | 'disk-clean' | 'reboot'
 
 export interface HostInfo {
   enabled:   boolean
@@ -51,6 +51,11 @@ export interface HostStatus {
   firmware?: { installed: boolean; devices: number; updates: { device: string; current: string; to: string }[] }
   containers?: { docker: string; projects: { file: string; name: string; running: number; total: number; services: { name: string; state: string; image: string }[] }[] }
   dashboard?: { dir: string; commit: string; behind: number | null; lastSelfUpdate: string }
+  /** The calendar app's checkout on the same box. Absent from a host script that predates it. */
+  calendar?: {
+    dir: string; present: boolean; git: boolean; commit: string; behind: number | null
+    services: { name: string; state: string; image: string }[]; lastUpdate: string
+  }
 }
 
 function isLine(raw: unknown): raw is HostLine {
