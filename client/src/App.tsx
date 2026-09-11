@@ -81,7 +81,8 @@ function App() {
     styles: imageStyles, model: imageModel, setModel: setImageModel,
     quality: imageQuality, setQuality: setImageQuality,
     params: imageParams, defaults: imageDefaults, loras: imageLoras,
-    autoLora: imageAutoLora, setParams: setImageParams, resetParams: resetImageParams,
+    autoLora: imageAutoLora, inpaintPatchInfo: imageInpaintPatchInfo,
+    setParams: setImageParams, resetParams: resetImageParams,
     generate: generateImage, remove: removeImage, clear: clearImages,
     queue: imageQueue, queueMax: imageQueueMax, drawError: imageDrawError,
     cancel: cancelImage,
@@ -438,6 +439,7 @@ function App() {
             defaults={imageDefaults}
             loras={imageLoras}
             autoLora={imageAutoLora}
+            inpaintPatchInfo={imageInpaintPatchInfo}
             onModel={setImageModel}
             onQuality={setImageQuality}
             onParams={setImageParams}

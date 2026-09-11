@@ -39,6 +39,8 @@ export interface ImageSettings {
   controlnet?: string
   /** The model's own inpainting patch that shaped a masked edit, when one was installed (Anima's LLLite file). */
   inpaintPatch?: string
+  /** A masked edit on a style that has a patch ran without it: switched off, or the file was missing. */
+  inpaintPatchSkipped?: 'off' | 'missing'
   /** How much of the source actually changed, 0-1. Absent for a fresh render or an older picture. */
   changed?:    number
   maskFile?:   string
@@ -305,6 +307,8 @@ export interface ImageParams {
   turbo:        boolean
   lora:         string
   loraStrength: number
+  /** Use the style's own inpainting patch for a masked edit (on by default; only styles that have one show the switch). */
+  inpaintPatch: boolean
   seedMode:     SeedMode
   seed:         number
   /**
@@ -338,7 +342,7 @@ export interface StyleDefaults {
 export const DEFAULT_PARAMS: ImageParams = {
   megapixels: 0, multipleOf: 8, steps: 0, cfg: 0,
   prefix: null, optimizations: null, negative: null, negativePrefix: null,
-  turbo: false, lora: '', loraStrength: 1,
+  turbo: false, lora: '', loraStrength: 1, inpaintPatch: true,
   seedMode: 'random', seed: 0,
 }
 
@@ -400,6 +404,12 @@ export interface StyleText {
   usesNegative?: boolean
 }
 
+/** The selected style's own inpainting patch, when it declares one, and whether the box has it. */
+export interface InpaintPatchInfo {
+  file:      string
+  installed: boolean
+}
+
 export interface ParamsResponse {
   style?:      string
   styleLabel?: string
@@ -408,6 +418,8 @@ export interface ParamsResponse {
   text?:       StyleText
   loras?:      string[]
   autoLora?:   string
+  /** Null (or absent, on an older server) for a style without a patch. */
+  inpaintPatch?: InpaintPatchInfo | null
 }
 
 /**
@@ -480,6 +492,7 @@ export function useImages() {
   const [defaults, setDefaults]    = useState<StyleDefaults | null>(null)
   const [loras,    setLoras]       = useState<string[]>([])
   const [autoLora, setAutoLora]    = useState('')
+  const [inpaintPatchInfo, setInpaintPatchInfo] = useState<InpaintPatchInfo | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -600,6 +613,7 @@ export function useImages() {
     setDefaults(j?.defaults ? { ...j.defaults } as StyleDefaults : null)
     setLoras(j?.loras ?? [])
     setAutoLora(j?.autoLora ?? '')
+    setInpaintPatchInfo(j?.inpaintPatch ?? null)
   }, [])
 
   // Follow the selected style. Runs on mount too (model starts '' and settles
@@ -1002,7 +1016,7 @@ export function useImages() {
     queue, queueMax, queueFull: queue.length >= queueMax, drawError, cancel,
     styles, model, setModel, capabilities, structure, setStructure, safeTags, setSafeTags,
     quality, setQuality,
-    params, defaults, loras, autoLora, setParams, resetParams,
+    params, defaults, loras, autoLora, inpaintPatchInfo, setParams, resetParams,
     generate, remove, clear, refresh,
     prompter, setPrompter, upload,
     fetchParams, setParamsForStyle,

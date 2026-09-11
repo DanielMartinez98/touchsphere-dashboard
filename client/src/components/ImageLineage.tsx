@@ -127,6 +127,8 @@ function Facts({ st, origin }: { st: ImageSettings | null; origin: string }) {
   // Only for a masked edit: whether the model's own inpainting patch was
   // there. The file name means nothing here either; that it was used does.
   if (st?.inpaintPatch) rows.push(['Inpainting patch', 'yes'])
+  else if (st?.inpaintPatchSkipped === 'off') rows.push(['Inpainting patch', 'off (Advanced)'])
+  else if (st?.inpaintPatchSkipped === 'missing') rows.push(['Inpainting patch', 'not installed'])
   else if (st?.mask) rows.push(['Inpainting patch', 'no'])
   if (st?.steps) rows.push(['Steps', String(st.steps)])
   if (st?.cfg) rows.push(['Guidance', String(st.cfg)])

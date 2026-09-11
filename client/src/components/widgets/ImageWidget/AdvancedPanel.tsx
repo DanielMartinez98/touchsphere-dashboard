@@ -21,12 +21,12 @@
 
 import { useState } from 'react'
 import {
-  ChevronDown, Dices, Gauge, Grid3x3, Hash, RotateCcw, Sliders, Zap,
+  ChevronDown, Dices, Gauge, Grid3x3, Hash, Layers, RotateCcw, Sliders, Zap,
 } from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
 import {
   LIMITS, MEGAPIXELS, MULTIPLES, resolutionFor,
-  type ImageParams, type Orientation, type SeedMode, type StyleDefaults,
+  type ImageParams, type InpaintPatchInfo, type Orientation, type SeedMode, type StyleDefaults,
 } from '../../../hooks/useImages'
 
 interface Props {
@@ -37,6 +37,8 @@ interface Props {
   loras:     string[]
   /** The LoRA turbo would pick if left on Auto. '' = it couldn't find one. */
   autoLora:  string
+  /** The style's own inpainting patch and whether the box has it. null = the style has none, no switch. */
+  inpaintPatchInfo: InpaintPatchInfo | null
   /** Steps the current quality preset means, for the Steps control's "Auto". */
   qualitySteps: number
   /** The shape selected above, so the resolution readout is the real one. */
@@ -163,7 +165,7 @@ function Range({ min, max, unit = '' }: { min: number; max: number; unit?: strin
 }
 
 export default function AdvancedPanel({
-  params, defaults, loras, autoLora, qualitySteps, orientation, onChange, onReset,
+  params, defaults, loras, autoLora, inpaintPatchInfo, qualitySteps, orientation, onChange, onReset,
 }: Props) {
   const [open, setOpen] = useState(false)
 
@@ -179,6 +181,8 @@ export default function AdvancedPanel({
     params.steps > 0 && `${params.steps} steps`,
     params.cfg > 0 && `cfg ${params.cfg}`,
     params.turbo && 'turbo',
+    // Only a departure from the default is worth a word in the header.
+    inpaintPatchInfo && !params.inpaintPatch && 'inpaint patch off',
     params.seedMode !== 'random' && `seed ${params.seed}`,
   ].filter(Boolean) as string[]
 
@@ -422,6 +426,53 @@ export default function AdvancedPanel({
               </>
             )}
           </div>
+
+          {/* ── Inpainting patch ──
+              Only for a style that declares one (Anima's ControlNet-LLLite
+              file). On by default: a masked "Just a part" edit is painted
+              knowing what surrounds it. Off runs the generic repaint, which
+              occasionally suits a picture better — and, like Turbo, the
+              switch says so when the file is not on the box rather than
+              flipping a control that has nothing to do. */}
+          {inpaintPatchInfo && (() => {
+            const missing = !inpaintPatchInfo.installed
+            const on = params.inpaintPatch && !missing
+            return (
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  disabled={missing}
+                  onClick={() => !missing && onChange({ inpaintPatch: !params.inpaintPatch })}
+                  className={`h-12 rounded-xl px-4 flex items-center gap-2.5 border transition-colors ${
+                    missing
+                      ? 'bg-white/[0.03] border-hairline text-white/25'
+                      : on
+                        ? 'bg-pink-500/20 border-pink-400/40 text-white active:scale-[0.99]'
+                        : 'bg-white/5 border-hairline text-white/55 active:scale-[0.99]'
+                  }`}
+                >
+                  <Layers size={15} className={on ? 'text-pink-300' : 'text-white/40'} />
+                  <span className="text-[13px] font-semibold">Inpainting patch</span>
+                  <span className={`ml-auto w-11 h-6 rounded-full p-0.5 transition-colors ${
+                    on ? 'bg-pink-400/70' : 'bg-white/15'
+                  }`}>
+                    <span className={`block w-5 h-5 rounded-full bg-white/70 transition-transform ${
+                      on ? 'translate-x-5' : ''
+                    }`} />
+                  </span>
+                </button>
+                <span className="text-[11px] text-white/30 leading-snug">
+                  {missing
+                    ? <>The file for it is not on the image server. Put{' '}
+                        <span className="font-mono">{inpaintPatchInfo.file}</span> in ComfyUI's{' '}
+                        <span className="font-mono">models/model_patches</span> folder on the GPU box.</>
+                    : params.inpaintPatch
+                      ? 'Used when you change just a part of a picture in this style: the part is painted to fit what surrounds it.'
+                      : 'Off: a changed part is repainted the generic way, with only the mask telling the sampler where to paint.'}
+                </span>
+              </div>
+            )
+          })()}
 
           {/* ── Seed ──
               Random is right for "draw me a cat"; Fixed is what makes iterating

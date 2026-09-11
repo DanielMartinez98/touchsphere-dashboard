@@ -35,8 +35,10 @@ import {
   jobWire,
   listImages,
   listLoras,
+  listModelPatches,
   listModels,
   listWorkflowStyles,
+  styleInpaintPatch,
   styleEdits,
   MAX_QUEUED,
   MAX_UPLOAD_BYTES,
@@ -283,6 +285,14 @@ router.get('/params', async (req: Request, res: Response) => {
   } catch (err) {
     console.warn('[image] listing LoRAs failed:', err instanceof Error ? err.message : err)
   }
+  // The style's own inpainting patch, if it declares one, and whether the box
+  // has the file — so the Advanced switch for it can say "not installed"
+  // rather than flipping a control that has nothing to do. Null for a style
+  // without one: the switch is then not shown at all.
+  const patchFile = styleInpaintPatch(style)
+  const inpaintPatch = patchFile
+    ? { file: patchFile, installed: (imagesEnabled() ? await listModelPatches() : []).some(f => f.split(/[\\/]/).pop() === patchFile) }
+    : null
   res.setHeader('Cache-Control', 'no-store')
   res.json({
     style,
@@ -309,6 +319,7 @@ router.get('/params', async (req: Request, res: Response) => {
     // What turbo would use if the user leaves the LoRA on "Auto" — shown in the
     // panel so "Auto" names a file instead of being a shrug.
     autoLora: pickLora(loras, []),
+    inpaintPatch,
     choices: { megapixels: MEGAPIXEL_CHOICES, multipleOf: MULTIPLE_CHOICES },
     quality: selectedQuality(),
     qualitySteps: QUALITY_STEPS[selectedQuality()] ?? 0,

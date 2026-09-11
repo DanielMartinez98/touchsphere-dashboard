@@ -29,7 +29,7 @@ import AdvancedPanel from './AdvancedPanel'
 import MaskEditor from './MaskEditor'
 import { STRENGTHS, styleUsable } from '../../../hooks/useImages'
 import type {
-  HoldMode, ImageCapabilities, ImageParams, ImageStyle, Orientation, QueuedJob, StoredImage,
+  HoldMode, ImageCapabilities, ImageParams, ImageStyle, InpaintPatchInfo, Orientation, QueuedJob, StoredImage,
   StructureSettings, StyleDefaults,
 } from '../../../hooks/useImages'
 
@@ -105,6 +105,8 @@ interface Props {
   defaults: StyleDefaults | null
   loras:    string[]
   autoLora: string
+  /** The selected style's inpainting patch, for the Advanced switch. null = none. */
+  inpaintPatchInfo: InpaintPatchInfo | null
   onModel:    (model: string) => void
   onQuality:  (quality: string) => void
   onParams:   (patch: Partial<ImageParams>) => void
@@ -264,7 +266,7 @@ const QUALITIES: { id: string; label: string; hint: string }[] = [
 export default function ImageExpanded({
   images, enabled, busy, queue, queueMax, drawError,
   styles, capabilities, keepPoseDefault, holdDefaults, model, quality,
-  params, defaults, loras, autoLora,
+  params, defaults, loras, autoLora, inpaintPatchInfo,
   onModel, onQuality, onParams, onResetParams, onGenerate, onDelete, onClear, onCancel,
   improveDefault, onImproveChange, onUpload,
 }: Props) {
@@ -1207,6 +1209,7 @@ export default function ImageExpanded({
         defaults={defaults}
         loras={loras}
         autoLora={autoLora}
+        inpaintPatchInfo={inpaintPatchInfo}
         qualitySteps={QUALITY_STEP_COUNT[quality] ?? 26}
         orientation={orientation}
         onChange={onParams}

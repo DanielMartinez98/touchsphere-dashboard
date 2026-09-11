@@ -459,6 +459,12 @@ export interface ImageSettings {
   /** The model's own inpainting patch that shaped a masked edit, when one was installed (Anima's LLLite file). */
   inpaintPatch?: string
   /**
+   * Why a masked edit on a style that HAS a patch ran without it: switched
+   * off in Advanced, or the file was not on the box. Absent when it was used,
+   * or when the style has no patch to begin with.
+   */
+  inpaintPatchSkipped?: 'off' | 'missing'
+  /**
    * HOW MUCH THE PICTURE ACTUALLY CHANGED, 0-1, against the source it was
    * redrawn from — the mean of the top 2% of grid cells, the same measure the
    * plan runner uses to catch an edit that did nothing (imageChange). Recorded
@@ -825,6 +831,12 @@ export interface ImageJob {
    * painted knowing what surrounds it.
    */
   inpaintPatch: string
+  /**
+   * The user switched the patch OFF for this style (Draw → Advanced), so run()
+   * does not even look for the file. Kept apart from `inpaintPatch === ''` so
+   * the picture's details can say "off" rather than "not installed".
+   */
+  inpaintPatchOff: boolean
   /** How it is held, resolved from the settings (or the request) at queue time. */
   hold:         HoldMode
   holdStrength: number
@@ -1420,6 +1432,7 @@ export function startImage(req: ImageRequest): ImageJob {
     // a speed/quality dial. 0 all the way down means "whatever the graph says".
     cfg:       Number.isFinite(req.cfg) && Number(req.cfg) > 0 ? Number(req.cfg) : p.cfg,
     turbo:     p.turbo,
+    inpaintPatchOff: !p.inpaintPatch,
     source:     source?.id ?? '',
     sourceFile: source?.file ?? '',
     sourceWidth:  source?.width ?? 0,
@@ -1713,7 +1726,11 @@ async function run(job: ImageJob): Promise<void> {
     // doesn't the part match its surroundings" has a durable answer.
     if (job.source && (job.maskFile || job.region) && !edits) {
       const want = styleInpaintPatch(job.model)
-      if (want) {
+      if (want && job.inpaintPatchOff) {
+        // Switched off in Advanced for this style: the generic repaint, on
+        // purpose. Not looked up, not a warning — a choice, recorded as one.
+        console.log(`[image] ${job.id} ${styleLabel(job.model)}'s inpainting patch is switched off — the part is repainted the generic way`)
+      } else if (want) {
         const have = await listModelPatches()
         job.inpaintPatch = have.find(f => f.split(/[\\/]/).pop() === want) ?? ''
         if (!job.inpaintPatch) {
@@ -3330,7 +3347,7 @@ function turboHints(style: string): string[] {
 }
 
 /** The inpainting patch a style was trained with, by filename; '' for a style without one. */
-function styleInpaintPatch(style: string): string {
+export function styleInpaintPatch(style: string): string {
   if (!style.startsWith(WORKFLOW_PREFIX)) return ''
   return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.inpaintPatch ?? ''
 }
@@ -3951,7 +3968,11 @@ function renderedWith(job: ImageJob, graph: ComfyGraph, changed?: number | null)
     ...(job.source ? { source: job.source, denoise: job.denoise } : {}),
     ...(job.maskFile ? { mask: true, ...(job.region ? { region: job.region } : {}) } : {}),
     ...(job.controlnet ? { controlnet: `${job.controlnet} · ${job.hold} ${Math.round(job.holdStrength * 100)}% to ${Math.round(job.holdEnd * 100)}%` } : {}),
-    ...(job.inpaintPatch ? { inpaintPatch: job.inpaintPatch } : {}),
+    ...(job.inpaintPatch
+      ? { inpaintPatch: job.inpaintPatch }
+      : job.maskFile && styleInpaintPatch(job.model)
+        ? { inpaintPatchSkipped: job.inpaintPatchOff ? 'off' as const : 'missing' as const }
+        : {}),
     ...(typeof changed === 'number' ? { changed } : {}),
     ...(job.retriedWith ? { retriedWith: job.retriedWith } : {}),
     ...(job.retryFailed ? { retryFailed: job.retryFailed } : {}),

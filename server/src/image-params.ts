@@ -39,6 +39,14 @@ export interface ImageParams {
   lora:         string
   /** LoRA strength, only meaningful while `turbo` is on. */
   loraStrength: number
+  /**
+   * Use the model's own inpainting patch (Anima's ControlNet-LLLite file) for
+   * a masked edit when the box has it. ON by default — the patch is the better
+   * repaint nearly always — and here rather than global because only the
+   * styles that declare one have anything to switch. Off means the masked
+   * edit runs the generic way, which occasionally suits a picture better.
+   */
+  inpaintPatch: boolean
   /** Where the seed comes from when the caller doesn't pass one. */
   seedMode:     SeedMode
   /** The seed itself, for 'fixed' and as the running value for 'increment'. */
@@ -82,6 +90,7 @@ export const DEFAULT_PARAMS: ImageParams = {
   turbo:        false,
   lora:         '',
   loraStrength: 1,
+  inpaintPatch: true,
   seedMode:     'random',
   seed:         0,
   // null, not '': nothing is overridden until somebody overrides it.
@@ -168,6 +177,7 @@ export function normalizeParams(raw: unknown, base: ImageParams = DEFAULT_PARAMS
     loraStrength: strength === null
       ? base.loraStrength
       : clamp(Math.round(strength * 100) / 100, 0, MAX_LORA),
+    inpaintPatch: typeof o['inpaintPatch'] === 'boolean' ? o['inpaintPatch'] : base.inpaintPatch,
     seedMode:     mode === 'random' || mode === 'fixed' || mode === 'increment'
       ? mode
       : base.seedMode,
@@ -280,7 +290,8 @@ export function setParamsFor(style: string, patch: unknown): ImageParams {
     `[image] params for ${style || '(workflow default)'}: ` +
     `${next.megapixels || 'preset'}MP/${next.multipleOf} steps=${next.steps || 'auto'} ` +
     `cfg=${next.cfg || 'graph'} turbo=${next.turbo ? `${next.lora || 'auto'}@${next.loraStrength}` : 'off'} ` +
-    `seed=${next.seedMode}${next.seedMode === 'random' ? '' : `:${next.seed}`}`,
+    `seed=${next.seedMode}${next.seedMode === 'random' ? '' : `:${next.seed}`}` +
+    `${next.inpaintPatch ? '' : ' inpaint-patch=off'}`,
   )
   return next
 }
