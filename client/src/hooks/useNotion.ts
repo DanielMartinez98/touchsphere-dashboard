@@ -3,6 +3,9 @@ import { useServerEvent } from './useServerEvents'
 
 export interface SchemaOption { id: string; name: string; color: string }
 
+export type DateKind = 'due' | 'publish' | 'film' | 'date'
+export interface DateKey { key: string; kind: DateKind }
+
 export interface NotionSchema {
   titleKey:         string
   statusKey:        string | null
@@ -14,12 +17,16 @@ export interface NotionSchema {
   priorityOptions:  SchemaOption[]
   dueKey:           string | null
   // Optional relation property pointing to a projects DB. When present we can
-  // filter/group tasks by project on the Home view.
+  // filter/group tasks by project on the My work view.
   projectKey:       string | null
   projectDbId:      string | null
-  // A people property ("Assignee"), when the database has one — what the
-  // "only my tasks" filter keys on once somebody is picked in Settings.
+  // A people property ("Assignee"), when the database has one — what "Take
+  // it" writes to and what unassigned means.
   peopleKey?:       string | null
+  peopleKeys?:      string[]
+  // Every date property with what it means — the agenda's entries.
+  dateKeys?:        DateKey[]
+  doneCheckKey?:    string | null
 }
 
 export interface NotionTask {
@@ -35,6 +42,29 @@ export interface NotionTask {
   // Which task database this row came from — used to resolve the correct schema
   // for toggle-done and to badge the row when several DBs are aggregated.
   dbId:       string
+  // Whose it is. `mine` is true for every row when nobody is picked yet (the
+  // server cannot tell), and `me` on the response is null then.
+  mine:       boolean
+  unassigned: boolean
+  assignees:  { id: string; name: string }[]
+  // The team (connection) the board belongs to.
+  conn:       string | null
+}
+
+// One row of a calendar board, with every date it carries — a content piece
+// with a film date and a publish date is two entries on the agenda.
+export interface CalendarItem {
+  id:         string
+  title:      string
+  boardId:    string
+  conn:       string | null
+  status:     string | null
+  done:       boolean
+  mine:       boolean
+  unassigned: boolean
+  assignees:  { id: string; name: string }[]
+  dates:      { key: string; kind: DateKind; start: string; end: string | null }[]
+  url:        string | null
 }
 
 export interface ProjectRef {
@@ -43,18 +73,51 @@ export interface ProjectRef {
   icon:  string | null
 }
 
-// A task database feeding the aggregated Home list.
+// A task database feeding the aggregated list (tasks boards only, default first).
 export interface TaskDbRef {
   id:    string
   title: string
   icon:  string | null
 }
 
+export type BoardRole = 'tasks' | 'calendar'
+
+export interface NotionTeam {
+  id:        string
+  name:      string
+  workspace: string
+  color:     string
+  source:    'env' | 'added'
+  ok:        boolean
+  error:     string | null
+}
+
+export interface NotionBoard {
+  id:              string
+  title:           string
+  icon:            string | null
+  conn:            { id: string; name: string; color: string } | null
+  role:            BoardRole
+  hasStatus:       boolean
+  dueKey:          string | null
+  dateKeys:        DateKey[]
+  isDefault:       boolean
+  unavailable:     boolean
+  error:           string | null
+  openCount:       number
+  mineCount:       number
+  unassignedCount: number
+}
+
+export interface NotionIdentity { id: string; name: string; email?: string }
+
 export type TaskFields = Partial<{
   title:    string
   status:   string | null
   priority: string | null
   due:      string | null
+  // 'me' puts the user on the row ("Take it"), null takes everyone off it.
+  assignee: 'me' | null
 }>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -82,19 +145,21 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface TasksResponse {
+  me:       NotionIdentity | null
+  teams:    NotionTeam[]
+  boards:   NotionBoard[]
   tasks:    NotionTask[]
+  items:    CalendarItem[]
   projects: Record<string, ProjectRef>
   // Per-database schemas keyed by db id (for DB-specific actions), the source
   // DBs (for the picker/badges), and a merged schema for the generic UI.
   schemas:  Record<string, NotionSchema>
   dbs:      TaskDbRef[]
   merged:   NotionSchema
-  // Who the list is filtered to, or null for everyone's tasks.
-  me?:      { id: string; name: string } | null
 }
 
 /**
- * The task list, kept current.
+ * The work list, kept current.
  *
  * `active` is whether the Tasks corner exists right now (work mode). While it
  * does, the list is refetched every minute, when the tab comes back into
@@ -109,21 +174,28 @@ export function useNotion(active = true) {
   const [schema,   setSchema]   = useState<NotionSchema | null>(null)
   const [schemas,  setSchemas]  = useState<Record<string, NotionSchema>>({})
   const [taskDbs,  setTaskDbs]  = useState<TaskDbRef[]>([])
+  const [boards,   setBoards]   = useState<NotionBoard[]>([])
+  const [teams,    setTeams]    = useState<NotionTeam[]>([])
   const [tasks,    setTasks]    = useState<NotionTask[]>([])
+  const [items,    setItems]    = useState<CalendarItem[]>([])
   const [projects, setProjects] = useState<Record<string, ProjectRef>>({})
-  const [me,       setMe]       = useState<{ id: string; name: string } | null>(null)
+  const [me,       setMe]       = useState<NotionIdentity | null>(null)
   const [loading,  setLoading]  = useState(true)
   const [error,    setError]    = useState<string | null>(null)
   const [errorKind, setErrorKind] = useState<NotionErrorKind | null>(null)
   const [updatedAt, setUpdatedAt] = useState<number | null>(null)
 
-  // A single /tasks call now returns everything: aggregated tasks, per-DB and
-  // merged schemas, and the source DB list. Applied together on load & refresh.
+  // A single /tasks call returns everything: the identity, the teams, the
+  // boards, the tasks, the agenda items, per-DB and merged schemas. Applied
+  // together on load & refresh.
   const applyTasks = useCallback((t: TasksResponse) => {
     setTasks(t.tasks)
+    setItems(t.items ?? [])
     setProjects(t.projects)
     setSchemas(t.schemas)
     setTaskDbs(t.dbs)
+    setBoards(t.boards ?? [])
+    setTeams(t.teams ?? [])
     setSchema(t.merged)
     setMe(t.me ?? null)
     setUpdatedAt(Date.now())
@@ -140,7 +212,7 @@ export function useNotion(active = true) {
     setLoading(true)
     setError(null)
     try {
-      applyTasks(await apiFetch<TasksResponse>('/api/notion/tasks'))
+      applyTasks(await apiFetch<TasksResponse>('/api/notion/tasks?fresh=1'))
     } catch (err: unknown) {
       fail(err)
     } finally {
@@ -174,7 +246,8 @@ export function useNotion(active = true) {
   // announces every edit made through this app, on every device.
   useServerEvent('notion', useCallback(() => { if (active) void refreshTasks() }, [active, refreshTasks]))
 
-  // Refetch when the set of task databases changes (Browse → "Show in Tasks").
+  // Refetch when the set of task databases, a role, a team's name or the
+  // identity changes (Settings → Notion, the inline picker).
   useEffect(() => {
     const onChange = () => { void refreshTasks() }
     window.addEventListener('ts:task-dbs-changed', onChange)
@@ -220,8 +293,13 @@ export function useNotion(active = true) {
     const target = tasks.find(t => t.id === id)
     setTasks(prev => prev.map(t => {
       if (t.id !== id) return t
-      const next = { ...t, ...fields }
+      const { assignee, ...rest } = fields
+      const next: NotionTask = { ...t, ...rest }
       if ('status' in fields) next.done = computeDone(fields.status ?? null, t.dbId)
+      if (assignee !== undefined) {
+        if (assignee === 'me') { next.mine = true; next.unassigned = false; next.assignees = me ? [{ id: me.id, name: me.name }] : t.assignees }
+        else { next.mine = false; next.unassigned = true; next.assignees = [] }
+      }
       return next
     }))
     try {
@@ -257,7 +335,10 @@ export function useNotion(active = true) {
     schema,
     schemas,
     taskDbs,
+    boards,
+    teams,
     tasks,
+    items,
     projects,
     me,
     loading,
@@ -272,3 +353,5 @@ export function useNotion(active = true) {
     getTaskContent,
   }
 }
+
+export type NotionData = ReturnType<typeof useNotion>

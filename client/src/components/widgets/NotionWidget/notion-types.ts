@@ -107,6 +107,8 @@ export interface BlocksPage {
 
 export type NavView =
   | { kind: 'home' }
+  | { kind: 'calendar' }
+  | { kind: 'teams' }
   | { kind: 'browse' }
   | { kind: 'search' }
   | { kind: 'groups' }

@@ -321,7 +321,7 @@ function ConditionRow({
 // "🙋 Me" shortcut once the user has starred (★) themselves — the integration is
 // a bot and can't know who "you" are, so this is a one-time, persisted choice.
 function PeopleValue({ value, onChange }: { value: string | null; onChange: (id: string) => void }) {
-  const { users, meId, setMe, loading } = useNotionMe()
+  const { people: users, meId, setMe, loading } = useNotionMe()
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -343,7 +343,7 @@ function PeopleValue({ value, onChange }: { value: string | null; onChange: (id:
               {u.name}
             </button>
             <button type="button" aria-label={meId === u.id ? `Unset ${u.name} as me` : `Set ${u.name} as me`}
-              onClick={() => setMe(meId === u.id ? null : u.id)}
+              onClick={() => void setMe(meId === u.id ? null : u)}
               className={`px-1.5 py-0.5 text-sm ${meId === u.id ? 'text-yellow-300 bg-white/[0.06]' : 'text-white/25 bg-white/[0.03] active:bg-white/10'}`}>★</button>
           </span>
         ))}

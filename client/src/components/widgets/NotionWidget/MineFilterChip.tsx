@@ -6,8 +6,9 @@ import { useNotionMe } from '../../../hooks/useNotionMe'
 // It injects (or removes) a single people-contains-me condition into the shared
 // filter model — keyed `mine` so it round-trips without disturbing other
 // conditions. First use prompts the user to pick which workspace member they
-// are (the Notion integration is a bot and can't infer it); the choice is
-// remembered via useNotionMe so subsequent taps are instant.
+// are (the Notion integration is a bot and can't infer it); the choice is the
+// one identity kept on the server (useNotionMe), so subsequent taps are instant
+// on every device.
 
 const MINE_ID = 'mine'
 
@@ -18,7 +19,7 @@ export default function MineFilterChip({
   filter:    FilterModel
   onChange:  (next: FilterModel) => void
 }) {
-  const { users, me, meId, setMe, loading } = useNotionMe()
+  const { people, me, meId, setMe, loading } = useNotionMe()
   const [picking, setPicking] = useState(false)
 
   const active = filter.conditions.some(c => c.id === MINE_ID)
@@ -56,15 +57,15 @@ export default function MineFilterChip({
         <div className="flex flex-col gap-1.5 bg-white/[0.025] rounded-xl p-2 border border-white/[0.05]">
           <span className="text-sm text-white/45">Who are you?</span>
           <div className="flex flex-wrap gap-1">
-            {loading && users.length === 0 && <span className="text-sm text-white/30 italic">loading users…</span>}
-            {users.map(u => (
+            {loading && people.length === 0 && <span className="text-sm text-white/30 italic">loading users…</span>}
+            {people.map(u => (
               <button key={u.id} type="button"
-                onClick={() => { setMe(u.id); setPicking(false); applyMine(u.id) }}
+                onClick={() => { void setMe(u); setPicking(false); applyMine(u.id) }}
                 className={`flex items-center gap-1 pl-1.5 pr-2 py-0.5 rounded-full text-sm ${meId === u.id ? 'bg-green-500 text-black' : 'bg-white/[0.06] text-white/60 active:bg-white/10'}`}>
                 {u.avatarUrl
                   ? <img src={u.avatarUrl} alt="" className="w-4 h-4 rounded-full" />
                   : <span className="w-4 h-4 rounded-full bg-white/15 flex items-center justify-center text-[8px]">{u.name?.[0] ?? '?'}</span>}
-                {u.name}
+                {u.name || u.email}
               </button>
             ))}
           </div>

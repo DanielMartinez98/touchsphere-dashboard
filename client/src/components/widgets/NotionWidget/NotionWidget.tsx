@@ -46,10 +46,12 @@ interface Props {
 }
 
 export function NotionCollapsed({ tasks, loading, error, errorKind }: Props) {
-  const pending = tasks.filter(t => !t.done)
+  // My numbers: `mine` is true for every row when nobody is picked yet, so
+  // the pill reads everyone's then, as it always did.
+  const pending = tasks.filter(t => !t.done && t.mine)
   const overdue = pending.filter(t => t.due && isOverdue(t.due)).length
   const today   = pending.filter(t => t.due && !isOverdue(t.due) && new Date(t.due + 'T00:00').getTime() === new Date().setHours(0, 0, 0, 0)).length
-  const next    = nextPending(tasks)
+  const next    = nextPending(pending)
   // A failure with a list already on screen keeps the list — it is the last
   // good answer — and only flags that it may be stale.
   const stale = !!error && tasks.length > 0

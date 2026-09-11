@@ -1,12 +1,16 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useServerEvent } from './useServerEvents'
 
-// Which Notion databases ("boards") feed the aggregated Home task list. Mirrors
-// the server-persisted set (see /api/notion/task-dbs): the boards in effect in
-// the order that decides where a new task goes, the hidden ones, and the
-// default. Settings → Notion is the full editor; the Browse view's "Show in
-// Tasks" toggle uses the same `has`/`toggle`. Every change fires a global
-// `ts:task-dbs-changed` event so the task widget refetches.
+// Which Notion databases ("boards") feed the corner. Mirrors the
+// server-persisted set (see /api/notion/task-dbs): the boards in effect in
+// the order that decides where a new task goes, each with its role (a to-do
+// list or a calendar), the hidden ones, and the default. Settings → Notion is
+// the full editor; the Browse view's "Show in Tasks" toggle uses the same
+// `has`/`toggle`. Every change fires a global `ts:task-dbs-changed` event so
+// the corner refetches.
+
+export type BoardRole = 'tasks' | 'calendar'
+export interface DateKey { key: string; kind: 'due' | 'publish' | 'film' | 'date' }
 
 export interface TaskBoard {
   id:          string
@@ -14,6 +18,12 @@ export interface TaskBoard {
   icon:        string | null
   /** A task can be created here: the database has a Status (or done checkbox). */
   hasStatus:   boolean
+  /** The role in effect: the override, else detected. null when it is neither a list nor a calendar. */
+  role:        BoardRole | null
+  /** What detection alone says. */
+  detectedRole: BoardRole | null
+  dueKey:      string | null
+  dateKeys:    DateKey[]
   source:      'env' | 'added' | 'discovered'
   /** New tasks land here. */
   isDefault:   boolean
@@ -139,10 +149,23 @@ export function useTaskDbs() {
     } catch { void refresh() }
   }, [apply, refresh])
 
+  /** A board's role: 'tasks', 'calendar', or '' to let detection decide again. */
+  const setRole = useCallback(async (id: string, role: BoardRole | '') => {
+    setView(prev => ({ ...prev, dbs: prev.dbs.map(d => d.id === id ? { ...d, role: role || d.detectedRole } : d) })) // optimistic
+    try {
+      apply(await api<View>('/api/notion/task-dbs/role', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ id, role }),
+      }))
+      announce()
+    } catch { void refresh() }
+  }, [apply, refresh])
+
   return {
     ids: view.ids, boards: view.dbs, hidden: view.hidden,
     defaultId: view.defaultId, defaultExplicit: view.defaultExplicit,
     loading, error,
-    has, add, remove, toggle, setDefault, refresh,
+    has, add, remove, toggle, setDefault, setRole, refresh,
   }
 }

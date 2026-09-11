@@ -547,6 +547,8 @@ async function addNotionTask(title: string, due: string): Promise<string> {
 interface VoiceTask {
   id: string; title: string; status: string | null; priority: string | null
   due: string | null; done: boolean; projectIds: string[]; dbId: string
+  /** The user's own, by the identity in Settings → Notion; true for every row when nobody is picked. */
+  mine?: boolean
 }
 interface VoiceTasks {
   tasks: VoiceTask[]
@@ -583,7 +585,10 @@ async function listTasks(which: string, project: string): Promise<string> {
   const today = ymdKey(new Date())
   const week  = ymdKey(new Date(Date.now() + 7 * 86_400_000))
   const scope = (which || 'all').toLowerCase()
+  // The user's own tasks unless they asked for everyone's: the boards are
+  // shared with whole teams, and "what's on my list" means mine.
   let list = data.tasks.filter(t => scope === 'done' ? t.done : !t.done)
+  if (scope !== 'everyone') list = list.filter(t => t.mine !== false)
   if (scope === 'overdue') list = list.filter(t => t.due && t.due < today)
   if (scope === 'today')   list = list.filter(t => t.due && t.due <= today)
   if (scope === 'week')    list = list.filter(t => t.due && t.due <= week)
@@ -602,7 +607,7 @@ async function listTasks(which: string, project: string): Promise<string> {
     return 0
   })
   const label = scope === 'overdue' ? 'overdue tasks' : scope === 'today' ? 'tasks due today or earlier'
-    : scope === 'week' ? 'tasks due within a week, overdue ones included' : scope === 'done' ? 'completed tasks' : 'open tasks'
+    : scope === 'week' ? 'tasks due within a week, overdue ones included' : scope === 'done' ? 'completed tasks' : scope === 'everyone' ? "open tasks across the teams, everyone's included" : 'open tasks'
   if (list.length === 0) return `No ${label}${proj ? ` in ${project}` : ''}.`
   const shown = list.slice(0, 15)
   const lines = shown.map(t => {
@@ -1543,7 +1548,7 @@ export const DASHBOARD_TOOLS = [
       parameters: {
         type: 'object',
         properties: {
-          which:   { type: 'string', enum: ['all', 'overdue', 'today', 'week', 'done'], description: 'Which tasks: all open ones (default), only overdue, due today or earlier, due within a week, or completed ones.' },
+          which:   { type: 'string', enum: ['all', 'overdue', 'today', 'week', 'done', 'everyone'], description: "Which tasks: all of the user's open ones (default), only overdue, due today or earlier, due within a week, completed ones, or 'everyone' for the teams' open tasks including other people's." },
           project: { type: 'string', description: 'Optional project name to narrow to, when the user names one.' },
         },
       },

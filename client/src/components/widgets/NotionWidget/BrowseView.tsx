@@ -5,12 +5,13 @@ import type { Workspace, WorkspaceItem } from './notion-types'
 import Tile from './Tile'
 import AddToGroupSheet from './AddToGroupSheet'
 import { useNotionGroups } from '../../../hooks/useNotionGroups'
+import GroupsView from './GroupsView'
 
 export default function BrowseView({ client }: { client: NotionClient }) {
   const [ws,      setWs]      = useState<Workspace | null>(null)
   const [loading, setLoading] = useState(true)
   const [error,   setError]   = useState<string | null>(null)
-  const [tab,     setTab]     = useState<'all' | 'databases' | 'pages'>('all')
+  const [tab,     setTab]     = useState<'all' | 'databases' | 'pages' | 'groups'>('all')
   // Item targeted by a long-press, opens the bottom sheet.
   const [adding,  setAdding]  = useState<{ item: WorkspaceItem; kind: 'page' | 'database' } | null>(null)
 
@@ -59,17 +60,23 @@ export default function BrowseView({ client }: { client: NotionClient }) {
 
       <p className="text-sm text-white/45 px-1">Long-press any item to add it to a group.</p>
 
+      {/* Groups (the user's own folders of pages and databases) live here since
+          2026-09-11 — they are a way of organising the workspace, which is
+          what Browse is for; the tab bar slot went to Calendar and Teams. */}
       <div className="flex gap-1.5">
-        {(['all', 'databases', 'pages'] as const).map(t => (
+        {(['all', 'databases', 'pages', 'groups'] as const).map(t => (
           <button key={t} type="button" onClick={() => setTab(t)}
             className={`flex-1 py-2.5 rounded-full text-sm font-medium transition-colors
               ${tab === t ? 'bg-green-500 text-black' : 'bg-white/[0.07] text-white/50 active:bg-white/15'}`}>
             {t === 'all' ? `All (${ws.databases.length + rootPages.length})`
               : t === 'databases' ? `Databases (${ws.databases.length})`
-              : `Pages (${rootPages.length})`}
+              : t === 'pages' ? `Pages (${rootPages.length})`
+              : `Groups (${groups.groups.length})`}
           </button>
         ))}
       </div>
+
+      {tab === 'groups' && <GroupsView client={client} />}
 
       {showDbs && ws.databases.length > 0 && (
         <div className="flex flex-col gap-1.5">
@@ -99,9 +106,11 @@ export default function BrowseView({ client }: { client: NotionClient }) {
         <p className="text-base text-white/45 italic text-center py-6">No top-level pages shared with this integration.</p>
       )}
 
-      <p className="text-sm text-white/35 text-center pt-3">
-        Share more pages or databases with your integration in Notion to see them here.
-      </p>
+      {tab !== 'groups' && (
+        <p className="text-sm text-white/35 text-center pt-3">
+          Share more pages or databases with your integration in Notion to see them here.
+        </p>
+      )}
 
       {adding && (
         <AddToGroupSheet

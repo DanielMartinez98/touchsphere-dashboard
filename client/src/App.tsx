@@ -117,8 +117,10 @@ function App() {
   const {
     schema:      notionSchema,
     schemas:     notionSchemas,
-    taskDbs:     notionTaskDbs,
+    boards:      notionBoards,
+    teams:       notionTeams,
     tasks:       notionTasks,
+    items:       notionItems,
     projects:    notionProjects,
     me:          notionMe,
     loading:     notionLoading,
@@ -470,8 +472,10 @@ function App() {
             <NotionExpanded
               schema={notionSchema}
               schemas={notionSchemas}
-              taskDbs={notionTaskDbs}
+              boards={notionBoards}
+              teams={notionTeams}
               tasks={notionTasks}
+              items={notionItems}
               projects={notionProjects}
               loading={notionLoading}
               error={notionError}

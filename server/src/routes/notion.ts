@@ -6,7 +6,7 @@ import { broadcast } from './system'
 import { isPublicHttpUrl } from './browse'
 import {
   ENV_CONN_ID, addConnection, connById, connIdFor, forgetConnection, headersFor,
-  listConnections, remember, rememberMany, removeConnection, renameConnection, type NotionConn,
+  listConnections, remember, rememberMany, removeConnection, setConnPrefs, type NotionConn,
 } from '../notion-connections'
 
 const router = Router()
@@ -119,57 +119,112 @@ function idFromLink(raw: string): string {
 const clean = (arr: unknown): string[] =>
   Array.isArray(arr) ? Array.from(new Set(arr.map(String).map(s => normId(s)).filter(Boolean))) : []
 
-// ── "Me" — whose tasks the widget shows ───────────────────────────────────────
-// Task databases are often shared, so an unfiltered query returns the whole
-// team's rows. The user picks themselves once in Settings (from /users) and we
-// persist the Notion user id here; /tasks then filters every DB that has a
-// people property down to rows assigned to them. With nobody picked the widget
-// behaves as before (everyone's tasks) rather than showing an empty list.
+// ── "Me" — whose work the corner shows ────────────────────────────────────────
+// Task databases are shared, so a row has to be told apart as mine or someone
+// else's. The user picks themselves once (Settings → Notion, or the picker
+// inside the corner) and the identity is kept here: ONE person, with the
+// Notion user id and, when the integration can read it, the email.
 //
-// PER CONNECTION, because a Notion user id is a workspace's id for that
-// person: the same human is a different id in each workspace. The file holds
-// one entry per connection; the pre-connections shape ({ id, name }) is read
-// as the env connection's entry.
+// One, not one per workspace (as it was until 2026-09-11), because a person's
+// Notion user id is the same in every workspace they belong to — the same id
+// is the Assignee on all three teams' boards here — and the email catches
+// the case where it is not. A per-workspace override remains for someone who
+// is a different account in one workspace; it is consulted first.
 const ME_FILE = 'notion-me.json'
 
-interface NotionMe { id: string; name: string }
+interface NotionMe { id: string; name: string; email?: string }
+interface MeStore { global: NotionMe | null; byConn: Record<string, NotionMe> }
 
-function readAllMe(): Record<string, NotionMe> {
+function parseMe(v: unknown): NotionMe | null {
+  const o = v as { id?: unknown; name?: unknown; email?: unknown } | null
+  if (!o || typeof o !== 'object' || !o.id) return null
+  const me: NotionMe = { id: String(o.id), name: String(o.name ?? '') }
+  if (typeof o.email === 'string' && o.email.trim()) me.email = o.email.trim().toLowerCase()
+  return me
+}
+
+let meCache: MeStore | null = null
+
+function readMeStore(): MeStore {
+  if (meCache) return meCache
   const p = path.join(cacheDir(), ME_FILE)
+  let store: MeStore = { global: null, byConn: {} }
   try {
-    if (!fs.existsSync(p)) return {}
-    const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as Partial<NotionMe> & { byConn?: Record<string, Partial<NotionMe>> }
-    const out: Record<string, NotionMe> = {}
-    if (parsed.byConn && typeof parsed.byConn === 'object') {
-      for (const [conn, me] of Object.entries(parsed.byConn)) if (me?.id) out[conn] = { id: String(me.id), name: String(me.name ?? '') }
-    } else if (parsed.id) {
-      out[ENV_CONN_ID] = { id: String(parsed.id), name: String(parsed.name ?? '') }
+    if (fs.existsSync(p)) {
+      const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as { global?: unknown; byConn?: Record<string, unknown> }
+      if (parsed.byConn && typeof parsed.byConn === 'object') {
+        for (const [conn, v] of Object.entries(parsed.byConn)) { const me = parseMe(v); if (me) store.byConn[conn] = me }
+      }
+      // Three shapes have lived in this file: { id, name } (one token), {
+      // byConn } (one per workspace) and now { global, byConn }. The first
+      // reads as the one person; the second promotes its first entry to the
+      // one person — right far more often than "nobody", see above — and
+      // keeps the entry as the override it also is.
+      store.global = parseMe(parsed.global) ?? (parsed.byConn ? null : parseMe(parsed))
+      if (!store.global) {
+        const first = Object.values(store.byConn)[0]
+        if (first) { store.global = first; writeMeStore(store); console.log(`[notion] identity promoted from a per-workspace pick: ${first.name} (${first.id})`) }
+      }
     }
-    return out
   } catch (err) {
     console.error('[notion] failed to read me store:', err)
-    return {}
+    store = { global: null, byConn: {} }
   }
+  meCache = store
+  return store
 }
 
-function readMe(connId: string): NotionMe | null {
-  return readAllMe()[connId] ?? null
-}
-
-function writeMe(connId: string, me: NotionMe | null): void {
+function writeMeStore(store: MeStore): void {
   const p = path.join(cacheDir(), ME_FILE)
   try {
-    const all = readAllMe()
-    if (me === null) delete all[connId]
-    else all[connId] = me
-    fs.writeFileSync(p, JSON.stringify({ byConn: all }, null, 2), 'utf8')
-    console.log(me
-      ? `[notion] set "me" for ${connId} → ${me.name} (${me.id})`
-      : `[notion] cleared "me" for ${connId} — its task boards will show everyone's tasks`)
+    fs.writeFileSync(p, JSON.stringify({ global: store.global, byConn: store.byConn }, null, 2), 'utf8')
+    meCache = store
   } catch (err) {
     console.error('[notion] failed to write me store:', err)
     throw err
   }
+}
+
+/** The identity in effect for a workspace: its override, else the one person. */
+function meFor(connId: string): NotionMe | null {
+  const s = readMeStore()
+  return s.byConn[connId] ?? s.global
+}
+
+/** Which of a row's people are the user — by id, or by email when the integration hands emails over. */
+function isMine(people: any[], me: NotionMe | null): boolean {
+  if (!me) return false
+  return people.some(p => p?.id === me.id
+    || (!!me.email && typeof p?.person?.email === 'string' && p.person.email.toLowerCase() === me.email))
+}
+
+// People seen on rows, per workspace: the "who are you" picker's second
+// source. The member list (/users) can be empty for an integration whose
+// workspace has not granted it user information, yet every row still names
+// its assignee — so whoever shows up on a board is offered as a candidate.
+interface SeenPerson { id: string; name: string; avatarUrl: string | null; email: string | null }
+const peopleSeen = new Map<string, Map<string, SeenPerson>>()
+
+function notePeople(connId: string, people: any[]): void {
+  let m = peopleSeen.get(connId)
+  if (!m) { m = new Map(); peopleSeen.set(connId, m) }
+  for (const p of people) {
+    if (!p?.id || (p.type && p.type !== 'person')) continue
+    const cur = m.get(p.id)
+    m.set(p.id, {
+      id: p.id,
+      name: (typeof p.name === 'string' && p.name) || cur?.name || '',
+      avatarUrl: (typeof p.avatar_url === 'string' && p.avatar_url) || cur?.avatarUrl || null,
+      email: (typeof p.person?.email === 'string' && p.person.email) || cur?.email || null,
+    })
+  }
+}
+
+/** Every people value of a row, across all of its people properties. */
+function peopleOf(props: Record<string, any>, keys: string[]): any[] {
+  const out: any[] = []
+  for (const k of keys) for (const p of (props[k]?.people ?? []) as any[]) out.push(p)
+  return out
 }
 
 function envTaskDbIds(): string[] {
@@ -182,31 +237,50 @@ function envTaskDbIds(): string[] {
 // that discovery didn't catch. Only these two overrides are persisted.
 // `defaultId` is the board new tasks land in (Settings → Notion). '' means
 // "whichever comes first" — the env-named one, as it always was.
-interface TaskDbStore { included: string[]; excluded: string[]; defaultId: string }
+// A board's ROLE (2026-09-11): a to-do list or a calendar. The three Content
+// Calendars have a Status like any to-do list, so until roles existed their
+// rows (Idea → Filming → Published, with a film date and a publish date) sat
+// in the task list between the to-dos, and a spoken "add a task" landed in
+// one of them. The role is detected from the schema and title (detectRole)
+// and can be overridden here per board.
+export type BoardRole = 'tasks' | 'calendar'
+
+interface TaskDbStore { included: string[]; excluded: string[]; defaultId: string; roles: Record<string, BoardRole> }
+
+function cleanRoles(v: unknown): Record<string, BoardRole> {
+  const out: Record<string, BoardRole> = {}
+  if (v && typeof v === 'object') {
+    for (const [k, r] of Object.entries(v as Record<string, unknown>)) {
+      if (r === 'tasks' || r === 'calendar') out[normId(k)] = r
+    }
+  }
+  return out
+}
 
 function readStore(): TaskDbStore {
   const p = path.join(cacheDir(), TASK_DBS_FILE)
   try {
     if (fs.existsSync(p)) {
-      const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as { included?: unknown; excluded?: unknown; ids?: unknown; defaultId?: unknown }
+      const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as { included?: unknown; excluded?: unknown; ids?: unknown; defaultId?: unknown; roles?: unknown }
       // Migrate the earlier `{ ids }` shape → explicit includes.
       return {
         included:  clean(parsed.included ?? parsed.ids),
         excluded:  clean(parsed.excluded),
         defaultId: typeof parsed.defaultId === 'string' ? normId(parsed.defaultId) : '',
+        roles:     cleanRoles(parsed.roles),
       }
     }
   } catch (err) {
     console.error('[notion] failed to read task-db store:', err)
   }
-  return { included: [], excluded: [], defaultId: '' }
+  return { included: [], excluded: [], defaultId: '', roles: {} }
 }
 
 function writeStore(store: TaskDbStore): void {
   try {
     fs.writeFileSync(
       path.join(cacheDir(), TASK_DBS_FILE),
-      JSON.stringify({ included: clean(store.included), excluded: clean(store.excluded), defaultId: normId(store.defaultId) }, null, 2),
+      JSON.stringify({ included: clean(store.included), excluded: clean(store.excluded), defaultId: normId(store.defaultId), roles: cleanRoles(store.roles) }, null, 2),
       'utf8',
     )
   } catch (err) {
@@ -380,6 +454,31 @@ export interface NotionSchema {
   // people property at all — such a DB can't express ownership, so every row in
   // it counts as the user's.
   peopleKey:        string | null
+  // Every people property, for the "is this mine" test — a row is the user's
+  // if they are on any of them, not only the one called Assignee.
+  peopleKeys:       string[]
+  // Every date property with what it means (due / film / publish / plain
+  // date), for the agenda and for telling a calendar board from a to-do list.
+  dateKeys:         DateKey[]
+  // A done-style checkbox, when the database marks completion that way.
+  doneCheckKey:     string | null
+}
+
+export type DateKind = 'due' | 'publish' | 'film' | 'date'
+export interface DateKey { key: string; kind: DateKind }
+
+// What a date property means, from its name. "Due date", "Deadline" are due
+// dates; "Publish date", "Post date", "Release", "Go live" are when a piece of
+// content goes out; "Film date", "Shoot", "Recording" are when it is made.
+// Anything else ("Date", "When", "Timeline", "Meeting date") is a plain date.
+// Contains-matching, not equality: findProp's exact names missed "Due date"
+// on both teams' Todo Lists, which is why their tasks never went overdue.
+function dateKind(name: string): DateKind {
+  const n = name.toLowerCase()
+  if (/due|deadline/.test(n)) return 'due'
+  if (/publish|post date|release|go.?live|\bair/.test(n)) return 'publish'
+  if (/film|shoot|record/.test(n)) return 'film'
+  return 'date'
 }
 
 // Per-database cache. Each entry holds the derived task schema plus the DB's
@@ -447,8 +546,13 @@ function buildSchema(props: Record<string, any>): NotionSchema {
   const priorityKey     = priorityEntry?.[0] ?? null
   const priorityOptions: SchemaOption[] = priorityEntry?.[1]?.select?.options ?? []
 
-  const dueEntry = findProp(props, ['due', 'deadline', 'date'], ['date'])
-  const dueKey   = dueEntry?.[0] ?? null
+  const dateKeys: DateKey[] = Object.entries(props)
+    .filter(([, p]) => p?.type === 'date')
+    .map(([k]) => ({ key: k, kind: dateKind(k) }))
+  // The due date: the one called due, else a plain date. A film or publish
+  // date is never a due date — it is what the agenda shows instead.
+  const dueKey = dateKeys.find(d => d.kind === 'due')?.key ?? dateKeys.find(d => d.kind === 'date')?.key ?? null
+  const doneCheckKey = findProp(props, ['done', 'complete', 'completed', 'finished'], ['checkbox'])?.[0] ?? null
 
   // Project relation — prefer name match ("project", "projects", "area",
   // "epic") then fall back to the first relation property of any name. The
@@ -467,8 +571,29 @@ function buildSchema(props: Record<string, any>): NotionSchema {
   const peopleEntry = findProp(props, ['assignee', 'assignees', 'owner', 'assigned to', 'person', 'people'], ['people'])
                    ?? Object.entries(props).find(([, p]) => p.type === 'people') as [string, any] | undefined ?? null
   const peopleKey = peopleEntry?.[0] ?? null
+  const peopleKeys = Object.entries(props).filter(([, p]) => p?.type === 'people').map(([k]) => k)
 
-  return { titleKey, statusKey, statusType, statusOptions, doneStatusNames, todoStatusNames, priorityKey, priorityOptions, dueKey, projectKey, projectDbId, peopleKey }
+  return { titleKey, statusKey, statusType, statusOptions, doneStatusNames, todoStatusNames, priorityKey, priorityOptions, dueKey, projectKey, projectDbId, peopleKey, peopleKeys, dateKeys, doneCheckKey }
+}
+
+// A board's role from what it is: a calendar when it has a film or publish
+// date or is called one (Content Calendar, Meetings, Editorial schedule…),
+// else a to-do list when it has a Status or a done checkbox, else a calendar
+// when it has any date at all (Projects with its Timeline), else nothing —
+// such a database is for Browse, not a board.
+const CALENDAR_TITLE = /calendar|schedule|meeting|editorial|\bcontent\b|\bevents?\b/i
+
+function detectRole(title: string, schema: NotionSchema): BoardRole | null {
+  const kinds = new Set(schema.dateKeys.map(d => d.kind))
+  if (schema.dateKeys.length > 0 && (kinds.has('publish') || kinds.has('film') || CALENDAR_TITLE.test(title))) return 'calendar'
+  if (schema.statusKey || schema.doneCheckKey) return 'tasks'
+  if (schema.dateKeys.length > 0) return 'calendar'
+  return null
+}
+
+/** The role in effect: the override from Settings, else the detected one. */
+function roleFor(dbId: string, entry: DbEntry, store: TaskDbStore = readStore()): BoardRole | null {
+  return store.roles[dbId] ?? detectRole(entry.title, entry.schema)
 }
 
 // Fold several task-DB schemas into one for the generic Home UI (status/priority
@@ -479,7 +604,7 @@ function buildSchema(props: Record<string, any>): NotionSchema {
 const EMPTY_SCHEMA: NotionSchema = {
   titleKey: 'Name', statusKey: null, statusType: null, statusOptions: [],
   doneStatusNames: [], todoStatusNames: [], priorityKey: null, priorityOptions: [],
-  dueKey: null, projectKey: null, projectDbId: null, peopleKey: null,
+  dueKey: null, projectKey: null, projectDbId: null, peopleKey: null, peopleKeys: [], dateKeys: [], doneCheckKey: null,
 }
 
 function mergeSchemas(list: NotionSchema[]): NotionSchema {
@@ -507,10 +632,31 @@ function mergeSchemas(list: NotionSchema[]): NotionSchema {
     projectKey:      first(s => s.projectKey),
     projectDbId:     first(s => s.projectDbId),
     peopleKey:       first(s => s.peopleKey),
+    peopleKeys:      uniq(list.flatMap(s => s.peopleKeys)),
+    dateKeys:        (() => { const seen = new Map<string, DateKey>(); for (const s of list) for (const d of s.dateKeys) if (!seen.has(d.key)) seen.set(d.key, d); return Array.from(seen.values()) })(),
+    doneCheckKey:    first(s => s.doneCheckKey),
   }
 }
 
-function extractTask(page: any, schema: NotionSchema, dbId: string) {
+// Who the row is for, worked out here rather than by a Notion-side filter:
+// every row comes down and is marked mine or not, so the screen can put mine
+// first and still reach the rest (a team's unassigned tasks, what a teammate
+// has). No identity in effect means every row is "mine" — there is no way to
+// tell, and an empty list would be the wrong answer — and the response's
+// `me` being null is what tells the screen to say so.
+interface RowCtx { me: NotionMe | null; connId: string }
+
+function ownership(props: Record<string, any>, schema: NotionSchema, ctx: RowCtx | undefined) {
+  const people = peopleOf(props, schema.peopleKeys)
+  if (ctx) notePeople(ctx.connId, people)
+  const assignees = ((schema.peopleKey ? props[schema.peopleKey]?.people : null) ?? [] as any[])
+    .map((p: any) => ({ id: String(p.id), name: typeof p.name === 'string' ? p.name : '' }))
+  const mine = schema.peopleKeys.length === 0 || !ctx?.me ? true : isMine(people, ctx.me)
+  const unassigned = !!schema.peopleKey && assignees.length === 0
+  return { mine, unassigned, assignees, conn: ctx?.connId ?? null }
+}
+
+function extractTask(page: any, schema: NotionSchema, dbId: string, ctx?: RowCtx) {
   const props   = page.properties as Record<string, any>
   const doneSet = new Set(schema.doneStatusNames.map(n => n.toLowerCase()))
 
@@ -534,7 +680,36 @@ function extractTask(page: any, schema: NotionSchema, dbId: string) {
     ? ((props[schema.projectKey]?.relation ?? []) as any[]).map(r => r.id)
     : []
 
-  return { id: page.id, title, status, priority, due, done, createdAt: page.created_time, projectIds, dbId }
+  return { id: page.id, title, status, priority, due, done, createdAt: page.created_time, projectIds, dbId, ...ownership(props, schema, ctx) }
+}
+
+// One row of a calendar board: a content piece, a meeting, a project — with
+// every date it carries, each an entry on the agenda ("🎬 Film · Product
+// launch" and "📣 Publish · Product launch" are the same row twice).
+export interface CalendarItem {
+  id: string; title: string; boardId: string; conn: string | null
+  status: string | null; done: boolean; mine: boolean; unassigned: boolean
+  assignees: { id: string; name: string }[]
+  dates: { key: string; kind: DateKind; start: string; end: string | null }[]
+  url: string | null
+}
+
+function extractItem(page: any, schema: NotionSchema, dbId: string, ctx?: RowCtx): CalendarItem {
+  const props   = page.properties as Record<string, any>
+  const doneSet = new Set(schema.doneStatusNames.map(n => n.toLowerCase()))
+  const title: string = props[schema.titleKey]?.title?.map((t: any) => t.plain_text).join('') || 'Untitled'
+  const statusProp = schema.statusKey ? props[schema.statusKey] : null
+  const status: string | null =
+    schema.statusType === 'status' ? (statusProp?.status?.name ?? null) :
+    schema.statusType === 'select' ? (statusProp?.select?.name  ?? null) : null
+  const doneViaBox = schema.doneCheckKey ? !!props[schema.doneCheckKey]?.checkbox : false
+  const done = doneViaBox || (status != null && doneSet.has(status.toLowerCase()))
+  const dates = schema.dateKeys.flatMap(d => {
+    const v = props[d.key]?.date
+    return v?.start ? [{ key: d.key, kind: d.kind, start: String(v.start), end: v.end ? String(v.end) : null }] : []
+  })
+  const own = ownership(props, schema, ctx)
+  return { id: page.id, title, boardId: dbId, conn: own.conn, status, done, mine: own.mine, unassigned: own.unassigned, assignees: own.assignees, dates, url: typeof page.url === 'string' ? page.url : null }
 }
 
 function buildTaskProperties(
@@ -569,21 +744,17 @@ router.get('/schema', async (_req, res) => {
   } catch (err) { notionError(res, err, 'Failed to fetch schema') }
 })
 
-// Query one task database's pages (paginated, newest first, non-archived).
-// When the user has identified themselves and this DB has a people property, the
-// filter is pushed down to Notion so a shared board only ever returns their
-// rows — cheaper than fetching the team's tasks and discarding them here.
-async function queryTaskPages(dbId: string, schema: NotionSchema): Promise<any[]> {
+// Query one database's pages (paginated, newest first, non-archived) — every
+// row, whoever it belongs to; "mine" is decided here (see ownership()).
+// Until 2026-09-11 the assignee filter was pushed down to Notion, which was
+// cheaper but left the screen unable to show a team's unassigned tasks or
+// what a teammate has, and "prioritise mine" is not "hide the rest".
+async function queryAllPages(dbId: string, filter?: any, maxPages = 10): Promise<any[]> {
   const conn = await connFor(dbId)
-  const me = readMe(conn.id)
-  const mineOnly = me && schema.peopleKey
-    ? { filter: { property: schema.peopleKey, people: { contains: me.id } } }
-    : {}
-
   const pages: any[] = []
   let cursor: string | undefined
   let safety = 0
-  // Cap at 10 pages (~1000 tasks) per DB to avoid hammering the API on
+  // Cap at 10 pages (~1000 rows) per DB to avoid hammering the API on
   // pathological databases — well above any realistic personal task list.
   do {
     const { data } = await axios.post(
@@ -591,7 +762,7 @@ async function queryTaskPages(dbId: string, schema: NotionSchema): Promise<any[]
       {
         page_size: 100,
         sorts: [{ timestamp: 'created_time', direction: 'descending' }],
-        ...mineOnly,
+        ...(filter ? { filter } : {}),
         ...(cursor ? { start_cursor: cursor } : {}),
       },
       { headers: headersFor(conn) },
@@ -599,57 +770,179 @@ async function queryTaskPages(dbId: string, schema: NotionSchema): Promise<any[]
     for (const r of data.results as any[]) { remember(r.id, conn.id); if (!r.archived) pages.push(r) }
     cursor = data.has_more ? data.next_cursor : undefined
     safety++
-  } while (cursor && safety < 10)
+  } while (cursor && safety < maxPages)
   return pages
 }
 
-router.get('/tasks', async (_req, res) => {
-  if (!tasksConfigured()) { res.status(503).json({ error: 'Notion task DB not configured' }); return }
-  try {
-    const dbIds = await getTaskDbIds()
+// A calendar board's rows inside a date window: any of its date properties
+// between `from` and `to`, so a long content archive does not come down
+// every minute — only what is on the agenda.
+const ITEMS_PAST_DAYS = 30
+const ITEMS_AHEAD_DAYS = 90
 
-    // Fetch every task database in parallel, tagging each row with its source
-    // DB. A single failing DB (deleted, unshared) is skipped rather than
-    // failing the whole list. Each DB's derived schema is returned so the
-    // client can toggle-done / create with that DB's valid options.
-    const schemas: Record<string, NotionSchema> = {}
-    const dbs: { id: string; title: string; icon: string | null }[] = []
-    const perDb = await Promise.all(dbIds.map(async dbId => {
-      try {
-        const entry = await getDb(dbId)
-        schemas[dbId] = entry.schema
-        dbs.push({ id: dbId, title: entry.title, icon: entry.icon })
-        const pages = await queryTaskPages(dbId, entry.schema)
-        return pages.map(p => extractTask(p, entry.schema, dbId))
-      } catch (err: any) {
-        console.error(`[notion] task DB ${dbId} failed, skipping:`, err?.response?.data ?? err?.message)
-        return []
+function ymd(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+async function queryWindowPages(dbId: string, schema: NotionSchema): Promise<any[]> {
+  if (schema.dateKeys.length === 0) return []
+  const from = new Date(); from.setDate(from.getDate() - ITEMS_PAST_DAYS)
+  const to   = new Date(); to.setDate(to.getDate() + ITEMS_AHEAD_DAYS)
+  const clauses = schema.dateKeys.map(d => ({
+    and: [
+      { property: d.key, date: { on_or_after:  ymd(from) } },
+      { property: d.key, date: { on_or_before: ymd(to) } },
+    ],
+  }))
+  return queryAllPages(dbId, clauses.length === 1 ? clauses[0] : { or: clauses }, 5)
+}
+
+// ── The whole picture, in one answer ─────────────────────────────────────────
+// GET /tasks is the one call the corner makes every minute, and what the
+// voice tools read. It answers with everything the screens need: the identity
+// in effect, the teams, every board with its role and counts, the tasks (from
+// `tasks` boards, each marked mine / unassigned), the agenda items (from
+// `calendar` boards, inside the window), the projects and the schemas.
+//
+// Memoised for 20 s: three screens polling on the minute do not triple the
+// Notion traffic, and every change made through this app drops the memo so
+// the next poll is fresh. `?fresh=1` bypasses it.
+const TASKS_MEMO_MS = 20_000
+let tasksMemo: { at: number; body: unknown } | null = null
+function invalidateTasks(): void { tasksMemo = null }
+
+interface TeamOut {
+  id: string; name: string; workspace: string; color: string; source: 'env' | 'added'
+  ok: boolean; error: string | null
+}
+
+interface BoardOut {
+  id: string; title: string; icon: string | null
+  conn: { id: string; name: string; color: string } | null
+  role: BoardRole
+  hasStatus: boolean
+  dueKey: string | null
+  dateKeys: DateKey[]
+  /** New tasks land here (tasks boards only). */
+  isDefault: boolean
+  unavailable: boolean
+  error: string | null
+  openCount: number
+  mineCount: number
+  unassignedCount: number
+}
+
+async function buildTasksResponse() {
+  const store  = readStore()
+  const dbIds  = await getTaskDbIds()
+  const conns  = listConnections()
+  const connOf = (id: string) => { const k = connIdFor(id); return k ? conns.find(c => c.id === k) ?? null : null }
+
+  const schemas: Record<string, NotionSchema> = {}
+  const boards: BoardOut[] = []
+  const teamErr = new Map<string, string>()
+
+  type Fetched = { tasks: ReturnType<typeof extractTask>[]; items: CalendarItem[] }
+  const perDb = await Promise.all(dbIds.map(async (dbId): Promise<Fetched> => {
+    let entry: DbEntry
+    try { entry = await getDb(dbId) }
+    catch (err: any) {
+      const c = classifyNotionError(err)
+      console.error(`[notion] board ${dbId} failed, skipping: ${c.message}`)
+      const conn = connOf(dbId)
+      if (conn && (c.kind === 'auth' || c.kind === 'network' || c.kind === 'timeout' || c.kind === 'rate')) teamErr.set(conn.id, c.message)
+      boards.push({ id: dbId, title: 'Unavailable', icon: null, conn: conn ? { id: conn.id, name: conn.name, color: conn.color } : null, role: 'tasks', hasStatus: false, dueKey: null, dateKeys: [], isDefault: false, unavailable: true, error: c.message, openCount: 0, mineCount: 0, unassignedCount: 0 })
+      return { tasks: [], items: [] }
+    }
+    const role = roleFor(dbId, entry, store)
+    if (!role) return { tasks: [], items: [] }   // no status, no dates: not a board
+    schemas[dbId] = entry.schema
+    const conn = connOf(dbId) ?? (await connFor(dbId).catch(() => null))
+    const ctx: RowCtx | undefined = conn ? { me: meFor(conn.id), connId: conn.id } : undefined
+    const board: BoardOut = {
+      id: dbId, title: entry.title, icon: entry.icon,
+      conn: conn ? { id: conn.id, name: conn.name, color: conn.color } : null,
+      role, hasStatus: !!entry.schema.statusKey, dueKey: entry.schema.dueKey, dateKeys: entry.schema.dateKeys,
+      isDefault: false, unavailable: false, error: null, openCount: 0, mineCount: 0, unassignedCount: 0,
+    }
+    boards.push(board)
+    try {
+      if (role === 'tasks') {
+        const tasks = (await queryAllPages(dbId)).map(p => extractTask(p, entry.schema, dbId, ctx))
+        for (const t of tasks) if (!t.done) { board.openCount++; if (t.mine) board.mineCount++; if (t.unassigned) board.unassignedCount++ }
+        return { tasks, items: [] }
       }
-    }))
-    const tasks = perDb.flat()
+      const items = (await queryWindowPages(dbId, entry.schema)).map(p => extractItem(p, entry.schema, dbId, ctx))
+      for (const it of items) if (!it.done) { board.openCount++; if (it.mine) board.mineCount++; if (it.unassigned) board.unassignedCount++ }
+      return { tasks: [], items }
+    } catch (err: any) {
+      const c = classifyNotionError(err)
+      console.error(`[notion] board "${entry.title}" query failed, skipping: ${c.message}`)
+      board.unavailable = true
+      board.error = c.message
+      if (conn && (c.kind === 'auth' || c.kind === 'network' || c.kind === 'timeout' || c.kind === 'rate')) teamErr.set(conn.id, c.message)
+      return { tasks: [], items: [] }
+    }
+  }))
+  const tasks = perDb.flatMap(x => x.tasks)
+  const items = perDb.flatMap(x => x.items)
 
-    // Resolve project titles once per unique id so the client can label rows
-    // without an N+1 round-trip. Tolerant of failures (a stale relation just
-    // produces a missing title).
-    const projects: Record<string, { id: string; title: string; icon: string | null }> = {}
-    // A project page lives in the same workspace as the task that points at
-    // it, so it is remembered under that task's connection before the fetch
-    // rather than probed.
-    for (const t of tasks) { const cid = connIdFor(t.dbId); if (cid) rememberMany(t.projectIds, cid) }
-    const uniqueIds = Array.from(new Set(tasks.flatMap(t => t.projectIds)))
-    await Promise.all(uniqueIds.map(async id => {
-      try {
-        const { data } = await axios.get(`${NOTION_API}/pages/${id}`, { headers: await hdr(id) })
-        projects[id] = { id, title: pageTitle(data), icon: iconOf(data)?.value ?? null }
-      } catch { /* tolerate */ }
-    }))
+  // Boards in the set's order (the order that decides where a new task goes),
+  // and the default: the starred board if it is a tasks board with a Status,
+  // else the first such board.
+  boards.sort((a, b) => dbIds.indexOf(a.id) - dbIds.indexOf(b.id))
+  const canTake = (b: BoardOut) => b.role === 'tasks' && b.hasStatus && !b.unavailable
+  const explicit = store.defaultId ? boards.find(b => b.id === store.defaultId && canTake(b)) : undefined
+  const effective = explicit ?? boards.find(canTake)
+  if (effective) effective.isDefault = true
 
-    // `me` rides along so the screen can say "everyone's tasks" when nobody
-    // is picked and a database has an assignee property to filter on. With
-    // several connections it is the first one's; `mes` has them all.
-    const mes = readAllMe()
-    const firstConn = listConnections()[0]
-    res.json({ tasks, projects, schemas, dbs, merged: mergeSchemas(Object.values(schemas)), me: firstConn ? (mes[firstConn.id] ?? null) : null, mes })
+  // Resolve project titles once per unique id so the client can label rows
+  // without an N+1 round-trip. Tolerant of failures (a stale relation just
+  // produces a missing title). A project page lives in the same workspace as
+  // the task that points at it, so it is remembered under that task's
+  // connection before the fetch rather than probed.
+  const projects: Record<string, { id: string; title: string; icon: string | null }> = {}
+  for (const t of tasks) { const cid = connIdFor(t.dbId); if (cid) rememberMany(t.projectIds, cid) }
+  const uniqueIds = Array.from(new Set(tasks.flatMap(t => t.projectIds)))
+  await Promise.all(uniqueIds.map(async id => {
+    try {
+      const { data } = await axios.get(`${NOTION_API}/pages/${id}`, { headers: await hdr(id) })
+      projects[id] = { id, title: pageTitle(data), icon: iconOf(data)?.value ?? null }
+    } catch { /* tolerate */ }
+  }))
+
+  // The teams: every connection, with what its token check said (cached five
+  // minutes in connectionsView) and whatever a board fetch just found out.
+  const views = await connectionsView().catch(() => [] as Awaited<ReturnType<typeof connectionsView>>)
+  const teams: TeamOut[] = conns.map(c => {
+    const v = views.find(x => x.id === c.id)
+    const err = teamErr.get(c.id) ?? v?.error ?? null
+    return { id: c.id, name: c.name, workspace: v?.workspace || c.workspace, color: c.color, source: c.source, ok: !err, error: err }
+  })
+
+  const me = readMeStore().global
+  return {
+    me,
+    teams,
+    boards,
+    tasks,
+    items,
+    projects,
+    schemas,
+    // The tasks boards alone, default first — what the create sheet offers.
+    dbs: boards.filter(b => b.role === 'tasks' && !b.unavailable).map(b => ({ id: b.id, title: b.title, icon: b.icon })),
+    merged: mergeSchemas(boards.filter(b => b.role === 'tasks').map(b => schemas[b.id]).filter((x): x is NotionSchema => !!x)),
+    generatedAt: new Date().toISOString(),
+  }
+}
+
+router.get('/tasks', async (req, res) => {
+  if (!tasksConfigured()) { res.status(503).json({ error: 'Notion task DB not configured' }); return }
+  if (!req.query['fresh'] && tasksMemo && Date.now() - tasksMemo.at < TASKS_MEMO_MS) { res.json(tasksMemo.body); return }
+  try {
+    const body = await buildTasksResponse()
+    tasksMemo = { at: Date.now(), body }
+    res.json(body)
   } catch (err) { notionError(res, err, 'Failed to fetch tasks') }
 })
 
@@ -661,16 +954,18 @@ router.get('/tasks', async (_req, res) => {
 // created there has nowhere to be ticked and a due date that is dropped
 // without a word. So the first database WITH a status wins, in the order above,
 // and if none has one the caller gets null and says so.
+// And only ever in a `tasks` board: a calendar board has a Status too, but a
+// spoken "add a task" must not become a content idea on a team's calendar.
 async function resolveTaskDb(dbId?: string): Promise<string | null> {
   const ids = await getTaskDbIds()
-  if (dbId && ids.includes(dbId)) return dbId
-  for (const id of ids) {
-    try {
-      const { schema } = await getDb(id)
-      if (schema.statusKey) return id
-    } catch { /* an unreachable database is not a candidate */ }
+  const store = readStore()
+  const takes = async (id: string) => {
+    try { const e = await getDb(id); return roleFor(id, e, store) === 'tasks' && !!e.schema.statusKey }
+    catch { return false }   // an unreachable database is not a candidate
   }
-  console.warn(`[notion] no task database with a Status property among ${ids.length} candidate(s)`)
+  if (dbId && ids.includes(dbId) && await takes(dbId)) return dbId
+  for (const id of ids) if (await takes(id)) return id
+  console.warn(`[notion] no tasks board with a Status property among ${ids.length} candidate(s)`)
   return null
 }
 
@@ -684,10 +979,10 @@ router.post('/tasks', async (req, res) => {
     const schema     = await getSchema(targetDb)
     const properties = buildTaskProperties(schema, { title: title.trim(), status, priority, due: due ?? null })
     // Assign new tasks to the user. Without this the row comes back unassigned
-    // and the "only my tasks" filter would hide it the moment the list refreshes
-    // — the task would look like it failed to save. "Me" is per workspace.
+    // and would sit under "unassigned" rather than in "my tasks" the moment
+    // the list refreshes — the task would look like it failed to save.
     const conn = await connFor(targetDb)
-    const me = readMe(conn.id)
+    const me = meFor(conn.id)
     if (me && schema.peopleKey) properties[schema.peopleKey] = { people: [{ object: 'user', id: me.id }] }
     const { data }   = await axios.post(
       `${NOTION_API}/pages`,
@@ -695,15 +990,19 @@ router.post('/tasks', async (req, res) => {
       { headers: headersFor(conn) },
     )
     remember(data.id, conn.id)
+    invalidateTasks()
     console.log(`[notion] created task "${title.trim().slice(0, 60)}" in ${schema.titleKey ? (await getDb(targetDb)).title : targetDb}${due ? ` due ${due}` : ''}`)
     broadcast('notion', { kind: 'task', op: 'create', id: data.id })
-    res.status(201).json(extractTask(data, schema, targetDb))
+    res.status(201).json(extractTask(data, schema, targetDb, { me, connId: conn.id }))
   } catch (err) { notionError(res, err, 'Failed to create task') }
 })
 
+// `assignee: 'me'` puts the user on the row ("Take it"), `assignee: null`
+// takes everyone off it ("Hand back") — the two moves a person managing a
+// team's unassigned pile needs, and nothing more.
 router.patch('/tasks/:id', async (req, res) => {
   if (!tasksConfigured()) { res.status(503).json({ error: 'Notion task DB not configured' }); return }
-  const { dbId, ...fields } = req.body as { dbId?: string; title?: string; status?: string | null; priority?: string | null; due?: string | null }
+  const { dbId, assignee, ...fields } = req.body as { dbId?: string; assignee?: 'me' | null; title?: string; status?: string | null; priority?: string | null; due?: string | null }
   try {
     // Resolve which DB's schema to build properties against: prefer the dbId the
     // client sends (it has it on the task), else look up the page's parent DB.
@@ -715,8 +1014,19 @@ router.patch('/tasks/:id', async (req, res) => {
     if (!schemaDbId) { res.status(400).json({ error: 'could not resolve task database' }); return }
     const schema     = await getSchema(schemaDbId)
     const properties = buildTaskProperties(schema, fields)
+    if (assignee !== undefined) {
+      if (!schema.peopleKey) { res.status(400).json({ error: 'This board has no assignee field' }); return }
+      if (assignee === 'me') {
+        const me = meFor((await connFor(schemaDbId)).id)
+        if (!me) { res.status(400).json({ error: 'Pick who you are first (Settings → Notion)' }); return }
+        properties[schema.peopleKey] = { people: [{ object: 'user', id: me.id }] }
+      } else {
+        properties[schema.peopleKey] = { people: [] }
+      }
+    }
     if (Object.keys(properties).length > 0)
       await axios.patch(`${NOTION_API}/pages/${req.params['id']}`, { properties }, { headers: await hdr(req.params['id']!) })
+    invalidateTasks()
     broadcast('notion', { kind: 'task', op: 'update', id: req.params['id'] })
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to update task') }
@@ -726,6 +1036,7 @@ router.delete('/tasks/:id', async (req, res) => {
   if (!tasksConfigured()) { res.status(503).json({ error: 'Notion task DB not configured' }); return }
   try {
     await axios.patch(`${NOTION_API}/pages/${req.params['id']}`, { archived: true }, { headers: await hdr(req.params['id']!) })
+    invalidateTasks()
     broadcast('notion', { kind: 'task', op: 'archive', id: req.params['id'] })
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to archive task') }
@@ -770,6 +1081,12 @@ interface TaskDbView {
   id: string; title: string; icon: string | null
   /** A task can be created here: the database has a Status (or done checkbox). */
   hasStatus: boolean
+  /** To-do list or calendar — the override from Settings, else detected. */
+  role: BoardRole | null
+  /** What detection alone says, so the Settings row can show when an override is in force. */
+  detectedRole: BoardRole | null
+  dueKey: string | null
+  dateKeys: DateKey[]
   /** Where this board came from — the env var, the user, or discovery. */
   source: 'env' | 'added' | 'discovered'
   /** New tasks land here. Explicit when set in Settings, else the first board with a Status. */
@@ -795,15 +1112,16 @@ async function taskDbsView() {
     const connOf = () => { const k = connIdFor(id); const c = k ? connById(k) : undefined; return c ? { id: c.id, name: c.name } : null }
     try {
       const e = await getDb(id)
-      return { id, title: e.title, icon: e.icon, hasStatus: !!e.schema.statusKey, source, isDefault: false, unavailable: false, conn: connOf() }
+      return { id, title: e.title, icon: e.icon, hasStatus: !!e.schema.statusKey, role: roleFor(id, e, store), detectedRole: detectRole(e.title, e.schema), dueKey: e.schema.dueKey, dateKeys: e.schema.dateKeys, source, isDefault: false, unavailable: false, conn: connOf() }
     } catch {
-      return { id, title: 'Unavailable', icon: null, hasStatus: false, source, isDefault: false, unavailable: true, conn: connOf() }
+      return { id, title: 'Unavailable', icon: null, hasStatus: false, role: store.roles[id] ?? null, detectedRole: null, dueKey: null, dateKeys: [], source, isDefault: false, unavailable: true, conn: connOf() }
     }
   }))
   // The effective default is what resolveTaskDb() would choose: the explicit
-  // pick if it can take a task, else the first board that can.
-  const explicit = store.defaultId && dbs.find(d => d.id === store.defaultId && d.hasStatus)
-  const effective = explicit || dbs.find(d => d.hasStatus)
+  // pick if it is a tasks board that can take a task, else the first such.
+  const canTake = (d: TaskDbView) => d.role === 'tasks' && d.hasStatus
+  const explicit = store.defaultId && dbs.find(d => d.id === store.defaultId && canTake(d))
+  const effective = explicit || dbs.find(canTake)
   if (effective) effective.isDefault = true
   const hidden = await Promise.all(store.excluded.map(async id => {
     try { const e = await getDb(id); return { id, title: e.title, icon: e.icon } }
@@ -815,8 +1133,32 @@ async function taskDbsView() {
 // Other devices' task lists and settings tabs follow this frame (useNotion
 // listens on `notion`), the same one every task edit through this app sends.
 function announceTaskDbs(): void {
+  invalidateTasks()
   broadcast('notion', { kind: 'task-dbs' })
 }
+
+// POST /task-dbs/role { id, role } → override a board's role ('tasks' |
+// 'calendar'); '' removes the override and detection decides again.
+router.post('/task-dbs/role', async (req, res) => {
+  if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
+  const body = req.body as { id?: unknown; role?: unknown }
+  const target = typeof body?.id === 'string' ? idFromLink(body.id) : ''
+  const role = body?.role
+  if (!target) { res.status(400).json({ error: 'id is required' }); return }
+  if (role !== 'tasks' && role !== 'calendar' && role !== '' && role !== null && role !== undefined) {
+    res.status(400).json({ error: 'role must be "tasks", "calendar" or empty' }); return
+  }
+  try {
+    if (!(await getTaskDbIds()).includes(target)) { res.status(400).json({ error: 'That database is not one of the boards' }); return }
+    const store = readStore()
+    if (role === 'tasks' || role === 'calendar') store.roles[target] = role
+    else delete store.roles[target]
+    writeStore(store)
+    console.log(`[notion] board ${target} role → ${role || '(detected)'}`)
+    announceTaskDbs()
+    res.json(await taskDbsView())
+  } catch { res.status(500).json({ error: 'Failed to persist task databases' }) }
+})
 
 // GET → the effective task databases (auto-discovered + overrides) with fresh
 // title/icon for the UI, plus the hidden ones and the default.
@@ -1089,6 +1431,7 @@ router.post('/pages', async (req, res) => {
       { headers: headersFor(conn) },
     )
     remember(data.id, conn.id)
+    invalidateTasks()
     broadcast('notion', { kind: 'page', op: 'create', id: data.id })
     res.status(201).json({ id: data.id, title: pageTitle(data) })
   } catch (err) { notionError(res, err, 'Failed to create page') }
@@ -1099,6 +1442,7 @@ router.patch('/pages/:id', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   try {
     await axios.patch(`${NOTION_API}/pages/${req.params['id']}`, req.body, { headers: await hdr(req.params['id']!) })
+    invalidateTasks()
     broadcast('notion', { kind: 'page', op: 'update', id: req.params['id'] })
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to update page') }
@@ -1108,6 +1452,7 @@ router.delete('/pages/:id', async (req, res) => {
   if (!configured()) { res.status(503).json({ error: 'Notion not configured' }); return }
   try {
     await axios.patch(`${NOTION_API}/pages/${req.params['id']}`, { archived: true }, { headers: await hdr(req.params['id']!) })
+    invalidateTasks()
     broadcast('notion', { kind: 'page', op: 'archive', id: req.params['id'] })
     res.json({ ok: true })
   } catch (err) { notionError(res, err, 'Failed to archive page') }
@@ -1178,37 +1523,43 @@ router.delete('/blocks/:id', async (req, res) => {
 // POST /api/notion/me { id, name } → pin the user; { id: null } → clear it.
 // Notion's own /users/me returns the *integration bot*, not the human, so the
 // user has to tell us which workspace member they are.
-// One "me" per connection (`byConn`); `me` alone is the first connection's,
-// for clients that predate connections.
+// `me` is the one person; `byConn` the per-workspace overrides; `effective`
+// what each workspace's boards are filtered by.
+function meView() {
+  const store = readMeStore()
+  const effective: Record<string, NotionMe | null> = {}
+  for (const c of listConnections()) effective[c.id] = store.byConn[c.id] ?? store.global
+  return { me: store.global, byConn: store.byConn, effective }
+}
+
 router.get('/me', (_req: Request, res: Response) => {
-  const byConn = readAllMe()
-  const first = listConnections()[0]
-  const me = first ? (byConn[first.id] ?? null) : null
-  console.log(`[notion] GET me → ${Object.keys(byConn).length} set`)
-  res.json({ me, byConn })
+  res.json(meView())
 })
 
-// POST { conn?, id, name } — `conn` defaults to the first connection, which
-// is what the old single-token picker meant.
+// POST { id, name, email?, conn? } — without `conn` this sets the one
+// person; with it, the override for that workspace. `id: null` clears either.
 router.post('/me', (req: Request, res: Response) => {
-  const { id, name, conn } = (req.body ?? {}) as { id?: string | null; name?: string; conn?: string }
-  const connId = typeof conn === 'string' && conn ? conn : (listConnections()[0]?.id ?? ENV_CONN_ID)
-  if (!connById(connId)) { res.status(400).json({ error: 'no such Notion connection' }); return }
+  const { id, name, email, conn } = (req.body ?? {}) as { id?: string | null; name?: string; email?: string; conn?: string }
+  const connId = typeof conn === 'string' && conn ? conn : null
+  if (connId && !connById(connId)) { res.status(400).json({ error: 'no such Notion connection' }); return }
   try {
+    const store = readMeStore()
     if (id === null || id === '') {
-      writeMe(connId, null)
-      res.json({ me: null, conn: connId, byConn: readAllMe() })
-      return
+      if (connId) delete store.byConn[connId]
+      else store.global = null
+      writeMeStore({ global: store.global, byConn: { ...store.byConn } })
+      console.log(`[notion] cleared "me"${connId ? ` for ${connId}` : ''}`)
+    } else {
+      if (!id || typeof id !== 'string') { res.status(400).json({ error: 'id is required (or null to clear)' }); return }
+      const me: NotionMe = { id, name: typeof name === 'string' ? name : '' }
+      if (typeof email === 'string' && email.trim()) me.email = email.trim().toLowerCase()
+      if (connId) store.byConn[connId] = me
+      else store.global = me
+      writeMeStore({ global: store.global, byConn: { ...store.byConn } })
+      console.log(`[notion] set "me"${connId ? ` for ${connId}` : ''} → ${me.name} (${me.id}${me.email ? `, ${me.email}` : ''})`)
     }
-    if (!id || typeof id !== 'string') {
-      res.status(400).json({ error: 'id is required (or null to clear)' })
-      return
-    }
-    const me: NotionMe = { id, name: typeof name === 'string' ? name : '' }
-    writeMe(connId, me)
-    // Task rows are filtered per-DB using the cached schema; the schema itself
-    // is unaffected by who "me" is, so there's no cache to bust here.
-    res.json({ me, conn: connId, byConn: readAllMe() })
+    announceTaskDbs()
+    res.json(meView())
   } catch {
     res.status(500).json({ error: 'Failed to persist Notion user' })
   }
@@ -1229,7 +1580,8 @@ router.get('/users', async (_req, res) => {
           name:      u.name,
           type:      u.type,
           avatarUrl: u.avatar_url,
-          conn:      { id: conn.id, name: conn.name },
+          email:     typeof u.person?.email === 'string' ? u.person.email : null,
+          conn:      { id: conn.id, name: conn.name, color: conn.color },
         }))
       } catch (err) {
         if (conns.length === 1) throw err
@@ -1237,7 +1589,13 @@ router.get('/users', async (_req, res) => {
         return []
       }
     }))
-    res.json({ users: perConn.flat() })
+    // The people seen on each workspace's boards, for the picker when the
+    // member list above is empty (see notePeople).
+    const seen: Record<string, (SeenPerson & { conn: { id: string; name: string; color: string } })[]> = {}
+    for (const conn of conns) {
+      seen[conn.id] = Array.from(peopleSeen.get(conn.id)?.values() ?? []).map(p => ({ ...p, conn: { id: conn.id, name: conn.name, color: conn.color } }))
+    }
+    res.json({ users: perConn.flat(), seen })
   } catch (err) { notionError(res, err, 'Failed to fetch users') }
 })
 
@@ -1267,15 +1625,18 @@ async function connectionsView() {
       try { info = await describeToken(c.token); error = null }
       catch (err) { info = null; error = classifyNotionError(err).message }
       botCache.set(c.id, { info, error, ts: Date.now() })
+      // The env connection learns its workspace's name here and keeps it, so
+      // its chip reads "Dolce Piquant" rather than "From .env".
+      if (c.source === 'env' && info?.workspace && info.workspace !== c.workspace) setConnPrefs(ENV_CONN_ID, { workspace: info.workspace })
     }
     return {
-      id: c.id, name: c.name, source: c.source,
+      id: c.id, name: c.name, source: c.source, color: c.color,
       workspace: info?.workspace || c.workspace, bot: info?.bot ?? '',
       // The token's last four characters, so two connections can be told
       // apart by someone holding the real thing — never more than that.
       tokenTail: c.token.slice(-4),
       ok: !error, error,
-      me: readMe(c.id),
+      me: meFor(c.id),
     }
   }))
 }
@@ -1305,20 +1666,30 @@ router.post('/connections', async (req, res) => {
   } catch { res.status(500).json({ error: 'Failed to save the connection' }) }
 })
 
-router.patch('/connections/:id', (req, res) => {
-  const name = (req.body as { name?: unknown })?.name
-  if (typeof name !== 'string' || !name.trim()) { res.status(400).json({ error: 'name is required' }); return }
-  if (req.params['id'] === ENV_CONN_ID) { res.status(400).json({ error: 'the .env connection is named in .env' }); return }
-  if (!renameConnection(req.params['id']!, name)) { res.status(404).json({ error: 'no such connection' }); return }
+// PATCH { name?, color? } — the team's name and colour, for the env
+// connection too (only its token lives in .env).
+router.patch('/connections/:id', async (req, res) => {
+  const body = (req.body ?? {}) as { name?: unknown; color?: unknown }
+  const patch: { name?: string; color?: string } = {}
+  if (body.name !== undefined) {
+    if (typeof body.name !== 'string' || !body.name.trim()) { res.status(400).json({ error: 'name must be a non-empty string' }); return }
+    patch.name = body.name.trim().slice(0, 40)
+  }
+  if (body.color !== undefined) {
+    if (typeof body.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(body.color)) { res.status(400).json({ error: 'color must be a #rrggbb value' }); return }
+    patch.color = body.color
+  }
+  if (!('name' in patch) && !('color' in patch)) { res.status(400).json({ error: 'nothing to change' }); return }
+  if (!setConnPrefs(req.params['id']!, patch)) { res.status(404).json({ error: 'no such connection' }); return }
   announceTaskDbs()
-  res.json({ ok: true })
+  res.json({ connections: await connectionsView() })
 })
 
 router.delete('/connections/:id', async (req, res) => {
   const id = req.params['id']!
   if (id === ENV_CONN_ID) { res.status(400).json({ error: 'The .env connection is removed by clearing NOTION_API_KEY in .env' }); return }
   if (!removeConnection(id)) { res.status(404).json({ error: 'no such connection' }); return }
-  try { writeMe(id, null) } catch { /* nothing to clear */ }
+  try { const s = readMeStore(); if (s.byConn[id]) { delete s.byConn[id]; writeMeStore({ global: s.global, byConn: { ...s.byConn } }) } } catch { /* nothing to clear */ }
   botCache.delete(id)
   forgetConnection(id)
   discoverCache = null

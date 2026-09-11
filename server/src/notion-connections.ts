@@ -30,9 +30,19 @@ export interface NotionConn {
   /** Notion's own name for the workspace, learned from /users/me when the token was added. */
   workspace: string
   addedAt:   string
+  /** The team's colour — the one visual key that says which team a row belongs to, everywhere. */
+  color:     string
 }
 
 interface StoredConn { id: string; name: string; token: string; workspace: string; addedAt: string }
+
+/** Per-connection preferences: a display name and a colour, for the env connection too (its token stays in .env). */
+export interface ConnPrefs { name?: string; color?: string; workspace?: string }
+
+// The team palette. Fixed and small on purpose: a colour has to be told apart
+// at arm's length on a 7" screen, and the one it must never be confused with
+// is the corner's own green — so green is not in it.
+export const TEAM_PALETTE = ['#3b82f6', '#f59e0b', '#ec4899', '#a855f7', '#14b8a6', '#f97316', '#ef4444', '#eab308']
 
 const CONNS_FILE = 'notion-connections.json'
 const MAP_FILE   = 'notion-resource-conns.json'
@@ -45,27 +55,50 @@ function cacheDir(): string {
   return dir
 }
 
-function readStored(): StoredConn[] {
+interface StoredFile { connections: StoredConn[]; prefs: Record<string, ConnPrefs> }
+
+function readFile(): StoredFile {
   const p = path.join(cacheDir(), CONNS_FILE)
   try {
-    if (!fs.existsSync(p)) return []
-    const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as { connections?: unknown }
-    if (!Array.isArray(parsed.connections)) return []
-    return parsed.connections
-      .filter((c): c is StoredConn => !!c && typeof c === 'object' && typeof (c as StoredConn).id === 'string' && typeof (c as StoredConn).token === 'string')
-      .map(c => ({ id: c.id, name: String(c.name ?? ''), token: c.token, workspace: String(c.workspace ?? ''), addedAt: String(c.addedAt ?? '') }))
+    if (!fs.existsSync(p)) return { connections: [], prefs: {} }
+    const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as { connections?: unknown; prefs?: unknown }
+    const connections = Array.isArray(parsed.connections)
+      ? parsed.connections
+        .filter((c): c is StoredConn => !!c && typeof c === 'object' && typeof (c as StoredConn).id === 'string' && typeof (c as StoredConn).token === 'string')
+        .map(c => ({ id: c.id, name: String(c.name ?? ''), token: c.token, workspace: String(c.workspace ?? ''), addedAt: String(c.addedAt ?? '') }))
+      : []
+    const prefs: Record<string, ConnPrefs> = {}
+    if (parsed.prefs && typeof parsed.prefs === 'object') {
+      for (const [k, v] of Object.entries(parsed.prefs as Record<string, Partial<ConnPrefs>>)) {
+        if (!v || typeof v !== 'object') continue
+        const out: ConnPrefs = {}
+        if (typeof v.name === 'string' && v.name.trim()) out.name = v.name.trim()
+        if (typeof v.color === 'string' && /^#[0-9a-f]{6}$/i.test(v.color)) out.color = v.color.toLowerCase()
+        if (typeof v.workspace === 'string' && v.workspace.trim()) out.workspace = v.workspace.trim()
+        prefs[k] = out
+      }
+    }
+    return { connections, prefs }
   } catch (err) {
     console.error('[notion] failed to read the connections store:', err)
-    return []
+    return { connections: [], prefs: {} }
   }
 }
 
-function writeStored(list: StoredConn[]): void {
+function readStored(): StoredConn[] {
+  return readFile().connections
+}
+
+function readPrefs(): Record<string, ConnPrefs> {
+  return readFile().prefs
+}
+
+function writeStored(list: StoredConn[], prefs: Record<string, ConnPrefs> = readPrefs()): void {
   const p = path.join(cacheDir(), CONNS_FILE)
   const tmp = `${p}.tmp-${process.pid}`
   try {
     // 0600: the file holds tokens that can read and edit whole workspaces.
-    fs.writeFileSync(tmp, JSON.stringify({ connections: list }, null, 2), { encoding: 'utf8', mode: 0o600 })
+    fs.writeFileSync(tmp, JSON.stringify({ connections: list, prefs }, null, 2), { encoding: 'utf8', mode: 0o600 })
     fs.renameSync(tmp, p)
     try { fs.chmodSync(p, 0o600) } catch { /* not every filesystem cares */ }
   } catch (err) {
@@ -77,11 +110,46 @@ function writeStored(list: StoredConn[]): void {
 
 /** Every connection, env first. Tokens included — for the server's own use only. */
 export function listConnections(): NotionConn[] {
+  const { connections, prefs } = readFile()
   const out: NotionConn[] = []
   const env = (process.env['NOTION_API_KEY'] ?? '').trim()
-  if (env) out.push({ id: ENV_CONN_ID, name: 'From .env', token: env, source: 'env', workspace: '', addedAt: '' })
-  for (const c of readStored()) out.push({ ...c, source: 'added' })
+  if (env) {
+    const p = prefs[ENV_CONN_ID] ?? {}
+    // The env connection is named after its workspace once that is known
+    // (connectionsView learns it from /users/me and keeps it here), because
+    // "From .env" is no name for a team on a chip.
+    out.push({ id: ENV_CONN_ID, name: p.name || p.workspace || 'From .env', token: env, source: 'env', workspace: p.workspace ?? '', addedAt: '', color: '' })
+  }
+  for (const c of connections) {
+    const p = prefs[c.id] ?? {}
+    out.push({ ...c, name: p.name || c.name, source: 'added', color: p.color ?? '' })
+  }
+  // A colour each: the chosen one, else the next of the palette in list
+  // order, skipping colours already chosen so two teams never share one by
+  // default.
+  const taken = new Set(out.map(c => c.color).filter(Boolean))
+  let i = 0
+  for (const c of out) {
+    if (c.color) continue
+    while (i < TEAM_PALETTE.length && taken.has(TEAM_PALETTE[i]!)) i++
+    c.color = TEAM_PALETTE[i % TEAM_PALETTE.length]!
+    taken.add(c.color)
+    i++
+  }
   return out
+}
+
+/** Set a connection's display name, colour or learned workspace name. Works for the env connection too. */
+export function setConnPrefs(id: string, patch: ConnPrefs): boolean {
+  const file = readFile()
+  if (id !== ENV_CONN_ID && !file.connections.some(c => c.id === id)) return false
+  const cur = file.prefs[id] ?? {}
+  if (patch.name !== undefined)      { if (patch.name.trim()) cur.name = patch.name.trim(); else delete cur.name }
+  if (patch.color !== undefined)     { if (/^#[0-9a-f]{6}$/i.test(patch.color)) cur.color = patch.color.toLowerCase(); else delete cur.color }
+  if (patch.workspace !== undefined) { if (patch.workspace.trim()) cur.workspace = patch.workspace.trim(); else delete cur.workspace }
+  file.prefs[id] = cur
+  writeStored(file.connections, file.prefs)
+  return true
 }
 
 export function connById(id: string): NotionConn | undefined {
@@ -102,7 +170,7 @@ export function addConnection(input: { name: string; token: string; workspace: s
   // The same token twice would be the same workspace listed twice, and every
   // search would come back doubled.
   const dup = list.find(c => c.token === input.token)
-  if (dup) return { ...dup, source: 'added' }
+  if (dup) return connById(dup.id)!
   const c: StoredConn = {
     id: randomUUID(), name: input.name.trim() || input.workspace || 'Workspace',
     token: input.token, workspace: input.workspace, addedAt: new Date().toISOString(),
@@ -110,16 +178,11 @@ export function addConnection(input: { name: string; token: string; workspace: s
   list.push(c)
   writeStored(list)
   console.log(`[notion] connection added: "${c.name}" (${c.workspace || 'workspace unnamed'}, token …${c.token.slice(-4)})`)
-  return { ...c, source: 'added' }
+  return connById(c.id)!
 }
 
 export function renameConnection(id: string, name: string): boolean {
-  const list = readStored()
-  const c = list.find(x => x.id === id)
-  if (!c) return false
-  c.name = name.trim() || c.workspace || c.name
-  writeStored(list)
-  return true
+  return setConnPrefs(id, { name })
 }
 
 /** Remove an added connection (the env one cannot be removed from here) and forget what it could see. */
@@ -127,7 +190,9 @@ export function removeConnection(id: string): boolean {
   const list = readStored()
   const next = list.filter(c => c.id !== id)
   if (next.length === list.length) return false
-  writeStored(next)
+  const prefs = readPrefs()
+  delete prefs[id]
+  writeStored(next, prefs)
   forgetConnection(id)
   console.log(`[notion] connection removed: ${id}`)
   return true
