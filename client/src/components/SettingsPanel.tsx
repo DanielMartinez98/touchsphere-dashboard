@@ -1693,7 +1693,10 @@ function OverrideField({
 }
 
 function DrawingTab() {
-  const { prompter, setPrompter, styles, structure, setStructure, capabilities, safeTags, setSafeTags } = useImages()
+  const {
+    prompter, setPrompter, styles, structure, setStructure, capabilities, safeTags, setSafeTags,
+    inpaintPatchOn, setInpaintPatchOn,
+  } = useImages()
   // Edited locally and saved explicitly. A template is a paragraph typed on an
   // on-screen keyboard, and saving per keystroke would write the store forty
   // times and re-fetch the preview on each one.
@@ -1786,6 +1789,43 @@ function DrawingTab() {
           </span>
           <span className="text-[13px] font-semibold text-white/85">
             {safeTags === null ? 'Loading…' : safeTags ? 'Added — safe in front, nsfw in the negative' : 'Not added'}
+          </span>
+        </button>
+      </div>
+
+      {/* The inpainting patch, for every style at once. The precise per-style
+          switch lives in Draw → Advanced, but it only shows with an Anima style
+          selected and three taps deep, which is how it went unfound. This one
+          is always here. Off here wins; on here defers to the per-style one. */}
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          Inpainting patch (Anima)
+        </span>
+        <p className="text-[12px] text-white/45 leading-relaxed mb-3">
+          When you change just a part of a picture in an Anima style, the model's own inpainting
+          patch (a ControlNet-LLLite file on the GPU box) paints that part to fit what surrounds it.
+          Off repaints the part the generic way, with only the mask telling the sampler where to
+          paint, which occasionally suits a picture better. Each style can also be switched on its
+          own under Draw → Advanced; this switch overrides them all.
+        </p>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={inpaintPatchOn !== false}
+          disabled={inpaintPatchOn === null}
+          onClick={() => { if (inpaintPatchOn !== null) void setInpaintPatchOn(!inpaintPatchOn) }}
+          className={`w-full flex items-center gap-3 rounded-2xl px-3 py-3 border text-left
+                      transition-colors active:scale-[0.99] disabled:opacity-50 ${
+            inpaintPatchOn !== false ? 'bg-pink-500/15 border-pink-400/40' : 'bg-white/5 border-hairline'
+          }`}
+        >
+          <span className={`w-11 h-6 shrink-0 rounded-full p-0.5 flex transition-colors ${
+            inpaintPatchOn !== false ? 'bg-pink-400/80 justify-end' : 'bg-white/15 justify-start'
+          }`}>
+            <span className="w-5 h-5 rounded-full bg-white shadow" />
+          </span>
+          <span className="text-[13px] font-semibold text-white/85">
+            {inpaintPatchOn === null ? 'Loading…' : inpaintPatchOn ? 'Used for masked edits on Anima styles' : 'Off — masked edits repaint the generic way'}
           </span>
         </button>
       </div>

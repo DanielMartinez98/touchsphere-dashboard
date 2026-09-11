@@ -22,6 +22,8 @@ import {
   structureAvailable,
   holdModes,
   safeTagsOn,
+  inpaintPatchOn,
+  setInpaintPatchOn,
   fidelitySettings,
   setFidelity,
   type FidelitySettings,
@@ -198,6 +200,8 @@ router.get('/models', async (_req: Request, res: Response) => {
       structureSettings: readStructure(),
       // Whether the built-in `safe` / `nsfw` tags are added (Settings → Drawing).
       safeTags: safeTagsOn(),
+      // Whether a style's own inpainting patch may be used (Settings → Drawing).
+      inpaintPatch: inpaintPatchOn(),
     })
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
@@ -611,6 +615,20 @@ router.post('/safety', (req: Request, res: Response) => {
   if (typeof body?.safeTags !== 'boolean') { res.status(400).json({ error: 'safeTags must be a boolean' }); return }
   setSafeTags(body.safeTags)
   res.json({ safeTags: safeTagsOn() })
+})
+
+// GET/POST /api/image/inpaint-patch { on } — whether a style's own inpainting
+// patch (Anima's LLLite file) is used for masked edits, for every style at
+// once. The per-style switch in Draw → Advanced still applies underneath.
+router.get('/inpaint-patch', (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store')
+  res.json({ on: inpaintPatchOn() })
+})
+router.post('/inpaint-patch', (req: Request, res: Response) => {
+  const body = req.body as { on?: unknown } | undefined
+  if (typeof body?.on !== 'boolean') { res.status(400).json({ error: 'on must be a boolean' }); return }
+  setInpaintPatchOn(body.on)
+  res.json({ on: inpaintPatchOn() })
 })
 
 // ── Keeping the pose ─────────────────────────────────────────────────────────

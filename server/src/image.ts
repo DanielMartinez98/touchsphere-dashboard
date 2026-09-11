@@ -832,9 +832,10 @@ export interface ImageJob {
    */
   inpaintPatch: string
   /**
-   * The user switched the patch OFF for this style (Draw → Advanced), so run()
-   * does not even look for the file. Kept apart from `inpaintPatch === ''` so
-   * the picture's details can say "off" rather than "not installed".
+   * The user switched the patch OFF — for this style (Draw → Advanced) or for
+   * everything (Settings → Drawing) — so run() does not even look for the
+   * file. Kept apart from `inpaintPatch === ''` so the picture's details can
+   * say "off" rather than "not installed".
    */
   inpaintPatchOff: boolean
   /** How it is held, resolved from the settings (or the request) at queue time. */
@@ -1432,7 +1433,9 @@ export function startImage(req: ImageRequest): ImageJob {
     // a speed/quality dial. 0 all the way down means "whatever the graph says".
     cfg:       Number.isFinite(req.cfg) && Number(req.cfg) > 0 ? Number(req.cfg) : p.cfg,
     turbo:     p.turbo,
-    inpaintPatchOff: !p.inpaintPatch,
+    // Off if EITHER switch says so: the global one in Settings → Drawing, or
+    // this style's own in Draw → Advanced.
+    inpaintPatchOff: !p.inpaintPatch || !inpaintPatchOn(),
     source:     source?.id ?? '',
     sourceFile: source?.file ?? '',
     sourceWidth:  source?.width ?? 0,
@@ -3113,6 +3116,43 @@ export function setSafeTags(on: boolean): void {
   } catch (err) {
     try { fs.unlinkSync(tmp) } catch { /* nothing */ }
     console.error('[image] failed to save the safety-tag switch:', err)
+  }
+}
+
+// ── The inpainting patch, for everything at once ─────────────────────────────
+// The per-style switch in Draw → Advanced is the precise control, but it only
+// shows with an Anima style selected and sits three taps deep — which is how
+// "I can't find the setting" happened the day it shipped. This is the
+// one-glance version in Settings → Drawing. OFF here wins over every style's
+// own setting; ON here defers to it. Default on, read per render like the
+// safety switch above, so flipping it reaches the next picture.
+
+function inpaintPatchFile(): string {
+  return path.join(process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache', 'image-inpaint-patch.json')
+}
+
+/** Whether a style's own inpainting patch may be used at all. Default on. */
+export function inpaintPatchOn(): boolean {
+  try {
+    const v = (JSON.parse(fs.readFileSync(inpaintPatchFile(), 'utf8')) as { on?: unknown }).on
+    return v !== false
+  } catch {
+    return true
+  }
+}
+
+export function setInpaintPatchOn(on: boolean): void {
+  const dir = path.dirname(inpaintPatchFile())
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  const p = inpaintPatchFile()
+  const tmp = `${p}.tmp-${process.pid}`
+  try {
+    fs.writeFileSync(tmp, JSON.stringify({ on }, null, 2), 'utf8')
+    fs.renameSync(tmp, p)
+    console.log(`[image] inpainting patch ${on ? 'on' : 'OFF'} for every style`)
+  } catch (err) {
+    try { fs.unlinkSync(tmp) } catch { /* nothing */ }
+    console.error('[image] failed to save the inpainting-patch switch:', err)
   }
 }
 

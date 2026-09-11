@@ -223,6 +223,8 @@ interface StylesResponse {
   capabilities?: Partial<ImageCapabilities>
   structureSettings?: Partial<StructureSettings>
   safeTags?: boolean
+  /** Whether a style's own inpainting patch may be used at all (Settings → Drawing). */
+  inpaintPatch?: boolean
 }
 
 /**
@@ -472,6 +474,8 @@ export function useImages() {
   const [structure, setStructureState] = useState<StructureSettings | null>(null)
   // Whether the built-in safe/nsfw tags are added. null until the server says.
   const [safeTags, setSafeTagsState] = useState<boolean | null>(null)
+  // The global inpainting-patch switch (Settings → Drawing). null until the server says.
+  const [inpaintPatchOn, setInpaintPatchOnState] = useState<boolean | null>(null)
   const readCaps = (j: StylesResponse): ImageCapabilities => ({
     inpaint: j.capabilities?.inpaint === true, segmentation: j.capabilities?.segmentation === true,
     structure: j.capabilities?.structure === true,
@@ -538,6 +542,7 @@ export function useImages() {
       setCapabilities(readCaps(j))
       const st = readStructureSettings(j); if (st) setStructureState(st)
       if (typeof j.safeTags === 'boolean') setSafeTagsState(j.safeTags)
+      if (typeof j.inpaintPatch === 'boolean') setInpaintPatchOnState(j.inpaintPatch)
       setModelState(j.selected ?? '')
       setQualityState(j.quality ?? 'standard')
     } catch (err) {
@@ -557,6 +562,7 @@ export function useImages() {
         setCapabilities(readCaps(j))
         const st = readStructureSettings(j); if (st) setStructureState(st)
         if (typeof j.safeTags === 'boolean') setSafeTagsState(j.safeTags)
+        if (typeof j.inpaintPatch === 'boolean') setInpaintPatchOnState(j.inpaintPatch)
         setModelState(j.selected ?? '')
         setQualityState(j.quality ?? 'standard')
       })
@@ -943,6 +949,17 @@ export function useImages() {
     } catch { /* the next models fetch restores the truth */ }
   }, [])
 
+  /** Switch the inpainting patch on or off for every style (Settings → Drawing). */
+  const setInpaintPatchOn = useCallback(async (on: boolean) => {
+    setInpaintPatchOnState(on)
+    try {
+      const res = await fetch('/api/image/inpaint-patch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on }),
+      })
+      if (res.ok) setInpaintPatchOnState((await res.json() as { on: boolean }).on)
+    } catch { /* the next models fetch restores the truth */ }
+  }, [])
+
   /** Patch the pose-hold settings; the answer is the whole saved record. */
   const setStructure = useCallback(async (patch: Partial<StructureSettings>) => {
     setStructureState(prev => ({ ...(prev ?? DEFAULT_STRUCTURE_SETTINGS), ...patch }))
@@ -1015,6 +1032,7 @@ export function useImages() {
     drawingElapsedMs: drawing?.elapsedMs ?? 0,
     queue, queueMax, queueFull: queue.length >= queueMax, drawError, cancel,
     styles, model, setModel, capabilities, structure, setStructure, safeTags, setSafeTags,
+    inpaintPatchOn, setInpaintPatchOn,
     quality, setQuality,
     params, defaults, loras, autoLora, inpaintPatchInfo, setParams, resetParams,
     generate, remove, clear, refresh,
