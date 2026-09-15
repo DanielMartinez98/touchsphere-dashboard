@@ -86,7 +86,7 @@ export function openBrowseFromPayload(raw: unknown): void {
       openPlexPlayer({ key: d['key'], title: title || 'Plex' })
       return
     }
-    if (d['action'] === 'open' && (d['tab'] === 'library' || d['tab'] === 'downloads' || d['tab'] === 'requests')) {
+    if (d['action'] === 'open' && (d['tab'] === 'library' || d['tab'] === 'downloads' || d['tab'] === 'requests' || d['tab'] === 'indexers')) {
       requestPlexPanel({
         tab: d['tab'],
         ...(typeof d['key'] === 'string' && /^\d+$/.test(d['key']) ? { key: d['key'] } : {}),

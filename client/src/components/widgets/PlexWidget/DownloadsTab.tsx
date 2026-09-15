@@ -26,15 +26,10 @@ import {
 } from '../../../hooks/usePlex'
 import { onServerEvent } from '../../../hooks/useServerEvents'
 import { MissingView } from './MissingView'
+import { fmtBytes } from './items'
 
 // ── Formatting ───────────────────────────────────────────────────────────────
 
-function fmtBytes(b: number): string {
-  if (b >= 1e12) return `${(b / 1e12).toFixed(2)} TB`
-  if (b >= 1e9) return `${(b / 1e9).toFixed(1)} GB`
-  if (b >= 1e6) return `${Math.round(b / 1e6)} MB`
-  return `${Math.round(b / 1e3)} kB`
-}
 function fmtSpeed(bps: number): string {
   if (bps >= 1e6) return `${(bps / 1e6).toFixed(1)} MB/s`
   if (bps >= 1e3) return `${Math.round(bps / 1e3)} kB/s`

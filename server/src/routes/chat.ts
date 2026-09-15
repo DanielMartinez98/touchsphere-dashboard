@@ -248,6 +248,10 @@ const SYSTEM_PROMPT_BODY =
       (PLEX_TOOLS.some(t => t.function.name === 'request_media')
         ? "request_media asks for something to be ADDED — say what was requested and whether it was approved. "
         : "") +
+      (PLEX_TOOLS.some(t => t.function.name === 'search_indexers')
+        ? "search_indexers asks the torrent/usenet indexers directly (\"search the indexers for…\", \"is there a " +
+          "remux of…\") and numbers the results; grab_release downloads one BY NUMBER from that list. "
+        : "") +
       "Speak the title, never ids or file names."
     : "")
 

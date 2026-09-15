@@ -19,7 +19,8 @@ import {
   qbitEnabled, torrents, torrentControl, transferInfo, arrQueue,
   seerrEnabled, seerrSearch, seerrRequest, seerrRequests,
   bazarrEnabled, bazarrWanted,
-  type PlexItem, type Torrent,
+  prowlarrEnabled, prowlarrSearch, prowlarrGrab, INDEXER_CATEGORIES,
+  type PlexItem, type Torrent, type IndexerRelease,
   plexItemFull,
 } from '../media-stack'
 import { displayTitle } from './plex'
@@ -126,6 +127,47 @@ export const PLEX_TOOLS = !plexEnabled() ? [] : [
       },
     },
   ] : []),
+  ...(prowlarrEnabled() ? [
+    {
+      type: 'function',
+      function: {
+        name: 'search_indexers',
+        description:
+          'Search the torrent/usenet INDEXERS directly through Prowlarr for anything by name — a ' +
+          'release the library has no entry for: "search the indexers for Cowboy Bebop remux", ' +
+          '"is there a 4K of Heat out there?", "look for the Interstellar soundtrack". This is NOT ' +
+          'request_media (which adds a title to the library through Seerr) and NOT web_search. ' +
+          'Returns the best few results numbered, with size and seeders, and opens the Indexers ' +
+          'tab with the full list on screen. Read out the top results briefly; the user can then ' +
+          'say "grab number 2" (grab_release) or tap one on screen.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'What to search for, as said.' },
+            kind:  { type: 'string', enum: ['movies', 'tv', 'anime', 'music', 'books', 'games'], description: 'Limit to one category, if they said or it is obvious. Omit to search everything.' },
+          },
+          required: ['query'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'grab_release',
+        description:
+          'Download one result from the LAST search_indexers, by its number in that list — "grab ' +
+          'number 2", "download the first one", "get the biggest one" (pick the number yourself from ' +
+          'the list). Sends it to the download client. Only after a search_indexers in this conversation.',
+        parameters: {
+          type: 'object',
+          properties: {
+            number: { type: 'integer', description: 'The 1-based position in the last search results.' },
+          },
+          required: ['number'],
+        },
+      },
+    },
+  ] : []),
   {
     type: 'function',
     function: {
@@ -190,7 +232,7 @@ async function pickEpisode(show: PlexItem, season?: number, episode?: number): P
   return pool.find(e => e.viewOffset) ?? pool.find(e => !e.viewCount) ?? pool[0] ?? null
 }
 
-function openPanel(tab: 'library' | 'downloads' | 'requests', title: string, extra: { key?: string; query?: string } = {}): DisplayPayload {
+function openPanel(tab: 'library' | 'downloads' | 'requests' | 'indexers', title: string, extra: { key?: string; query?: string } = {}): DisplayPayload {
   return { kind: 'plex', action: 'open', tab, title, ...extra }
 }
 
@@ -431,6 +473,63 @@ async function mediaRequests(): Promise<BrowseToolResult> {
   return { text: `Recent requests: ${list.map(line).join('; ')}.`, display }
 }
 
+
+// ── Indexers ─────────────────────────────────────────────────────────────────
+//
+// A spoken search is answered with a NUMBERED list, and a grab takes a number
+// from it: the alternative — matching a spoken release name against fifty
+// strings that differ by a codec tag — is a guess with someone else's disk
+// space. The list is kept for one kiosk (there is one conversation) and for
+// as long as Prowlarr keeps the releases it came from cached, since a grab
+// older than that fails on Prowlarr's side anyway.
+
+const INDEXER_LIST_TTL_MS = 30 * 60_000
+let lastIndexerSearch: { at: number; query: string; releases: IndexerRelease[] } | null = null
+
+function fmtSize(b: number): string {
+  if (b >= 1e9) return `${(b / 1e9).toFixed(1)} GB`
+  if (b >= 1e6) return `${Math.round(b / 1e6)} MB`
+  return b ? `${Math.round(b / 1e3)} kB` : 'unknown size'
+}
+
+function fmtRelease(r: IndexerRelease, n: number): string {
+  const seeds = r.seeders !== null ? `, ${r.seeders} seeders` : ''
+  return `${n}. ${r.title} — ${fmtSize(r.size)}${seeds}, on ${r.indexer}`
+}
+
+async function searchIndexers(query: string, kind: string): Promise<BrowseToolResult> {
+  if (!query.trim()) return { text: 'search_indexers needs a query.', display: null }
+  const display = openPanel('indexers', 'Indexers', { query: query.trim() })
+  const cat = INDEXER_CATEGORIES[kind]
+  let releases: IndexerRelease[]
+  try { releases = await prowlarrSearch(query, { categories: cat?.ids ?? [] }) }
+  catch (err) { return { text: `Couldn't search the indexers: ${err instanceof Error ? err.message : err}`, display } }
+  releases.sort((a, b) => (b.seeders ?? -1) - (a.seeders ?? -1) || a.ageHours - b.ageHours)
+  lastIndexerSearch = { at: Date.now(), query, releases }
+  if (!releases.length) return { text: `The indexers have nothing for "${query}"${cat ? ` under ${cat.label}` : ''}.`, display }
+  const top = releases.slice(0, 5).map(fmtRelease)
+  return {
+    text:
+      `${releases.length} result${releases.length === 1 ? '' : 's'} for "${query}"${cat ? ` (${cat.label})` : ''}, best seeded first: ` +
+      `${top.join('; ')}. The full list is on screen. To download one, call grab_release with its number, or they can tap it.`,
+    display,
+  }
+}
+
+async function grabRelease(number: number | undefined): Promise<BrowseToolResult> {
+  const display = openPanel('indexers', 'Indexers')
+  if (!lastIndexerSearch || Date.now() - lastIndexerSearch.at > INDEXER_LIST_TTL_MS) {
+    return { text: 'There is no recent indexer search to pick from — call search_indexers first.', display }
+  }
+  const r = number !== undefined ? lastIndexerSearch.releases[number - 1] : undefined
+  if (!r) return { text: `The last search for "${lastIndexerSearch.query}" has ${lastIndexerSearch.releases.length} results; number ${number ?? '?'} isn't one of them.`, display }
+  await prowlarrGrab(r.guid, r.indexerId)
+  return {
+    text: `Sent "${r.title}" (${fmtSize(r.size)}) to the download client. It will show under Downloads once it starts; Sonarr or Radarr will file it only if it matches something they track.`,
+    display: openPanel('downloads', 'Downloads'),
+  }
+}
+
 // ── Dispatch ─────────────────────────────────────────────────────────────────
 
 export async function runPlexTool(name: string, args: Record<string, unknown>): Promise<BrowseToolResult | null> {
@@ -450,6 +549,8 @@ export async function runPlexTool(name: string, args: Record<string, unknown>): 
       case 'control_download': return await controlDownload(str('name'), str('action'))
       case 'request_media':    return await requestMedia(str('title'), str('type'), int('year'), int('season'))
       case 'media_requests':   return await mediaRequests()
+      case 'search_indexers':  return await searchIndexers(str('query'), str('kind'))
+      case 'grab_release':     return await grabRelease(int('number'))
       default: return null
     }
   } catch (err) {

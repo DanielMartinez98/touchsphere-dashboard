@@ -246,7 +246,7 @@ app.use('/api/image', tileLimiter, imageRouter)
 // quietly put every poster on the 60-a-minute data budget. The old panel drew
 // ~35 posters a screen and stayed just under; a library page draws over a
 // hundred and 429'd on the second shelf.
-const PLEX_STRICT = /^\/(discover|request|requests|torrents)(\/|$)/
+const PLEX_STRICT = /^\/(discover|request|requests|torrents|indexers)(\/|$)/
 app.use('/api/plex', (req, res, next) =>
   PLEX_STRICT.test(req.path) ? dataLimiter(req, res, next) : tileLimiter(req, res, next), plexRouter)
 // Artwork is split across both limiters. Cached covers are served off local

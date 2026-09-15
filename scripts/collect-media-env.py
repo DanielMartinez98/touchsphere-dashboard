@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Copy the media stack's API keys into touchsphere's .env — without printing any.
 
-Run ON THE BOX that hosts Plex / Sonarr / Radarr / Bazarr / Seerr / qBittorrent:
+Run ON THE BOX that hosts Plex / Sonarr / Radarr / Bazarr / Seerr / Prowlarr / qBittorrent:
 
     python3 scripts/collect-media-env.py [path/to/touchsphere/.env]
 
@@ -26,6 +26,7 @@ SONARR_CFG  = os.environ.get('SONARR_CFG',  '/mnt/Plex/Docker/Sonarr/data/config
 RADARR_CFG  = os.environ.get('RADARR_CFG',  '/mnt/Plex/Docker/Radarr/data/config.xml')
 BAZARR_DIR  = os.environ.get('BAZARR_DIR',  '/mnt/Plex/Docker/Bazarr/config/config')
 SEERR_CFG   = os.environ.get('SEERR_CFG',   '/mnt/Plex/Docker/Overseerr/config/settings.json')
+PROWLARR_CFG = os.environ.get('PROWLARR_CFG', '/mnt/Plex/Docker/Prowlarr/data/config.xml')
 SONARR_HOST = os.environ.get('SONARR_HOST', 'http://127.0.0.1:8989')
 
 found = {}
@@ -70,6 +71,7 @@ grab('MEDIA_SONARR_KEY', lambda: xml_tag(SONARR_CFG, 'ApiKey'))
 grab('MEDIA_RADARR_KEY', lambda: xml_tag(RADARR_CFG, 'ApiKey'))
 grab('MEDIA_BAZARR_KEY', bazarr_key)
 grab('MEDIA_SEERR_KEY',  seerr_key)
+grab('MEDIA_PROWLARR_KEY', lambda: xml_tag(PROWLARR_CFG, 'ApiKey'))
 
 def qbit_creds():
     key = found.get('MEDIA_SONARR_KEY')
@@ -108,6 +110,7 @@ urls = {
     'MEDIA_RADARR_URL': f'{GW}:7878',
     'MEDIA_BAZARR_URL': f'{GW}:6767',
     'MEDIA_SEERR_URL':  f'{GW}:5055',
+    'MEDIA_PROWLARR_URL': f'{GW}:9696',
     'MEDIA_QBIT_URL':   f'{GW}:8080',
 }
 
