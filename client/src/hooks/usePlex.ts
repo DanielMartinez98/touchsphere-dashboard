@@ -266,10 +266,37 @@ export interface SeerrRequest {
   seasons?: number[]
 }
 
+/** One of Prowlarr's indexers. */
+export interface Indexer {
+  id: number
+  name: string
+  protocol: string
+  privacy: string
+  enabled: boolean
+}
+
+/** One hit from an indexer, as Prowlarr's search returns it. */
+export interface IndexerRelease {
+  guid: string
+  indexerId: number
+  indexer: string
+  title: string
+  size: number
+  seeders: number | null
+  leechers: number | null
+  grabs: number | null
+  ageHours: number
+  publishDate: string
+  protocol: string
+  categories: string[]
+  infoUrl?: string
+  flags: string[]
+}
+
 export interface PlexStatus {
   enabled: boolean
-  services: Record<'plex' | 'sonarr' | 'radarr' | 'bazarr' | 'seerr' | 'qbit', { configured: boolean; ok: boolean; detail?: string }>
-  features: { requests: boolean; torrents: boolean; subtitles: boolean }
+  services: Record<'plex' | 'sonarr' | 'radarr' | 'bazarr' | 'seerr' | 'prowlarr' | 'qbit', { configured: boolean; ok: boolean; detail?: string }>
+  features: { requests: boolean; torrents: boolean; subtitles: boolean; indexers: boolean }
 }
 
 // ── Fetch helpers ────────────────────────────────────────────────────────────
@@ -380,6 +407,17 @@ export const plexApi = {
   requests: () => getJson<{ requests: SeerrRequest[] }>('/api/plex/requests'),
   discover: (q: string) => getJson<{ results: SeerrResult[] }>(`/api/plex/discover?q=${encodeURIComponent(q)}`),
   request:  (mediaType: 'movie' | 'tv', tmdbId: number, seasons?: number[]) => postJson<{ request: SeerrRequest }>('/api/plex/request', { mediaType, tmdbId, seasons }),
+  /** Prowlarr's indexers, whether a grab has a download client to go to, and the category chips. */
+  indexers: () => getJson<{ indexers: Indexer[]; canGrab: { torrent: boolean; usenet: boolean }; categories: { id: string; label: string }[] }>('/api/plex/indexers'),
+  /** Ask the indexers directly. Slow — every one is queried live. */
+  indexerSearch: (q: string, opts: { cat?: string; indexers?: number[] } = {}) => {
+    const p = new URLSearchParams({ q })
+    if (opts.cat) p.set('cat', opts.cat)
+    if (opts.indexers?.length) p.set('indexer', opts.indexers.join(','))
+    return getJson<{ releases: IndexerRelease[] }>(`/api/plex/indexers/search?${p.toString()}`)
+  },
+  /** Send one release to Prowlarr's download client. */
+  grabRelease: (guid: string, indexerId: number) => postJson<{ ok: true; detail: string }>('/api/plex/indexers/grab', { guid, indexerId }),
 }
 
 // ── Enabled? ─────────────────────────────────────────────────────────────────
@@ -445,7 +483,7 @@ export function usePlexPlayerTarget() {
 
 // ── Panel request ────────────────────────────────────────────────────────────
 
-export type PlexTab = 'library' | 'downloads' | 'requests'
+export type PlexTab = 'library' | 'downloads' | 'requests' | 'indexers'
 
 export interface PlexPanelRequest {
   tab: PlexTab
