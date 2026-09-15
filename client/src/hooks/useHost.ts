@@ -55,6 +55,8 @@ export interface HostStatus {
   calendar?: {
     dir: string; present: boolean; git: boolean; commit: string; behind: number | null
     services: { name: string; state: string; image: string }[]; lastUpdate: string
+    /** Where the checkout's path came from: "conf" (the installer wrote it) or "found" (the running container named it). */
+    via?: string
   }
 }
 
