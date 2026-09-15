@@ -37,12 +37,15 @@ import {
   plexSelectStreams,
   plexStopTranscode,
   plexTimeline,
+  prowlarrCategories,
   prowlarrDownloadClients,
   prowlarrEnabled,
   prowlarrGrab,
+  prowlarrGrabMany,
   prowlarrIndexers,
   prowlarrSearch,
   INDEXER_CATEGORIES,
+  INDEXER_SEARCH_TYPES,
   qbitEnabled,
   seerrEnabled,
   seerrRequest,
@@ -896,49 +899,53 @@ router.post('/request', async (req: Request, res: Response) => {
 
 // ── Indexers (Prowlarr) ──────────────────────────────────────────────────────
 // The *arr searches above are FOR a queue row — an episode, a film the *arr
-// already tracks. These are a bare search across the indexers Prowlarr holds,
-// for everything that has no row: a title the *arrs don't know, a concert
-// film, a soundtrack, "is there a remux of this yet". A grab goes to the
-// download client Prowlarr has configured; the *arrs pick it up from there
-// only if it happens to match something they monitor, and the panel says so.
+// already tracks. These are Prowlarr's own Search page: a bare query across
+// the indexers it holds, with its search types, its indexer and category
+// pickers, its paging and its grab. A grab goes to the download client
+// Prowlarr has configured; the *arrs pick it up from there only if it happens
+// to match something they monitor, and the panel says so.
+
+const SEARCH_PAGE = 100
 
 router.get('/indexers', async (_req: Request, res: Response) => {
   if (!prowlarrEnabled()) return disabled(res, 'Prowlarr')
   res.setHeader('Cache-Control', 'no-store')
   try {
-    const [indexers, canGrab] = await Promise.all([
+    const [indexers, categories, canGrab] = await Promise.all([
       prowlarrIndexers(),
+      prowlarrCategories().catch(() => []),
       prowlarrDownloadClients().catch(() => ({ torrent: false, usenet: false })),
     ])
-    res.json({
-      indexers, canGrab,
-      categories: Object.entries(INDEXER_CATEGORIES).map(([id, c]) => ({ id, label: c.label })),
-    })
+    res.json({ indexers, categories, canGrab })
   } catch (err) {
     res.status(502).json({ error: `Prowlarr: ${msg(err)}` })
   }
 })
 
 /** Parse a comma list of integers off the query string; anything else is dropped. */
-function intList(v: unknown): number[] {
-  return String(v ?? '').split(',').map(x => Number(x.trim())).filter(n => Number.isInteger(n) && n > 0)
+function intList(v: unknown, allowGroups = false): number[] {
+  return String(v ?? '').split(',').map(x => Number(x.trim()))
+    .filter(n => Number.isInteger(n) && (n > 0 || (allowGroups && (n === -1 || n === -2))))
 }
 
 router.get('/indexers/search', async (req: Request, res: Response) => {
   if (!prowlarrEnabled()) return disabled(res, 'Prowlarr')
   res.setHeader('Cache-Control', 'no-store')
-  const q = String(req.query['q'] ?? '').trim().slice(0, 200)
-  if (!q) return res.json({ releases: [] })
-  // Category chips arrive by their short id (movies, tv, anime…) and are
-  // resolved here, so the client never holds a Newznab number.
-  const categories = String(req.query['cat'] ?? '').split(',').map(x => x.trim()).filter(Boolean)
-    .flatMap(id => INDEXER_CATEGORIES[id]?.ids ?? [])
-  const indexerIds = intList(req.query['indexer'])
+  const q = String(req.query['q'] ?? '').trim().slice(0, 300)
+  if (!q) return res.json({ releases: [], offset: 0, more: false })
+  const type = String(req.query['type'] ?? 'search')
+  if (!(INDEXER_SEARCH_TYPES as readonly string[]).includes(type)) return res.status(400).json({ error: `type must be one of ${INDEXER_SEARCH_TYPES.join(', ')}` })
+  // Categories arrive either as Newznab ids from the picker (`cats`) or as
+  // the short names the voice tool uses (`cat`: movies, tv, anime…).
+  const categories = [
+    ...intList(req.query['cats']),
+    ...String(req.query['cat'] ?? '').split(',').map(x => x.trim()).filter(Boolean).flatMap(id => INDEXER_CATEGORIES[id]?.ids ?? []),
+  ]
+  const indexerIds = intList(req.query['indexer'], true)
+  const offset = Math.max(0, Math.min(10_000, Number(req.query['offset']) || 0))
   try {
-    const releases = await prowlarrSearch(q, { categories, indexerIds })
-    // Most seeded first; usenet has no swarm, so those fall back to newest.
-    releases.sort((a, b) => (b.seeders ?? -1) - (a.seeders ?? -1) || a.ageHours - b.ageHours)
-    res.json({ releases })
+    const releases = await prowlarrSearch(q, { type, categories, indexerIds, limit: SEARCH_PAGE, offset })
+    res.json({ releases, offset, more: releases.length >= SEARCH_PAGE })
   } catch (err) {
     res.status(502).json({ error: `Prowlarr: ${msg(err)}` })
   }
@@ -947,12 +954,24 @@ router.get('/indexers/search', async (req: Request, res: Response) => {
 router.post('/indexers/grab', async (req: Request, res: Response) => {
   if (!prowlarrEnabled()) return disabled(res, 'Prowlarr')
   const body = (req.body ?? {}) as Record<string, unknown>
-  const guid = typeof body['guid'] === 'string' ? body['guid'].slice(0, 2000) : ''
-  const indexerId = Number(body['indexerId'])
-  if (!guid || !Number.isInteger(indexerId) || indexerId <= 0) return res.status(400).json({ error: 'guid and indexerId are required' })
+  const pick = (r: unknown): { guid: string; indexerId: number } | null => {
+    const o = (r ?? {}) as Record<string, unknown>
+    const guid = typeof o['guid'] === 'string' ? o['guid'].slice(0, 2000) : ''
+    const indexerId = Number(o['indexerId'])
+    return guid && Number.isInteger(indexerId) && indexerId > 0 ? { guid, indexerId } : null
+  }
+  const filed = 'It shows up under Downloads once the client has it; Sonarr or Radarr will file it only if it matches something they monitor.'
   try {
-    await prowlarrGrab(guid, indexerId)
-    res.json({ ok: true, detail: 'Sent to the download client. It shows up under Downloads once qBittorrent has it; Sonarr or Radarr will file it only if it matches something they monitor.' })
+    if (Array.isArray(body['releases'])) {
+      const list = (body['releases'] as unknown[]).map(pick).filter((x): x is { guid: string; indexerId: number } => !!x).slice(0, 100)
+      if (!list.length) return res.status(400).json({ error: 'releases must carry guid and indexerId' })
+      const grabbed = await prowlarrGrabMany(list)
+      return res.json({ ok: true, grabbed, detail: `Sent ${grabbed.length} of ${list.length} to the download client. ${filed}` })
+    }
+    const one = pick(body)
+    if (!one) return res.status(400).json({ error: 'guid and indexerId are required' })
+    await prowlarrGrab(one.guid, one.indexerId)
+    res.json({ ok: true, grabbed: [one], detail: `Sent to the download client. ${filed}` })
   } catch (err) {
     res.status(502).json({ error: msg(err) })
   }
