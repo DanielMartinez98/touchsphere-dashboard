@@ -275,6 +275,12 @@ export interface Indexer {
   enabled: boolean
 }
 
+/** A Newznab category with its subcategories, as Prowlarr's own picker lists them. */
+export interface IndexerCategory { id: number; name: string; subCategories: { id: number; name: string }[] }
+
+/** Prowlarr's search types — Basic, TV, Movie, Audio, Book. */
+export type IndexerSearchType = 'search' | 'tvsearch' | 'movie' | 'music' | 'book'
+
 /** One hit from an indexer, as Prowlarr's search returns it. */
 export interface IndexerRelease {
   guid: string
@@ -282,16 +288,27 @@ export interface IndexerRelease {
   indexer: string
   title: string
   size: number
+  files: number | null
   seeders: number | null
   leechers: number | null
   grabs: number | null
+  age: number
   ageHours: number
+  ageMinutes: number
   publishDate: string
   protocol: string
-  categories: string[]
+  categories: { id: number; name: string }[]
   infoUrl?: string
+  posterUrl?: string
   flags: string[]
+  imdbId?: number
+  tmdbId?: number
+  tvdbId?: number
+  tvMazeId?: number
 }
+
+/** What a grab needs: Prowlarr keys its release cache on exactly these two. */
+export interface IndexerGrab { guid: string; indexerId: number }
 
 export interface PlexStatus {
   enabled: boolean
@@ -407,17 +424,21 @@ export const plexApi = {
   requests: () => getJson<{ requests: SeerrRequest[] }>('/api/plex/requests'),
   discover: (q: string) => getJson<{ results: SeerrResult[] }>(`/api/plex/discover?q=${encodeURIComponent(q)}`),
   request:  (mediaType: 'movie' | 'tv', tmdbId: number, seasons?: number[]) => postJson<{ request: SeerrRequest }>('/api/plex/request', { mediaType, tmdbId, seasons }),
-  /** Prowlarr's indexers, whether a grab has a download client to go to, and the category chips. */
-  indexers: () => getJson<{ indexers: Indexer[]; canGrab: { torrent: boolean; usenet: boolean }; categories: { id: string; label: string }[] }>('/api/plex/indexers'),
-  /** Ask the indexers directly. Slow — every one is queried live. */
-  indexerSearch: (q: string, opts: { cat?: string; indexers?: number[] } = {}) => {
+  /** Prowlarr's indexers, its category tree, and whether a grab has a download client to go to. */
+  indexers: () => getJson<{ indexers: Indexer[]; categories: IndexerCategory[]; canGrab: { torrent: boolean; usenet: boolean } }>('/api/plex/indexers'),
+  /** Ask the indexers directly, a page of 100 at a time. Slow — every one is queried live. */
+  indexerSearch: (q: string, opts: { type?: IndexerSearchType; indexers?: number[]; cats?: number[]; offset?: number } = {}) => {
     const p = new URLSearchParams({ q })
-    if (opts.cat) p.set('cat', opts.cat)
+    if (opts.type) p.set('type', opts.type)
     if (opts.indexers?.length) p.set('indexer', opts.indexers.join(','))
-    return getJson<{ releases: IndexerRelease[] }>(`/api/plex/indexers/search?${p.toString()}`)
+    if (opts.cats?.length) p.set('cats', opts.cats.join(','))
+    if (opts.offset) p.set('offset', String(opts.offset))
+    return getJson<{ releases: IndexerRelease[]; offset: number; more: boolean }>(`/api/plex/indexers/search?${p.toString()}`)
   },
   /** Send one release to Prowlarr's download client. */
-  grabRelease: (guid: string, indexerId: number) => postJson<{ ok: true; detail: string }>('/api/plex/indexers/grab', { guid, indexerId }),
+  grabRelease: (guid: string, indexerId: number) => postJson<{ ok: true; grabbed: IndexerGrab[]; detail: string }>('/api/plex/indexers/grab', { guid, indexerId }),
+  /** Several at once; `grabbed` is the subset Prowlarr actually took. */
+  grabReleases: (releases: IndexerGrab[]) => postJson<{ ok: true; grabbed: IndexerGrab[]; detail: string }>('/api/plex/indexers/grab', { releases }),
 }
 
 // ── Enabled? ─────────────────────────────────────────────────────────────────

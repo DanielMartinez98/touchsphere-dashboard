@@ -1851,28 +1851,64 @@ export interface IndexerRelease {
   indexer: string
   title: string
   size: number
+  /** Files in the release, when the indexer says. */
+  files: number | null
   seeders: number | null
   leechers: number | null
   /** How many times the indexer has seen it grabbed, when it says. */
   grabs: number | null
+  /** Prowlarr's three age fields, which its own formatAge() needs together. */
+  age: number
   ageHours: number
+  ageMinutes: number
   publishDate: string
   protocol: string
-  /** Newznab category names, top level first: "Movies", "Movies/HD". */
-  categories: string[]
+  /** Newznab categories, sorted by id: {2000 Movies}, {2040 Movies/HD}. */
+  categories: { id: number; name: string }[]
   /** The release's page on the indexer, when there is one. */
   infoUrl?: string
+  /** A poster some indexers attach, absolute http(s). */
+  posterUrl?: string
   /** An indexer flag the tracker attached: "freeleech", "internal", … */
   flags: string[]
+  imdbId?: number
+  tmdbId?: number
+  tvdbId?: number
+  tvMazeId?: number
+}
+
+/** A Newznab category with its subcategories, as Prowlarr's own picker lists them. */
+export interface IndexerCategory { id: number; name: string; subCategories: { id: number; name: string }[] }
+
+/** Prowlarr's search types; each maps to a Newznab `t=` and its own id tokens in the query. */
+export const INDEXER_SEARCH_TYPES = ['search', 'tvsearch', 'movie', 'music', 'book'] as const
+export type IndexerSearchType = typeof INDEXER_SEARCH_TYPES[number]
+
+/**
+ * Prowlarr answers a refused request with `{ message }` — "Search failed due
+ * to all selected indexers being unavailable", "Failed to grab any release"
+ * — and axios's own "Request failed with status code 400" hides exactly the
+ * half that says what to do, so the body's sentence is what gets thrown.
+ */
+function prowlarrError(err: unknown): Error {
+  if (axios.isAxiosError(err)) {
+    const body = err.response?.data as Raw | string | undefined
+    const message = typeof body === 'object' && body ? str(body['message']) : typeof body === 'string' ? body.slice(0, 200) : undefined
+    if (message) return new Error(message)
+    if (err.response) return new Error(`Prowlarr answered ${err.response.status}`)
+  }
+  return err instanceof Error ? err : new Error(String(err))
 }
 
 async function prowlarrGet<T>(path: string, params: URLSearchParams | Record<string, string | number> = {}, timeout = HTTP_TIMEOUT_MS): Promise<T> {
   const qs = params instanceof URLSearchParams ? params.toString() : new URLSearchParams(params as Record<string, string>).toString()
-  const { data } = await axios.get<T>(`${PROWLARR_URL}/api/v1${path}${qs ? `?${qs}` : ''}`, {
-    headers: { 'X-Api-Key': PROWLARR_KEY, Accept: 'application/json' },
-    timeout,
-  })
-  return data
+  try {
+    const { data } = await axios.get<T>(`${PROWLARR_URL}/api/v1${path}${qs ? `?${qs}` : ''}`, {
+      headers: { 'X-Api-Key': PROWLARR_KEY, Accept: 'application/json' },
+      timeout,
+    })
+    return data
+  } catch (err) { throw prowlarrError(err) }
 }
 
 /** The indexers Prowlarr has, enabled ones first, then by name. */
@@ -1889,6 +1925,18 @@ export async function prowlarrIndexers(): Promise<Indexer[]> {
       enabled: r['enable'] !== false,
     }]
   }).sort((a, b) => Number(b.enabled) - Number(a.enabled) || a.name.localeCompare(b.name))
+}
+
+/** The Newznab category tree Prowlarr's own search page offers — parents with their subcategories. */
+export async function prowlarrCategories(): Promise<IndexerCategory[]> {
+  const data = await prowlarrGet<Raw[]>('/indexer/categories')
+  if (!Array.isArray(data)) return []
+  const sub = (v: unknown) => (Array.isArray(v) ? (v as Raw[]) : [])
+    .flatMap(c => (num(c['id']) && str(c['name']) ? [{ id: num(c['id'])!, name: str(c['name'])! }] : []))
+    .sort((a, b) => a.id - b.id)
+  return data.flatMap(c => (num(c['id']) && str(c['name'])
+    ? [{ id: num(c['id'])!, name: str(c['name'])!, subCategories: sub(c['subCategories']) }] : []))
+    .sort((a, b) => a.id - b.id)
 }
 
 /**
@@ -1914,24 +1962,35 @@ function toIndexerRelease(r: Raw): IndexerRelease | null {
   const guid = str(r['guid']); const title = str(r['title']); const indexerId = num(r['indexerId'])
   if (!guid || !title || !indexerId) return null
   const cats = Array.isArray(r['categories'])
-    ? (r['categories'] as Raw[]).flatMap(c => (str(c['name']) ? [str(c['name'])!] : []))
+    ? (r['categories'] as Raw[]).flatMap(c => (num(c['id']) && str(c['name']) ? [{ id: num(c['id'])!, name: str(c['name'])! }] : []))
     : []
   const flags = Array.isArray(r['indexerFlags'])
     ? (r['indexerFlags'] as unknown[]).flatMap(f => (typeof f === 'string' ? [f] : str((f as Raw)?.['name']) ? [str((f as Raw)['name'])!] : []))
     : []
+  const poster = str(r['posterUrl'])
+  const idOf = (k: string) => { const n = num(r[k]); return n && n > 0 ? n : undefined }
+  const age = num(r['age']) ?? 0
   return {
     guid, indexerId, title,
     indexer: str(r['indexer']) ?? 'unknown',
     size: num(r['size']) ?? 0,
+    files: num(r['files']) ?? null,
     seeders: num(r['seeders']) ?? null,
     leechers: num(r['leechers']) ?? null,
     grabs: num(r['grabs']) ?? null,
-    ageHours: num(r['ageHours']) ?? (num(r['age']) ?? 0) * 24,
+    age,
+    ageHours: num(r['ageHours']) ?? age * 24,
+    ageMinutes: num(r['ageMinutes']) ?? (num(r['ageHours']) ?? age * 24) * 60,
     publishDate: str(r['publishDate']) ?? '',
     protocol: str(r['protocol']) ?? 'torrent',
-    categories: [...new Set(cats)],
+    categories: [...new Map(cats.map(c => [c.id, c])).values()].sort((a, b) => a.id - b.id),
     ...(str(r['infoUrl']) ? { infoUrl: str(r['infoUrl']) } : {}),
+    ...(poster && /^https?:\/\//i.test(poster) ? { posterUrl: poster } : {}),
     flags,
+    ...(idOf('imdbId') ? { imdbId: idOf('imdbId') } : {}),
+    ...(idOf('tmdbId') ? { tmdbId: idOf('tmdbId') } : {}),
+    ...(idOf('tvdbId') ? { tvdbId: idOf('tvdbId') } : {}),
+    ...(idOf('tvMazeId') ? { tvMazeId: idOf('tvMazeId') } : {}),
   }
 }
 
@@ -1949,23 +2008,40 @@ export const INDEXER_CATEGORIES: Record<string, { label: string; ids: number[] }
   games:  { label: 'Games',  ids: [1000, 4050] },
 }
 
+export interface IndexerSearchOptions {
+  type?: string
+  /** Prowlarr's own ids, plus its two groups: -1 = every usenet indexer, -2 = every torrent one. */
+  indexerIds?: number[]
+  categories?: number[]
+  limit?: number
+  offset?: number
+}
+
 /**
- * Ask every enabled indexer (or the ones named) what it has. Slow by nature —
- * each indexer is queried live and a private tracker may take twenty
- * seconds — so it gets the same room the *arr interactive search does.
- * Prowlarr reads `indexerIds` and `categories` as REPEATED keys, not the
- * `ids[]=` axios writes for an array, hence the hand-built query string.
+ * Ask the indexers what they have. Slow by nature — each indexer is queried
+ * live and a private tracker may take twenty seconds — so it gets the same
+ * room the *arr interactive search does. Two things about the query string
+ * are Prowlarr's, not a preference: `indexerIds` and `categories` are
+ * REPEATED keys (not the `ids[]=` axios writes for an array), and "every
+ * enabled indexer" is NO indexerIds at all — -1 and -2 are its usenet and
+ * torrent groups, which is what its own picker sends for "Usenet" / "Torrent".
+ * The first version sent -1 for "all" and searched only usenet indexers,
+ * which on a torrent-only box is "all selected indexers unavailable".
  */
-export async function prowlarrSearch(query: string, opts: { indexerIds?: number[]; categories?: number[]; limit?: number } = {}): Promise<IndexerRelease[]> {
+export async function prowlarrSearch(query: string, opts: IndexerSearchOptions = {}): Promise<IndexerRelease[]> {
   const q = query.trim()
   if (!q) return []
-  const params = new URLSearchParams({ query: q, type: 'search', limit: String(opts.limit ?? 100), offset: '0' })
-  // -1 is Prowlarr's own "every enabled indexer".
-  for (const id of opts.indexerIds?.length ? opts.indexerIds : [-1]) params.append('indexerIds', String(id))
+  const type = (INDEXER_SEARCH_TYPES as readonly string[]).includes(opts.type ?? '') ? opts.type! : 'search'
+  const params = new URLSearchParams({ query: q, type, limit: String(opts.limit ?? 100), offset: String(opts.offset ?? 0) })
+  for (const id of opts.indexerIds ?? []) params.append('indexerIds', String(id))
   for (const c of opts.categories ?? []) params.append('categories', String(c))
   const data = await prowlarrGet<Raw[]>('/search', params, 120_000)
   if (!Array.isArray(data)) return []
   return data.flatMap(r => { const x = toIndexerRelease(r); return x ? [x] : [] })
+}
+
+function prowlarrPostHeaders(): Record<string, string> {
+  return { 'X-Api-Key': PROWLARR_KEY, Accept: 'application/json', 'content-type': 'application/json' }
 }
 
 /**
@@ -1975,16 +2051,28 @@ export async function prowlarrSearch(query: string, opts: { indexerIds?: number[
  * 500 — both relayed as-is, since each names the fix.
  */
 export async function prowlarrGrab(guid: string, indexerId: number): Promise<void> {
-  const res = await axios.post<Raw>(`${PROWLARR_URL}/api/v1/search`, { guid, indexerId }, {
-    headers: { 'X-Api-Key': PROWLARR_KEY, Accept: 'application/json', 'content-type': 'application/json' },
-    timeout: 30_000,
-    validateStatus: () => true,
-  })
-  if (res.status >= 200 && res.status < 300) return
-  const body = res.data as Raw | string | undefined
-  const message = typeof body === 'object' && body ? str(body['message']) : typeof body === 'string' ? body.slice(0, 200) : undefined
-  if (res.status === 404) throw new Error(message ?? 'Prowlarr no longer has that release cached — search again and grab it fresh')
-  throw new Error(message ?? `Prowlarr refused the grab (${res.status})`)
+  try {
+    await axios.post<Raw>(`${PROWLARR_URL}/api/v1/search`, { guid, indexerId }, { headers: prowlarrPostHeaders(), timeout: 30_000 })
+  } catch (err) {
+    const e = prowlarrError(err)
+    if (axios.isAxiosError(err) && err.response?.status === 404 && !/cache/i.test(e.message)) {
+      throw new Error('Prowlarr no longer has that release cached — search again and grab it fresh')
+    }
+    throw e
+  }
+}
+
+/**
+ * Several at once — Prowlarr's "Grab Release(s)" over a selection. Its bulk
+ * endpoint skips what it can't grab and answers with what it did, so the
+ * caller learns exactly which rows landed; it 400s only when none did.
+ */
+export async function prowlarrGrabMany(releases: { guid: string; indexerId: number }[]): Promise<{ guid: string; indexerId: number }[]> {
+  if (!releases.length) return []
+  try {
+    const { data } = await axios.post<Raw[]>(`${PROWLARR_URL}/api/v1/search/bulk`, releases, { headers: prowlarrPostHeaders(), timeout: 120_000 })
+    return (Array.isArray(data) ? data : []).flatMap(r => (str(r['guid']) && num(r['indexerId']) ? [{ guid: str(r['guid'])!, indexerId: num(r['indexerId'])! }] : []))
+  } catch (err) { throw prowlarrError(err) }
 }
 
 // ── Health ───────────────────────────────────────────────────────────────────
