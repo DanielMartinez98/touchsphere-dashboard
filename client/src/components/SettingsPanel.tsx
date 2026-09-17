@@ -2241,7 +2241,7 @@ function AiBoxTab() {
 
     let line: ReactNode
     if (p.reach === 'offline') line = <>This PC is off or asleep, so its AI can&apos;t be switched from here.</>
-    else if (p.reach === 'agent-down') line = <>This PC is on, but its AI agent isn&apos;t running. It starts when someone signs in on the PC.</>
+    else if (p.reach === 'agent-down') line = <>This PC is on, but the agent that switches its AI isn&apos;t running. It restarts itself within seconds, so if this doesn&apos;t clear, nobody is signed in on the PC.</>
     else if (unreachable) line = <>Couldn&apos;t ask this PC: {p.error}</>
     else if (phase === 'starting') line = <>Starting — {s!.detail || 'this takes a minute or two'}</>
     else if (phase === 'stopping') line = <>Turning off — unloading models and freeing the VRAM</>

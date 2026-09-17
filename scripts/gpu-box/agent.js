@@ -80,7 +80,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 /** Any HTTP answer counts, as in the dashboard's own probe. */
 function answers(port, timeoutMs = 2500) {
   return new Promise(resolve => {
-    const req = http.request({ host: '127.0.0.1', port, path: '/', method: 'HEAD', timeout: timeoutMs }, res => { res.resume(); resolve(true) })
+    const req = http.request({ host: '127.0.0.1', port, path: '/', method: 'HEAD', timeout: timeoutMs }, res => { res.on('error', () => {}); res.resume(); resolve(true) })
     req.on('timeout', () => { req.destroy(); resolve(false) })
     req.on('error', () => resolve(false))
     req.end()
@@ -95,6 +95,8 @@ function httpJson(method, port, pathname, body, timeoutMs = 10_000) {
       headers: data ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } : {},
     }, res => {
       let s = ''
+      // A response cut off mid-body emits 'error'; unheard, that kills the process.
+      res.on('error', () => resolve(null))
       res.on('data', c => { s += c })
       res.on('end', () => { try { resolve(JSON.parse(s)) } catch { resolve(null) } })
     })
@@ -150,6 +152,7 @@ let keeper = null
 function ensureKeeper() {
   if (keeper) return
   keeper = spawn('wsl.exe', ['-d', DISTRO, '--exec', '/bin/sleep', 'infinity'], { windowsHide: true, stdio: 'ignore' })
+  keeper.on('error', e => log(`keeper could not start: ${e.message}`))
   log(`keeper started (pid ${keeper.pid})`)
   keeper.on('exit', code => {
     log(`keeper exited (${code})`)
@@ -172,7 +175,9 @@ async function turnOn() {
   setPhase('starting', 'starting Ollama and the GPU services')
   if (await ollamaProcesses() === 0) {
     try {
-      spawn(OLLAMA_APP, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref()
+      const app = spawn(OLLAMA_APP, [], { detached: true, stdio: 'ignore', windowsHide: true })
+      app.on('error', e => log(`could not start Ollama: ${e.message}`))
+      app.unref()
       log('Ollama app started')
     } catch (e) { log(`could not start Ollama: ${e.message}`) }
   }
@@ -276,6 +281,17 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
+// ── Staying up, and saying why when it doesn't ───────────────────────────────
+// The agent once disappeared with nothing in this log and nothing in Windows'
+// event logs — an uncaught exception ends Node quietly. Every way out is now
+// written down, and start-agent.vbs starts it again when it exits.
+process.on('uncaughtException', e => { log(`uncaught exception: ${e && e.stack || e}`); process.exit(1) })
+process.on('unhandledRejection', e => { log(`unhandled rejection: ${e && e.stack || e}`) })
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP']) {
+  process.on(sig, () => { log(`received ${sig}`); process.exit(0) })
+}
+process.on('exit', code => log(`exiting with code ${code}`))
+
 server.on('error', e => {
   log(`listen failed: ${e.message}`)
   process.exit(e.code === 'EADDRINUSE' ? 0 : 1)
@@ -285,12 +301,12 @@ server.listen(PORT, '127.0.0.1', async () => {
   log(`agent listening on 127.0.0.1:${PORT}; desired=${desired}`)
   const [distro, procs] = await Promise.all([distroRunning(), ollamaProcesses()])
   if (desired === 'on') {
-    void serial(turnOn)
+    serial(turnOn).catch(e => log(`start-up turn on failed: ${e && e.stack || e}`))
   } else {
     setPhase(distro || procs ? 'on' : 'off')
     // Left off: the Ollama app starts itself at logon, so once it has had time
     // to come up, put it back down — the PC should come back from a reboot the
     // way it was left.
-    setTimeout(() => { if (desired === 'off') void serial(turnOff) }, 90_000)
+    setTimeout(() => { if (desired === 'off') serial(turnOff).catch(e => log(`start-up turn off failed: ${e && e.stack || e}`)) }, 90_000)
   }
 })
