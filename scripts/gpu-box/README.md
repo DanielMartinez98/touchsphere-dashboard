@@ -42,6 +42,12 @@ E:\ai\ollama\models the Ollama app's model folder
    (~125 GB; progress shows on the dashboard's AI box card).
 5. Copy `agent.js` and `start-agent.vbs` to `E:\ai\agent`, write a random
    `token.txt` there, and put a shortcut to `start-agent.vbs` in the Startup folder.
+   **Never start the agent from a terminal that belongs to another app.** A packaged
+   app (the Claude desktop app is one) runs its children inside its own Windows job,
+   and they all die when that app restarts: the agent, and with it the WSL keeper and
+   every GPU container (2026-09-17). Sign-in starts it from the Startup folder; to
+   start it by hand, use that shortcut, or WMI:
+   `Invoke-CimMethod Win32_Process -MethodName Create -Arguments @{CommandLine='"C:\Program Files\nodejs\node.exe" "E:\ai\agent\agent.js"'}`
 6. `tailscale serve --bg --tcp=<port> tcp://127.0.0.1:<port>` for 8190, 8880, 5050,
    8000 and 8188.
 7. On the dashboard's host, in `.env`:

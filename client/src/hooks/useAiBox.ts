@@ -34,6 +34,8 @@ export interface AiBoxPower {
   status: AiBoxAgentStatus | null
   checkedAt: string | null
   error: string | null
+  /** offline = the PC is off or asleep; agent-down = the PC is on and its agent is not running. */
+  reach: 'ok' | 'offline' | 'agent-down' | 'error' | null
 }
 
 export interface AiBoxView {

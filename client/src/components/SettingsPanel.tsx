@@ -2199,6 +2199,11 @@ function AiBoxTab() {
   const gb = (mb: number) => (mb / 1024).toFixed(1)
 
   const summary = (b: AiBoxView['boxes'][number]) => {
+    // What the agent can tell us comes first: it knows the difference between a
+    // PC that is off and a PC whose AI was switched off, which the ports cannot.
+    const reach = b.power?.reach
+    if (reach === 'offline') return { text: 'PC offline', tone: 'text-red-300 bg-red-500/15' }
+    if (reach === 'agent-down') return { text: 'Agent not running', tone: 'text-amber-300 bg-amber-500/15' }
     const phase = b.power?.status?.phase
     if (phase === 'off') return { text: 'Off', tone: 'text-white/60 bg-white/10' }
     if (phase === 'starting') return { text: 'Starting…', tone: 'text-cyan-200 bg-cyan-500/15' }
@@ -2207,7 +2212,13 @@ function AiBoxTab() {
     const up = known.filter(p => p.up).length
     if (known.length === 0) return { text: 'Checking…', tone: 'text-white/40 bg-white/5' }
     if (up === b.ports.length) return { text: 'Answering', tone: 'text-emerald-300 bg-emerald-500/15' }
-    if (up === 0) return { text: 'Not answering', tone: 'text-red-300 bg-red-500/15' }
+    // Every port timing out is a machine that is off; refused ones mean it is on
+    // and the services are not.
+    if (up === 0) {
+      return b.ports.every(p => p.error === 'no answer')
+        ? { text: 'Offline', tone: 'text-red-300 bg-red-500/15' }
+        : { text: 'Not running', tone: 'text-red-300 bg-red-500/15' }
+    }
     return { text: `${up} of ${b.ports.length} answering`, tone: 'text-amber-300 bg-amber-500/15' }
   }
 
@@ -2224,11 +2235,14 @@ function AiBoxTab() {
     const phase = s?.phase
     const working = busy === `power:${b.id}` || phase === 'starting' || phase === 'stopping'
     const isOn = s?.desired === 'on'
+    // Nothing to switch when the agent cannot be asked: a button there would
+    // only come back with an error, so the row explains instead.
     const unreachable = !!p.error
 
     let line: ReactNode
-    if (unreachable && !s) line = <>Can&apos;t reach this PC — it may be asleep or off. {p.error}</>
-    else if (unreachable) line = <>Can&apos;t reach this PC right now ({p.error}). Last known: {s!.desired}.</>
+    if (p.reach === 'offline') line = <>This PC is off or asleep, so its AI can&apos;t be switched from here.</>
+    else if (p.reach === 'agent-down') line = <>This PC is on, but its AI agent isn&apos;t running. It starts when someone signs in on the PC.</>
+    else if (unreachable) line = <>Couldn&apos;t ask this PC: {p.error}</>
     else if (phase === 'starting') line = <>Starting — {s!.detail || 'this takes a minute or two'}</>
     else if (phase === 'stopping') line = <>Turning off — unloading models and freeing the VRAM</>
     else if (phase === 'off') line = <>AI is off; its VRAM is free for the PC.{s!.gpu ? ` In use now: ${gb(s!.gpu.usedMb)} of ${gb(s!.gpu.totalMb)} GB.` : ''}</>
@@ -2241,7 +2255,7 @@ function AiBoxTab() {
       <div className="mt-3 pt-3 border-t border-white/8 space-y-2">
         <div className="flex items-center gap-3">
           <span className="text-white/60 text-sm flex-1 min-w-0">{line}</span>
-          {confirmOff === b.id ? (
+          {unreachable ? null : confirmOff === b.id ? (
             <div className="flex gap-2 flex-shrink-0">
               <button type="button" onClick={() => setConfirmOff(null)}
                 className="h-11 px-4 rounded-xl bg-white/10 text-white/60 text-sm font-medium">
@@ -2256,7 +2270,7 @@ function AiBoxTab() {
           ) : (
             <button
               type="button"
-              disabled={working || (unreachable && !isOn)}
+              disabled={working}
               onClick={() => { if (isOn) setConfirmOff(b.id); else switchPower(b.id, true) }}
               className={`h-11 px-4 rounded-xl text-sm font-semibold flex items-center gap-2 flex-shrink-0 transition active:scale-95 ${
                 working ? 'bg-white/5 text-white/40'

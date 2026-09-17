@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import multer from 'multer'
-import { aiBoxDown, boxUrl, onAiBoxChange } from '../ai-box'
+import { aiBoxDown, boxUrl, boxUrlSettled, onAiBoxChange } from '../ai-box'
 
 // POST /api/stt   ── multipart/form-data, field "audio"
 //
@@ -159,7 +159,7 @@ async function transcribeWhisper(clip: Clip, lang: string, timeoutMs = WHISPER_T
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   let res: Response
   try {
-    res = await fetch(`${whisperUrl()}${WHISPER_PATH}`, { method: 'POST', body: fd, signal: ctrl.signal })
+    res = await fetch(`${await boxUrlSettled(WHISPER_URL)}${WHISPER_PATH}`, { method: 'POST', body: fd, signal: ctrl.signal })
   } finally {
     clearTimeout(timer)
   }
