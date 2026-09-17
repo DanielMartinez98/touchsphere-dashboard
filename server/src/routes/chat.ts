@@ -896,7 +896,11 @@ router.post('/', async (req: Request, res: Response) => {
   // true when the model calls keep_listening; flipped back to false if it
   // later calls end_conversation in the same turn.
   let keepListening = false
-  // Set by end_conversation's `silent` argument: the reply is deliberately empty.
+  // Set by end_conversation's `silent` argument: the reply is deliberately
+  // empty, and the response says so with `silent: true` — on the wire an
+  // empty reply is otherwise indistinguishable from the model having failed,
+  // and the client speaks its "can't reach my brain" apology over one. That
+  // is exactly what a "no thank you" produced until the flag existed.
   let endSilently = false
   // The last thing the model actually said, across every round.
   let lastSpoken = ''
@@ -1117,7 +1121,7 @@ router.post('/', async (req: Request, res: Response) => {
         // kick off a background summary. Fire-and-forget so the user gets their
         // reply without waiting on either.
         if (!keepListening) void endConversation(messages, reply)
-        return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed], keepListening, display, tools: toolsCalled, ...(answeredBy ? { by: answeredBy } : {}) })
+        return res.json({ reply, model: OLLAMA_MODEL, changed: [...changed], keepListening, display, tools: toolsCalled, ...(endSilently ? { silent: true } : {}), ...(answeredBy ? { by: answeredBy } : {}) })
       }
 
       // Cap reached — bail with whatever text we have so the user hears something.
