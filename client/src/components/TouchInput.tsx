@@ -54,11 +54,11 @@ export function TouchInput({
   const [draft, setDraft] = useState(value)
   const ref = useRef<KeyboardTarget | null>(null)
 
-  // Sync external value updates while not editing. While editing the local
-  // draft is the source of truth so external rerenders (a debounced save
-  // coming back from the server) don't clobber in-progress typing.
-  useEffect(() => { if (!editing) setDraft(value) }, [value, editing])
-
+  // While editing, the local draft is the source of truth, so external
+  // rerenders (a debounced save coming back from the server) don't clobber
+  // in-progress typing; the rest of the time the field shows the parent's
+  // value. The draft is taken from the value at the moment editing starts —
+  // no effect keeping the two in step, which would be a render per keystroke.
   const shown = editing ? draft : value
 
   // Opening the board covers the bottom third of the kiosk's screen, and half
@@ -136,7 +136,9 @@ export function TouchInput({
   // the browser is already placing the caret where the finger landed, and
   // stealing focus mid-tap is exactly what would move it back to the end.
   function handleOpen() {
-    if (!native && !editing) setEditing(true)
+    if (native || editing) return
+    setDraft(value)
+    setEditing(true)
   }
   function handleDone() { finish(draft) }
 
@@ -208,12 +210,13 @@ export function TouchInput({
           At the body there is no such ancestor, so bottom-0 is the screen and
           --ts-keyboard-h means what every consumer assumes it means. Nothing
           about the board depends on DOM adjacency: it edits through
-          `targetRef` and closes only from its own Done key. */}
+          `targetRef`, and closes from its Done key or a tap outside it. */}
       {!native && editing && createPortal(
         <TouchKeyboard
           value={draft}
           onChange={change}
           onDone={handleDone}
+          onDismiss={handleDone}
           multiline={multiline}
           numeric={numeric}
           targetRef={ref}

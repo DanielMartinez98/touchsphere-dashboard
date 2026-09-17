@@ -60,10 +60,21 @@ const REPEAT_EVERY_MS = 55
 // ate a paragraph, shallow enough to stay a fixed cost.
 const UNDO_MAX = 40
 
+// How many boards are mounted, so the last one out resets --ts-keyboard-h.
+let boardsUp = 0
+
 interface Props {
   value:    string
   onChange: (v: string) => void
   onDone:   () => void
+  /**
+   * A tap anywhere outside the board and its field. TouchInput passes its
+   * commit-and-close here, which is how the board goes away in a multiline
+   * field — return types a newline there, exactly as on a phone, so the phone's
+   * other gesture has to work too. Opt-in: a sheet with its own Save button
+   * (the media list's rename, the guide's pins) keeps the board up until then.
+   */
+  onDismiss?: () => void
   // Multiline mode keeps the keyboard open after Enter and inserts a newline
   // instead of closing. Single-line inputs (titles, search) close on Enter.
   multiline?: boolean
@@ -81,7 +92,7 @@ interface Props {
 }
 
 export function TouchKeyboard({
-  value, onChange, onDone, multiline = false, numeric = false, targetRef,
+  value, onChange, onDone, onDismiss, multiline = false, numeric = false, targetRef,
 }: Props) {
   // Which page of keys — letters / 123 / #+=, the same three iOS has.
   const [page, setPage] = useState<KeyPage>('letters')
@@ -221,11 +232,37 @@ export function TouchKeyboard({
   useLayoutEffect(() => {
     const el = boardRef.current
     const root = document.documentElement
+    boardsUp++
     if (el) root.style.setProperty('--ts-keyboard-h', `${el.offsetHeight}px`)
-    return () => { root.style.setProperty('--ts-keyboard-h', '0px') }
+    return () => {
+      // Only the LAST board to go resets the page: tapping from one field
+      // straight into another mounts the second board before the first has
+      // unmounted, and its cleanup would otherwise zero the height the new
+      // board just published.
+      boardsUp--
+      if (boardsUp <= 0) { boardsUp = 0; root.style.setProperty('--ts-keyboard-h', '0px') }
+    }
     // `page` and `shape` are deps because swapping to `#+=` or rotating an iPad
     // changes the board's height, and a stale figure is a gap or a dead strip.
   }, [page, shape, numeric])
+
+  // A tap outside the board and its field closes it, as it does on a phone.
+  // On `click` rather than `pointerdown`: the sheet a field sits in is often
+  // pinned to the board's top edge, and closing on the way DOWN would move the
+  // button the finger is on before the click lands — it would miss. Capture
+  // phase, and never stopped, so the button still gets its click.
+  useEffect(() => {
+    if (!onDismiss) return
+    const onClick = (e: MouseEvent) => {
+      const t = e.target as Node | null
+      if (!t) return
+      if (boardRef.current?.contains(t)) return
+      if (targetRef?.current?.contains(t)) return
+      onDismiss()
+    }
+    document.addEventListener('click', onClick, true)
+    return () => document.removeEventListener('click', onClick, true)
+  }, [onDismiss, targetRef])
 
   const rows = LAYOUTS[shape][page]
 
@@ -263,7 +300,7 @@ export function TouchKeyboard({
         return (
           <button type="button" key={id} style={grow}
             onPointerDown={e => tap(e, () => pressKey(key.v))}
-            className={`${keyBase} bg-white/12`}>
+            className={`${keyBase} bg-white/20`}>
             {label}
           </button>
         )
@@ -279,7 +316,7 @@ export function TouchKeyboard({
             className={`${keyBase} ${
               shift === 'lock' ? 'bg-[var(--accent,#06b6d4)] text-black ring-2 ring-white/40'
               : shift === 'once' ? 'bg-[var(--accent,#06b6d4)] text-black'
-              : 'bg-white/20'}`}>
+              : 'bg-white/10'}`}>
             {shift === 'lock' ? '⇪' : '⇧'}
           </button>
         )
@@ -293,7 +330,7 @@ export function TouchKeyboard({
             onPointerUp={stopRepeat}
             onPointerLeave={stopRepeat}
             onPointerCancel={stopRepeat}
-            className={`${keyBase} bg-white/20`}>
+            className={`${keyBase} bg-white/10`}>
             ⌫
           </button>
         )
@@ -307,7 +344,7 @@ export function TouchKeyboard({
               // spent on a digit, which shift does nothing to, and be gone.
               if (key.to !== 'letters' && shift === 'once') setShift('off')
             })}
-            className={`${keyBase} bg-white/20 text-xs font-bold`}>
+            className={`${keyBase} bg-white/10 text-xs font-bold`}>
             {key.label}
           </button>
         )
@@ -316,29 +353,31 @@ export function TouchKeyboard({
         return (
           <button type="button" key={id} style={grow} aria-label="Space"
             onPointerDown={e => tap(e, () => insert(' '))}
-            className={`${keyBase} bg-white/12 text-white/60 text-xs`}>
+            className={`${keyBase} bg-white/20 text-white/60 text-xs`}>
             space
           </button>
         )
 
+      // iOS's one return key, wearing the job it has in this field: a newline
+      // in a multiline box, and "Done" — the label a phone shows for
+      // enterKeyHint="done", which is what the same field asks a native
+      // keyboard for — in a one-line one.
       case 'enter':
-        return (
-          <button type="button" key={id} style={grow} aria-label="Return"
-            onPointerDown={e => tap(e, pressEnter)}
-            className={`${keyBase} bg-white/20 text-xs font-bold`}>
-            ↵
-          </button>
-        )
-
-      case 'done':
-        return (
-          <button type="button" key={id} style={grow}
-            onPointerDown={e => tap(e, onDone)}
-            className={`${keyBase} bg-[var(--accent,#06b6d4)] text-black font-bold
-                        active:opacity-80 active:brightness-100`}>
-            Done
-          </button>
-        )
+        return multiline
+          ? (
+            <button type="button" key={id} style={grow} aria-label="Return"
+              onPointerDown={e => tap(e, pressEnter)}
+              className={`${keyBase} bg-white/10 text-base font-bold`}>
+              ↵
+            </button>
+          ) : (
+            <button type="button" key={id} style={grow} aria-label="Done"
+              onPointerDown={e => tap(e, pressEnter)}
+              className={`${keyBase} bg-[var(--accent,#06b6d4)] text-black font-bold
+                          active:opacity-80 active:brightness-100`}>
+              Done
+            </button>
+          )
     }
   }
 
@@ -420,7 +459,7 @@ export function TouchKeyboard({
   return (
     <div ref={boardRef}
       className="fixed bottom-0 left-0 right-0 z-[10000] bg-[#1a1a1a] border-t border-white/15 px-2 pt-2 pb-3 select-none">
-      {[...rows, bottomRow(page, multiline, shape)].map((row, ri) => (
+      {[...rows, bottomRow(page, shape)].map((row, ri) => (
         <div key={ri} className="flex gap-1 mb-1.5 last:mb-0">
           {row.map((key, ki) => renderKey(key, `${ri}-${ki}`))}
         </div>
