@@ -190,7 +190,7 @@ export function Companion({ open, setOpen, plexStatus, plexSummary, agent, setAg
           </p>
           {/* Typing is the phone's natural way in — a phone is often somewhere
               speaking to it would be odd — and it runs the same turn as speech. */}
-          <div className="pointer-events-auto w-full px-4 flex items-end gap-2 kb-room">
+          <div data-keyboard-keep className="pointer-events-auto w-full px-4 flex items-end gap-2 kb-room">
             <div className="flex-1 min-w-0">
               <TouchInput
                 value={typed}
