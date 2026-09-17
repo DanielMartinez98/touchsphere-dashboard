@@ -37,7 +37,7 @@ import { visionModel, readPrompter} from './image-prompt'
 import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
-import { boxUrl } from './ai-box'
+import { boxUrlSettled } from './ai-box'
 
 // The planner is a picture-side call: same box as the improver and the vision
 // composer (see image-prompt.ts for why that is not the chat's URL).
@@ -324,7 +324,7 @@ async function askPlanner(image: Buffer, request: string, tools: PlanMode[], sty
   try {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
-    const res = await fetch(`${boxUrl(OLLAMA_URL).replace(/\/$/, '')}/api/chat`, {
+    const res = await fetch(`${(await boxUrlSettled(OLLAMA_URL)).replace(/\/$/, '')}/api/chat`, {
       method: 'POST', headers, signal: ctrl.signal,
       body: JSON.stringify({
         model, stream: false, think: false, format: 'json',

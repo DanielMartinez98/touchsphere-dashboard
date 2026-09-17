@@ -70,7 +70,7 @@ import { pushGuide } from './guide-events'
 import { note } from './guide-activity'
 import { cacheGuideImage } from './guide-media'
 import { searchYouTube } from './routes/browse'
-import { boxUrl } from './ai-box'
+import { boxUrlSettled } from './ai-box'
 
 // Where the guide model lives. Its own setting for the same reason the picture
 // models have one: a guide is a dozen calls nobody is waiting on, and the cloud
@@ -179,7 +179,7 @@ async function postChat(
   try {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
-    const res = await fetch(`${boxUrl(OLLAMA_URL).replace(/\/$/, '')}/api/chat`, {
+    const res = await fetch(`${(await boxUrlSettled(OLLAMA_URL)).replace(/\/$/, '')}/api/chat`, {
       method: 'POST',
       headers,
       signal: ctrl.signal,

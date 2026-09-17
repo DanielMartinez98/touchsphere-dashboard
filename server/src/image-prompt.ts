@@ -40,7 +40,7 @@
 
 import fs from 'fs'
 import path from 'path'
-import { boxUrl } from './ai-box'
+import { boxUrl, boxUrlSettled } from './ai-box'
 
 // Where the PICTURE-side models live — the improver, the vision composer, the
 // region box finder and (in image-plan.ts) the edit planner. Separate from the
@@ -328,7 +328,7 @@ export async function improvePrompt(prompt: string, style: StyleFacts): Promise<
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
 
     const ask = async (extra: string, temperature: number): Promise<string> => {
-      const res = await fetch(`${imageModelUrl().replace(/\/$/, '')}/api/chat`, {
+      const res = await fetch(`${(await boxUrlSettled(OLLAMA_URL_ENV)).replace(/\/$/, '')}/api/chat`, {
         method: 'POST',
         headers,
         signal: ctrl.signal,
@@ -553,7 +553,7 @@ export async function composeRedrawPrompt(
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
 
-    const res = await fetch(`${imageModelUrl().replace(/\/$/, '')}/api/chat`, {
+    const res = await fetch(`${(await boxUrlSettled(OLLAMA_URL_ENV)).replace(/\/$/, '')}/api/chat`, {
       method: 'POST',
       headers,
       signal: ctrl.signal,
@@ -630,7 +630,7 @@ export async function composeKontextInstruction(
   try {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
-    const res = await fetch(`${imageModelUrl().replace(/\/$/, '')}/api/chat`, {
+    const res = await fetch(`${(await boxUrlSettled(OLLAMA_URL_ENV)).replace(/\/$/, '')}/api/chat`, {
       method: 'POST',
       headers,
       signal: ctrl.signal,
@@ -691,7 +691,7 @@ export async function locateBox(image: Buffer, what: string): Promise<Box | null
   try {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
-    const res = await fetch(`${imageModelUrl().replace(/\/$/, '')}/api/chat`, {
+    const res = await fetch(`${(await boxUrlSettled(OLLAMA_URL_ENV)).replace(/\/$/, '')}/api/chat`, {
       method: 'POST', headers, signal: ctrl.signal,
       body: JSON.stringify({
         model, stream: false, think: false, format: 'json',

@@ -336,11 +336,32 @@ export function probeAll(): Promise<void> {
 
 let timer: NodeJS.Timeout | null = null
 
+// The first round of probes, and whether it has finished. Until it has, Auto
+// has picked nothing and every box-bound URL still names whichever box .env
+// does — so a request in the first seconds after a restart went there. The one
+// that showed it: a picture asked for a second after a deploy had its prompt
+// improver sent to loklo-pc, switched off, while the render itself (a few
+// seconds later) went to the box that was on.
+let firstProbe: Promise<void> | null = null
+let firstDone = false
+
+/** Resolves once the first probe round is done — at once when AI_BOXES is unset or it already has. */
+export function aiBoxSettled(): Promise<void> {
+  if (firstDone || !aiBoxesEnabled() || !firstProbe) return Promise.resolve()
+  return firstProbe
+}
+
+/** boxUrl(), after the first probe round: for the async paths that actually make the call. */
+export async function boxUrlSettled(raw: string): Promise<string> {
+  await aiBoxSettled()
+  return boxUrl(raw)
+}
+
 export function startAiBoxProbe(): void {
   if (timer || !aiBoxesEnabled()) return
   const names = aiBoxes().map(b => `${b.name} (${b.host})`).join(', ')
   console.log(`[ai-box] boxes: ${names}; selected: ${aiBoxChoice()}; watching ports ${boundPorts().join(', ') || 'none'}`)
-  void probeAll()
+  firstProbe = probeAll().catch(() => {}).finally(() => { firstDone = true })
   timer = setInterval(() => { void probeAll() }, PROBE_EVERY_MS)
   timer.unref()
 }

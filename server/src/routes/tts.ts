@@ -5,7 +5,7 @@ import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
 import { getSelectedProfile, ASSISTANT_PROFILES, type AssistantId } from '../config/assistant'
-import { aiBoxDown, boxUrl, onAiBoxChange } from '../ai-box'
+import { aiBoxDown, boxUrl, boxUrlSettled, onAiBoxChange } from '../ai-box'
 
 // GET /api/tts?text=hello[&voice=...]
 //
@@ -402,7 +402,7 @@ async function kokoroSynth(text: string, voice: string, format: 'mp3' | 'wav'): 
   const timer = setTimeout(() => ctrl.abort(), SYNTH_TIMEOUT_MS)
 
   console.log(`[tts][kokoro] POST voice=${voice} format=${format} chars=${text.length}`)
-  const apiRes = await fetch(`${boxUrl(KOKORO_URL)}/v1/audio/speech`, {
+  const apiRes = await fetch(`${await boxUrlSettled(KOKORO_URL)}/v1/audio/speech`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -570,7 +570,7 @@ async function convertWithRVCLocked(wav: Buffer, model: string, pitch: number): 
   // budget covers its own work rather than the clip ahead of it.
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), RVC_TIMEOUT_MS)
-  const url = boxUrl(RVC_URL)
+  const url = await boxUrlSettled(RVC_URL)
   if (rvcServer !== url) {
     rvcServer = url
     rvcLoadedModel = null

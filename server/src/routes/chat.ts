@@ -41,7 +41,7 @@ import {
   type SessionTurn,
 } from '../session'
 import { getSelectedProfile, type AssistantProfile } from '../config/assistant'
-import { aiBoxDown, boxUrl } from '../ai-box'
+import { aiBoxDown, boxUrl, boxUrlSettled } from '../ai-box'
 
 const router = Router()
 
@@ -670,7 +670,7 @@ async function endConversation(history: ChatMessage[], finalReply: string): Prom
     const timer = setTimeout(() => ctrl.abort(), 15_000)
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
-    const res = await fetch(`${boxUrl(OLLAMA_URL).replace(/\/$/, '')}/api/chat`, {
+    const res = await fetch(`${(await boxUrlSettled(OLLAMA_URL)).replace(/\/$/, '')}/api/chat`, {
       method: 'POST',
       headers,
       signal: ctrl.signal,
@@ -721,7 +721,7 @@ interface OllamaResponse {
 let answeredBy = ''
 
 async function callOllama(messages: ChatMessage[]): Promise<OllamaResponse> {
-  const first = await callOllamaAt(boxUrl(OLLAMA_URL), OLLAMA_MODEL, messages)
+  const first = await callOllamaAt(await boxUrlSettled(OLLAMA_URL), OLLAMA_MODEL, messages)
   answeredBy = ''
   const canFallBack = OLLAMA_FALLBACK_URL && OLLAMA_FALLBACK_MODEL
     && (OLLAMA_FALLBACK_URL !== OLLAMA_URL || OLLAMA_FALLBACK_MODEL !== OLLAMA_MODEL)
@@ -742,7 +742,7 @@ async function callOllama(messages: ChatMessage[]): Promise<OllamaResponse> {
   // VRAM by a render or a guide takes 20-40 s to come back before it reads a
   // 14k-token prompt — well past the 30 s a cloud reply gets. It waits longer,
   // and asks Ollama to keep the model loaded so the next turn is warm.
-  const second = await callOllamaAt(boxUrl(OLLAMA_FALLBACK_URL), OLLAMA_FALLBACK_MODEL, messages, Math.max(TIMEOUT_MS, 120_000))
+  const second = await callOllamaAt(await boxUrlSettled(OLLAMA_FALLBACK_URL), OLLAMA_FALLBACK_MODEL, messages, Math.max(TIMEOUT_MS, 120_000))
   if (second.status !== 200) {
     console.warn(`[chat] the fallback ${OLLAMA_FALLBACK_MODEL} at ${boxUrl(OLLAMA_FALLBACK_URL)} answered ${second.status || 'nothing'}${second.detail ? ` (${second.detail.slice(0, 160).replace(/\s+/g, ' ')})` : ''} — nothing left to try`)
   }

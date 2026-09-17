@@ -30,7 +30,7 @@ import path from 'path'
 import { broadcast } from './routes/system'
 import { advanceSeed, paramsFor, type ImageParams } from './image-params'
 import { estimateRender, humanMs, recordRender } from './image-timing'
-import { boxUrl, onAiBoxChange } from './ai-box'
+import { boxUrl, boxUrlSettled, onAiBoxChange } from './ai-box'
 import { composeKontextInstruction, composeRedrawPrompt, visionModel, improvePrompt, prompterModel, readPrompter, locateBox } from './image-prompt'
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -4093,7 +4093,7 @@ export function styleDefaults(style: string): StyleDefaults {
 async function comfyFetch(pathname: string, init?: RequestInit, timeoutMs = HTTP_MS): Promise<Response> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
-  const base = comfyUrl()
+  const base = await boxUrlSettled(COMFY_URL)
   try {
     return await fetch(`${base}${pathname}`, { ...init, signal: ctrl.signal })
   } catch (err) {
