@@ -46,9 +46,14 @@ RUN pip install --no-cache-dir "pip<24.1" "setuptools==65.5.0" "wheel"
 # against a specific torch ABI, so a torch/torchaudio pair that drifted apart
 # dies at import with "undefined symbol: aoti_torch_abi_version". Leaving these
 # unpinned lets a later install shift torch and break torchaudio.
+#
+# PyPI is an EXTRA index for torch's dependencies — see Dockerfile.gpu: the
+# PyTorch index alone no longer resolves typing-extensions. +cpu still wins
+# over PyPI's plain 2.1.2 as the higher local version.
 RUN pip install --no-cache-dir \
         "torch==2.1.2" "torchaudio==2.1.2" \
-        --index-url https://download.pytorch.org/whl/cpu
+        --index-url https://download.pytorch.org/whl/cpu \
+        --extra-index-url https://pypi.org/simple
 
 # Must exist before fairseq builds: its setup.py imports numpy, and Cython 3
 # breaks its generated sources.
