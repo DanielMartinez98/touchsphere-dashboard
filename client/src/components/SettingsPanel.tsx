@@ -26,8 +26,9 @@ import { useTaskDbs, type TaskBoard, type BoardRole } from '../hooks/useTaskDbs'
 import { useNotionMe } from '../hooks/useNotionMe'
 import IdentityPicker from './widgets/NotionWidget/IdentityPicker'
 import { TouchInput } from './TouchInput'
+import { AppStoreTab } from './AppStoreTab'
 
-type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'prompts' | 'mail' | 'notion' | 'system' | 'aibox' | 'server' | 'debug'
+type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'prompts' | 'mail' | 'notion' | 'apps' | 'system' | 'aibox' | 'server' | 'debug'
 
 // The preview reuses the dashboard's own renderers. Lazy, same chunks App
 // splits out — opening the VTuber tab is what pulls in the heavy deps, and
@@ -415,6 +416,7 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
     { id: 'guides',    label: 'Guides'    },
     { id: 'mail',      label: 'Mail'      },
     { id: 'notion',    label: 'Notion'    },
+    { id: 'apps',      label: 'Apps'      },
     { id: 'drawing',   label: 'Drawing'   },
     { id: 'prompts',   label: 'Prompts'   },
     { id: 'system',    label: 'System'    },
@@ -1379,6 +1381,9 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
 
             {/* Notion tab — which boards feed the Tasks list, and who you are */}
             {tab === 'notion' && <NotionTab />}
+
+            {/* Apps tab — the user's own apps on the App Store */}
+            {tab === 'apps' && <AppStoreTab />}
 
             {/* Drawing tab — how the prompt improver is told to rewrite prompts */}
             {tab === 'drawing' && <DrawingTab />}

@@ -34,6 +34,7 @@ import { BROWSE_TOOLS, runBrowseTool, type DisplayPayload } from './browse'
 import { GUIDE_VIEW_TOOLS, GUIDE_VIEW_MUTATING, runGuideViewTool } from './guide-view-tools'
 import { IMAGE_TOOLS, imagePromptGuidance, runImageTool } from './image-tools'
 import { PLEX_TOOLS, runPlexTool } from './plex-tools'
+import { APP_STORE_TOOLS, runAppStoreTool } from './app-store-tools'
 import { addMemory, formatForPrompt as formatMemoryForPrompt } from '../memory'
 import { presenceForPrompt } from '../presence'
 import {
@@ -508,7 +509,7 @@ const TURN_CONTROL_TOOLS = [
 // even without an Ollama web-search key.) IMAGE_TOOLS is empty unless COMFYUI_URL
 // is set — unlike TTS there is no fallback renderer, so a model that can see the
 // tool would promise a picture no configured box can draw.
-const TOOLS = [...DASHBOARD_TOOLS, ...BROWSE_TOOLS, ...GUIDE_VIEW_TOOLS, ...IMAGE_TOOLS, ...PLEX_TOOLS, ...TURN_CONTROL_TOOLS, ...WEB_TOOLS]
+const TOOLS = [...DASHBOARD_TOOLS, ...BROWSE_TOOLS, ...GUIDE_VIEW_TOOLS, ...IMAGE_TOOLS, ...PLEX_TOOLS, ...APP_STORE_TOOLS, ...TURN_CONTROL_TOOLS, ...WEB_TOOLS]
 /** Every tool name, for spotting one that was written out rather than called. */
 const TOOL_NAMES = TOOLS.map(t => t.function.name)
 
@@ -581,6 +582,8 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<str
     if (!u.trim()) return 'web_fetch error: missing "url" argument.'
     return runWebFetch(u.trim())
   }
+  const appStore = runAppStoreTool(name, args)
+  if (appStore !== null) return appStore
   const dashboard = await runDashboardTool(name, args)
   if (dashboard !== null) return dashboard
   return `Unknown tool: ${name}`
