@@ -257,7 +257,13 @@ export function TouchKeyboard({
       const t = e.target as Node | null
       if (!t) return
       if (boardRef.current?.contains(t)) return
-      if (targetRef?.current?.contains(t)) return
+      const field = targetRef?.current
+      if (field?.contains(t)) return
+      // A sheet that exists for its field (the main screen's typing sheet)
+      // marks itself `data-keyboard-keep`: a tap on its card is not a tap
+      // away, and closing the board there dropped the sheet 230px while it
+      // was still open. Its own X and Send close it.
+      if (field?.closest('[data-keyboard-keep]')?.contains(t)) return
       onDismiss()
     }
     document.addEventListener('click', onClick, true)

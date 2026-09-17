@@ -37,7 +37,7 @@ function TypeSheet({ onSend, onClose, busy }: { onSend: (t: string) => void; onC
       style={{ bottom: 'var(--ts-keyboard-h, 0px)' }}
       onPointerDown={e => e.stopPropagation()}
     >
-      <div className="mx-auto w-[min(96vw,640px)] rounded-3xl bg-[#101014]/95 backdrop-blur-md border border-white/15 shadow-2xl p-3 flex flex-col gap-2">
+      <div data-keyboard-keep className="mx-auto w-[min(96vw,640px)] rounded-3xl bg-[#101014]/95 backdrop-blur-md border border-white/15 shadow-2xl p-3 flex flex-col gap-2">
         <div className="flex items-center justify-between px-1">
           <p className="text-[13px] text-white/60 font-semibold tracking-wide">Type to her</p>
           <button

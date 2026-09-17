@@ -17,14 +17,14 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { Fragment } from 'react'
-import { Clapperboard, Brush, ListChecks, Settings, Pause, Play, Square, Tv, Smartphone, WifiOff, Radio, Sparkles, Lock, Briefcase, Moon, SendHorizontal, ClipboardCheck} from 'lucide-react'
+import { Clapperboard, Brush, ListChecks, Settings, Pause, Play, Square, Tv, Smartphone, WifiOff, Radio, Sparkles, Lock, Briefcase, Moon, SendHorizontal, ClipboardCheck, ChartColumn } from 'lucide-react'
 import { TouchInput } from './TouchInput'
 import type { AppMode } from '../hooks/useAppMode'
 import { openPlexPlayer, plexApi, plexImg, type PlexItem, type PlexStatus } from '../hooks/usePlex'
 import { onServerEvent } from '../hooks/useServerEvents'
 import type { PlexSummary } from './widgets/PlexWidget/PlexWidget'
 
-type OpenWidget = 'time' | 'plex' | 'media' | 'notion' | 'images' | 'mail' | null
+type OpenWidget = 'time' | 'plex' | 'media' | 'notion' | 'images' | 'mail' | 'apps' | null
 
 export interface NowPlaying {
   key: string
@@ -129,7 +129,10 @@ export function Companion({ open, setOpen, plexStatus, plexSummary, agent, setAg
   // phone's own screen, and its corner is reachable from Settings if wanted.
   const TABS: { id: OpenWidget | 'settings'; label: string; icon: React.ReactElement; badge?: number }[] = [
     { id: 'plex',   label: 'Plex',   icon: <Clapperboard size={20} />, ...(plexSummary?.downloading ? { badge: plexSummary.downloading } : {}) },
-    { id: 'images', label: 'Draw',   icon: <Brush size={20} />, ...(queued ? { badge: queued } : {}) },
+    // The kiosk's bottom-left rule: the App Store while working, Draw while resting.
+    mode === 'work'
+      ? { id: 'apps',   label: 'Apps',   icon: <ChartColumn size={20} /> }
+      : { id: 'images', label: 'Draw',   icon: <Brush size={20} />, ...(queued ? { badge: queued } : {}) },
     // The kiosk's own rule for its bottom-right corner: Tasks while working,
     // the Watch/Play list while resting. The phone is where a task actually
     // gets ticked, and it had no way to reach them at all.
@@ -190,7 +193,7 @@ export function Companion({ open, setOpen, plexStatus, plexSummary, agent, setAg
           </p>
           {/* Typing is the phone's natural way in — a phone is often somewhere
               speaking to it would be odd — and it runs the same turn as speech. */}
-          <div className="pointer-events-auto w-full px-4 flex items-end gap-2 kb-room">
+          <div data-keyboard-keep className="pointer-events-auto w-full px-4 flex items-end gap-2 kb-room">
             <div className="flex-1 min-w-0">
               <TouchInput
                 value={typed}

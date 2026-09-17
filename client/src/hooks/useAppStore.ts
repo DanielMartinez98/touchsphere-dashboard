@@ -30,7 +30,11 @@ export interface AppStoreApp {
   latestSalesDay:     string | null
   latestAnalyticsDay: string | null
   periods: { yesterday: PeriodTotals; week: PeriodTotals; prevWeek: PeriodTotals; month: PeriodTotals; prevMonth: PeriodTotals }
-  series: { date: string; downloads: number; proceeds: number; impressions: number | null; pageViews: number | null }[]
+  series: {
+    date: string; downloads: number; redownloads: number; updates: number; iap: number; refunds: number
+    proceeds: number; impressions: number | null; pageViews: number | null; taps: number | null
+    sessions: number | null; crashes: number | null
+  }[]
   countries: { code: string; downloads: number }[]
 }
 
@@ -55,12 +59,18 @@ async function fetchView(): Promise<AppStoreView> {
   return await res.json() as AppStoreView
 }
 
-export function useAppStore() {
+/**
+ * `active` is whether anything on screen wants the numbers — the work-mode
+ * corner, the Settings tab. Off, nothing is fetched: a rest-mode kiosk makes
+ * no App Store calls at all, the Mail and Tasks corners' rule.
+ */
+export function useAppStore(active = true) {
   const [view, setView] = useState<AppStoreView | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<'save' | 'forget' | 'sync' | null>(null)
 
   useEffect(() => {
+    if (!active) return
     let cancelled = false
     const load = () => {
       fetchView()
@@ -71,7 +81,7 @@ export function useAppStore() {
     const off = onServerEvent('app-store', load)
     const t = setInterval(load, 5 * 60_000)
     return () => { cancelled = true; off(); clearInterval(t) }
-  }, [])
+  }, [active])
 
   const send = useCallback(async (method: 'POST' | 'DELETE', path: string, body: unknown, kind: 'save' | 'forget' | 'sync'): Promise<boolean> => {
     setBusy(kind)

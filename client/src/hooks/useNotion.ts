@@ -298,7 +298,8 @@ export function useNotion(active = true) {
       if ('status' in fields) next.done = computeDone(fields.status ?? null, t.dbId)
       if (assignee !== undefined) {
         if (assignee === 'me') { next.mine = true; next.unassigned = false; next.assignees = me ? [{ id: me.id, name: me.name }] : t.assignees }
-        else { next.mine = false; next.unassigned = true; next.assignees = [] }
+        // Handed back, the row is nobody's — which the server counts as yours to see.
+        else { next.mine = true; next.unassigned = true; next.assignees = [] }
       }
       return next
     }))

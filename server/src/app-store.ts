@@ -771,7 +771,11 @@ export interface AppView {
   latestAnalyticsDay: string | null
   periods: { yesterday: PeriodTotals; week: PeriodTotals; prevWeek: PeriodTotals; month: PeriodTotals; prevMonth: PeriodTotals }
   /** The last SERIES_DAYS days, oldest first, for the sparkline. */
-  series: { date: string; downloads: number; proceeds: number; impressions: number | null; pageViews: number | null }[]
+  series: {
+    date: string; downloads: number; redownloads: number; updates: number; iap: number; refunds: number
+    proceeds: number; impressions: number | null; pageViews: number | null; taps: number | null
+    sessions: number | null; crashes: number | null
+  }[]
   /** First-time downloads by country over the month, most first. */
   countries: { code: string; downloads: number }[]
 }
@@ -856,12 +860,20 @@ export function appStoreView(): AppStoreView {
     for (let i = SERIES_DAYS - 1; i >= 0; i--) {
       const date = addDays(asOf, -i)
       const day = days[date]
+      const n = (v: number | undefined) => (typeof v === 'number' ? v : null)
       view.series.push({
         date,
         downloads:   day?.downloads ?? 0,
+        redownloads: day?.redownloads ?? 0,
+        updates:     day?.updates ?? 0,
+        iap:         day?.iap ?? 0,
+        refunds:     day?.refunds ?? 0,
         proceeds:    currency ? (day?.proceeds[currency] ?? 0) : 0,
-        impressions: typeof day?.impressions === 'number' ? day.impressions : null,
-        pageViews:   typeof day?.pageViews === 'number' ? day.pageViews : null,
+        impressions: n(day?.impressions),
+        pageViews:   n(day?.pageViews),
+        taps:        n(day?.taps),
+        sessions:    n(day?.sessions),
+        crashes:     n(day?.crashes),
       })
     }
   }
