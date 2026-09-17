@@ -50,8 +50,38 @@ CALENDAR_DIR=""
 export DEBIAN_FRONTEND=noninteractive TERM=dumb NEEDRESTART_MODE=a
 say() { echo "▶ $*"; }
 
+# Where the Smart Calendar checkout is, when the conf has no usable answer —
+# it was cloned after the installer ran, or moved. The running container's
+# compose labels name the folder it was built from, wherever that is; then the
+# folders people clone it into. Same function as install.sh's; keep them alike.
+find_calendar_dir() {
+  local home="$1" dash="$2" d=""
+  d=$(docker inspect smart-calendar --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null || true)
+  [[ "$d" == "<no value>" ]] && d=""
+  if [[ -z "$d" ]]; then
+    d=$(docker ps --filter label=com.docker.compose.project=smart-calendar \
+      --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null | grep -m1 . || true)
+  fi
+  if [[ -n "$d" && -d "$d" ]]; then echo "$d"; return 0; fi
+  for d in "$home/smart-calendar" "$dash/../smart-calendar" /opt/smart-calendar /srv/smart-calendar; do
+    if [[ -f "$d/docker-compose.yml" || -f "$d/compose.yaml" || -f "$d/compose.yml" ]]; then
+      (cd "$d" && pwd)
+      return 0
+    fi
+  done
+  return 0
+}
+# CALENDAR_VIA says where the answer came from, for the card: "conf" or "found".
+CALENDAR_VIA=""
+if [[ -n "$CALENDAR_DIR" && -d "$CALENDAR_DIR" ]]; then
+  CALENDAR_VIA="conf"
+else
+  CALENDAR_DIR=$(find_calendar_dir "$(getent passwd "${DASHBOARD_USER:-}" 2>/dev/null | cut -d: -f6)" "$DASHBOARD_DIR")
+  [[ -n "$CALENDAR_DIR" ]] && CALENDAR_VIA="found"
+fi
+
 if [[ "$verb" == "status" ]]; then
-  DASHBOARD_DIR="$DASHBOARD_DIR" DASHBOARD_USER="$DASHBOARD_USER" COMPOSE_FILES="$COMPOSE_FILES" CALENDAR_DIR="$CALENDAR_DIR" \
+  DASHBOARD_DIR="$DASHBOARD_DIR" DASHBOARD_USER="$DASHBOARD_USER" COMPOSE_FILES="$COMPOSE_FILES" CALENDAR_DIR="$CALENDAR_DIR" CALENDAR_VIA="$CALENDAR_VIA" \
   exec python3 - <<'PY'
 import json, os, re, shutil, subprocess, time
 
@@ -214,7 +244,7 @@ out['dashboard'] = d
 
 # ── the calendar app's checkout (Smart Calendar) ──
 cal_dir = os.environ.get('CALENDAR_DIR', '')
-cal = {'dir': cal_dir, 'present': bool(cal_dir) and os.path.isdir(cal_dir),
+cal = {'dir': cal_dir, 'via': os.environ.get('CALENDAR_VIA', ''), 'present': bool(cal_dir) and os.path.isdir(cal_dir),
        'git': False, 'commit': '', 'behind': None, 'services': [], 'lastUpdate': ''}
 if cal['present'] and os.environ.get('DASHBOARD_USER'):
     who = os.environ['DASHBOARD_USER']
@@ -347,7 +377,7 @@ case "$verb" in
     # file is only for "last done" in status. Pulls when the checkout has a
     # remote (a private repo needs a credential on this box for that — the
     # git error says so plainly), otherwise rebuilds what is here.
-    [[ -n "$CALENDAR_DIR" && -d "$CALENDAR_DIR" ]] || { echo "CALENDAR_DIR is not set in $CONF, or the folder is gone — re-run install.sh with CALENDAR_DIR=/path/to/smart-calendar" >&2; exit 78; }
+    [[ -n "$CALENDAR_DIR" && -d "$CALENDAR_DIR" ]] || { echo "no Smart Calendar checkout: CALENDAR_DIR in $CONF is unset or gone, no running smart-calendar container names one, and none of the usual folders has it — re-run the installer as: sudo CALENDAR_DIR=/path/to/smart-calendar bash scripts/host/install.sh '<key>'" >&2; exit 78; }
     [[ -n "$DASHBOARD_USER" ]] || { echo "DASHBOARD_USER not set in $CONF" >&2; exit 78; }
     log=/var/log/touchsphere-calendar-update.log
     say "Updating the calendar app in $CALENDAR_DIR"

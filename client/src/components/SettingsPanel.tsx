@@ -26,8 +26,9 @@ import { useTaskDbs, type TaskBoard, type BoardRole } from '../hooks/useTaskDbs'
 import { useNotionMe } from '../hooks/useNotionMe'
 import IdentityPicker from './widgets/NotionWidget/IdentityPicker'
 import { TouchInput } from './TouchInput'
+import { AppStoreTab } from './AppStoreTab'
 
-type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'prompts' | 'mail' | 'notion' | 'system' | 'aibox' | 'server' | 'debug'
+type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'prompts' | 'mail' | 'notion' | 'apps' | 'system' | 'aibox' | 'server' | 'debug'
 
 // The preview reuses the dashboard's own renderers. Lazy, same chunks App
 // splits out — opening the VTuber tab is what pulls in the heavy deps, and
@@ -415,6 +416,7 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
     { id: 'guides',    label: 'Guides'    },
     { id: 'mail',      label: 'Mail'      },
     { id: 'notion',    label: 'Notion'    },
+    { id: 'apps',      label: 'Apps'      },
     { id: 'drawing',   label: 'Drawing'   },
     { id: 'prompts',   label: 'Prompts'   },
     { id: 'system',    label: 'System'    },
@@ -1379,6 +1381,9 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
 
             {/* Notion tab — which boards feed the Tasks list, and who you are */}
             {tab === 'notion' && <NotionTab />}
+
+            {/* Apps tab — the user's own apps on the App Store */}
+            {tab === 'apps' && <AppStoreTab />}
 
             {/* Drawing tab — how the prompt improver is told to rewrite prompts */}
             {tab === 'drawing' && <DrawingTab />}
@@ -2654,10 +2659,18 @@ function ServerTab() {
             <code className="text-white/60">sudo bash scripts/host/install.sh '&lt;the key above&gt;'</code> and this card fills in.
           </p>
         ) : !status.calendar.present ? (
-          <p className="text-white/40 text-xs leading-relaxed">
-            No calendar checkout was found when the installer ran. Re-run it with{' '}
-            <code className="text-white/60">CALENDAR_DIR=/path/to/smart-calendar</code> in front of the command.
-          </p>
+          <>
+            <p className="text-white/40 text-xs leading-relaxed">
+              No Smart Calendar checkout was found
+              {status.calendar.dir ? <> — <code className="text-white/60">{status.calendar.dir}</code> from the installer is gone</> : ''}.
+              Re-running the installer (in the dashboard folder on the server) finds it on its own from the running{' '}
+              <code className="text-white/60">smart-calendar</code> container; to name it instead, the variable goes{' '}
+              <em>after</em> sudo, which drops one put in front:
+            </p>
+            <code className="block text-white/60 text-xs leading-relaxed break-all">
+              sudo CALENDAR_DIR=/path/to/smart-calendar bash scripts/host/install.sh '&lt;the key above&gt;'
+            </code>
+          </>
         ) : (
           <>
             <p className="text-white/80 text-sm">
@@ -2666,6 +2679,11 @@ function ServerTab() {
                 ? <span className="text-cyan-200"> · {status.calendar.behind} commit{status.calendar.behind === 1 ? '' : 's'} behind</span>
                 : status.calendar.behind === 0 ? <span className="text-white/40"> · up to date with the last fetch</span> : ''}
             </p>
+            {status.calendar.via === 'found' && (
+              <p className="text-white/30 text-xs leading-relaxed">
+                Found from the running container at <code className="text-white/50">{status.calendar.dir}</code>; the installer has not recorded it.
+              </p>
+            )}
             {status.calendar.services.length > 0 && (
               <p className="text-white/30 text-xs leading-relaxed truncate">
                 {status.calendar.services.map(s => `${s.name} · ${s.state}`).join(', ')}

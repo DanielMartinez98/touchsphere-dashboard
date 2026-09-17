@@ -72,3 +72,6 @@ client/public/live2dcubismcore.min.js
 
 # Python bytecode from syntax checks
 __pycache__/
+
+# App Store Connect keys (Settings → Apps keeps the real one on the volume)
+*.p8

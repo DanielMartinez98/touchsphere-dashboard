@@ -30,10 +30,12 @@ import plexRouter from './routes/plex'
 import hostRouter from './routes/host'
 import presenceRouter from './routes/presence'
 import aiBoxRouter from './routes/ai-box'
+import appStoreRouter from './routes/app-store'
 import { elevenLabsKeyState } from './config/keys'
 import { sweepInterrupted } from './guides'
 import { startPlexWatch } from './plex-watch'
 import { startAiBoxProbe } from './ai-box'
+import { startAppStoreSync } from './app-store'
 import { SEARCH_PROVIDERS } from './research'
 
 dotenv.config()
@@ -112,6 +114,8 @@ sweepInterrupted()
 startPlexWatch()
 // Which GPU box the local AI goes to (Settings → AI box). No-op without AI_BOXES.
 startAiBoxProbe()
+// App Store Connect, hourly: a no-op until a key is saved in Settings → Apps.
+startAppStoreSync()
 
 // Fail fast if the required API key is missing
 if (!process.env['OPENWEATHER_API_KEY']) {
@@ -240,6 +244,10 @@ app.use('/api/presence', dataLimiter, presenceRouter)
 // like /api/system: every answer is in memory, a check shares one probe run, and
 // the 60/min data budget is easily spent by the corners while this tab is open.
 app.use('/api/ai-box', aiBoxRouter)
+// Settings → Apps: the user's own apps on the App Store (see app-store.ts).
+// Always mounted — the key is pasted into the tab, so there is no env var to
+// gate on; it answers `configured: false` until then.
+app.use('/api/app-store', dataLimiter, appStoreRouter)
 // Generated images: the gallery pulls a file per thumbnail, so this sits behind
 // the generous tile limiter rather than the 60/min data one, same as artwork.
 app.use('/api/image', tileLimiter, imageRouter)

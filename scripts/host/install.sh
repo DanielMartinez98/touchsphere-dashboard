@@ -19,6 +19,30 @@
 
 set -euo pipefail
 
+# Where the Smart Calendar checkout is, for the calendar-update verb. Asked of
+# the running container first — its compose labels name the folder it was
+# built from, wherever that is, and the kiosk's page is always running — then
+# the folders people clone it into. Prints nothing when there is none. The
+# same function lives in touchsphere-host, which falls back to it when the
+# conf has no usable answer, so keep the two alike.
+find_calendar_dir() {
+  local home="$1" dash="$2" d=""
+  d=$(docker inspect smart-calendar --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null || true)
+  [[ "$d" == "<no value>" ]] && d=""
+  if [[ -z "$d" ]]; then
+    d=$(docker ps --filter label=com.docker.compose.project=smart-calendar \
+      --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null | grep -m1 . || true)
+  fi
+  if [[ -n "$d" && -d "$d" ]]; then echo "$d"; return 0; fi
+  for d in "$home/smart-calendar" "$dash/../smart-calendar" /opt/smart-calendar /srv/smart-calendar; do
+    if [[ -f "$d/docker-compose.yml" || -f "$d/compose.yaml" || -f "$d/compose.yml" ]]; then
+      (cd "$d" && pwd)
+      return 0
+    fi
+  done
+  return 0
+}
+
 KEY="${1:-}"
 if [[ -z "$KEY" || "$KEY" != ssh-* ]]; then
   echo "usage: sudo bash $0 '<the public key shown in Settings → Server>'" >&2
@@ -68,12 +92,21 @@ echo "installed /usr/local/bin/touchsphere-host"
 COMPOSE=$(docker ps --format '{{.Label "com.docker.compose.project.config_files"}}' 2>/dev/null \
   | tr ',' '\n' | grep -v '^$' | grep -v "^$DASH/" | sort -u | tr '\n' ' ' | sed 's/ $//' || true)
 # The calendar app's checkout, for Settings → Server → "Update the calendar
-# app": CALENDAR_DIR=/path in front of the command names it; otherwise the
-# usual place (~/smart-calendar) is used when it exists. Kept OUT of
-# COMPOSE_FILES: that list is pulled from a registry, this one is rebuilt.
+# app". Name it outright with CALENDAR_DIR — AFTER sudo, since sudo's
+# env_reset drops a variable put in front of it, which then reads as "none
+# found" with no hint why:
+#     sudo CALENDAR_DIR=/path/to/smart-calendar bash scripts/host/install.sh '<key>'
+# Otherwise it is found from the running container, then the usual folders
+# (find_calendar_dir above). Kept OUT of COMPOSE_FILES: that list is pulled
+# from a registry, this one is rebuilt.
 CAL="${CALENDAR_DIR:-}"
-if [[ -z "$CAL" && -d "$HOME_DIR/smart-calendar" ]]; then CAL="$HOME_DIR/smart-calendar"; fi
 if [[ -n "$CAL" && ! -d "$CAL" ]]; then echo "CALENDAR_DIR=$CAL is not a directory" >&2; exit 78; fi
+[[ -n "$CAL" ]] || CAL=$(find_calendar_dir "$HOME_DIR" "$DASH")
+if [[ -z "$CAL" ]]; then
+  echo "no Smart Calendar checkout found: no running smart-calendar container to ask, and nothing at" >&2
+  echo "  $HOME_DIR/smart-calendar, $DASH/../smart-calendar, /opt/smart-calendar or /srv/smart-calendar" >&2
+  echo "  (name it: sudo CALENDAR_DIR=/path/to/smart-calendar bash $0 '<key>')" >&2
+fi
 if [[ -n "$CAL" ]]; then
   CAL_FILES=$(docker ps --format '{{.Label "com.docker.compose.project.config_files"}}' 2>/dev/null \
     | tr ',' '\n' | grep "^$CAL/" || true)
