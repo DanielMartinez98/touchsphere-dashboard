@@ -8,7 +8,11 @@ import { extractCues, dispatchCue, type AvatarCue } from '../utils/avatarCues'
 import { openBrowseFromPayload } from './useBrowse'
 
 // Fallback replies if /api/chat fails or returns nothing usable. We still want
-// the user to hear *something* so they know the loop completed.
+// the user to hear *something* so they know the loop completed. NOT for a
+// reply the server marked `silent` — that is the assistant ending on a "no
+// thank you" with nothing to add, and the right sound is none at all. Until
+// the flag was read here, every polite "no thanks" was answered with the
+// first line below.
 const FALLBACK_REPLIES = [
   "Sorry, I'm having trouble reaching my brain right now.",
   "I heard you, but I can't think of a reply at the moment.",
@@ -398,7 +402,10 @@ const MAX_HISTORY_TURNS = 20
 // page or a video, via open_website / play_video). It's carried back to the
 // caller rather than opened here, so the window appears in step with the spoken
 // reply instead of while she's still thinking.
-interface ChatReply { text: string; keepListening: boolean; display: unknown }
+// `silent` is the assistant hanging up without a word — the user declined
+// more help and end_conversation was called with silent set. Nothing is
+// spoken and nothing is added to the history; the turn simply ends.
+interface ChatReply { text: string; keepListening: boolean; display: unknown; silent: boolean }
 
 // `newConversation` marks the opening utterance after a wake word. The server
 // only asks "is this the same topic as last time?" on that turn — later turns
@@ -413,9 +420,9 @@ async function fetchReply(messages: ChatTurn[], newConversation: boolean): Promi
     })
     if (!res.ok) {
       console.warn('[voice] /api/chat http', res.status)
-      return { text: FALLBACK_REPLIES[Math.floor(Math.random() * FALLBACK_REPLIES.length)]!, keepListening: false, display: null }
+      return { text: FALLBACK_REPLIES[Math.floor(Math.random() * FALLBACK_REPLIES.length)]!, keepListening: false, display: null, silent: false }
     }
-    const json = (await res.json()) as { reply?: string; changed?: string[]; keepListening?: boolean; display?: unknown }
+    const json = (await res.json()) as { reply?: string; changed?: string[]; keepListening?: boolean; display?: unknown; silent?: boolean }
     // Tell affected widgets to re-fetch their data (e.g. the media list after
     // the assistant added an item via add_media_item).
     const changed = Array.isArray(json.changed) ? json.changed : []
@@ -423,11 +430,14 @@ async function fetchReply(messages: ChatTurn[], newConversation: boolean): Promi
       console.log('[voice] state changed by chat tools:', changed)
       window.dispatchEvent(new CustomEvent('ts:state-changed', { detail: { slices: changed } }))
     }
+    // An intentional silence comes with the flag; only a bare empty reply is
+    // the failure the fallback sentence exists for.
+    if (json.silent === true) return { text: '', keepListening: false, display: null, silent: true }
     const text = (json.reply ?? '').trim() || FALLBACK_REPLIES[0]!
-    return { text, keepListening: json.keepListening === true, display: json.display ?? null }
+    return { text, keepListening: json.keepListening === true, display: json.display ?? null, silent: false }
   } catch (err) {
     console.warn('[voice] /api/chat failed:', err)
-    return { text: FALLBACK_REPLIES[Math.floor(Math.random() * FALLBACK_REPLIES.length)]!, keepListening: false, display: null }
+    return { text: FALLBACK_REPLIES[Math.floor(Math.random() * FALLBACK_REPLIES.length)]!, keepListening: false, display: null, silent: false }
   }
 }
 
@@ -519,8 +529,20 @@ export function useVoice(): VoiceState {
       ...historyRef.current,
       { role: 'user', content: text } as ChatTurn,
     ].slice(-MAX_HISTORY_TURNS)
-    const { text: replyText, keepListening: wantFollowUp, display } =
+    const { text: replyText, keepListening: wantFollowUp, display, silent } =
       await fetchReply(historyRef.current, isOpeningTurn)
+    // The assistant hung up without a word: the user said "no thanks" and
+    // there is nothing to say back. No TTS, no fallback sentence, no
+    // follow-up mic — the conversation is over and the next wake word
+    // starts fresh.
+    if (silent) {
+      clientLog('info', 'conversation ended silently — the user declined more help')
+      stopThinkingSound()
+      setIsThinking(false)
+      setReply('')
+      historyRef.current = []
+      return
+    }
     clientLog('info', `reply (${replyText.length} chars, keepListening=${wantFollowUp}): "${replyText.slice(0, 160)}"`)
     historyRef.current = [
       ...historyRef.current,
