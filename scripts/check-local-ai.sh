@@ -116,6 +116,17 @@ for key in stt tts search chat; do
     *)           echo "$line" ;;
   esac
 done
+# Which machine each service is on, as the server resolved it: the device
+# chosen under Settings → Devices, else the env var. This is the table the
+# .env-driven pass above cannot see.
+devs=$(printf '%s' "$debug" | jfield devices)
+if [ -n "$devs" ] && [ "$devs" != "[]" ]; then
+  dim "which machine does what (Settings → Devices, else .env):"
+  printf '%s' "$debug" | python3 -c 'import sys,json
+for d in json.load(sys.stdin).get("devices", []):
+    where = d["source"] + ((" · " + d["device"]) if d.get("device") else "")
+    print("   %-26s %-40s %s" % (d["label"], d["url"] or "off", where))' 2>/dev/null
+fi
 warnings=$(printf '%s' "$debug" | jfield warnings)
 [ -n "$warnings" ] && [ "$warnings" != "[]" ] && warn "server warnings: $warnings"
 

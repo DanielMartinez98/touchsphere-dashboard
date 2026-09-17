@@ -369,7 +369,7 @@ async function main(): Promise<void> {
       check('/api/stt goes to Scribe as before', r.status === 200 && r.body['provider'] === 'elevenlabs' && r.body['text'] === 'the quick brown fox via scribe')
       check('Whisper was never asked', whisper.seen.length === 0)
       const chk = await get(s.port, '/api/stt/check')
-      check('/api/stt/check explains that hearing goes to the cloud', chk.status === 502 && /WHISPER_URL not set/.test(String(chk.body['error'])))
+      check('/api/stt/check explains that hearing goes to the cloud', chk.status === 502 && /no Whisper device or WHISPER_URL/.test(String(chk.body['error'])))
       const t = await get(s.port, '/api/tts?as=jarvis&text=hello')
       check('/api/tts is voiced by ElevenLabs by default', t.status === 200 && t.headers.get('x-tts-provider') === 'elevenlabs')
       const s2 = await get(s.port, '/api/tts?as=jarvis&text=hello%20again')
@@ -385,6 +385,60 @@ async function main(): Promise<void> {
       const dbg = await get(s.port, '/api/system/debug')
       check('/api/system/debug carries the warning', ((dbg.body['warnings'] as string[]) ?? []).some(w => /No speech-to-text provider/.test(w)))
       check('the STT chain reads "none"', /^none/.test((dbg.body['chains'] as Record<string, string>)['stt'] ?? ''))
+    } finally { await s.stop() }
+
+    // ── E. A device chosen under Settings → Devices, after boot, no restart ──
+    // The env names nothing local; the device is added over the API with each
+    // fake on its own port, and every service must move at once.
+    console.log('\nE. a device chosen under Settings → Devices, after boot')
+    for (const f of fakes) { f.seen.length = 0; f.fail = false }
+    s = await boot({ OLLAMA_URL: ollama.url })
+    try {
+      const post = async (p: string, body: unknown) => {
+        const res = await fetch(`http://127.0.0.1:${s.port}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+        return { status: res.status, body: await res.json() as Record<string, unknown> }
+      }
+      type Svc = { id: string; source: string; url: string; device?: { name: string } }
+      let dv = await get(s.port, '/api/ai-devices')
+      let svc = dv.body['services'] as Svc[]
+      check('with nothing local in the env, every service but chat reads "off"', svc.filter(x => x.id !== 'chat').every(x => x.source === 'off') && svc.find(x => x.id === 'chat')?.source === 'env', JSON.stringify(svc))
+      let r = await stt(s.port)
+      check('before a device is chosen, /api/stt has no provider', r.status === 500)
+
+      const wp = Number(new URL(whisper.url).port), kp = Number(new URL(kokoro.url).port), op = Number(new URL(ollama.url).port)
+      const add = await post('/api/ai-devices', { name: 'GPU box', host: '127.0.0.1', ports: { stt: wp, tts: kp, chat: op }, assign: ['stt', 'tts', 'chat'] })
+      check('POST /api/ai-devices adds the device and assigns the services named', add.status === 200 && (add.body['device'] as { id: string })?.id === 'gpu-box' && JSON.stringify(add.body['assigned']) === '["stt","tts","chat"]', JSON.stringify(add.body).slice(0, 300))
+      r = await stt(s.port)
+      check('/api/stt now transcribes through the device\'s Whisper — no restart', r.status === 200 && r.body['provider'] === 'whisper' && r.body['text'] === 'the quick brown fox', JSON.stringify(r.body))
+      const t = await get(s.port, '/api/tts?as=jarvis&text=hello')
+      check('/api/tts is voiced by the device\'s Kokoro', t.status === 200 && t.headers.get('x-tts-provider') === 'kokoro', `${t.status} ${t.headers.get('x-tts-provider')}`)
+
+      const dbg = await get(s.port, '/api/system/debug')
+      const chains = dbg.body['chains'] as Record<string, string>
+      const devices = dbg.body['devices'] as Array<{ id: string; source: string; device: string | null; url: string }>
+      check('/api/system/debug reports the STT chain on the device', (chains['stt'] ?? '').startsWith(`whisper (local, http://127.0.0.1:${wp})`), chains['stt'])
+      check('/api/system/debug names the device per service, and pictures as off', devices.find(d => d.id === 'stt')?.source === 'device' && devices.find(d => d.id === 'stt')?.device === 'GPU box' && devices.find(d => d.id === 'image')?.source === 'off', JSON.stringify(devices))
+      check('the config table reads WHISPER_URL / KOKORO_URL as set through the device', (dbg.body['config'] as Record<string, boolean>)['WHISPER_URL'] === true && (dbg.body['config'] as Record<string, boolean>)['KOKORO_URL'] === true)
+      check('the chat model\'s URL follows the device too', (dbg.body['ollama'] as { url: string }).url === `http://127.0.0.1:${op}`, JSON.stringify(dbg.body['ollama']))
+
+      const probe = await post('/api/ai-devices/gpu-box/probe', {})
+      const results = probe.body['results'] as Array<{ service: string; ok: boolean; detail: string }>
+      check('the probe finds Ollama (with its models) and Whisper on the device', probe.status === 200 && results.find(x => x.service === 'chat')?.ok === true && /qwen3:8b/.test(results.find(x => x.service === 'chat')?.detail ?? '') && results.find(x => x.service === 'stt')?.ok === true, JSON.stringify(results))
+      check('…and says the picture service is not there', results.find(x => x.service === 'image')?.ok === false)
+
+      const back = await post('/api/ai-devices/assign', { service: 'stt', deviceId: '' })
+      svc = back.body['services'] as Svc[]
+      check('assigning "" puts a service back on the env', back.status === 200 && svc.find(x => x.id === 'stt')?.source === 'off', JSON.stringify(svc))
+      r = await stt(s.port)
+      check('/api/stt is off again at once', r.status === 500)
+      const bad = await post('/api/ai-devices', { name: 'x', host: 'not a host!' })
+      check('a bad host is refused with a sentence', bad.status === 400 && /host must be/.test(String(bad.body['error'])), JSON.stringify(bad.body))
+
+      const del = await fetch(`http://127.0.0.1:${s.port}/api/ai-devices/gpu-box`, { method: 'DELETE' })
+      const db = await del.json() as { devices: unknown[]; assign: object }
+      check('DELETE removes the device and clears what pointed at it', del.status === 200 && db.devices.length === 0 && Object.keys(db.assign).length === 0, JSON.stringify(db))
+      dv = await get(s.port, '/api/ai-devices')
+      check('after the delete, the chat model is back on OLLAMA_URL', (dv.body['services'] as Svc[]).find(x => x.id === 'chat')?.source === 'env')
     } finally { await s.stop() }
   } finally {
     await Promise.all(fakes.map(f => f.close()))

@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { serviceUrl } from '../ai-devices'
 import multer from 'multer'
 
 // POST /api/stt   ── multipart/form-data, field "audio"
@@ -38,7 +39,8 @@ const upload = multer({
 const router = Router()
 
 // ── Config ───────────────────────────────────────────────────────────────────
-const WHISPER_URL   = (process.env['WHISPER_URL'] ?? '').replace(/\/+$/, '')
+// The transcriber's URL is whisperUrl() below — resolved per call through
+// ai-devices.ts (the device chosen under Settings → Devices, else WHISPER_URL).
 // The `model` field of the request. speaches and faster-whisper-server take a
 // Hugging Face repo id and download it on first use; whisper.cpp ignores the
 // field (its model is a command-line flag); LocalAI wants its configured name.
@@ -64,10 +66,10 @@ const FORCED = process.env['STT_PROVIDER']?.trim().toLowerCase()
 
 /** The providers /api/stt will try, in order. Empty = voice input is off. */
 export function sttProviders(): SttProvider[] {
-  if (FORCED === 'whisper')    return WHISPER_URL ? ['whisper'] : []
+  if (FORCED === 'whisper')    return whisperUrl() ? ['whisper'] : []
   if (FORCED === 'elevenlabs') return EL_KEY ? ['elevenlabs'] : []
   const chain: SttProvider[] = []
-  if (WHISPER_URL) chain.push('whisper')
+  if (whisperUrl()) chain.push('whisper')
   if (EL_KEY) chain.push('elevenlabs')
   return chain
 }
@@ -75,13 +77,13 @@ export function sttProviders(): SttProvider[] {
 /** One line for the startup log and the Debug tab: "whisper (local) → elevenlabs". */
 export function sttSummary(): string {
   const chain = sttProviders()
-  if (chain.length === 0) return 'none — set WHISPER_URL (local) or ELEVENLABS_API_KEY'
-  return chain.map(p => p === 'whisper' ? `whisper (local, ${WHISPER_URL})` : 'elevenlabs (cloud)').join(' → ')
+  if (chain.length === 0) return 'none — pick a voice-in device under Settings → Devices, set WHISPER_URL, or set ELEVENLABS_API_KEY'
+  return chain.map(p => p === 'whisper' ? `whisper (local, ${whisperUrl()})` : 'elevenlabs (cloud)').join(' → ')
     + (FORCED ? ` (pinned by STT_PROVIDER=${FORCED})` : '')
 }
 
 /** Where the local transcriber is, for diagnostics. Empty when not configured. */
-export function whisperUrl(): string { return WHISPER_URL }
+export function whisperUrl(): string { return serviceUrl('stt') }
 
 if (FORCED && FORCED !== 'whisper' && FORCED !== 'elevenlabs') {
   console.warn(`[stt] unrecognised STT_PROVIDER="${FORCED}" — using the per-config chain`)
@@ -157,7 +159,7 @@ async function transcribeWhisper(clip: Clip, lang: string, timeoutMs = WHISPER_T
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   let res: Response
   try {
-    res = await fetch(`${WHISPER_URL}${WHISPER_PATH}`, { method: 'POST', body: fd, signal: ctrl.signal })
+    res = await fetch(`${whisperUrl()}${WHISPER_PATH}`, { method: 'POST', body: fd, signal: ctrl.signal })
   } finally {
     clearTimeout(timer)
   }
@@ -227,7 +229,7 @@ router.post('/', upload.single('audio'), async (req, res) => {
   const chain = sttProviders()
   if (chain.length === 0) {
     return res.status(500).json({
-      error: 'no speech-to-text provider configured — set WHISPER_URL (local Whisper) or ELEVENLABS_API_KEY',
+      error: 'no speech-to-text provider configured — pick a voice-in device under Settings → Devices, set WHISPER_URL (local Whisper), or set ELEVENLABS_API_KEY',
     })
   }
   if (!req.file) {
@@ -296,7 +298,7 @@ function silentWav(seconds = 1): Buffer {
 /** Send a second of silence through the local transcriber. Resolves with the
  *  round-trip time; rejects with the upstream's own words. */
 export async function probeWhisper(timeoutMs: number): Promise<{ ms: number; text: string }> {
-  if (!WHISPER_URL) throw new Error('WHISPER_URL not set')
+  if (!whisperUrl()) throw new Error('no Whisper device chosen and WHISPER_URL not set')
   const t0 = Date.now()
   const out = await transcribeWhisper({ buffer: silentWav(), mimetype: 'audio/wav', name: 'silence.wav' }, '', timeoutMs)
   return { ms: Date.now() - t0, text: out.text }
@@ -310,18 +312,18 @@ export async function probeWhisper(timeoutMs: number): Promise<{ ms: number; tex
 // cold box spends its first call loading weights, and "took 20 s" is a more
 // useful answer than "timed out at 10".
 router.get('/check', async (_req, res) => {
-  if (!WHISPER_URL) {
+  if (!whisperUrl()) {
     return res.status(502).json({
       error: EL_KEY
-        ? 'WHISPER_URL not set — voice input goes to ElevenLabs Scribe (cloud)'
-        : 'WHISPER_URL not set and no ElevenLabs key — voice input is disabled',
+        ? 'no Whisper device or WHISPER_URL — voice input goes to ElevenLabs Scribe (cloud)'
+        : 'no Whisper device or WHISPER_URL, and no ElevenLabs key — voice input is disabled',
     })
   }
   try {
     const { ms, text } = await probeWhisper(45_000)
     res.json({
       ok: true,
-      url: WHISPER_URL,
+      url: whisperUrl(),
       model: WHISPER_MODEL,
       ms,
       detail: `${WHISPER_MODEL} answered in ${(ms / 1000).toFixed(1)}s${text ? ` (heard "${text.slice(0, 40)}" in silence)` : ''}`,
@@ -329,7 +331,7 @@ router.get('/check', async (_req, res) => {
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
     console.warn('[stt] whisper check failed:', detail)
-    res.status(502).json({ error: `${WHISPER_URL}: ${detail.slice(0, 300)}` })
+    res.status(502).json({ error: `${whisperUrl()}: ${detail.slice(0, 300)}` })
   }
 })
 
@@ -339,7 +341,7 @@ router.get('/check', async (_req, res) => {
 // minute or more for `small`. Nobody is talking at boot, so that is spent now
 // rather than on someone's first question. Quiet and non-fatal, like RVC's:
 // if the box isn't up yet the first real utterance pays the load, as before.
-if (WHISPER_URL && sttProviders().includes('whisper')) {
+if (whisperUrl() && sttProviders().includes('whisper')) {
   setTimeout(() => {
     void probeWhisper(10 * 60_000)
       .then(({ ms }) => console.log(`[stt][whisper] warm: ${WHISPER_MODEL} ready (first transcription took ${ms}ms)`))

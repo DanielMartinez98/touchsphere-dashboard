@@ -25,8 +25,9 @@ import { useTaskDbs, type TaskBoard, type BoardRole } from '../hooks/useTaskDbs'
 import { useNotionMe } from '../hooks/useNotionMe'
 import IdentityPicker from './widgets/NotionWidget/IdentityPicker'
 import { TouchInput } from './TouchInput'
+import DevicesTab from './DevicesTab'
 
-type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'prompts' | 'mail' | 'notion' | 'system' | 'server' | 'debug'
+type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'prompts' | 'mail' | 'notion' | 'devices' | 'system' | 'server' | 'debug'
 
 // The preview reuses the dashboard's own renderers. Lazy, same chunks App
 // splits out — opening the VTuber tab is what pulls in the heavy deps, and
@@ -415,6 +416,7 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
     { id: 'notion',    label: 'Notion'    },
     { id: 'drawing',   label: 'Drawing'   },
     { id: 'prompts',   label: 'Prompts'   },
+    { id: 'devices',   label: 'Devices'   },
     { id: 'system',    label: 'System'    },
     // Only when the server says it is set up: an "update the host" tab that
     // can't reach a host is a tab full of broken buttons.
@@ -1379,6 +1381,9 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
             {/* Drawing tab — how the prompt improver is told to rewrite prompts */}
             {tab === 'drawing' && <DrawingTab />}
             {tab === 'prompts' && <PromptsTab />}
+
+            {/* Devices tab — which machine does each piece of AI work */}
+            {tab === 'devices' && <DevicesTab />}
 
             {/* Server tab — updating the machine this runs on */}
             {tab === 'server' && <ServerTab />}

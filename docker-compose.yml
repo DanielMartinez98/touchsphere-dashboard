@@ -49,6 +49,13 @@ services:
       # runs ComfyUI there under the same `gpu` profile as Kokoro and RVC):
       #   COMFYUI_URL=http://<gpu-box-ip>:8188
       COMFYUI_URL: ${COMFYUI_URL:-}
+    # host.docker.internal resolves on Docker Desktop but not on Linux unless
+    # mapped; this maps it, so the AI stack started on THIS box by
+    # scripts/local-ai/install.sh (its own compose project, ports on the host)
+    # is reachable as http://host.docker.internal:<port> — which is also the
+    # oldest default for OLLAMA_URL.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - touchsphere-cache:/data/cache   # persist cache across restarts
       # Avatar assets (Live2D model + Cubism runtime). Licensed files that are

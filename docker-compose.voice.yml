@@ -1,8 +1,21 @@
-# ── Remote GPU services (Kokoro TTS + Whisper STT + RVC conversion + ComfyUI) ─
-# Run this on a machine that can afford the compute — typically the same box
-# that already runs Ollama. The dashboard app talks to these containers over
-# plain HTTP, so where they run is purely a .env decision:
+# ── The AI stack (Ollama + Kokoro TTS + Whisper STT + RVC conversion + ComfyUI) ─
+# Run this on a machine that can afford the compute. The dashboard app talks to
+# these containers over plain HTTP, so where they run is purely a decision —
+# in .env, or per service under Settings → Devices, which is how one dashboard
+# uses two such machines.
 #
+#   THE EASY WAY, on the machine that should do the work:
+#     bash scripts/local-ai/install.sh --dashboard https://<the dashboard>
+#   picks the biggest disk that isn't the system one, writes .env.ai (TS_AI_DATA,
+#   the profile), starts everything below bound to that disk, downloads the
+#   models, and registers the machine with the dashboard. Day to day:
+#     scripts/local-ai/ai-stack.sh up | down | status | logs
+#
+#   Every bind mount below is under ${TS_AI_DATA:-.} — the repo checkout unless
+#   .env.ai (or a .env beside this file) says otherwise — so multi-gigabyte
+#   weights can live on a data drive while the checkout stays where it is.
+#
+#   BY HAND:
 #   On the LLM machine (this file):
 #     git clone <this repo> && cd touchsphere-dashboard
 #     # put the voice model at ./rvc-models/miku/ (a .pth + optional .index)
@@ -19,7 +32,8 @@
 #     docker compose up -d --remove-orphans
 #
 # Exactly one profile (cpu or gpu) should be up at a time — both variants bind
-# the same host ports. The GPU profile is the reason to bother: RVC conversion
+# the same host ports. Likewise don't run docker-compose.yml's `local-voice`
+# profile on the same box as this file: same container names, same ports. The GPU profile is the reason to bother: RVC conversion
 # that takes seconds per sentence on CPU is near-instant on CUDA.
 #
 # NOTE: these ports carry no authentication — anyone on the LAN can synthesise
@@ -28,6 +42,45 @@
 # don't forward them past it.
 
 services:
+  # ── Ollama — the language model ───────────────────────────────────────────
+  # The assistant, its tools, the guide writer, the prompt improver and the
+  # vision model all speak to this. Models are pulled into ${TS_AI_DATA}/ollama
+  # (scripts/local-ai/install.sh pulls the chat and vision ones; more with
+  # `ai-stack.sh pull <model>`). Skip this service on a box that already runs
+  # Ollama natively — it would fight it for :11434.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: touchsphere-ollama
+    profiles: ["cpu"]
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ${TS_AI_DATA:-.}/ollama:/root/.ollama
+    environment:
+      # Keep a model loaded between turns; the dashboard's own calls send
+      # keep_alive per request, this is the floor for anything else.
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
+
+  ollama-gpu:
+    image: ollama/ollama:latest
+    container_name: touchsphere-ollama
+    profiles: ["gpu"]
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ${TS_AI_DATA:-.}/ollama:/root/.ollama
+    environment:
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
   # ── Kokoro — neural TTS (says the words) ──────────────────────────────────
   kokoro:
     image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
@@ -65,7 +118,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./whisper-models:/home/ubuntu/.cache/huggingface/hub
+      - ${TS_AI_DATA:-.}/whisper-models:/home/ubuntu/.cache/huggingface/hub
 
   whisper-gpu:
     image: ghcr.io/speaches-ai/speaches:latest-cuda
@@ -75,7 +128,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./whisper-models:/home/ubuntu/.cache/huggingface/hub
+      - ${TS_AI_DATA:-.}/whisper-models:/home/ubuntu/.cache/huggingface/hub
     deploy:
       resources:
         reservations:
@@ -97,7 +150,7 @@ services:
     ports:
       - "5050:5050"
     volumes:
-      - ./rvc-models:/app/rvc_models
+      - ${TS_AI_DATA:-.}/rvc-models:/app/rvc_models
 
   rvc-gpu:
     build:
@@ -109,7 +162,7 @@ services:
     ports:
       - "5050:5050"
     volumes:
-      - ./rvc-models:/app/rvc_models
+      - ${TS_AI_DATA:-.}/rvc-models:/app/rvc_models
     deploy:
       resources:
         reservations:
@@ -146,9 +199,11 @@ services:
       # checkout is inside OneDrive on a system drive with no room left: set
       # COMFY_MODELS_DIR in a .env beside this file (e.g. D:/touchsphere/comfy/models)
       # and the folder stays out of the sync client and off the boot drive.
+      # (scripts/local-ai/install.sh writes COMFY_MODELS_DIR into .env.ai beside
+      # TS_AI_DATA, so both spellings land on the same disk.)
       - ${COMFY_MODELS_DIR:-./comfy/models}:/root/ComfyUI/models
-      - ./comfy/output:/root/ComfyUI/output
-      - ./comfy/input:/root/ComfyUI/input
+      - ${TS_AI_DATA:-.}/comfy/output:/root/ComfyUI/output
+      - ${TS_AI_DATA:-.}/comfy/input:/root/ComfyUI/input
       # NOTE: custom_nodes is deliberately NOT mounted. Bind-mounting an empty
       # host directory over it would hide whatever the image ships there — the
       # manager included — and the failure looks like ComfyUI simply forgetting

@@ -41,10 +41,15 @@ import {
   type SessionTurn,
 } from '../session'
 import { getSelectedProfile, type AssistantProfile } from '../config/assistant'
+import { ollamaUrlFor } from '../ai-devices'
+import { imagesEnabled } from '../image'
 
 const router = Router()
 
-const OLLAMA_URL     = process.env['OLLAMA_URL']    ?? 'http://host.docker.internal:11434'
+// Where the model is — resolved PER REQUEST rather than read once, so a device
+// picked under Settings → Devices takes effect on the next turn with no restart.
+// Falls back to OLLAMA_URL, then Ollama on the docker host (see ai-devices.ts).
+const ollamaUrl      = (): string => ollamaUrlFor('chat')
 const OLLAMA_MODEL   = process.env['OLLAMA_MODEL']  ?? 'gemma3'
 const OLLAMA_API_KEY = process.env['OLLAMA_API_KEY'] ?? ''
 // A second model to answer with when the first cannot. Ollama's cloud service
@@ -97,7 +102,7 @@ const WEB_SEARCH_ENABLED = (() => {
 // Everything after the persona is identical across assistants. The persona
 // (name + personality) is prepended per-request from the user's selected
 // profile \u2014 see buildSystemPrompt below.
-const SYSTEM_PROMPT_BODY =
+function systemPromptBody(): string { return (
   "You are a voice assistant living on the user's dashboard. " +
   "Reply in 1-2 short, natural-sounding sentences. " +
   "Avoid lists, markdown, code blocks, and emoji \u2014 your reply will be spoken aloud. " +
@@ -228,7 +233,7 @@ const SYSTEM_PROMPT_BODY =
   // Only described when there is a renderer behind it. Describing a tool the
   // model cannot call is how you get an assistant that offers to draw and then
   // silently doesn't.
-  (IMAGE_TOOLS.length > 0
+  (imagesEnabled()
     ? " DRAWING: generate_image invents a picture and puts it on screen — use it when they ask you to draw, " +
       "paint, or imagine something, NOT to find a picture of something real (that is open_website). " +
       "It takes a few seconds and fills in on screen by itself, so tell them it is coming and " +
@@ -254,16 +259,17 @@ const SYSTEM_PROMPT_BODY =
         : "") +
       "Speak the title, never ids or file names."
     : "")
+) }
 
 // Compose the full system prompt for a given assistant: its personality up
 // front, then the shared behaviour/tool instructions.
 function buildSystemPrompt(profile: AssistantProfile): string {
   // The drawing-style line is appended per request rather than baked into
-  // SYSTEM_PROMPT_BODY, because it depends on which picture model is selected
+  // systemPromptBody(), because it depends on which picture model is selected
   // and the user can change that between one drawing and the next. Empty
   // string when there is no image server, so nothing changes for a box
   // without one.
-  return `${profile.persona} ${SYSTEM_PROMPT_BODY}${imagePromptGuidance()}`
+  return `${profile.persona} ${systemPromptBody()}${imagePromptGuidance()}`
 }
 
 /**
@@ -504,12 +510,17 @@ const TURN_CONTROL_TOOLS = [
 
 // Dashboard + browsing tools are always exposed; web search/fetch layer on if
 // configured. (open_website / play_video do their own resolving, so they work
-// even without an Ollama web-search key.) IMAGE_TOOLS is empty unless COMFYUI_URL
-// is set — unlike TTS there is no fallback renderer, so a model that can see the
-// tool would promise a picture no configured box can draw.
-const TOOLS = [...DASHBOARD_TOOLS, ...BROWSE_TOOLS, ...GUIDE_VIEW_TOOLS, ...IMAGE_TOOLS, ...PLEX_TOOLS, ...TURN_CONTROL_TOOLS, ...WEB_TOOLS]
+// even without an Ollama web-search key.) The image tools are offered only while
+// a picture device is configured — unlike TTS there is no fallback renderer, so a
+// model that can see the tool would promise a picture no configured box can draw.
+const STATIC_TOOLS = [...DASHBOARD_TOOLS, ...BROWSE_TOOLS, ...GUIDE_VIEW_TOOLS, ...PLEX_TOOLS, ...TURN_CONTROL_TOOLS, ...WEB_TOOLS]
+/** The tools this request may call. The image ones come and go with the
+ *  picture device (Settings → Devices), so this is per request, not a const. */
+function toolsNow(): (typeof STATIC_TOOLS[number] | typeof IMAGE_TOOLS[number])[] {
+  return imagesEnabled() ? [...STATIC_TOOLS, ...IMAGE_TOOLS] : STATIC_TOOLS
+}
 /** Every tool name, for spotting one that was written out rather than called. */
-const TOOL_NAMES = TOOLS.map(t => t.function.name)
+const TOOL_NAMES = [...STATIC_TOOLS, ...IMAGE_TOOLS].map(t => t.function.name)
 
 // ── Tool implementations ──────────────────────────────────────────────────
 /**
@@ -669,7 +680,7 @@ async function endConversation(history: ChatMessage[], finalReply: string): Prom
     const timer = setTimeout(() => ctrl.abort(), 15_000)
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
-    const res = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
+    const res = await fetch(`${ollamaUrl().replace(/\/$/, '')}/api/chat`, {
       method: 'POST',
       headers,
       signal: ctrl.signal,
@@ -720,10 +731,10 @@ interface OllamaResponse {
 let answeredBy = ''
 
 async function callOllama(messages: ChatMessage[]): Promise<OllamaResponse> {
-  const first = await callOllamaAt(OLLAMA_URL, OLLAMA_MODEL, messages)
+  const first = await callOllamaAt(ollamaUrl(), OLLAMA_MODEL, messages)
   answeredBy = ''
   const canFallBack = OLLAMA_FALLBACK_URL && OLLAMA_FALLBACK_MODEL
-    && (OLLAMA_FALLBACK_URL !== OLLAMA_URL || OLLAMA_FALLBACK_MODEL !== OLLAMA_MODEL)
+    && (OLLAMA_FALLBACK_URL !== ollamaUrl() || OLLAMA_FALLBACK_MODEL !== OLLAMA_MODEL)
   // 429 is a quota, 5xx is the service; a network failure comes back as 0.
   // 4xx other than 429 is our request being wrong, which the fallback would
   // get wrong too.
@@ -731,7 +742,7 @@ async function callOllama(messages: ChatMessage[]): Promise<OllamaResponse> {
     return first
   }
   console.warn(
-    `[chat] ${OLLAMA_URL} answered ${first.status || 'nothing'}` +
+    `[chat] ${ollamaUrl()} answered ${first.status || 'nothing'}` +
     `${first.detail ? ` (${first.detail.slice(0, 120).replace(/\s+/g, ' ')})` : ''} — ` +
     `retrying on ${OLLAMA_FALLBACK_MODEL} at ${OLLAMA_FALLBACK_URL}`,
   )
@@ -759,7 +770,8 @@ async function callOllamaAt(url: string, model: string, messages: ChatMessage[],
       stream: false,
       messages,
     }
-    if (TOOLS.length > 0) body['tools'] = TOOLS
+    const tools = toolsNow()
+    if (tools.length > 0) body['tools'] = tools
     if (OLLAMA_THINK !== null) body['think'] = OLLAMA_THINK
     // See NUM_CTX. Without this the tools are silently truncated away.
     body['options'] = { num_ctx: NUM_CTX }
@@ -876,7 +888,7 @@ router.post('/', async (req: Request, res: Response) => {
 
   const preview = last.content.slice(0, 80)
   console.log(
-    `[chat] → ${OLLAMA_URL} model=${OLLAMA_MODEL} as=${profile.id} turns=${history.length} ` +
+    `[chat] → ${ollamaUrl()} model=${OLLAMA_MODEL} as=${profile.id} turns=${history.length} ` +
     `carry=${carry ? (carry.turns.length > 0 ? `${carry.turns.length}turns` : 'recap') : 'none'} ` +
     `tools=dashboard${WEB_SEARCH_ENABLED ? '+web' : ''} think=${JSON.stringify(OLLAMA_THINK)} ` +
     `prompt=\"${preview}${last.content.length > 80 ? '\u2026' : ''}\"`,
