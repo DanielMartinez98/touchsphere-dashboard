@@ -16,6 +16,9 @@ import { ImageCollapsed } from './components/widgets/ImageWidget/ImageWidget'
 import ImageExpanded from './components/widgets/ImageWidget/ImageExpanded'
 import { MailCollapsed } from './components/widgets/MailWidget/MailWidget'
 import MailExpanded from './components/widgets/MailWidget/MailExpanded'
+import { AppStoreCollapsed } from './components/widgets/AppStoreWidget/AppStoreWidget'
+import AppStoreExpanded from './components/widgets/AppStoreWidget/AppStoreExpanded'
+import { useAppStore } from './hooks/useAppStore'
 import { useMailUnread } from './hooks/useMail'
 import { NotionCollapsed } from './components/widgets/NotionWidget/NotionWidget'
 import NotionExpanded from './components/widgets/NotionWidget/NotionExpanded'
@@ -57,7 +60,7 @@ const Avatar = lazy(() => import('./components/Avatar/Avatar'))
 const Live2DAvatar = lazy(() => import('./components/Avatar/Live2DAvatar'))
 
 // 'time' is the merged calendar+clock corner; 'images' is the ComfyUI corner.
-type OpenWidget = 'time' | 'plex' | 'media' | 'notion' | 'images' | 'mail' | null
+type OpenWidget = 'time' | 'plex' | 'media' | 'notion' | 'images' | 'mail' | 'apps' | null
 
 // Distinct glowing accent colour per corner.
 const ACCENT = {
@@ -67,6 +70,7 @@ const ACCENT = {
   notion:  '#22c55e', // green (work tasks)
   images:  '#ec4899', // pink (drawing)
   mail:    '#38bdf8', // sky (work mail)
+  apps:    '#818cf8', // indigo (the App Store, work)
 } as const
 
 function App() {
@@ -135,6 +139,9 @@ function App() {
   // Mail is polled only while the work corner exists, so a rest-mode kiosk
   // makes no Gmail calls at all.
   const mail = useMailUnread(mode === 'work')
+  // The App Store corner is the work-mode bottom-left; a rest-mode kiosk
+  // makes no App Store calls at all, the same rule.
+  const appStore = useAppStore(mode === 'work')
   const voice = useVoice()
   const muted = useMuted()
   // The assistant owns its own face: it names a model from the catalogue, so
@@ -203,7 +210,11 @@ function App() {
   // field nobody can see is not a prompt anyone can edit. A subscription rather
   // than a piece of derived state, because this is an event — asking twice in a
   // row has to open the panel twice, and nothing should reopen it at boot.
-  useEffect(() => onDrawPanelRequest(() => setOpen('images')), [])
+  // Only while the Draw corner exists (rest mode): in work mode that slot is
+  // the App Store, and opening a panel with no corner behind it shows nothing.
+  const modeRef = useRef(mode)
+  useEffect(() => { modeRef.current = mode }, [mode])
+  useEffect(() => onDrawPanelRequest(() => { if (modeRef.current !== 'work') setOpen('images') }), [])
   useEffect(() => onPlexPanelRequest(() => setOpen('plex')), [])
 
   const plexStatus = usePlexStatus()
@@ -241,6 +252,9 @@ function App() {
     // rule applies to it: a panel whose corner just went away must not stay up.
     if (mode === 'work' && open === 'plex')    setOpen(null)
     if (mode !== 'work' && open === 'mail')    setOpen(null)
+    // And bottom-left: the App Store while working, Draw while resting.
+    if (mode === 'work' && open === 'images')  setOpen(null)
+    if (mode !== 'work' && open === 'apps')    setOpen(null)
   }, [mode])
 
   const isRest = mode === 'rest' || mode === 'locked'
@@ -403,59 +417,72 @@ function App() {
         expanded={<TimeExpanded timers={timers} stopwatch={stopwatch} />}
       />
 
-      {/* Bottom-Left — Draw a picture (pink glow). The tap half of the
-          assistant's generate_image: same job engine, same store, same
-          full-screen viewer, so a picture looks identical however it was asked
-          for. */}
-      <Widget
-        pill={!companion}
-        position="bottom-left"
-        accent={ACCENT.images}
-        isOpen={open === 'images'}
-        onToggle={() => toggle('images')}
-        collapsed={
-          <ImageCollapsed
-            images={images}
-            enabled={imagesEnabled}
-            busy={imageBusy}
-            queued={Math.max(0, imageQueue.length - 1)}
-            etaMs={imageEtaMs}
-            elapsedMs={imageElapsedMs}
-          />
-        }
-        expanded={
-          <ImageExpanded
-            images={images}
-            enabled={imagesEnabled}
-            busy={imageBusy}
-            queue={imageQueue}
-            queueMax={imageQueueMax}
-            drawError={imageDrawError}
-            styles={imageStyles}
-            capabilities={imageCapabilities}
-            keepPoseDefault={imageStructure ? imageStructure.enabled : null}
-            holdDefaults={imageStructure}
-            model={imageModel}
-            quality={imageQuality}
-            params={imageParams}
-            defaults={imageDefaults}
-            loras={imageLoras}
-            autoLora={imageAutoLora}
-            inpaintPatchInfo={imageInpaintPatchInfo}
-            onModel={setImageModel}
-            onQuality={setImageQuality}
-            onParams={setImageParams}
-            onResetParams={resetImageParams}
-            onGenerate={drawImage}
-            onDelete={removeImage}
-            onClear={clearImages}
-            onCancel={cancelImage}
-            improveDefault={imagePrompter ? imagePrompter.enabled : null}
-            onImproveChange={on => { void setImagePrompter({ enabled: on }) }}
-            onUpload={uploadImage}
-          />
-        }
-      />
+      {/* Bottom-Left — the App Store in work mode (indigo glow), Draw in rest
+          (pink). The third corner to change with the mode: how the apps did
+          is a working question, a picture is not. Draw's tap half of
+          generate_image is unchanged; it is simply not on the wall while the
+          screen is set to work. */}
+      {mode === 'work' ? (
+        <Widget
+          pill={!companion}
+          position="bottom-left"
+          accent={ACCENT.apps}
+          isOpen={open === 'apps'}
+          onToggle={() => toggle('apps')}
+          collapsed={<AppStoreCollapsed view={appStore.view} error={appStore.error} />}
+          expanded={<AppStoreExpanded view={appStore.view} error={appStore.error} busy={appStore.busy === 'sync'} onSync={() => { void appStore.sync() }} />}
+        />
+      ) : (
+        <Widget
+          pill={!companion}
+          position="bottom-left"
+          accent={ACCENT.images}
+          isOpen={open === 'images'}
+          onToggle={() => toggle('images')}
+          collapsed={
+            <ImageCollapsed
+              images={images}
+              enabled={imagesEnabled}
+              busy={imageBusy}
+              queued={Math.max(0, imageQueue.length - 1)}
+              etaMs={imageEtaMs}
+              elapsedMs={imageElapsedMs}
+            />
+          }
+          expanded={
+            <ImageExpanded
+              images={images}
+              enabled={imagesEnabled}
+              busy={imageBusy}
+              queue={imageQueue}
+              queueMax={imageQueueMax}
+              drawError={imageDrawError}
+              styles={imageStyles}
+              capabilities={imageCapabilities}
+              keepPoseDefault={imageStructure ? imageStructure.enabled : null}
+              holdDefaults={imageStructure}
+              model={imageModel}
+              quality={imageQuality}
+              params={imageParams}
+              defaults={imageDefaults}
+              loras={imageLoras}
+              autoLora={imageAutoLora}
+              inpaintPatchInfo={imageInpaintPatchInfo}
+              onModel={setImageModel}
+              onQuality={setImageQuality}
+              onParams={setImageParams}
+              onResetParams={resetImageParams}
+              onGenerate={drawImage}
+              onDelete={removeImage}
+              onClear={clearImages}
+              onCancel={cancelImage}
+              improveDefault={imagePrompter ? imagePrompter.enabled : null}
+              onImproveChange={on => { void setImagePrompter({ enabled: on }) }}
+              onUpload={uploadImage}
+            />
+          }
+        />
+      )}
 
       {/* Bottom-Right — Notion tasks in work mode, Media collection in
           rest/locked. This pair moved here from bottom-left when the merged
@@ -467,7 +494,7 @@ function App() {
           accent={ACCENT.notion}
           isOpen={open === 'notion'}
           onToggle={() => toggle('notion')}
-          collapsed={<NotionCollapsed tasks={notionTasks} loading={notionLoading} error={notionError} errorKind={notionErrorKind} />}
+          collapsed={<NotionCollapsed tasks={notionTasks} boards={notionBoards} loading={notionLoading} error={notionError} errorKind={notionErrorKind} />}
           expanded={
             <NotionExpanded
               schema={notionSchema}

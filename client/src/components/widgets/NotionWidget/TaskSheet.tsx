@@ -106,7 +106,7 @@ export default function TaskSheet({
                   <span className={`flex-1 min-w-0 text-base ${names.length ? 'text-white' : 'text-amber-200/70'}`}>
                     {names.length ? names.join(', ') : 'Nobody yet'}
                   </span>
-                  {!task.mine && (
+                  {(!task.mine || task.unassigned) && (
                     <button type="button" disabled={!me} onClick={() => onUpdate({ assignee: 'me' })}
                       title={me ? 'Assign this task to me' : 'Pick who you are first'}
                       className="h-11 px-4 rounded-xl bg-green-500/15 border border-green-400/30 text-green-200 text-sm font-semibold flex items-center gap-1.5 active:scale-95 disabled:opacity-40">

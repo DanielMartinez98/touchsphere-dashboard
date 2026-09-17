@@ -651,7 +651,13 @@ function ownership(props: Record<string, any>, schema: NotionSchema, ctx: RowCtx
   if (ctx) notePeople(ctx.connId, people)
   const assignees = ((schema.peopleKey ? props[schema.peopleKey]?.people : null) ?? [] as any[])
     .map((p: any) => ({ id: String(p.id), name: typeof p.name === 'string' ? p.name : '' }))
-  const mine = schema.peopleKeys.length === 0 || !ctx?.me ? true : isMine(people, ctx.me)
+  // A row nobody is on counts as the user's too (2026-09-17). Until then it
+  // did not, and on a personal board — where nobody assigns tasks to
+  // themselves — picking who you are in Settings turned every open task into
+  // "not mine": the pill read "All done!" over a list of open tasks. Only a
+  // row that names someone else is someone else's. `unassigned` stays true
+  // beside it, so the Unassigned scope and the team's pile still work.
+  const mine = schema.peopleKeys.length === 0 || !ctx?.me ? true : (people.length === 0 || isMine(people, ctx.me))
   const unassigned = !!schema.peopleKey && assignees.length === 0
   return { mine, unassigned, assignees, conn: ctx?.connId ?? null }
 }

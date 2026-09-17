@@ -1,4 +1,4 @@
-import type { NotionTask, NotionErrorKind } from '../../../hooks/useNotion'
+import type { NotionTask, NotionBoard, NotionErrorKind } from '../../../hooks/useNotion'
 
 const PRIORITY_ORDER: Record<string, number> = { High: 0, 'High Priority': 0, Urgent: 0, Medium: 1, Normal: 1, Low: 2 }
 
@@ -40,15 +40,22 @@ function shortError(kind: NotionErrorKind | null): string {
 
 interface Props {
   tasks:     NotionTask[]
+  /** The boards in effect, so "no task board" and "all done" are told apart. */
+  boards?:   NotionBoard[]
   loading:   boolean
   error:     string | null
   errorKind: NotionErrorKind | null
 }
 
-export function NotionCollapsed({ tasks, loading, error, errorKind }: Props) {
+export function NotionCollapsed({ tasks, boards, loading, error, errorKind }: Props) {
   // My numbers: `mine` is true for every row when nobody is picked yet, so
-  // the pill reads everyone's then, as it always did.
+  // the pill reads everyone's then, as it always did — and for a row nobody
+  // is on, since a task nobody has picked up is not done.
   const pending = tasks.filter(t => !t.done && t.mine)
+  // Open tasks that are someone else's: "all done" would be a lie over them.
+  const others  = tasks.filter(t => !t.done && !t.mine).length
+  // No board with the tasks role at all is a setup state, not a clean sheet.
+  const noBoards = boards !== undefined && !boards.some(b => b.role === 'tasks' && !b.unavailable)
   const overdue = pending.filter(t => t.due && isOverdue(t.due)).length
   const today   = pending.filter(t => t.due && !isOverdue(t.due) && new Date(t.due + 'T00:00').getTime() === new Date().setHours(0, 0, 0, 0)).length
   const next    = nextPending(pending)
@@ -64,6 +71,13 @@ export function NotionCollapsed({ tasks, loading, error, errorKind }: Props) {
         <span className="w-4 h-4 rounded-full border-2 border-white/20 border-t-green-400 animate-spin" />
       ) : error && tasks.length === 0 ? (
         <span className="text-sm text-ink-dim leading-tight">{shortError(errorKind)}</span>
+      ) : pending.length === 0 && noBoards ? (
+        <span className="text-sm text-ink-dim leading-tight">No task board yet</span>
+      ) : pending.length === 0 && others > 0 ? (
+        <>
+          <span className="text-base font-semibold text-green-400">Nothing for you</span>
+          <span className="text-[11px] text-white/45 leading-tight text-center">{others} open for others</span>
+        </>
       ) : pending.length === 0 ? (
         <span className="text-base font-semibold text-green-400">All done!</span>
       ) : (
