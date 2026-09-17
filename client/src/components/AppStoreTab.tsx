@@ -324,8 +324,8 @@ export function AppStoreTab() {
             <TouchInput
               value={issuerId.v}
               onChange={v => setIssuerId({ v, seeded: true })}
-              commitOn="done"
               placeholder="Issuer ID — 8-4-4-4-12 characters"
+              plain
               ariaLabel="App Store Connect issuer id"
               className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px] placeholder:text-white/30 border border-hairline"
             />
@@ -333,17 +333,17 @@ export function AppStoreTab() {
               <TouchInput
                 value={keyId.v}
                 onChange={v => setKeyId({ v, seeded: true })}
-                commitOn="done"
                 placeholder="Key ID — 10 characters"
+                plain
                 ariaLabel="App Store Connect key id"
                 className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px] placeholder:text-white/30 border border-hairline"
               />
               <TouchInput
                 value={vendor.v}
                 onChange={v => setVendor({ v, seeded: true })}
-                commitOn="done"
                 numeric
                 placeholder="Vendor number"
+                plain
                 ariaLabel="Vendor number"
                 className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px] placeholder:text-white/30 border border-hairline"
               />
@@ -362,10 +362,10 @@ export function AppStoreTab() {
             <TouchInput
               value={pem}
               onChange={setPem}
-              commitOn="done"
               multiline
               rows={3}
               placeholder="…or paste the key file here, BEGIN line to END line"
+              plain
               ariaLabel="Private key"
               className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[12px] font-mono placeholder:text-white/30 border border-hairline"
             />

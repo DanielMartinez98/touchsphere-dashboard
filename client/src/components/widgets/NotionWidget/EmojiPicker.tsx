@@ -48,7 +48,6 @@ export default function EmojiPicker({
             <TouchInput
               value={query}
               onChange={setQuery}
-              commitOn="change"
               placeholder="Search…"
               ariaLabel="Search emoji"
               className="flex-1 bg-white/[0.06] text-white text-sm rounded-lg px-3 py-2 outline-none placeholder-white/25"

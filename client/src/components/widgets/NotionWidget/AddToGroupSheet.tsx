@@ -125,7 +125,7 @@ export default function AddToGroupSheet({ item, kind, groups, onClose }: Props) 
                   className="flex-shrink-0 w-11 h-11 rounded-lg bg-white/[0.06] active:bg-white/10 text-2xl">
                   {icon}
                 </button>
-                <TouchInput value={name} onChange={setName} commitOn="change"
+                <TouchInput value={name} onChange={setName}
                   placeholder="Group name…"
                   ariaLabel="Group name"
                   className="flex-1 bg-white/10 text-white rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-green-400" />

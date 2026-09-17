@@ -37,10 +37,8 @@ export type KeyDef =
   /** Switches pages. `label` is what iOS writes on it (`123`, `#+=`, `ABC`). */
   | { k: 'page'; to: KeyPage; label: string; w?: number }
   | { k: 'space'; w?: number }
-  /** Newline in a multiline field; in a single-line one iOS's return commits. */
+  /** iOS's return: a newline in a multiline field, Done (commit and close) in a one-line one. */
   | { k: 'enter'; w?: number }
-  /** Our own commit-and-close. iOS's return does both jobs; ours are separate. */
-  | { k: 'done'; w?: number }
   /** Blank filler. Row 2 of the iPhone board is inset by half a key each side. */
   | { k: 'gap'; w?: number }
 
@@ -130,42 +128,28 @@ export const TABLET: Layout = {
 }
 
 /**
- * The bottom row.
+ * The bottom row: iOS's, on both boards — `123`, the space bar, `return`.
  *
- * Two deliberate departures from iOS, both of them fixes for this app rather
- * than decoration:
+ * It used to depart from iOS twice on the phone board (`,` and `.` flanking
+ * the space bar; a separate `↵` and `Done` parked at the far end so nothing
+ * that commits sat next to space). Both were dropped on request (2026-09-17)
+ * for the standard layout: the point of copying iOS is that a thumb already
+ * knows where everything is, and a row that is nearly iOS is worse than one
+ * that is not iOS at all. The comma is where iOS keeps it, on the `123` page;
+ * return does what iOS's does — a newline in a multiline field, Done in a
+ * one-line one — and the board closes on a tap outside it, as a phone's does.
  *
- * `,` and `.` FLANK THE SPACE BAR. On an iPhone the comma lives on the `123`
- * page, which costs two taps and a hunt every time — fine when you are writing
- * a text message and know the board by heart, bad here, where the longest thing
- * anyone types is a comma-separated image prompt. Android has put them here for
- * years and it is the right call at this width. (The tablet board doesn't need
- * this: `,` and `.` are already on its letter row, as they are on a real iPad.)
- *
- * NOTHING THAT COMMITS SITS NEXT TO SPACE. iOS's single `return` has to be two
- * keys here — one types a newline, one closes the field — and the first version
- * of this row put `↵` immediately right of the space bar, where it got hit by
- * accident constantly. Both now sit at the far end, past `.`, so the keys either
- * side of space are punctuation and a mis-tap costs a character, not the field.
+ * The weights follow the iPhone's proportions (measured: 123 ≈ 2.4, space
+ * ≈ 5.1, return ≈ 2.5 of ten columns) and sum to ROW_UNITS_PHONE so the space
+ * bar lines up under the letters above it; the tablet row sums to ROW_UNITS.
  */
-export function bottomRow(page: KeyPage, multiline: boolean, shape: Shape): KeyDef[] {
-  const toggle: KeyDef = page === 'letters'
-    ? { k: 'page', to: 'numbers', label: '123', w: 2 }
-    : { k: 'page', to: 'letters', label: 'ABC', w: 2 }
-
-  // The tablet already has punctuation and `return` on its letter rows, so its
-  // bottom row stays the plain iPad one.
-  if (shape === 'tablet') {
-    return [toggle, { k: 'space', w: 8 }, { k: 'done', w: 2 }]
-  }
-
-  const comma: KeyDef = { k: 'char', v: ',', w: 1.15 }
-  const stop:  KeyDef = { k: 'char', v: '.', w: 1.15 }
-  // Both sum to ROW_UNITS_PHONE so the space bar lines up under the letters
-  // above it instead of the row quietly having a scale of its own.
-  return multiline
-    ? [toggle, comma, { k: 'space', w: 3.7 }, stop, { k: 'enter', w: 1 }, { k: 'done', w: 1 }]
-    : [toggle, comma, { k: 'space', w: 3.7 }, stop, { k: 'done', w: 2 }]
+export function bottomRow(page: KeyPage, shape: Shape): KeyDef[] {
+  const toggle = (w: number): KeyDef => page === 'letters'
+    ? { k: 'page', to: 'numbers', label: '123', w }
+    : { k: 'page', to: 'letters', label: 'ABC', w }
+  return shape === 'tablet'
+    ? [toggle(2), { k: 'space', w: 8 }, { k: 'enter', w: 2 }]
+    : [toggle(2.5), { k: 'space', w: 5 }, { k: 'enter', w: 2.5 }]
 }
 
 /**

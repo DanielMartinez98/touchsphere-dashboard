@@ -83,7 +83,7 @@ export default function CreateTaskSheet({
             )}
             <label className="flex flex-col gap-2">
               <span className="text-sm text-white/35 uppercase tracking-wider font-medium">Title</span>
-              <TouchInput value={title} onChange={setTitle} commitOn="change"
+              <TouchInput value={title} onChange={setTitle}
                 placeholder="Task name…"
                 ariaLabel="Task title"
                 className="bg-white/10 text-white placeholder-white/20 rounded-xl px-4 py-4 text-sm outline-none focus:ring-2 focus:ring-green-400" />

@@ -110,7 +110,7 @@ function UrlPromptSheet({
            onClick={e => e.stopPropagation()}>
         <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-3" />
         <h3 className="text-sm font-bold text-white mb-3 px-1">{title}</h3>
-        <TouchInput value={v} onChange={setV} commitOn="change"
+        <TouchInput value={v} onChange={setV}
           placeholder={placeholder ?? 'https://…'}
           ariaLabel={title}
           className="bg-white/[0.06] text-white rounded-xl px-4 py-3 text-sm outline-none focus:ring-1 focus:ring-white/20 placeholder-white/30 mb-3" />
@@ -136,7 +136,7 @@ function TextPromptSheet({
            onClick={e => e.stopPropagation()}>
         <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-3" />
         <h3 className="text-sm font-bold text-white mb-3 px-1">{title}</h3>
-        <TouchInput value={v} onChange={setV} commitOn="change"
+        <TouchInput value={v} onChange={setV}
           placeholder={placeholder}
           multiline={multiline}
           rows={multiline ? 4 : undefined}

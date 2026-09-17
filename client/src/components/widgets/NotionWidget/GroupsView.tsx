@@ -31,7 +31,7 @@ function NewGroupForm({
           className="flex-shrink-0 w-11 h-11 rounded-lg bg-white/[0.06] active:bg-white/10 text-2xl">
           {icon}
         </button>
-        <TouchInput value={name} onChange={setName} commitOn="change"
+        <TouchInput value={name} onChange={setName}
           placeholder="Group name…" ariaLabel="Group name"
           className="flex-1 bg-white/10 text-white rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-green-400" />
       </div>
@@ -79,7 +79,7 @@ function GroupSettings({
     <div className="bg-white/[0.025] border border-white/[0.05] rounded-xl p-3 flex flex-col gap-3">
       {renaming ? (
         <div className="flex gap-2">
-          <TouchInput value={draft} onChange={setDraft} commitOn="change"
+          <TouchInput value={draft} onChange={setDraft}
             placeholder="Group name" ariaLabel="Group name"
             className="flex-1 bg-white/10 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-green-400" />
           <button type="button" onClick={() => { if (draft.trim()) { void api.renameGroup(group.id, draft.trim()); setRenaming(false) } }}

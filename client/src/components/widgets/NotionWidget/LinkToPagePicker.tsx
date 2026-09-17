@@ -38,7 +38,7 @@ export default function LinkToPagePicker({
 
   const list = (
     <div className="flex flex-col gap-3">
-      <TouchInput value={query} onChange={setQuery} commitOn="change"
+      <TouchInput value={query} onChange={setQuery}
         placeholder="Search workspace…"
         ariaLabel="Search pages"
         className="bg-white/[0.06] text-white rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-1 focus:ring-white/20 placeholder-white/30" />

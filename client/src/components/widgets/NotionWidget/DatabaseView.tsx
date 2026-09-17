@@ -94,7 +94,7 @@ function QuickAddRow({
   return (
     <div className="flex flex-col gap-1.5 px-1">
       <div className="flex gap-2">
-        <TouchInput value={title} onChange={setTitle} commitOn="change"
+        <TouchInput value={title} onChange={setTitle}
           placeholder="+ New row…"
           ariaLabel="New row title"
           className="flex-1 bg-white/[0.04] text-white text-sm rounded-lg px-3 py-2 outline-none focus:bg-white/[0.08] placeholder-white/25" />
@@ -688,7 +688,7 @@ export default function DatabaseView({ dbId, client, onTitle }: { dbId: string; 
                 )}
                 {saveOpen ? (
                   <div className="flex gap-2">
-                    <TouchInput value={viewName} onChange={setViewName} commitOn="change"
+                    <TouchInput value={viewName} onChange={setViewName}
                       placeholder="View name…" ariaLabel="View name"
                       className="flex-1 bg-white/10 text-white rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-green-400" />
                     <button type="button" onClick={saveCurrentView} disabled={!viewName.trim()}
@@ -834,7 +834,7 @@ function AddPropertySheet({
           <div className="flex flex-col gap-4">
             <label className="flex flex-col gap-2">
               <span className="text-sm text-white/35 uppercase tracking-wider">Name</span>
-              <TouchInput value={name} onChange={setName} commitOn="change"
+              <TouchInput value={name} onChange={setName}
                 placeholder="Property name…"
                 ariaLabel="Property name"
                 className="bg-white/10 text-white rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-green-400" />

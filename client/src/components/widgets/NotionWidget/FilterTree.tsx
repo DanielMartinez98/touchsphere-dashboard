@@ -259,7 +259,7 @@ function ConditionRow({
     )
   } else if (condition.type === 'number') {
     valueUi = (
-      <TouchInput value={String(condition.value ?? '')} onChange={v => onChange({ value: v })} commitOn="change"
+      <TouchInput value={String(condition.value ?? '')} onChange={v => onChange({ value: v })}
         placeholder="number"
         ariaLabel="Filter value"
         className="bg-white/[0.06] text-white text-sm rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-white/20 w-28" />
@@ -268,7 +268,7 @@ function ConditionRow({
     valueUi = <PeopleValue value={condition.value} onChange={v => onChange({ value: v })} />
   } else {
     valueUi = (
-      <TouchInput value={String(condition.value ?? '')} onChange={v => onChange({ value: v })} commitOn="change"
+      <TouchInput value={String(condition.value ?? '')} onChange={v => onChange({ value: v })}
         placeholder="value…"
         ariaLabel="Filter value"
         className="bg-white/[0.06] text-white text-sm rounded-lg px-2.5 py-1.5 outline-none focus:ring-1 focus:ring-white/20 flex-1 min-w-[8rem]" />

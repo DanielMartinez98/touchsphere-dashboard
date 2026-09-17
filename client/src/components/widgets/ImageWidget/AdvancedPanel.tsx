@@ -120,16 +120,19 @@ function NumberField({
   // rather than 4.0 — the decimals only bound the precision, they don't have to
   // be spelled out.
   const shown = value === 0 && auto ? '' : String(round(value))
+  // What is being typed, until it is committed; null when the field shows the value.
+  const [draft, setDraft] = useState<string | null>(null)
 
   return (
     <div className="flex items-center gap-2">
       <button type="button" className={btn} onClick={() => bump(-1)}
               disabled={value === 0 && !!auto} aria-label="Less">−</button>
       <TouchInput
-        value={shown}
-        onChange={commit}
-        // commit() clamps and saves; "9" on the way to "96" must not be either.
-        commitOn="done"
+        value={draft ?? shown}
+        onChange={setDraft}
+        // commit() clamps and saves; "9" on the way to "96" must not be either,
+        // so the box shows what is typed and the number lands when editing ends.
+        onCommit={v => { setDraft(null); commit(v) }}
         placeholder={auto ?? ''}
         ariaLabel={ariaLabel}
         numeric
@@ -513,7 +516,7 @@ export default function AdvancedPanel({
               <div className="flex gap-2">
                 <TouchInput
                   value={String(params.seed)}
-                  onChange={v => {
+                  onCommit={v => {
                     // The touch keyboard can produce anything; a NaN seed would
                     // be rejected server-side and silently snap back to 0.
                     const n = parseInt(v.replace(/\D/g, ''), 10)
@@ -522,7 +525,6 @@ export default function AdvancedPanel({
                     })
                   }}
                   ariaLabel="Seed value"
-                  commitOn="done"
                   numeric
                   className="flex-1 h-12 bg-white/[0.07] text-white rounded-xl px-4 text-[15px]
                              font-semibold tabular-nums border border-hairline"

@@ -99,7 +99,7 @@ function TitleAndIcon({
             : schema.icon?.type === 'url' ? <img src={schema.icon.value} alt="" className="w-6 h-6 rounded inline" />
             : '🗄️'}
         </button>
-        <TouchInput value={name} onChange={setName} commitOn="change"
+        <TouchInput value={name} onChange={setName}
           placeholder="Database name"
           ariaLabel="Database name"
           className="flex-1 bg-white/10 text-white rounded-xl px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-green-400" />
@@ -181,7 +181,7 @@ function PropertyRow({
           {/* Rename */}
           {!isTitle && (
             <div className="flex gap-1.5">
-              <TouchInput value={draft} onChange={setDraft} commitOn="change"
+              <TouchInput value={draft} onChange={setDraft}
                 placeholder="Rename property"
                 ariaLabel="Property name"
                 className="flex-1 bg-white/10 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-green-400" />
@@ -196,7 +196,7 @@ function PropertyRow({
               <div className="flex flex-col gap-1.5 bg-white/[0.025] rounded-lg p-2">
                 {opts.map((o, i) => (
                   <div key={i} className="flex items-center gap-1.5">
-                    <TouchInput value={o.name} onChange={v => editOptionName(i, v)} commitOn="change"
+                    <TouchInput value={o.name} onChange={v => editOptionName(i, v)}
                       placeholder="Option name"
                       ariaLabel="Option name"
                       className="flex-1 bg-white/10 text-white rounded-md px-2 py-1.5 text-sm outline-none focus:ring-1 focus:ring-white/30" />

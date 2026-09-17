@@ -1,66 +1,69 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { TouchKeyboard, type KeyboardTarget } from './TouchKeyboard'
+import { useKeyboardMode } from '../hooks/useKeyboardMode'
 
-// Drop-in replacement for <input> / <textarea> that opens the on-screen
-// TouchKeyboard when tapped (kiosk has no physical keyboard). `inputMode='none'`
-// is what keeps the native IME away. Edits go through TouchKeyboard's onChange
-// and commit to the parent live (commitOn='change', the default) or only when
-// Done is tapped (commitOn='done'). Live is the default because a field whose
-// parent only learns the text on Done reads as broken: a search that doesn't
-// search, a Save button that stays grey, a prompt the Draw button ignores —
-// every one of those was reported as "the text does not update". 'done' is
-// for the few fields whose parent does something expensive or lossy per
-// value (a POST, a clamp), and those name it explicitly.
+// Drop-in replacement for <input> / <textarea>: the one way text is typed in
+// this app, whichever device it is on.
+//
+// ON THE KIOSK it opens the on-screen TouchKeyboard when tapped, since the Pi
+// has no keyboard of its own; `inputMode='none'` is what keeps the (absent)
+// native IME away. ON A PHONE, A TABLET OR A DESKTOP it is a plain field and
+// the device's own keyboard comes up — autocorrect, dictation, emoji and all,
+// which no board drawn in a web page can offer. `useKeyboardMode` decides per
+// device (Settings → Hardware overrides it).
+//
+// ONE RULE FOR WHAT THE PARENT SEES, on both: every keystroke reaches
+// `onChange` as it happens, and `onCommit` fires once when editing ends — Done
+// on the board, or the field losing focus / Enter with a native keyboard.
+// There used to be a `commitOn='done'` switch that handed the parent nothing
+// until Done was tapped, for fields whose parent POSTed or clamped per value;
+// it read as "typing does nothing until I find the Done key", and with a
+// native keyboard there is no Done key to find. Those parents now debounce
+// (AutosaveInput) or act on `onCommit` instead, and the field always shows
+// what is being typed, because while editing the local draft is the value.
 //
 // The element is handed to TouchKeyboard by ref, which is what makes the caret
-// real — tap to put it anywhere, drag or double-tap to select, and the keyboard
-// edits at that selection instead of appending at the end.
+// real on the kiosk — tap to put it anywhere, drag or double-tap to select, and
+// the keyboard edits at that selection instead of appending at the end.
 
-interface Props {
+export interface TouchInputProps {
   value:        string
-  onChange:     (v: string) => void
+  /** Every keystroke, as it happens. Optional only for a field that acts on `onCommit` alone (a rename). */
+  onChange?:    (v: string) => void
+  /** Editing ended, with the final text: Done on the board, or blur / Enter with a native keyboard. */
+  onCommit?:    (v: string) => void
   placeholder?: string
   multiline?:   boolean
   className?:   string
   ariaLabel?:   string
-  // 'change' (default) hands every keystroke to the parent; 'done' only the
-  // final value, for parents that POST or clamp on each one.
-  commitOn?:    'done' | 'change'
   rows?:        number
-  /** Draw the dialler pad instead of the letter board (steps, cfg, seed…). */
+  /** A number-only field: the dialler pad on the kiosk, the numeric keyboard on a phone. */
   numeric?:     boolean
+  /** Ids, keys, tokens, tags: no autocorrect or auto-capitalisation from a phone's keyboard. */
+  plain?:       boolean
 }
 
 export function TouchInput({
-  value, onChange, placeholder, multiline = false,
-  className = '', ariaLabel, commitOn = 'change', rows, numeric = false,
-}: Props) {
-  const [open,  setOpen]  = useState(false)
+  value, onChange, onCommit, placeholder, multiline = false,
+  className = '', ariaLabel, rows, numeric = false, plain = false,
+}: TouchInputProps) {
+  const native = useKeyboardMode() === 'native'
+  // Editing = the board is open (kiosk) or the field has focus (native).
+  const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(value)
   const ref = useRef<KeyboardTarget | null>(null)
 
-  // Sync external value updates when keyboard isn't open. While open the
-  // local draft is the source of truth so external rerenders don't clobber
-  // in-progress typing.
-  useEffect(() => { if (!open) setDraft(value) }, [value, open])
+  // While editing, the local draft is the source of truth, so external
+  // rerenders (a debounced save coming back from the server) don't clobber
+  // in-progress typing; the rest of the time the field shows the parent's
+  // value. The draft is taken from the value at the moment editing starts —
+  // no effect keeping the two in step, which would be a render per keystroke.
+  const shown = editing ? draft : value
 
-
-  // Grow a multiline field to fit what's in it.
-  //
-  // `rows` is a FLOOR now, not a window. A three-row box holding a forty-word
-  // image prompt scrolls internally, and an internal scroller is a dead strip
-  // for the page behind it: a finger dragging to scroll the Draw panel that
-  // happens to start on the prompt — which is wide, near the top, and the
-  // biggest single target up there — moves the prompt's own two lines of
-  // overflow and then stops, because `overscroll-behavior: contain` (index.css)
-  // won't chain it out. Growing the box removes the scroller instead of fighting
-  // it, and has the side benefit that you can see the whole thing you typed.
-  const shown = open ? draft : value
-
-  // Opening the keyboard covers the bottom third of the screen, and half the
-  // fields in this app live down there — a sheet's input lands underneath it
-  // and you type blind.
+  // Opening the board covers the bottom third of the kiosk's screen, and half
+  // the fields in this app live down there — a sheet's input lands underneath
+  // it and you type blind.
   //
   // `block: 'center'` was not enough on its own for two reasons, and both were
   // reported as "I can't read the text while typing". A field already at the
@@ -75,14 +78,15 @@ export function TouchInput({
   // `nearest` for a box that fits, and `start` for one that doesn't — which
   // keeps the first line pinned near the top and leaves the most room for what
   // follows. Re-run when the box grows past the board, so a prompt that gets
-  // long as you type doesn't slide back under it.
+  // long as you type doesn't slide back under it. A native keyboard does this
+  // itself, so it is the kiosk's board only.
   const boardH = () => {
     const v = getComputedStyle(document.documentElement).getPropertyValue('--ts-keyboard-h')
     const n = parseFloat(v)
     return Number.isFinite(n) ? n : 0
   }
   useEffect(() => {
-    if (!open) return
+    if (!editing || native) return
     const el = ref.current
     if (!el) return
     // A frame's delay: the board mounts after this and its height is what the
@@ -99,7 +103,17 @@ export function TouchInput({
     // `shown` is a dep on purpose: a growing box has to be re-checked, and
     // scrollIntoView on an element already in view is a no-op, so this is
     // quiet while you type inside the visible area.
-  }, [open, shown])
+  }, [editing, native, shown])
+
+  // Grow a multiline field to fit what's in it.
+  //
+  // `rows` is a FLOOR, not a window. A three-row box holding a forty-word image
+  // prompt scrolls internally, and an internal scroller is a dead strip for the
+  // page behind it: a finger dragging to scroll the Draw panel that happens to
+  // start on the prompt moves the prompt's own two lines of overflow and then
+  // stops, because `overscroll-behavior: contain` (index.css) won't chain it
+  // out. Growing the box removes the scroller instead of fighting it, and has
+  // the side benefit that you can see the whole thing you typed.
   useLayoutEffect(() => {
     const el = ref.current
     if (!el || !multiline) return
@@ -109,45 +123,72 @@ export function TouchInput({
     el.style.height = `${el.scrollHeight}px`
   }, [multiline, shown])
 
-  function handleKeyboardChange(next: string) {
+  function change(next: string) {
     setDraft(next)
-    if (commitOn === 'change') onChange(next)
+    onChange?.(next)
   }
-  function handleDone() {
-    setOpen(false)
-    if (commitOn === 'done' && draft !== value) onChange(draft)
+  function finish(next: string) {
+    setEditing(false)
+    onCommit?.(next)
   }
 
+  // Kiosk: a tap opens the board. Never preventDefault and never force focus:
+  // the browser is already placing the caret where the finger landed, and
+  // stealing focus mid-tap is exactly what would move it back to the end.
   function handleOpen() {
-    // Never preventDefault and never force focus: the browser is already
-    // placing the caret where the finger landed, and stealing focus mid-tap is
-    // exactly what would move it back to the end.
-    if (!open) setOpen(true)
+    if (native || editing) return
+    setDraft(value)
+    setEditing(true)
+  }
+  function handleDone() { finish(draft) }
+
+  // Native: focus and blur are the edges of editing, and Enter in a one-line
+  // field is Done — it blurs, which commits.
+  function handleFocus() {
+    if (!native) return
+    setDraft(value)
+    setEditing(true)
+  }
+  function handleBlur() {
+    if (native && editing) finish(draft)
+  }
+  function handleKeyDown(e: React.KeyboardEvent<KeyboardTarget>) {
+    if (native && !multiline && e.key === 'Enter') {
+      e.preventDefault()
+      e.currentTarget.blur()
+    }
   }
 
   const shared = {
     value:       shown,
     placeholder,
-    // NOT readOnly.
-    //
-    // It used to be, to keep the native IME away — but Chromium paints no caret
-    // at all in a readonly field, so tapping into the middle of a prompt put an
-    // invisible caret somewhere and looked like the tap had done nothing. That
-    // is the whole interaction this component exists for, so `inputMode='none'`
-    // carries the job on its own: it is the attribute that means "this app
-    // supplies its own keyboard", the field stays a real editable field, and the
-    // caret and selection are the browser's, visible and draggable.
-    //
-    // The trade: a physical keyboard can now type straight into the field. On
-    // the kiosk there isn't one; on a desktop browser it is the behaviour you'd
-    // want anyway, which is why onChange below keeps the draft in step instead
-    // of blocking it.
-    inputMode:   'none' as const,
-    onChange:    (e: React.ChangeEvent<KeyboardTarget>) => handleKeyboardChange(e.target.value),
-    onClick:        handleOpen,
-    onPointerDown:  handleOpen,
-    'aria-label':   ariaLabel,
-    className:   `${className} cursor-text`,
+    // On the kiosk `inputMode='none'` is the attribute that means "this app
+    // supplies its own keyboard"; the field stays a real editable field (NOT
+    // readOnly — Chromium paints no caret in a readonly field, so tapping into
+    // the middle of a prompt looked like the tap had done nothing), so the
+    // caret and selection are the browser's, visible and draggable. A
+    // physical keyboard can type straight in, which is why onChange keeps the
+    // draft in step instead of blocking it. On a device with its own keyboard
+    // the hint is the kind of keyboard wanted: the number pad for a number.
+    ...(native
+      ? {
+          inputMode:      numeric ? 'decimal' as const : undefined,
+          enterKeyHint:   multiline ? undefined : 'done' as const,
+          autoCorrect:    plain ? 'off' : undefined,
+          autoCapitalize: plain ? 'none' : undefined,
+          spellCheck:     plain ? false : undefined,
+          onFocus:        handleFocus,
+          onBlur:         handleBlur,
+          onKeyDown:      handleKeyDown,
+        }
+      : {
+          inputMode:      'none' as const,
+          onClick:        handleOpen,
+          onPointerDown:  handleOpen,
+        }),
+    onChange:     (e: React.ChangeEvent<KeyboardTarget>) => change(e.target.value),
+    'aria-label': ariaLabel,
+    className:    `${className} cursor-text`,
   }
 
   return (
@@ -169,12 +210,13 @@ export function TouchInput({
           At the body there is no such ancestor, so bottom-0 is the screen and
           --ts-keyboard-h means what every consumer assumes it means. Nothing
           about the board depends on DOM adjacency: it edits through
-          `targetRef` and closes only from its own Done key. */}
-      {open && createPortal(
+          `targetRef`, and closes from its Done key or a tap outside it. */}
+      {!native && editing && createPortal(
         <TouchKeyboard
           value={draft}
-          onChange={handleKeyboardChange}
+          onChange={change}
           onDone={handleDone}
+          onDismiss={handleDone}
           multiline={multiline}
           numeric={numeric}
           targetRef={ref}

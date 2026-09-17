@@ -296,7 +296,7 @@ export function IndexersTab({ request }: { request: { q: string; seq: number } }
         <div>
           <p className="text-[11px] uppercase tracking-widest text-white/40 font-semibold mb-1.5">Query</p>
           <div className="flex gap-2">
-            <TouchInput value={query} onChange={v => { changeQuery(v); if (v.trim()) void search(v, { type, indexers: indexerIds, cats, append: false, offset: 0 }) }} commitOn="done"
+            <TouchInput value={query} onChange={changeQuery} onCommit={v => { if (v.trim()) void search(v, { type, indexers: indexerIds, cats, append: false, offset: 0 }) }}
               placeholder={type === 'search' ? 'Search…' : `${type === 'tvsearch' ? 'Show' : type === 'movie' ? 'Film' : type === 'music' ? 'Artist or album' : 'Author or title'}, or an id token…`}
               ariaLabel="Search query"
               className="flex-1 min-w-0 bg-white/10 text-white rounded-2xl px-4 py-3.5 text-base placeholder:text-white/30 border border-hairline" />

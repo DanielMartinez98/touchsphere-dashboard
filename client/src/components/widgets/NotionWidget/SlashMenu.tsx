@@ -23,7 +23,7 @@ export default function SlashMenu({
            onClick={e => e.stopPropagation()}>
         <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-3" />
         <h3 className="text-sm font-bold text-white mb-3 px-1">Insert block</h3>
-        <TouchInput value={query} onChange={setQuery} commitOn="change"
+        <TouchInput value={query} onChange={setQuery}
           placeholder="Filter…" ariaLabel="Filter blocks"
           className="bg-white/[0.06] text-white rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-1 focus:ring-white/20 placeholder-white/30 mb-3" />
         <div className="flex-1 overflow-y-auto -mx-1 px-1">

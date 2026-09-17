@@ -26,6 +26,7 @@ import { guideProgress } from '../../../types'
 import { openBrowse } from '../../../hooks/useBrowse'
 import { MediaCover } from './MediaCover'
 import { TouchKeyboard } from '../../TouchKeyboard'
+import { useKeyboardMode } from '../../../hooks/useKeyboardMode'
 
 const KIND_LABEL: Record<SectionKind, string> = {
   progression: 'Walkthrough',
@@ -236,6 +237,7 @@ function ChapterMapView({
   const [dragging, setDragging] = useState<string | null>(null)
   const [selected, setSelected] = useState<MapPinView | null>(null)
   const [adding, setAdding] = useState<{ x: number; y: number } | null>(null)
+  const touch = useKeyboardMode() === 'touch'
   const [draft, setDraft] = useState('')
 
   const pins: MapPinView[] = [
@@ -346,19 +348,22 @@ function ChapterMapView({
             <p className="text-sm font-semibold text-white mb-3">What is here?</p>
             <input
               value={draft}
-              readOnly
-              inputMode="none"
+              readOnly={touch}
+              inputMode={touch ? 'none' : undefined}
+              onChange={e => setDraft(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { onAddPin(adding.x, adding.y, draft.trim()); setAdding(null) } }}
+              autoFocus={!touch}
               placeholder="bomb wall, heart piece, the shop…"
               className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-sm border border-hairline mb-3"
             />
-            <TouchKeyboard
+            {touch && <TouchKeyboard
               value={draft}
               onChange={setDraft}
               onDone={() => {
                 onAddPin(adding.x, adding.y, draft.trim())
                 setAdding(null)
               }}
-            />
+            />}
             <button type="button" onClick={() => setAdding(null)}
               className="w-full h-12 rounded-xl bg-white/10 text-white/70 text-sm font-semibold">
               Cancel
@@ -736,6 +741,7 @@ function ReorderSheet({
   // Handed to the keyboard so its caret, selection and toolbar act on this
   // field rather than blindly appending at the end.
   const inputRef = useRef<HTMLInputElement>(null)
+  const touch = useKeyboardMode() === 'touch'
 
   const commit = () => {
     onSubmit(value.trim())
@@ -758,8 +764,9 @@ function ReorderSheet({
             {/* Not readOnly: Chromium paints no caret in one, and tapping into the
                 middle of the text is how you move the caret. inputMode="none"
                 is what keeps the native keyboard away. */}
-            <input type="text" inputMode="none" value={value} ref={inputRef}
+            <input type="text" inputMode={touch ? 'none' : undefined} value={value} ref={inputRef}
               onChange={e => setValue(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') commit() }}
               autoFocus
               placeholder="how should it be organized?"
               className="flex-1 bg-glass-2 text-white rounded-xl px-4 py-3 text-base outline-none placeholder:text-white/25" />
@@ -769,7 +776,7 @@ function ReorderSheet({
             </button>
           </div>
         </div>
-        <TouchKeyboard value={value} onChange={setValue} onDone={commit} targetRef={inputRef} />
+        {touch && <TouchKeyboard value={value} onChange={setValue} onDone={commit} targetRef={inputRef} />}
       </div>
     </div>
   )

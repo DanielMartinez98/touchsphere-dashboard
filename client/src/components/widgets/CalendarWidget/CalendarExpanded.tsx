@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { fetchMonthEvents } from '../../../hooks/useCalendar'
+import { TouchInput } from '../../TouchInput'
 import type { CalendarEvent } from '../../../types'
 import { playStartupSound } from '../../../utils/sound'
 
@@ -344,7 +345,6 @@ function NewEventSheet({ defaultDate, onClose, onSave }: NewEventSheetProps) {
   const [startT, setStartT] = useState('09:00')
   const [endT,   setEndT]   = useState('10:00')
   const [repeat, setRepeat] = useState<RepeatType>('none')
-  const titleRef = useRef<HTMLInputElement>(null)
 
   function save() {
     const trimmed = title.trim()
@@ -377,16 +377,15 @@ function NewEventSheet({ defaultDate, onClose, onSave }: NewEventSheetProps) {
             {/* Title — triggers keyboard on touchscreen */}
             <label className="flex flex-col gap-1.5">
               <span className="text-xs text-white/40">Title</span>
-              <input
-                ref={titleRef}
-                type="text"
-                inputMode="text"
-                autoFocus
-                autoComplete="off"
-                placeholder="Event name…"
+              {/* TouchInput rather than a bare input: on the kiosk this is the
+                  only way a keyboard comes up at all, and on a phone it is the
+                  phone's own. Saving stays on the button — a commit on blur
+                  would fire on the way to the date picker. */}
+              <TouchInput
                 value={title}
-                onChange={e => setTitle(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && save()}
+                onChange={setTitle}
+                placeholder="Event name…"
+                ariaLabel="Event title"
                 className="bg-white/10 text-white placeholder-white/20 rounded-xl px-4 py-4
                            text-sm outline-none focus:ring-2 focus:ring-cyan-400 w-full" />
             </label>
