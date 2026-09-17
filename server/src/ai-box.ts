@@ -168,7 +168,14 @@ export interface AgentStatus {
   models: { total: number; done: number; current: string | null; failed: string[] }
 }
 
-const agentStatus = new Map<string, { at: number; status: AgentStatus | null; error?: string }>()
+/** Why an agent could not be asked: the PC is off or asleep, or it is on and the agent is not running. */
+export type AgentReach = 'ok' | 'offline' | 'agent-down' | 'error'
+
+class AgentError extends Error {
+  constructor(message: string, readonly reach: AgentReach) { super(message) }
+}
+
+const agentStatus = new Map<string, { at: number; status: AgentStatus | null; error?: string; reach: AgentReach }>()
 
 function agentUrl(box: AiBox): string {
   for (const entry of (process.env['AI_BOX_AGENTS'] ?? '').split(/[,;\n]/)) {
@@ -196,13 +203,18 @@ async function agentCall(box: AiBox, method: 'GET' | 'POST', pathname: string, b
       body: body ? JSON.stringify(body) : undefined,
     })
     const json = await res.json().catch(() => null) as (AgentStatus & { error?: string }) | null
-    if (!res.ok || !json) throw new Error(json?.error ?? `HTTP ${res.status}`)
+    if (!res.ok || !json) throw new AgentError(json?.error ?? `HTTP ${res.status}`, 'error')
     return json
   } catch (err) {
+    if (err instanceof AgentError) throw err
+    // A timeout is a PC that is off or asleep. A refused or dropped connection
+    // is a PC that answered — `tailscale serve` accepts and then finds nothing
+    // behind the port — so the machine is on and only the agent is missing.
     const code = (err as { cause?: { code?: string } }).cause?.code ?? ''
-    throw new Error(err instanceof Error && /abort/i.test(err.message) ? `${box.name} did not answer`
-      : code === 'ECONNRESET' || code === 'UND_ERR_SOCKET' || code === 'ECONNREFUSED' ? `${box.name}'s agent is not running`
-      : err instanceof Error ? err.message : String(err))
+    if (err instanceof Error && /abort/i.test(err.message)) throw new AgentError(`${box.name} did not answer`, 'offline')
+    if (code === 'ECONNRESET' || code === 'UND_ERR_SOCKET' || code === 'ECONNREFUSED') throw new AgentError(`${box.name}'s agent is not running`, 'agent-down')
+    if (code === 'EHOSTUNREACH' || code === 'ENETUNREACH') throw new AgentError(`${box.name} is unreachable`, 'offline')
+    throw new AgentError(err instanceof Error ? err.message : String(err), 'error')
   } finally {
     clearTimeout(timer)
   }
@@ -211,12 +223,16 @@ async function agentCall(box: AiBox, method: 'GET' | 'POST', pathname: string, b
 async function refreshAgent(box: AiBox): Promise<void> {
   if (!agentUrl(box)) return
   try {
-    agentStatus.set(box.id, { at: Date.now(), status: await agentCall(box, 'GET', '/status', undefined, 6_000) })
+    agentStatus.set(box.id, { at: Date.now(), status: await agentCall(box, 'GET', '/status', undefined, 6_000), reach: 'ok' })
   } catch (err) {
     // Unreachable is not "off": keep the last known wish so an asleep PC that
     // was switched off stays off in the auto picks.
     const prev = agentStatus.get(box.id)?.status ?? null
-    agentStatus.set(box.id, { at: Date.now(), status: prev, error: err instanceof Error ? err.message : String(err) })
+    agentStatus.set(box.id, {
+      at: Date.now(), status: prev,
+      error: err instanceof Error ? err.message : String(err),
+      reach: err instanceof AgentError ? err.reach : 'error',
+    })
   }
 }
 
@@ -226,7 +242,7 @@ export async function setBoxPower(id: string, on: boolean): Promise<void> {
   if (!box) throw new Error(`no AI box called "${id}"`)
   const before = snapshot()
   const status = await agentCall(box, 'POST', '/power', { on })
-  agentStatus.set(box.id, { at: Date.now(), status })
+  agentStatus.set(box.id, { at: Date.now(), status, reach: 'ok' })
   console.log(`[ai-box] ${box.name} switched ${on ? 'on' : 'off'} from the dashboard`)
   recomputeAuto()
   announce(before)
@@ -270,8 +286,9 @@ async function probe(box: AiBox, port: number): Promise<void> {
     // Node's fetch says "fetch failed" for everything; the reason is on `cause`.
     const code = (err as { cause?: { code?: string } }).cause?.code ?? ''
     const msg = err instanceof Error && /abort/i.test(err.message) ? 'no answer'
-      : code === 'ECONNREFUSED' ? 'nothing listening'
-      : code === 'ECONNRESET' || code === 'UND_ERR_SOCKET' ? 'connection dropped'
+      // Refused, or accepted and dropped by `tailscale serve` with nothing behind
+      // it: either way the PC answered and the service is what is missing.
+      : code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'UND_ERR_SOCKET' ? 'not running'
       : code === 'EHOSTUNREACH' || code === 'ENETUNREACH' ? 'unreachable'
       : code || (err instanceof Error ? err.message : String(err))
     // Down only on the second miss in a row. RVC's server is single-threaded
@@ -415,7 +432,7 @@ export interface AiBoxView {
     id: string; name: string; host: string
     ports: { port: number; up: boolean | null; ms: number | null; checkedAt: string | null; error: string | null }[]
     /** Null when the box has no agent, i.e. no on/off switch. */
-    power: { status: AgentStatus | null; checkedAt: string | null; error: string | null } | null
+    power: { status: AgentStatus | null; checkedAt: string | null; error: string | null; reach: AgentReach | null } | null
   }[]
   services: { key: string; label: string; port: number; box: string | null; url: string }[]
 }
@@ -442,7 +459,7 @@ export function aiBoxView(): AiBoxView {
       power: agentUrl(b)
         ? (() => {
             const a = agentStatus.get(b.id)
-            return { status: a?.status ?? null, checkedAt: a ? new Date(a.at).toISOString() : null, error: a?.error ?? null }
+            return { status: a?.status ?? null, checkedAt: a ? new Date(a.at).toISOString() : null, error: a?.error ?? null, reach: a?.reach ?? null }
           })()
         : null,
     })),
