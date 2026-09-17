@@ -1,11 +1,12 @@
-// The expanded top-left corner: the Plex library, the downloads, the requests.
+// The expanded top-left corner: the Plex library, the downloads, the requests,
+// the indexers.
 //
-// Three tabs on the same sticky bar TimeExpanded uses, because the corner is
-// asked three different questions — "what can I watch", "is it here yet", and
-// "can we get X" — and each is answered by a different service (Plex,
-// qBittorrent via the *arr pair, Seerr). Tabs whose service isn't configured
-// are simply not drawn: an empty Requests tab is a permanent reminder of a
-// feature nobody set up.
+// Four tabs on the same sticky bar TimeExpanded uses, because the corner is
+// asked four different questions — "what can I watch", "is it here yet",
+// "can we get X" and "what is actually out there for X" — and each is
+// answered by a different service (Plex, qBittorrent via the *arr pair, Seerr,
+// Prowlarr). Tabs whose service isn't configured are simply not drawn: an
+// empty Requests tab is a permanent reminder of a feature nobody set up.
 //
 // The Library tab is two layers, the way the guide is: the browse layer
 // (search, continue watching, recently added) and, on tapping anything, that
@@ -22,7 +23,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  Library, Download, Inbox, Play, Tv, Search, Check, Clock, Languages, Subtitles, AlertTriangle, RefreshCw,
+  Library, Download, Inbox, Play, Tv, Search, Check, Clock, Languages, Subtitles, AlertTriangle, RefreshCw, Radar,
 } from 'lucide-react'
 import { TouchInput } from '../../TouchInput'
 import {
@@ -32,6 +33,7 @@ import {
 } from '../../../hooks/usePlex'
 import { ACCENT, itemTitle, itemSubtitle, PlexColumnSlider, PosterGrid, Row } from './items'
 import { clientRole } from '../../../hooks/useClientRole'
+import { IndexersTab } from './IndexersTab'
 import { DownloadsTab } from './DownloadsTab'
 import {
   BackButton, Backdrop, CastRow, CollectionPage, CrewLine, factsLine, FolderPage, GenreChips, HeaderPoster,
@@ -49,6 +51,10 @@ export default function PlexExpanded({ status }: { status: PlexStatus | null }) 
   // a library, a folder, a collection, or an item, each a place to go back from.
   const [stack, setStack] = useState<Layer[]>([])
   const [query, setQuery] = useState('')
+  // The Indexers tab keeps its own search — a spoken "search the indexers for
+  // X" must not land X in the library's search field — stamped with the
+  // request's seq so the same words asked twice run twice.
+  const [indexerQuery, setIndexerQuery] = useState<{ q: string; seq: number }>({ q: '', seq: 0 })
   const req = usePlexPanelRequest()
   const seenReq = useRef(0)
 
@@ -58,16 +64,19 @@ export default function PlexExpanded({ status }: { status: PlexStatus | null }) 
     seenReq.current = req.seq
     setTab(req.tab)
     if (req.key) setStack([{ kind: 'item', key: req.key }])
+    else if (req.query !== undefined && req.tab === 'indexers') setIndexerQuery({ q: req.query, seq: req.seq })
     else if (req.query !== undefined) { setStack([]); setQuery(req.query) }
     else setStack([])
   }, [req])
 
   const showDownloads = !!status && (status.features.torrents || status.services.sonarr.configured || status.services.radarr.configured)
   const showRequests = !!status?.features.requests
+  const showIndexers = !!status?.features.indexers
   const TABS: { id: PlexTab; label: string; icon: React.ReactElement }[] = [
     { id: 'library', label: 'Library', icon: <Library size={18} /> },
     ...(showDownloads ? [{ id: 'downloads' as const, label: 'Downloads', icon: <Download size={18} /> }] : []),
     ...(showRequests ? [{ id: 'requests' as const, label: 'Requests', icon: <Inbox size={18} /> }] : []),
+    ...(showIndexers ? [{ id: 'indexers' as const, label: 'Indexers', icon: <Radar size={18} /> }] : []),
   ]
 
   const open = useCallback((key: string) => setStack(s => [...s, { kind: 'item', key }]), [])
@@ -115,6 +124,7 @@ export default function PlexExpanded({ status }: { status: PlexStatus | null }) 
         )}
         {tab === 'downloads' && <DownloadsTab canControl={!!status?.features.torrents} />}
         {tab === 'requests' && <RequestsTab />}
+        {tab === 'indexers' && <IndexersTab request={indexerQuery} />}
       </div>
     </div>
   )

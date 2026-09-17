@@ -30,6 +30,7 @@ import path from 'path'
 import { broadcast } from './routes/system'
 import { advanceSeed, paramsFor, type ImageParams } from './image-params'
 import { estimateRender, humanMs, recordRender } from './image-timing'
+import { boxUrl, onAiBoxChange } from './ai-box'
 import { composeKontextInstruction, composeRedrawPrompt, visionModel, improvePrompt, prompterModel, readPrompter, locateBox } from './image-prompt'
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -44,8 +45,9 @@ export function imagesEnabled(): boolean {
   return COMFY_URL !== ''
 }
 
+/** Where ComfyUI is right now — re-pointed per call when its host is one of AI_BOXES. */
 export function comfyUrl(): string {
-  return COMFY_URL
+  return boxUrl(COMFY_URL)
 }
 
 // A whole render, not a single HTTP call: queue wait + checkpoint load + steps.
@@ -4091,16 +4093,17 @@ export function styleDefaults(style: string): StyleDefaults {
 async function comfyFetch(pathname: string, init?: RequestInit, timeoutMs = HTTP_MS): Promise<Response> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+  const base = comfyUrl()
   try {
-    return await fetch(`${COMFY_URL}${pathname}`, { ...init, signal: ctrl.signal })
+    return await fetch(`${base}${pathname}`, { ...init, signal: ctrl.signal })
   } catch (err) {
     // A dead GPU box is the expected failure here, and "fetch failed" tells
     // nobody anything. Name the host that didn't answer.
     const msg = err instanceof Error ? err.message : String(err)
     throw new Error(
       /abort/i.test(msg)
-        ? `${COMFY_URL} did not respond within ${(timeoutMs / 1000).toFixed(0)}s`
-        : `cannot reach ComfyUI at ${COMFY_URL} (${msg})`,
+        ? `${base} did not respond within ${(timeoutMs / 1000).toFixed(0)}s`
+        : `cannot reach ComfyUI at ${base} (${msg})`,
     )
   } finally {
     clearTimeout(timer)
@@ -4687,6 +4690,15 @@ export async function inpaintAvailable(): Promise<boolean> {
   return ok
 }
 
+// What one GPU box has installed says nothing about another, so every answer
+// above is dropped when ComfyUI moves (Settings → AI box).
+onAiBoxChange(() => {
+  holdModesCache = null
+  structureCache = null
+  segCache = null
+  inpaintCache = null
+})
+
 export interface FoundMask extends StoredMask { coverage: number; box: [number, number, number, number]; uploaded: string }
 
 /**
@@ -4989,7 +5001,7 @@ export async function comfyStats(): Promise<{ ok: boolean; detail: string }> {
   if (!COMFY_URL) return { ok: false, detail: 'COMFYUI_URL not set — image generation is disabled' }
   try {
     const res = await comfyFetch('/system_stats', undefined, 8000)
-    if (!res.ok) return { ok: false, detail: `HTTP ${res.status} from ${COMFY_URL}` }
+    if (!res.ok) return { ok: false, detail: `HTTP ${res.status} from ${comfyUrl()}` }
     const j = await res.json() as {
       devices?: { name?: string; vram_total?: number; vram_free?: number }[]
     }
@@ -4999,7 +5011,7 @@ export async function comfyStats(): Promise<{ ok: boolean; detail: string }> {
       ok: true,
       detail: dev
         ? `${dev.name ?? 'device'} — ${gb(dev.vram_free)} free of ${gb(dev.vram_total)}`
-        : `reachable at ${COMFY_URL}`,
+        : `reachable at ${comfyUrl()}`,
     }
   } catch (err) {
     return { ok: false, detail: err instanceof Error ? err.message : String(err) }

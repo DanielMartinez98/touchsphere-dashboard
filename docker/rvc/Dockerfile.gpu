@@ -30,9 +30,17 @@ RUN pip install --no-cache-dir "pip<24.1" "setuptools==65.5.0" "wheel"
 # CUDA torch, PINNED as a matched pair (same versions as the CPU image, cu121
 # wheels). cu121 works with any driver ≥ 525 — you do NOT need CUDA 12.1
 # installed on the host, just the driver.
+#
+# PyPI stays reachable as an EXTRA index for torch's own dependencies: with the
+# PyTorch index alone, pip resolves typing-extensions there, finds no wheel it
+# can use and falls back to an sdist whose build backend (flit_core) that index
+# does not carry — the build dies before torch is installed. The pinned torch
+# still comes from the PyTorch index, whose +cu121 local version sorts above
+# PyPI's plain 2.1.2.
 RUN pip install --no-cache-dir \
         "torch==2.1.2" "torchaudio==2.1.2" \
-        --index-url https://download.pytorch.org/whl/cu121
+        --index-url https://download.pytorch.org/whl/cu121 \
+        --extra-index-url https://pypi.org/simple
 
 # Must exist before fairseq builds: its setup.py imports numpy, and Cython 3
 # breaks its generated sources.

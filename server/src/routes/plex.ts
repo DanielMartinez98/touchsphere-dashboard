@@ -1,4 +1,4 @@
-// REST surface for the media stack (Plex + Seerr + qBittorrent + *arr + Bazarr).
+// REST surface for the media stack (Plex + Seerr + qBittorrent + *arr + Bazarr + Prowlarr).
 // The clients are in ../media-stack.ts; this file only shapes their answers for
 // the screen and proxies the two things a browser can't fetch from Plex itself:
 // images and the HLS stream, both of which need the token this server holds.
@@ -37,6 +37,15 @@ import {
   plexSelectStreams,
   plexStopTranscode,
   plexTimeline,
+  prowlarrCategories,
+  prowlarrDownloadClients,
+  prowlarrEnabled,
+  prowlarrGrab,
+  prowlarrGrabMany,
+  prowlarrIndexers,
+  prowlarrSearch,
+  INDEXER_CATEGORIES,
+  INDEXER_SEARCH_TYPES,
   qbitEnabled,
   seerrEnabled,
   seerrRequest,
@@ -83,8 +92,8 @@ router.get('/status', async (_req: Request, res: Response) => {
   res.json({
     enabled: plexEnabled(),
     services: health,
-    // The three optional blocks the panel offers, so it can hide what isn't there.
-    features: { requests: seerrEnabled(), torrents: qbitEnabled(), subtitles: bazarrEnabled() },
+    // The optional blocks the panel offers, so it can hide what isn't there.
+    features: { requests: seerrEnabled(), torrents: qbitEnabled(), subtitles: bazarrEnabled(), indexers: prowlarrEnabled() },
   })
 })
 
@@ -885,6 +894,86 @@ router.post('/request', async (req: Request, res: Response) => {
     const status = axios.isAxiosError(err) ? err.response?.status : undefined
     const detail = axios.isAxiosError(err) ? (err.response?.data as { message?: string } | undefined)?.message : undefined
     res.status(status === 409 ? 409 : 502).json({ error: detail ?? `Seerr: ${msg(err)}` })
+  }
+})
+
+// ── Indexers (Prowlarr) ──────────────────────────────────────────────────────
+// The *arr searches above are FOR a queue row — an episode, a film the *arr
+// already tracks. These are Prowlarr's own Search page: a bare query across
+// the indexers it holds, with its search types, its indexer and category
+// pickers, its paging and its grab. A grab goes to the download client
+// Prowlarr has configured; the *arrs pick it up from there only if it happens
+// to match something they monitor, and the panel says so.
+
+const SEARCH_PAGE = 100
+
+router.get('/indexers', async (_req: Request, res: Response) => {
+  if (!prowlarrEnabled()) return disabled(res, 'Prowlarr')
+  res.setHeader('Cache-Control', 'no-store')
+  try {
+    const [indexers, categories, canGrab] = await Promise.all([
+      prowlarrIndexers(),
+      prowlarrCategories().catch(() => []),
+      prowlarrDownloadClients().catch(() => ({ torrent: false, usenet: false })),
+    ])
+    res.json({ indexers, categories, canGrab })
+  } catch (err) {
+    res.status(502).json({ error: `Prowlarr: ${msg(err)}` })
+  }
+})
+
+/** Parse a comma list of integers off the query string; anything else is dropped. */
+function intList(v: unknown, allowGroups = false): number[] {
+  return String(v ?? '').split(',').map(x => Number(x.trim()))
+    .filter(n => Number.isInteger(n) && (n > 0 || (allowGroups && (n === -1 || n === -2))))
+}
+
+router.get('/indexers/search', async (req: Request, res: Response) => {
+  if (!prowlarrEnabled()) return disabled(res, 'Prowlarr')
+  res.setHeader('Cache-Control', 'no-store')
+  const q = String(req.query['q'] ?? '').trim().slice(0, 300)
+  if (!q) return res.json({ releases: [], offset: 0, more: false })
+  const type = String(req.query['type'] ?? 'search')
+  if (!(INDEXER_SEARCH_TYPES as readonly string[]).includes(type)) return res.status(400).json({ error: `type must be one of ${INDEXER_SEARCH_TYPES.join(', ')}` })
+  // Categories arrive either as Newznab ids from the picker (`cats`) or as
+  // the short names the voice tool uses (`cat`: movies, tv, anime…).
+  const categories = [
+    ...intList(req.query['cats']),
+    ...String(req.query['cat'] ?? '').split(',').map(x => x.trim()).filter(Boolean).flatMap(id => INDEXER_CATEGORIES[id]?.ids ?? []),
+  ]
+  const indexerIds = intList(req.query['indexer'], true)
+  const offset = Math.max(0, Math.min(10_000, Number(req.query['offset']) || 0))
+  try {
+    const releases = await prowlarrSearch(q, { type, categories, indexerIds, limit: SEARCH_PAGE, offset })
+    res.json({ releases, offset, more: releases.length >= SEARCH_PAGE })
+  } catch (err) {
+    res.status(502).json({ error: `Prowlarr: ${msg(err)}` })
+  }
+})
+
+router.post('/indexers/grab', async (req: Request, res: Response) => {
+  if (!prowlarrEnabled()) return disabled(res, 'Prowlarr')
+  const body = (req.body ?? {}) as Record<string, unknown>
+  const pick = (r: unknown): { guid: string; indexerId: number } | null => {
+    const o = (r ?? {}) as Record<string, unknown>
+    const guid = typeof o['guid'] === 'string' ? o['guid'].slice(0, 2000) : ''
+    const indexerId = Number(o['indexerId'])
+    return guid && Number.isInteger(indexerId) && indexerId > 0 ? { guid, indexerId } : null
+  }
+  const filed = 'It shows up under Downloads once the client has it; Sonarr or Radarr will file it only if it matches something they monitor.'
+  try {
+    if (Array.isArray(body['releases'])) {
+      const list = (body['releases'] as unknown[]).map(pick).filter((x): x is { guid: string; indexerId: number } => !!x).slice(0, 100)
+      if (!list.length) return res.status(400).json({ error: 'releases must carry guid and indexerId' })
+      const grabbed = await prowlarrGrabMany(list)
+      return res.json({ ok: true, grabbed, detail: `Sent ${grabbed.length} of ${list.length} to the download client. ${filed}` })
+    }
+    const one = pick(body)
+    if (!one) return res.status(400).json({ error: 'guid and indexerId are required' })
+    await prowlarrGrab(one.guid, one.indexerId)
+    res.json({ ok: true, grabbed: [one], detail: `Sent to the download client. ${filed}` })
+  } catch (err) {
+    res.status(502).json({ error: msg(err) })
   }
 })
 

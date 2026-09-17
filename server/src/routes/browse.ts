@@ -66,7 +66,7 @@ export type DisplayPayload =
   // kiosk — the client owns the transcode session, so nothing is started here;
   // `open` brings the Plex corner up on a tab, optionally on one item or search.
   | { kind: 'plex'; action: 'play'; key: string; title: string }
-  | { kind: 'plex'; action: 'open'; tab: 'library' | 'downloads' | 'requests'; title: string; key?: string; query?: string }
+  | { kind: 'plex'; action: 'open'; tab: 'library' | 'downloads' | 'requests' | 'indexers'; title: string; key?: string; query?: string }
   | { kind: 'close' }
 
 // ── URL helpers ──────────────────────────────────────────────────────────────

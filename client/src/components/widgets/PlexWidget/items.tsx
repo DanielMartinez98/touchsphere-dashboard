@@ -11,6 +11,24 @@ import { ColumnSlider } from '../../ColumnSlider'
 
 export const ACCENT = '#e5a00d'
 
+/** "1.4 GB" — the size of a file or a release, the way a download page prints it. */
+export function fmtBytes(b: number): string {
+  if (b >= 1e12) return `${(b / 1e12).toFixed(2)} TB`
+  if (b >= 1e9) return `${(b / 1e9).toFixed(1)} GB`
+  if (b >= 1e6) return `${Math.round(b / 1e6)} MB`
+  return `${Math.round(b / 1e3)} kB`
+}
+
+/** "3h old" / "12d old" / "2y old" — how long ago a release was posted. */
+export function fmtAgeHours(h: number): string {
+  if (h < 1) return 'just posted'
+  if (h < 48) return `${Math.round(h)}h old`
+  const d = h / 24
+  if (d < 60) return `${Math.round(d)}d old`
+  if (d < 730) return `${Math.round(d / 30)}mo old`
+  return `${(d / 365).toFixed(1).replace(/\.0$/, '')}y old`
+}
+
 export function itemTitle(i: PlexItem): string {
   if (i.type === 'episode') {
     const se = i.parentIndex !== undefined && i.index !== undefined ? `S${i.parentIndex}E${i.index} · ` : ''

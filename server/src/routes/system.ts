@@ -4,6 +4,7 @@ import path from 'path'
 import { elevenLabsKeyState } from '../config/keys'
 import { sttProviders, sttSummary, whisperUrl } from './stt'
 import { ttsChainSummary } from './tts'
+import { aiBoxView, aiBoxesEnabled, boxUrl } from '../ai-box'
 import { SEARCH_PROVIDERS, SEARCH_LOCAL_FIRST } from '../research'
 
 const router = Router()
@@ -341,9 +342,11 @@ router.get('/debug', (_req: Request, res: Response) => {
       tts:    ttsChainSummary(),
       search: SEARCH_PROVIDERS.map(p => p === 'ollama' ? 'ollama hosted (cloud)' : p === 'searxng' ? 'searxng (local)' : p).join(' → ')
         + (SEARCH_LOCAL_FIRST ? ' (SEARCH_PREFER_LOCAL)' : ''),
-      chat:   `${env['OLLAMA_MODEL'] ?? 'gemma3 (default)'} at ${env['OLLAMA_URL'] ?? 'http://host.docker.internal:11434 (default)'}`
-        + (env['OLLAMA_FALLBACK_URL'] ? ` → ${env['OLLAMA_FALLBACK_MODEL'] ?? env['OLLAMA_MODEL'] ?? ''} at ${env['OLLAMA_FALLBACK_URL']}` : ''),
+      chat:   `${env['OLLAMA_MODEL'] ?? 'gemma3 (default)'} at ${env['OLLAMA_URL'] ? boxUrl(env['OLLAMA_URL']) : 'http://host.docker.internal:11434 (default)'}`
+        + (env['OLLAMA_FALLBACK_URL'] ? ` → ${env['OLLAMA_FALLBACK_MODEL'] ?? env['OLLAMA_MODEL'] ?? ''} at ${boxUrl(env['OLLAMA_FALLBACK_URL'])}` : ''),
     },
+    // Where each box-bound service is going right now (Settings → AI box).
+    aiBox: aiBoxesEnabled() ? aiBoxView() : null,
   })
 })
 

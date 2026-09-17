@@ -1,7 +1,7 @@
-// The media stack: Plex, Sonarr/Radarr, Bazarr, Seerr and qBittorrent, as one
-// module of thin typed clients.
+// The media stack: Plex, Sonarr/Radarr, Bazarr, Seerr, Prowlarr and
+// qBittorrent, as one module of thin typed clients.
 //
-// Six services, one file, because the kiosk asks them one question each and
+// Seven services, one file, because the kiosk asks them one question each and
 // the interesting work is stitching their answers together, not any one API:
 //
 //   • Plex      — what is IN the library (and how to play it)
@@ -12,6 +12,8 @@
 //                 readable by the person who set the stack up
 //   • Bazarr    — which subtitle languages are still WANTED, which Plex can't
 //                 say (Plex only knows what is on disk)
+//   • Prowlarr  — the indexers themselves, asked directly: what is out there
+//                 for a search the *arrs have no title for
 //
 // Every service is optional and independently so: the panel is offered when
 // Plex is configured, and each other block simply says it isn't set up rather
@@ -41,6 +43,7 @@ const SONARR_URL  = env('MEDIA_SONARR_URL');  const SONARR_KEY = env('MEDIA_SONA
 const RADARR_URL  = env('MEDIA_RADARR_URL');  const RADARR_KEY = env('MEDIA_RADARR_KEY')
 const BAZARR_URL  = env('MEDIA_BAZARR_URL');  const BAZARR_KEY = env('MEDIA_BAZARR_KEY')
 const SEERR_URL   = env('MEDIA_SEERR_URL');   const SEERR_KEY  = env('MEDIA_SEERR_KEY')
+const PROWLARR_URL = env('MEDIA_PROWLARR_URL'); const PROWLARR_KEY = env('MEDIA_PROWLARR_KEY')
 const QBIT_URL    = env('MEDIA_QBIT_URL')
 const QBIT_USER   = env('MEDIA_QBIT_USER');   const QBIT_PASS  = process.env['MEDIA_QBIT_PASS'] ?? ''
 
@@ -51,6 +54,7 @@ export function qbitEnabled(): boolean { return !!(QBIT_URL && QBIT_USER && QBIT
 export function bazarrEnabled(): boolean { return !!(BAZARR_URL && BAZARR_KEY) }
 export function sonarrEnabled(): boolean { return !!(SONARR_URL && SONARR_KEY) }
 export function radarrEnabled(): boolean { return !!(RADARR_URL && RADARR_KEY) }
+export function prowlarrEnabled(): boolean { return !!(PROWLARR_URL && PROWLARR_KEY) }
 
 // One identity for every request this server makes to Plex. Plex keys
 // transcode sessions, "continue watching" and the players list to it, so it is
@@ -1817,6 +1821,260 @@ export async function bazarrWanted(kind: 'movie' | 'show', title: string, year?:
   }
 }
 
+// ── Prowlarr (the indexers themselves) ───────────────────────────────────────
+//
+// Sonarr and Radarr search their indexers FOR something they already track —
+// an episode id, a movie id — and the Downloads tab reaches that through
+// arrReleases(). What they cannot do is answer a bare question: "what is out
+// there for 'Cowboy Bebop remux'", a concert film no *arr has a category for,
+// a game soundtrack. Prowlarr is where the indexers are actually configured,
+// and its own search page answers exactly that, so this asks it the same way
+// its page does: every enabled indexer live, one query, the results as the
+// indexers returned them. A grab hands the release to the download client
+// Prowlarr has for that protocol — the same qBittorrent the *arrs feed — so
+// nothing here ever holds a magnet link or a torrent file; Prowlarr keeps
+// the release in its own cache for half an hour after a search, and a grab is
+// `{guid, indexerId}` against that cache, which is what its UI sends too.
+
+export interface Indexer {
+  id: number
+  name: string
+  protocol: string           // "torrent" | "usenet"
+  privacy: string            // "public" | "private" | "semiPrivate"
+  enabled: boolean
+}
+
+/** One hit from an indexer, as Prowlarr's search returns it. */
+export interface IndexerRelease {
+  guid: string
+  indexerId: number
+  indexer: string
+  title: string
+  size: number
+  /** Files in the release, when the indexer says. */
+  files: number | null
+  seeders: number | null
+  leechers: number | null
+  /** How many times the indexer has seen it grabbed, when it says. */
+  grabs: number | null
+  /** Prowlarr's three age fields, which its own formatAge() needs together. */
+  age: number
+  ageHours: number
+  ageMinutes: number
+  publishDate: string
+  protocol: string
+  /** Newznab categories, sorted by id: {2000 Movies}, {2040 Movies/HD}. */
+  categories: { id: number; name: string }[]
+  /** The release's page on the indexer, when there is one. */
+  infoUrl?: string
+  /** A poster some indexers attach, absolute http(s). */
+  posterUrl?: string
+  /** An indexer flag the tracker attached: "freeleech", "internal", … */
+  flags: string[]
+  imdbId?: number
+  tmdbId?: number
+  tvdbId?: number
+  tvMazeId?: number
+}
+
+/** A Newznab category with its subcategories, as Prowlarr's own picker lists them. */
+export interface IndexerCategory { id: number; name: string; subCategories: { id: number; name: string }[] }
+
+/** Prowlarr's search types; each maps to a Newznab `t=` and its own id tokens in the query. */
+export const INDEXER_SEARCH_TYPES = ['search', 'tvsearch', 'movie', 'music', 'book'] as const
+export type IndexerSearchType = typeof INDEXER_SEARCH_TYPES[number]
+
+/**
+ * Prowlarr answers a refused request with `{ message }` — "Search failed due
+ * to all selected indexers being unavailable", "Failed to grab any release"
+ * — and axios's own "Request failed with status code 400" hides exactly the
+ * half that says what to do, so the body's sentence is what gets thrown.
+ */
+function prowlarrError(err: unknown): Error {
+  if (axios.isAxiosError(err)) {
+    const body = err.response?.data as Raw | string | undefined
+    const message = typeof body === 'object' && body ? str(body['message']) : typeof body === 'string' ? body.slice(0, 200) : undefined
+    if (message) return new Error(message)
+    if (err.response) return new Error(`Prowlarr answered ${err.response.status}`)
+  }
+  return err instanceof Error ? err : new Error(String(err))
+}
+
+async function prowlarrGet<T>(path: string, params: URLSearchParams | Record<string, string | number> = {}, timeout = HTTP_TIMEOUT_MS): Promise<T> {
+  const qs = params instanceof URLSearchParams ? params.toString() : new URLSearchParams(params as Record<string, string>).toString()
+  try {
+    const { data } = await axios.get<T>(`${PROWLARR_URL}/api/v1${path}${qs ? `?${qs}` : ''}`, {
+      headers: { 'X-Api-Key': PROWLARR_KEY, Accept: 'application/json' },
+      timeout,
+    })
+    return data
+  } catch (err) { throw prowlarrError(err) }
+}
+
+/** The indexers Prowlarr has, enabled ones first, then by name. */
+export async function prowlarrIndexers(): Promise<Indexer[]> {
+  const data = await prowlarrGet<Raw[]>('/indexer')
+  if (!Array.isArray(data)) return []
+  return data.flatMap(r => {
+    const id = num(r['id']); const name = str(r['name'])
+    if (!id || !name) return []
+    return [{
+      id, name,
+      protocol: str(r['protocol']) ?? 'torrent',
+      privacy: str(r['privacy']) ?? 'public',
+      enabled: r['enable'] !== false,
+    }]
+  }).sort((a, b) => Number(b.enabled) - Number(a.enabled) || a.name.localeCompare(b.name))
+}
+
+/** The Newznab category tree Prowlarr's own search page offers — parents with their subcategories. */
+export async function prowlarrCategories(): Promise<IndexerCategory[]> {
+  const data = await prowlarrGet<Raw[]>('/indexer/categories')
+  if (!Array.isArray(data)) return []
+  const sub = (v: unknown) => (Array.isArray(v) ? (v as Raw[]) : [])
+    .flatMap(c => (num(c['id']) && str(c['name']) ? [{ id: num(c['id'])!, name: str(c['name'])! }] : []))
+    .sort((a, b) => a.id - b.id)
+  return data.flatMap(c => (num(c['id']) && str(c['name'])
+    ? [{ id: num(c['id'])!, name: str(c['name'])!, subCategories: sub(c['subCategories']) }] : []))
+    .sort((a, b) => a.id - b.id)
+}
+
+/**
+ * Whether a grab has anywhere to go. Prowlarr sends a grabbed release to a
+ * download client of ITS OWN configuring (Settings → Download Clients), which
+ * is a separate list from Sonarr's — and a box that has never opened that
+ * page fails every grab with a bare 500. Asked up front so the panel can say
+ * so before anyone taps.
+ */
+export async function prowlarrDownloadClients(): Promise<{ torrent: boolean; usenet: boolean }> {
+  const data = await prowlarrGet<Raw[]>('/downloadclient')
+  const out = { torrent: false, usenet: false }
+  for (const c of Array.isArray(data) ? data : []) {
+    if (c['enable'] === false) continue
+    const p = str(c['protocol'])
+    if (p === 'torrent') out.torrent = true
+    if (p === 'usenet') out.usenet = true
+  }
+  return out
+}
+
+function toIndexerRelease(r: Raw): IndexerRelease | null {
+  const guid = str(r['guid']); const title = str(r['title']); const indexerId = num(r['indexerId'])
+  if (!guid || !title || !indexerId) return null
+  const cats = Array.isArray(r['categories'])
+    ? (r['categories'] as Raw[]).flatMap(c => (num(c['id']) && str(c['name']) ? [{ id: num(c['id'])!, name: str(c['name'])! }] : []))
+    : []
+  const flags = Array.isArray(r['indexerFlags'])
+    ? (r['indexerFlags'] as unknown[]).flatMap(f => (typeof f === 'string' ? [f] : str((f as Raw)?.['name']) ? [str((f as Raw)['name'])!] : []))
+    : []
+  const poster = str(r['posterUrl'])
+  const idOf = (k: string) => { const n = num(r[k]); return n && n > 0 ? n : undefined }
+  const age = num(r['age']) ?? 0
+  return {
+    guid, indexerId, title,
+    indexer: str(r['indexer']) ?? 'unknown',
+    size: num(r['size']) ?? 0,
+    files: num(r['files']) ?? null,
+    seeders: num(r['seeders']) ?? null,
+    leechers: num(r['leechers']) ?? null,
+    grabs: num(r['grabs']) ?? null,
+    age,
+    ageHours: num(r['ageHours']) ?? age * 24,
+    ageMinutes: num(r['ageMinutes']) ?? (num(r['ageHours']) ?? age * 24) * 60,
+    publishDate: str(r['publishDate']) ?? '',
+    protocol: str(r['protocol']) ?? 'torrent',
+    categories: [...new Map(cats.map(c => [c.id, c])).values()].sort((a, b) => a.id - b.id),
+    ...(str(r['infoUrl']) ? { infoUrl: str(r['infoUrl']) } : {}),
+    ...(poster && /^https?:\/\//i.test(poster) ? { posterUrl: poster } : {}),
+    flags,
+    ...(idOf('imdbId') ? { imdbId: idOf('imdbId') } : {}),
+    ...(idOf('tmdbId') ? { tmdbId: idOf('tmdbId') } : {}),
+    ...(idOf('tvdbId') ? { tvdbId: idOf('tvdbId') } : {}),
+    ...(idOf('tvMazeId') ? { tvMazeId: idOf('tvMazeId') } : {}),
+  }
+}
+
+/**
+ * Newznab's top-level categories, which every indexer Prowlarr speaks to maps
+ * its own onto. The panel offers these as chips; anything finer ("Movies/HD")
+ * is the indexer's business and comes back on each release.
+ */
+export const INDEXER_CATEGORIES: Record<string, { label: string; ids: number[] }> = {
+  movies: { label: 'Films',  ids: [2000] },
+  tv:     { label: 'TV',     ids: [5000] },
+  anime:  { label: 'Anime',  ids: [5070] },
+  music:  { label: 'Music',  ids: [3000] },
+  books:  { label: 'Books',  ids: [7000] },
+  games:  { label: 'Games',  ids: [1000, 4050] },
+}
+
+export interface IndexerSearchOptions {
+  type?: string
+  /** Prowlarr's own ids, plus its two groups: -1 = every usenet indexer, -2 = every torrent one. */
+  indexerIds?: number[]
+  categories?: number[]
+  limit?: number
+  offset?: number
+}
+
+/**
+ * Ask the indexers what they have. Slow by nature — each indexer is queried
+ * live and a private tracker may take twenty seconds — so it gets the same
+ * room the *arr interactive search does. Two things about the query string
+ * are Prowlarr's, not a preference: `indexerIds` and `categories` are
+ * REPEATED keys (not the `ids[]=` axios writes for an array), and "every
+ * enabled indexer" is NO indexerIds at all — -1 and -2 are its usenet and
+ * torrent groups, which is what its own picker sends for "Usenet" / "Torrent".
+ * The first version sent -1 for "all" and searched only usenet indexers,
+ * which on a torrent-only box is "all selected indexers unavailable".
+ */
+export async function prowlarrSearch(query: string, opts: IndexerSearchOptions = {}): Promise<IndexerRelease[]> {
+  const q = query.trim()
+  if (!q) return []
+  const type = (INDEXER_SEARCH_TYPES as readonly string[]).includes(opts.type ?? '') ? opts.type! : 'search'
+  const params = new URLSearchParams({ query: q, type, limit: String(opts.limit ?? 100), offset: String(opts.offset ?? 0) })
+  for (const id of opts.indexerIds ?? []) params.append('indexerIds', String(id))
+  for (const c of opts.categories ?? []) params.append('categories', String(c))
+  const data = await prowlarrGet<Raw[]>('/search', params, 120_000)
+  if (!Array.isArray(data)) return []
+  return data.flatMap(r => { const x = toIndexerRelease(r); return x ? [x] : [] })
+}
+
+function prowlarrPostHeaders(): Record<string, string> {
+  return { 'X-Api-Key': PROWLARR_KEY, Accept: 'application/json', 'content-type': 'application/json' }
+}
+
+/**
+ * Send one release to Prowlarr's download client for its protocol. Prowlarr
+ * answers a release it no longer has cached (searches expire after half an
+ * hour) with a 404 and a sentence, and a box with no download client with a
+ * 500 — both relayed as-is, since each names the fix.
+ */
+export async function prowlarrGrab(guid: string, indexerId: number): Promise<void> {
+  try {
+    await axios.post<Raw>(`${PROWLARR_URL}/api/v1/search`, { guid, indexerId }, { headers: prowlarrPostHeaders(), timeout: 30_000 })
+  } catch (err) {
+    const e = prowlarrError(err)
+    if (axios.isAxiosError(err) && err.response?.status === 404 && !/cache/i.test(e.message)) {
+      throw new Error('Prowlarr no longer has that release cached — search again and grab it fresh')
+    }
+    throw e
+  }
+}
+
+/**
+ * Several at once — Prowlarr's "Grab Release(s)" over a selection. Its bulk
+ * endpoint skips what it can't grab and answers with what it did, so the
+ * caller learns exactly which rows landed; it 400s only when none did.
+ */
+export async function prowlarrGrabMany(releases: { guid: string; indexerId: number }[]): Promise<{ guid: string; indexerId: number }[]> {
+  if (!releases.length) return []
+  try {
+    const { data } = await axios.post<Raw[]>(`${PROWLARR_URL}/api/v1/search/bulk`, releases, { headers: prowlarrPostHeaders(), timeout: 120_000 })
+    return (Array.isArray(data) ? data : []).flatMap(r => (str(r['guid']) && num(r['indexerId']) ? [{ guid: str(r['guid'])!, indexerId: num(r['indexerId'])! }] : []))
+  } catch (err) { throw prowlarrError(err) }
+}
+
 // ── Health ───────────────────────────────────────────────────────────────────
 
 export interface ServiceHealth { configured: boolean; ok: boolean; detail?: string }
@@ -1827,14 +2085,15 @@ async function check(configured: boolean, probe: () => Promise<string>): Promise
   catch (err) { return { configured: true, ok: false, detail: err instanceof Error ? err.message : String(err) } }
 }
 
-export async function stackHealth(): Promise<Record<'plex' | 'sonarr' | 'radarr' | 'bazarr' | 'seerr' | 'qbit', ServiceHealth>> {
-  const [plex, sonarr, radarr, bazarr, seerr, qbit] = await Promise.all([
+export async function stackHealth(): Promise<Record<'plex' | 'sonarr' | 'radarr' | 'bazarr' | 'seerr' | 'prowlarr' | 'qbit', ServiceHealth>> {
+  const [plex, sonarr, radarr, bazarr, seerr, prowlarr, qbit] = await Promise.all([
     check(plexEnabled(), async () => { const i = await plexIdentity(); return `${i.name} ${i.version}` }),
     check(sonarrEnabled(), async () => { const d = await arrGet<Raw>(SONARR_URL, SONARR_KEY, '/api/v3/system/status'); return `Sonarr ${str(d['version']) ?? ''}` }),
     check(radarrEnabled(), async () => { const d = await arrGet<Raw>(RADARR_URL, RADARR_KEY, '/api/v3/system/status'); return `Radarr ${str(d['version']) ?? ''}` }),
     check(bazarrEnabled(), async () => { const d = await bazarrGet<Raw>('/system/status'); const v = (d['data'] as Raw | undefined)?.['bazarr_version']; return `Bazarr ${str(v) ?? ''}` }),
     check(seerrEnabled(), async () => { const d = await seerrGet<Raw>('/status'); return `Seerr ${str(d['version']) ?? ''}` }),
+    check(prowlarrEnabled(), async () => { const d = await prowlarrGet<Raw>('/system/status'); return `Prowlarr ${str(d['version']) ?? ''}` }),
     check(qbitEnabled(), async () => { const t = await transferInfo(); return t.connected ? 'connected' : 'no peers connection' }),
   ])
-  return { plex, sonarr, radarr, bazarr, seerr, qbit }
+  return { plex, sonarr, radarr, bazarr, seerr, prowlarr, qbit }
 }
