@@ -86,7 +86,7 @@ export default function CommentsSheet({
         </div>
 
         <div className="flex-shrink-0 px-5 pt-2 pb-6 border-t border-white/[0.06] flex gap-2">
-          <TouchInput value={draft} onChange={setDraft} commitOn="change"
+          <TouchInput value={draft} onChange={setDraft}
             placeholder="Add a comment…" ariaLabel="Comment text" multiline rows={1}
             className="flex-1 bg-white/[0.06] text-white text-sm rounded-xl px-3 py-2 outline-none placeholder-white/25 resize-none"
           />

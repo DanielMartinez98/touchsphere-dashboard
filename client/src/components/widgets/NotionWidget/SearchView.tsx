@@ -42,7 +42,6 @@ export default function SearchView({ client }: { client: NotionClient }) {
           value={client.query}
           onChange={client.setQuery}
           placeholder="Search workspace…"
-          commitOn="change"
           ariaLabel="Search workspace"
           className="flex-1 bg-white/[0.06] text-white text-sm rounded-xl px-4 py-3 outline-none focus:ring-1 focus:ring-white/20 placeholder-white/30"
         />

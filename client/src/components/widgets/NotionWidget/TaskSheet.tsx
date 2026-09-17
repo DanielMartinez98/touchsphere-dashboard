@@ -51,8 +51,7 @@ export default function TaskSheet({
                 {team && <span className="w-2.5 h-2.5 rounded-full" style={{ background: team.color }} />}
                 {team ? `${team.name} · ` : 'Task'}{sourceTitle ?? ''}
               </span>
-              <TouchInput value={task.title} onChange={t => { if (t.trim() && t !== task.title) onUpdate({ title: t.trim() }) }}
-                commitOn="done"
+              <TouchInput value={task.title} onCommit={t => { if (t.trim() && t !== task.title) onUpdate({ title: t.trim() }) }}
                 ariaLabel="Task title"
                 className="bg-white/10 text-white rounded-xl px-4 py-4 text-base font-medium outline-none focus:ring-2 focus:ring-green-400" />
             </label>

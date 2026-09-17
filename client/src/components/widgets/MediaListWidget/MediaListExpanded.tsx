@@ -7,6 +7,7 @@ import { MediaTypeIcon } from './MediaTypeIcon'
 import { MediaCover } from './MediaCover'
 import { openGuide } from '../../../hooks/useGuideOverlay'
 import { TouchKeyboard } from '../../TouchKeyboard'
+import { useKeyboardMode } from '../../../hooks/useKeyboardMode'
 
 const STATUS_LABEL: Record<MediaStatus, string> = {
   not_started: 'Not started',
@@ -134,6 +135,7 @@ function RenameSheet({
   // Handed to the keyboard so its caret, selection and toolbar act on this
   // field rather than blindly appending at the end.
   const inputRef = useRef<HTMLInputElement>(null)
+  const touch = useKeyboardMode() === 'touch'
 
   const commit = () => {
     const trimmed = value.trim()
@@ -155,11 +157,12 @@ function RenameSheet({
           <div className="flex gap-2">
             <input
               type="text"
-              inputMode="none"
+              inputMode={touch ? 'none' : undefined}
               autoFocus
               ref={inputRef}
               value={value}
               onChange={e => setValue(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') commit() }}
               className="flex-1 bg-glass-2 text-white rounded-xl px-4 py-3 text-base outline-none"
             />
             <button type="button" onClick={commit}
@@ -169,7 +172,7 @@ function RenameSheet({
           </div>
         </div>
 
-        <TouchKeyboard value={value} onChange={setValue} onDone={commit} targetRef={inputRef} />
+        {touch && <TouchKeyboard value={value} onChange={setValue} onDone={commit} targetRef={inputRef} />}
       </div>
     </div>
   )
@@ -359,17 +362,9 @@ export default function MediaListExpanded({
     setPendingDelete(null)
   }
 
-  // Detect a fine pointer (mouse) — on desktop the user wants to type with
-  // their physical keyboard rather than tap the on-screen one.
-  const [hasMouse, setHasMouse] = useState(false)
-  useEffect(() => {
-    if (typeof window === 'undefined' || !window.matchMedia) return
-    const mq = window.matchMedia('(pointer: fine)')
-    const update = () => setHasMouse(mq.matches)
-    update()
-    mq.addEventListener?.('change', update)
-    return () => mq.removeEventListener?.('change', update)
-  }, [])
+  // A device with a keyboard of its own (a phone, a desktop) types with it;
+  // the kiosk gets the on-screen board. One rule for the whole app.
+  const hasMouse = useKeyboardMode() === 'native'
 
   const handleAdd = (e?: React.SyntheticEvent) => {
     e?.preventDefault()

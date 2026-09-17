@@ -26,6 +26,8 @@ import { useTaskDbs, type TaskBoard, type BoardRole } from '../hooks/useTaskDbs'
 import { useNotionMe } from '../hooks/useNotionMe'
 import IdentityPicker from './widgets/NotionWidget/IdentityPicker'
 import { TouchInput } from './TouchInput'
+import { AutosaveInput } from './AutosaveInput'
+import { KeyboardCard } from './KeyboardCard'
 import { AppStoreTab } from './AppStoreTab'
 
 type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'prompts' | 'mail' | 'notion' | 'apps' | 'system' | 'aibox' | 'server' | 'debug'
@@ -1064,6 +1066,7 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
             {/* Hardware tab */}
             {tab === 'hardware' && (
               <div className="space-y-4 max-w-lg mx-auto">
+                <KeyboardCard />
                 <DeskSensorCard />
 
                 {/* ── Audio Devices (mic + speaker selectors) ── */}
@@ -1680,12 +1683,11 @@ function OverrideField({
           </button>
         )}
       </div>
-      <TouchInput
+      <AutosaveInput
         value={value ?? ''}
-        onChange={onChange}
+        onSave={onChange}
         // Each value is saved to the server and shown back as "overridden";
         // half-typed text must not be.
-        commitOn="done"
         multiline
         rows={rows}
         placeholder={overridden ? 'nothing will be added' : (fallback || 'nothing by default')}
@@ -1902,10 +1904,10 @@ function DrawingTab() {
           call the way they are on a spoken reply, so a slower, better model costs nothing
           you can perceive.
         </p>
-        <TouchInput
+        <AutosaveInput
           value={prompter.model}
-          onChange={model => { void setPrompter({ model }) }}
-          commitOn="done"
+          onSave={model => { void setPrompter({ model }) }}
+          plain
           placeholder="(the server's default)"
           ariaLabel="Model that rewrites prompts"
           className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-sm
@@ -2043,7 +2045,6 @@ function DrawingTab() {
             <TouchInput
               value={retryDraft.seeded ? retryDraft.text : String(Math.round((prompter.retryBelow ?? 0) * 100))}
               onChange={text => setRetryDraft({ text, seeded: true })}
-              commitOn="done"
               numeric
               placeholder="0"
               ariaLabel="Redraw an edit that changed less than this percent"
@@ -2107,8 +2108,8 @@ function DrawingTab() {
           <TouchInput
             value={editModelDraft.seeded ? editModelDraft.text : prompter.editModel}
             onChange={text => setEditModelDraft({ text, seeded: true })}
-            commitOn="done"
             placeholder={prompter.visionModel}
+            plain
             ariaLabel="Model for rewriting a failed edit"
             className="w-full h-12 rounded-xl bg-white/10 border border-hairline px-3 text-[14px]"
           />
@@ -3184,8 +3185,8 @@ function MailTab() {
           <TouchInput
             value={id.v}
             onChange={v => setId({ v, seeded: true })}
-            commitOn="done"
             placeholder="Client ID — ends in .apps.googleusercontent.com"
+            plain
             ariaLabel="Google OAuth client ID"
             className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px]
                        placeholder:text-white/30 border border-hairline"
@@ -3193,8 +3194,8 @@ function MailTab() {
           <TouchInput
             value={secret}
             onChange={setSecret}
-            commitOn="done"
             placeholder={status.configured ? 'Client secret (saved — type to replace)' : 'Client secret'}
+            plain
             ariaLabel="Google OAuth client secret"
             className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px]
                        placeholder:text-white/30 border border-hairline"
@@ -3835,8 +3836,7 @@ function NotionConnections({ conns, error, onChanged, setConns }: {
               {renaming === c.id ? (
                 <TouchInput
                   value={c.name}
-                  onChange={v => { setRenaming(null); if (v.trim() && v.trim() !== c.name) void patch(c.id, { name: v.trim() }) }}
-                  commitOn="done"
+                  onCommit={v => { setRenaming(null); if (v.trim() && v.trim() !== c.name) void patch(c.id, { name: v.trim() }) }}
                   ariaLabel="Team name"
                   className="w-full bg-white/10 text-white rounded-lg px-3 py-2 text-sm border border-hairline"
                 />
@@ -3880,7 +3880,6 @@ function NotionConnections({ conns, error, onChanged, setConns }: {
         <TouchInput
           value={name}
           onChange={setName}
-          commitOn="done"
           placeholder="Team name (optional, e.g. Design team)"
           ariaLabel="Team name"
           className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px] placeholder:text-white/30 border border-hairline"
@@ -3889,8 +3888,8 @@ function NotionConnections({ conns, error, onChanged, setConns }: {
           <TouchInput
             value={token}
             onChange={setToken}
-            commitOn="done"
             placeholder="Integration token — starts with ntn_"
+            plain
             ariaLabel="Notion integration token"
             className="flex-1 min-w-0 bg-white/10 text-white rounded-xl px-4 py-3 text-[13px] placeholder:text-white/30 border border-hairline font-mono"
           />
@@ -4267,8 +4266,8 @@ function NotionTab() {
           <TouchInput
             value={link}
             onChange={setLink}
-            commitOn="done"
             placeholder="Paste a Notion database link or id"
+            plain
             ariaLabel="Notion database link"
             className="flex-1 min-w-0 bg-white/10 text-white rounded-xl px-4 py-3 text-[13px] placeholder:text-white/30 border border-hairline"
           />
@@ -5167,7 +5166,6 @@ function FidelityCard() {
           <TouchInput
             value={extra}
             onChange={setExtra}
-            commitOn="done"
             placeholder="e.g. anime coloring, detailed face"
             ariaLabel="Extra tags for named characters"
             className="w-full h-11 rounded-xl bg-white/10 border border-hairline px-3 text-[14px]"

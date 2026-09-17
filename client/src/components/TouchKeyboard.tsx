@@ -1,6 +1,7 @@
-// The on-screen keyboard. The kiosk has no physical one, and the native IME is
-// suppressed everywhere (readOnly + inputMode='none'), so this is the ONLY way
-// text gets typed on this device.
+// The on-screen keyboard. The kiosk has no physical one, and there the native
+// IME is suppressed (inputMode='none'), so this is the ONLY way text gets typed
+// on that device. A phone, a tablet or a desktop types with its own keyboard
+// instead and never sees this board — useKeyboardMode decides, per device.
 //
 // It used to be append-only: every key did `value + char` and ⌫ did
 // `slice(0, -1)`. That made the caret a fiction — you could not fix a typo in
