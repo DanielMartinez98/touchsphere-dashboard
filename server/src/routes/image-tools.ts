@@ -107,7 +107,9 @@ const SIZES: Record<string, { width: number; height: number }> = {
   square:    { width: 896,  height: 896  },
 }
 
-export const IMAGE_TOOLS = !imagesEnabled() ? [] : [
+// Always defined; chat.ts offers them only while imagesEnabled(), per request,
+// because the picture device can be chosen in Settings after boot.
+export const IMAGE_TOOLS = [
   {
     type: 'function',
     function: {
@@ -281,7 +283,7 @@ const noDisplay = (text: string): BrowseToolResult => ({ text, display: null })
 function generate(prompt: string, orientation: string): BrowseToolResult {
   if (!imagesEnabled()) {
     return noDisplay(
-      'Image generation is not configured on this server (COMFYUI_URL is unset). ' +
+      'Image generation is not configured on this server (no picture device is chosen under Settings → Devices and COMFYUI_URL is unset). ' +
       'Tell the user you cannot draw right now and why, in one sentence.',
     )
   }
@@ -396,7 +398,7 @@ function noMatch(about: string): BrowseToolResult {
 async function redraw(prompt: string, about: string, strength: string, region = ''): Promise<BrowseToolResult> {
   if (!imagesEnabled()) {
     return noDisplay(
-      'Image generation is not configured on this server (COMFYUI_URL is unset). ' +
+      'Image generation is not configured on this server (no picture device is chosen under Settings → Devices and COMFYUI_URL is unset). ' +
       'Tell the user you cannot draw right now and why, in one sentence.',
     )
   }
@@ -462,7 +464,7 @@ async function findImageOnWeb(query: string): Promise<BrowseToolResult> {
   if (!query.trim()) return noDisplay('find_image error: pass a `query` saying what to find.')
   if (!imagesEnabled()) {
     return noDisplay(
-      'Image generation is not configured on this server (COMFYUI_URL is unset), and a downloaded ' +
+      'Image generation is not configured on this server (no picture device is chosen under Settings → Devices and COMFYUI_URL is unset), and a downloaded ' +
       'picture has to be converted before it can be stored. Say so in one sentence.',
     )
   }
@@ -501,7 +503,7 @@ async function findImageOnWeb(query: string): Promise<BrowseToolResult> {
 
 function planEdit(request: string, about: string): BrowseToolResult {
   if (!imagesEnabled()) {
-    return noDisplay('Image generation is not configured on this server (COMFYUI_URL is unset). Say so in one sentence.')
+    return noDisplay('Image generation is not configured on this server (no picture device is chosen under Settings → Devices and COMFYUI_URL is unset). Say so in one sentence.')
   }
   if (!request.trim()) return noDisplay('plan_image_edit error: pass `request` saying what should change.')
   if (listImages().length === 0) {

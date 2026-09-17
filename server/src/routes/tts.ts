@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { serviceUrl } from '../ai-devices'
 import { spawn } from 'child_process'
 import fs from 'fs'
 import os from 'os'
@@ -51,7 +52,8 @@ const EL_MODEL_ID = process.env['ELEVENLABS_MODEL_ID'] ?? 'eleven_turbo_v2_5'
 // speech; it re-timbres existing speech. So her voice is a two-step LOCAL
 // pipeline: Kokoro speaks the words, then RVC converts that audio into Miku.
 // Free, offline, no API key, no per-word billing.
-const RVC_URL = (process.env['RVC_URL'] ?? '').replace(/\/$/, '')
+// Resolved per call: the device chosen under Settings → Devices, else RVC_URL.
+const rvcUrl = (): string => serviceUrl('rvc')
 // Conversion is much slower than plain synthesis (it's a second model pass over
 // the audio, on CPU), so it gets its own, longer budget.
 const RVC_TIMEOUT_MS = Number(process.env['RVC_TIMEOUT_MS'] ?? 45_000)
@@ -108,7 +110,8 @@ const RVC_PROTECT = Number(process.env['RVC_PROTECT'] ?? 0.33)
 // the preferred provider whenever it's configured — the cloud ones are only
 // there for voices Kokoro can't do (Miku) or when it isn't deployed.
 // It speaks the OpenAI /v1/audio/speech dialect.
-const KOKORO_URL = (process.env['KOKORO_URL'] ?? '').replace(/\/$/, '')
+// Resolved per call: the device chosen under Settings → Devices, else KOKORO_URL.
+const kokoroUrl = (): string => serviceUrl('tts')
 
 type Provider = 'rvc' | 'kokoro' | 'elevenlabs' | 'espeak'
 
@@ -145,13 +148,13 @@ function providerChain(profile: { rvcModel?: string }): Provider[] {
   }
   const chain: Provider[] = []
   // RVC needs Kokoro to produce the source audio, so it's only viable with both.
-  if (profile.rvcModel && RVC_URL && KOKORO_URL) chain.push('rvc')
+  if (profile.rvcModel && rvcUrl() && kokoroUrl()) chain.push('rvc')
   if (PREFER_LOCAL) {
-    if (KOKORO_URL) chain.push('kokoro')
+    if (kokoroUrl()) chain.push('kokoro')
     if (EL_KEY) chain.push('elevenlabs')
   } else {
     if (EL_KEY) chain.push('elevenlabs')
-    if (KOKORO_URL) chain.push('kokoro')
+    if (kokoroUrl()) chain.push('kokoro')
   }
   chain.push('espeak')
   return chain
@@ -179,8 +182,8 @@ if (FORCED && !PREFER_LOCAL && !['elevenlabs', 'espeak', 'kokoro', 'rvc'].includ
   console.warn(`[tts] unrecognised TTS_PROVIDER="${FORCED}" — using the per-assistant chain`)
 }
 console.log(
-  `[tts] forced=${FORCED ?? 'no (per-assistant chain)'} kokoro=${KOKORO_URL || 'no'} ` +
-  `rvc=${RVC_URL || 'no'} elevenlabs=${EL_KEY ? 'yes' : 'no'} → ${ttsChainSummary()}`,
+  `[tts] forced=${FORCED ?? 'no (per-assistant chain)'} kokoro=${kokoroUrl() || 'no'} ` +
+  `rvc=${rvcUrl() || 'no'} elevenlabs=${EL_KEY ? 'yes' : 'no'} → ${ttsChainSummary()}`,
 )
 
 // ── Stage directions vs. spelled-out sounds ──────────────────────────────────
@@ -395,7 +398,7 @@ async function kokoroSynth(text: string, voice: string, format: 'mp3' | 'wav'): 
   const timer = setTimeout(() => ctrl.abort(), SYNTH_TIMEOUT_MS)
 
   console.log(`[tts][kokoro] POST voice=${voice} format=${format} chars=${text.length}`)
-  const apiRes = await fetch(`${KOKORO_URL}/v1/audio/speech`, {
+  const apiRes = await fetch(`${kokoroUrl()}/v1/audio/speech`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -565,7 +568,7 @@ async function convertWithRVCLocked(wav: Buffer, model: string, pitch: number): 
     // The RVC server holds one model in memory at a time; only reload on change.
     if (rvcLoadedModel !== model) {
       console.log(`[tts][rvc] loading model "${model}"`)
-      const loadRes = await fetch(`${RVC_URL}/models/${encodeURIComponent(model)}`, {
+      const loadRes = await fetch(`${rvcUrl()}/models/${encodeURIComponent(model)}`, {
         method: 'POST',
         signal: ctrl.signal,
       })
@@ -590,7 +593,7 @@ async function convertWithRVCLocked(wav: Buffer, model: string, pitch: number): 
         filter_radius: 3,
         resample_sr:   0,
       }
-      const paramRes = await fetch(`${RVC_URL}/params`, {
+      const paramRes = await fetch(`${rvcUrl()}/params`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ params }),
@@ -606,7 +609,7 @@ async function convertWithRVCLocked(wav: Buffer, model: string, pitch: number): 
     }
 
     console.log(`[tts][rvc] converting ${wav.length} bytes with "${model}"`)
-    const convRes = await fetch(`${RVC_URL}/convert`, {
+    const convRes = await fetch(`${rvcUrl()}/convert`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ audio_data: wav.toString('base64') }),
@@ -641,7 +644,7 @@ async function convertWithRVCLocked(wav: Buffer, model: string, pitch: number): 
 const WARM_TEXT = 'Hello.'
 
 async function warmRVC(): Promise<void> {
-  if (!RVC_URL || !KOKORO_URL) return
+  if (!rvcUrl() || !kokoroUrl()) return
   const profiles = Object.values(ASSISTANT_PROFILES).filter(p => p.rvcModel)
   if (profiles.length === 0) return
 
@@ -660,7 +663,7 @@ async function warmRVC(): Promise<void> {
 
 // Both containers need a moment to come up; the app doesn't wait on them, and a
 // warm-up that races them just fails for no reason.
-if (RVC_URL && KOKORO_URL) {
+if (rvcUrl() && kokoroUrl()) {
   setTimeout(() => { void warmRVC() }, 20_000).unref()
 }
 

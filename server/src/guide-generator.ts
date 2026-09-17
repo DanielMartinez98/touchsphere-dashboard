@@ -30,6 +30,7 @@
 // by guides.ts sweepInterrupted() rather than resumed.
 
 import crypto from 'crypto'
+import { ollamaUrlFor } from './ai-devices'
 import {
   GUIDE_CAPS,
   guideProgress,
@@ -75,7 +76,9 @@ import { searchYouTube } from './routes/browse'
 // models have one: a guide is a dozen calls nobody is waiting on, and the cloud
 // model's per-session limit is better spent on conversation. Defaults to the
 // chat's Ollama.
-const OLLAMA_URL     = process.env['OLLAMA_GUIDE_URL'] ?? process.env['OLLAMA_URL'] ?? 'http://host.docker.internal:11434'
+// Resolved per call (ai-devices.ts): the language-model device picked under
+// Settings → Devices, else OLLAMA_GUIDE_URL, else OLLAMA_URL.
+const ollamaUrl      = (): string => ollamaUrlFor('guide')
 const OLLAMA_MODEL   = process.env['OLLAMA_MODEL']   ?? 'gemma3'
 const OLLAMA_API_KEY = process.env['OLLAMA_API_KEY'] ?? ''
 
@@ -178,7 +181,7 @@ async function postChat(
   try {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
-    const res = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
+    const res = await fetch(`${ollamaUrl().replace(/\/$/, '')}/api/chat`, {
       method: 'POST',
       headers,
       signal: ctrl.signal,

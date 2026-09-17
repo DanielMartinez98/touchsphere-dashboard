@@ -27,6 +27,7 @@
 // and a restart mid-plan loses it, which the panel says rather than spins.
 
 import { broadcast } from './routes/system'
+import { ollamaUrlFor } from './ai-devices'
 import {
   cancelJob, getJob, imageDifference, listImages, listModels, listWorkflowStyles, missingFiles, selectedModel, startImage,
   styleEdits, styleLabel, styleNeeds, stylePromptStyle, supersededCheckpoints,
@@ -40,7 +41,9 @@ import path from 'path'
 
 // The planner is a picture-side call: same box as the improver and the vision
 // composer (see image-prompt.ts for why that is not the chat's URL).
-const OLLAMA_URL     = process.env['OLLAMA_IMAGE_URL'] ?? process.env['OLLAMA_URL'] ?? 'http://host.docker.internal:11434'
+// Resolved per call (ai-devices.ts): the language-model device picked under
+// Settings → Devices, else OLLAMA_IMAGE_URL, else OLLAMA_URL.
+const ollamaUrl      = (): string => ollamaUrlFor('image')
 const OLLAMA_API_KEY = process.env['OLLAMA_API_KEY'] ?? ''
 const PLAN_TIMEOUT_MS = Number(process.env['OLLAMA_IMAGE_TIMEOUT_MS'] ?? 45_000) * 2
 /** Per step. A cold FLUX render with segmentation in front of it is ~2 min; this is a wedge guard. */
@@ -323,7 +326,7 @@ async function askPlanner(image: Buffer, request: string, tools: PlanMode[], sty
   try {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
-    const res = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
+    const res = await fetch(`${ollamaUrl().replace(/\/$/, '')}/api/chat`, {
       method: 'POST', headers, signal: ctrl.signal,
       body: JSON.stringify({
         model, stream: false, think: false, format: 'json',

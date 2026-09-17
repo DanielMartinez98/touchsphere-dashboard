@@ -29,6 +29,8 @@ import imageRouter from './routes/image'
 import plexRouter from './routes/plex'
 import hostRouter from './routes/host'
 import presenceRouter from './routes/presence'
+import aiDevicesRouter from './routes/ai-devices'
+import { describeService, ollamaUrlFor } from './ai-devices'
 import { elevenLabsKeyState } from './config/keys'
 import { sweepInterrupted } from './guides'
 import { startPlexWatch } from './plex-watch'
@@ -64,17 +66,23 @@ console.log('[startup] ELEVENLABS_API_KEY    :',
 // lines and the web-search line below either back or refute.
 console.log('[startup] speech-to-text        :', sttSummary())
 console.log('[startup] text-to-speech        :', ttsChainSummary())
-console.log('[startup] OLLAMA_URL            :', process.env['OLLAMA_URL']           ?? 'http://host.docker.internal:11434 (default)')
+// Each AI service, where it is and why (a device picked in Settings, or the env
+// var). These are the lines to read when "which box is doing this" is the question.
+console.log('[startup] language model        :', describeService('chat'))
+console.log('[startup] pictures (ComfyUI)    :', describeService('image'))
+console.log('[startup] voice out (Kokoro)    :', describeService('tts'))
+console.log('[startup] voice in (Whisper)    :', describeService('stt'))
+console.log("[startup] Miku's voice (RVC)    :", describeService('rvc'))
 console.log('[startup] OLLAMA_MODEL          :', process.env['OLLAMA_MODEL']         ?? 'gemma3 (default)')
 console.log('[startup] OLLAMA_NUM_CTX        :', process.env['OLLAMA_NUM_CTX'] ?? '32768 (default)')
 console.log('[startup] chat fallback         :', process.env['OLLAMA_FALLBACK_URL']
   ? `${process.env['OLLAMA_FALLBACK_MODEL'] ?? process.env['OLLAMA_MODEL']} at ${process.env['OLLAMA_FALLBACK_URL']}`
   : '— none (a cloud quota error is a failed reply)')
-console.log('[startup] guide model           :', `${process.env['OLLAMA_GUIDE_MODEL'] || process.env['OLLAMA_MODEL'] || 'gemma3'} at ${process.env['OLLAMA_GUIDE_URL'] ?? process.env['OLLAMA_URL'] ?? 'http://host.docker.internal:11434'}`)
+console.log('[startup] guide model           :', `${process.env['OLLAMA_GUIDE_MODEL'] || process.env['OLLAMA_MODEL'] || 'gemma3'} at ${ollamaUrlFor('guide')}`)
 console.log('[startup] picture-side models   :', `${process.env['OLLAMA_IMAGE_MODEL'] || process.env['OLLAMA_MODEL'] || 'gemma3'} (improver, planner)` +
   ` / ${process.env['OLLAMA_VISION_MODEL'] || process.env['OLLAMA_IMAGE_MODEL'] || process.env['OLLAMA_MODEL'] || 'gemma3'} (vision)` +
-  ` at ${process.env['OLLAMA_IMAGE_URL'] ?? process.env['OLLAMA_URL'] ?? 'http://host.docker.internal:11434'}` +
-  (process.env['OLLAMA_IMAGE_URL'] ? '' : ' (same as chat — set OLLAMA_IMAGE_URL to move them)'))
+  ` at ${ollamaUrlFor('image')}` +
+  (ollamaUrlFor('image') !== ollamaUrlFor('chat') ? '' : ' (same as chat — set OLLAMA_IMAGE_URL to move them)'))
 console.log('[startup] OLLAMA_API_KEY        :', process.env['OLLAMA_API_KEY']       ? '✓ set' : '— not set (no auth header)')
 console.log('[startup] YOUTUBE_API_KEY       :', process.env['YOUTUBE_API_KEY']      ? '✓ set' : '— not set (video search falls back to scraping)')
 console.log('[startup] NOTION_API_KEY        :', process.env['NOTION_API_KEY']       ? '✓ set' : '— not set (Notion widget disabled)')
@@ -212,6 +220,7 @@ app.use('/api/airquality', dataLimiter, airQualityRouter)
 app.use('/api/tiles', tileLimiter, tilesRouter)
 app.use('/api/geoip', dataLimiter, geoipRouter)
 app.use('/api/system', systemRouter)
+app.use('/api/ai-devices', dataLimiter, aiDevicesRouter)
 app.use('/api/state', dataLimiter, stateRouter)
 app.use('/api/device', dataLimiter, deviceRouter)
 app.use('/api/audio', audioRouter)

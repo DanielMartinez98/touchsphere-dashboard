@@ -39,6 +39,7 @@
 // need to know what a style is.
 
 import fs from 'fs'
+import { ollamaUrlFor } from './ai-devices'
 import path from 'path'
 
 // Where the PICTURE-side models live — the improver, the vision composer, the
@@ -50,12 +51,14 @@ import path from 'path'
 // far better spent on talking than on rewriting "a cat in a hat". Defaults to
 // OLLAMA_URL so a setup with one Ollama is unchanged.
 //   OLLAMA_IMAGE_URL=http://<gpu-box>:11434
-const OLLAMA_URL     = process.env['OLLAMA_IMAGE_URL'] ?? process.env['OLLAMA_URL'] ?? 'http://host.docker.internal:11434'
+// Resolved per call (ai-devices.ts): the language-model device picked under
+// Settings → Devices, else OLLAMA_IMAGE_URL, else OLLAMA_URL.
+const ollamaUrl      = (): string => ollamaUrlFor('image')
 const OLLAMA_MODEL   = process.env['OLLAMA_MODEL']   ?? 'gemma3'
 const OLLAMA_API_KEY = process.env['OLLAMA_API_KEY'] ?? ''
 
 /** Where the picture-side model calls go — for the startup log and Settings. */
-export function imageModelUrl(): string { return OLLAMA_URL }
+export function imageModelUrl(): string { return ollamaUrl() }
 
 /** The model that rewrites prompts. See the header for why it is not the chat one. */
 const ENV_MODEL = process.env['OLLAMA_IMAGE_MODEL'] ?? ''
@@ -326,7 +329,7 @@ export async function improvePrompt(prompt: string, style: StyleFacts): Promise<
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
 
     const ask = async (extra: string, temperature: number): Promise<string> => {
-      const res = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
+      const res = await fetch(`${ollamaUrl().replace(/\/$/, '')}/api/chat`, {
         method: 'POST',
         headers,
         signal: ctrl.signal,
@@ -551,7 +554,7 @@ export async function composeRedrawPrompt(
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
 
-    const res = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
+    const res = await fetch(`${ollamaUrl().replace(/\/$/, '')}/api/chat`, {
       method: 'POST',
       headers,
       signal: ctrl.signal,
@@ -628,7 +631,7 @@ export async function composeKontextInstruction(
   try {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
-    const res = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
+    const res = await fetch(`${ollamaUrl().replace(/\/$/, '')}/api/chat`, {
       method: 'POST',
       headers,
       signal: ctrl.signal,
@@ -689,7 +692,7 @@ export async function locateBox(image: Buffer, what: string): Promise<Box | null
   try {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
-    const res = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
+    const res = await fetch(`${ollamaUrl().replace(/\/$/, '')}/api/chat`, {
       method: 'POST', headers, signal: ctrl.signal,
       body: JSON.stringify({
         model, stream: false, think: false, format: 'json',
