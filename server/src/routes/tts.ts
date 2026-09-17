@@ -5,6 +5,7 @@ import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
 import { getSelectedProfile, ASSISTANT_PROFILES, type AssistantId } from '../config/assistant'
+import { aiBoxDown, boxUrl, onAiBoxChange } from '../ai-box'
 
 // GET /api/tts?text=hello[&voice=...]
 //
@@ -265,6 +266,12 @@ router.get('/', async (req, res) => {
   const failures: string[] = []
 
   for (const provider of chain) {
+    // Skip a local voice whose GPU box is switched off (Settings → AI box)
+    // instead of spending SYNTH_TIMEOUT_MS finding out.
+    if ((provider === 'kokoro' && aiBoxDown(KOKORO_URL)) || (provider === 'rvc' && (aiBoxDown(RVC_URL) || aiBoxDown(KOKORO_URL)))) {
+      failures.push(`${provider}: its AI box is switched off or not answering`)
+      continue
+    }
     try {
       // Which engine actually produced the audio. The chain means a 200 does
       // NOT imply the preferred provider worked — a rejected ElevenLabs key
@@ -395,7 +402,7 @@ async function kokoroSynth(text: string, voice: string, format: 'mp3' | 'wav'): 
   const timer = setTimeout(() => ctrl.abort(), SYNTH_TIMEOUT_MS)
 
   console.log(`[tts][kokoro] POST voice=${voice} format=${format} chars=${text.length}`)
-  const apiRes = await fetch(`${KOKORO_URL}/v1/audio/speech`, {
+  const apiRes = await fetch(`${boxUrl(KOKORO_URL)}/v1/audio/speech`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -436,6 +443,9 @@ async function synthesizeKokoro(text: string, voice: string, res: import('expres
 //
 // Nothing is written to `res` until the conversion has succeeded, so a failure
 // here falls cleanly through to the next provider in the chain.
+// Which RVC server that state describes. The model and params live on ONE box;
+// a switch to another box (Settings → AI box) starts from nothing there.
+let rvcServer = ''
 let rvcLoadedModel: string | null = null
 // The params currently set on the RVC server. Re-sent only when they change, so
 // a ?pitch= override costs one extra call rather than one per reply.
@@ -560,12 +570,18 @@ async function convertWithRVCLocked(wav: Buffer, model: string, pitch: number): 
   // budget covers its own work rather than the clip ahead of it.
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), RVC_TIMEOUT_MS)
+  const url = boxUrl(RVC_URL)
+  if (rvcServer !== url) {
+    rvcServer = url
+    rvcLoadedModel = null
+    rvcAppliedPitch = null
+  }
 
   try {
     // The RVC server holds one model in memory at a time; only reload on change.
     if (rvcLoadedModel !== model) {
       console.log(`[tts][rvc] loading model "${model}"`)
-      const loadRes = await fetch(`${RVC_URL}/models/${encodeURIComponent(model)}`, {
+      const loadRes = await fetch(`${url}/models/${encodeURIComponent(model)}`, {
         method: 'POST',
         signal: ctrl.signal,
       })
@@ -590,7 +606,7 @@ async function convertWithRVCLocked(wav: Buffer, model: string, pitch: number): 
         filter_radius: 3,
         resample_sr:   0,
       }
-      const paramRes = await fetch(`${RVC_URL}/params`, {
+      const paramRes = await fetch(`${url}/params`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ params }),
@@ -606,7 +622,7 @@ async function convertWithRVCLocked(wav: Buffer, model: string, pitch: number): 
     }
 
     console.log(`[tts][rvc] converting ${wav.length} bytes with "${model}"`)
-    const convRes = await fetch(`${RVC_URL}/convert`, {
+    const convRes = await fetch(`${url}/convert`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ audio_data: wav.toString('base64') }),
@@ -663,6 +679,16 @@ async function warmRVC(): Promise<void> {
 if (RVC_URL && KOKORO_URL) {
   setTimeout(() => { void warmRVC() }, 20_000).unref()
 }
+
+// Switching GPU box (Settings → AI box) lands on a server that has loaded no
+// voice at all, so the warm-up is spent again there.
+let rvcWarmedFor = boxUrl(RVC_URL)
+onAiBoxChange(() => {
+  const url = boxUrl(RVC_URL)
+  if (!RVC_URL || !KOKORO_URL || url === rvcWarmedFor) return
+  rvcWarmedFor = url
+  void warmRVC()
+})
 
 // ── espeak-ng (offline fallback) ─────────────────────────────────────────────
 function synthesizeEspeak(text: string, lang: string, res: import('express').Response): Promise<void> {

@@ -19,6 +19,7 @@ import { useImages, type StructureSettings } from '../hooks/useImages'
 import type { ParamsResponse } from '../hooks/useImages'
 import { useGuideActivity, type ActivityLevel } from '../hooks/useGuideActivity'
 import { useHost, useHostEnabled, type HostTask } from '../hooks/useHost'
+import { useAiBox, useAiBoxEnabled, type AiBoxView } from '../hooks/useAiBox'
 import { usePresence, useLiveReadings } from '../hooks/usePresence'
 import { useMailSettings } from '../hooks/useMail'
 import { useTaskDbs, type TaskBoard, type BoardRole } from '../hooks/useTaskDbs'
@@ -26,7 +27,7 @@ import { useNotionMe } from '../hooks/useNotionMe'
 import IdentityPicker from './widgets/NotionWidget/IdentityPicker'
 import { TouchInput } from './TouchInput'
 
-type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'prompts' | 'mail' | 'notion' | 'system' | 'server' | 'debug'
+type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'prompts' | 'mail' | 'notion' | 'system' | 'aibox' | 'server' | 'debug'
 
 // The preview reuses the dashboard's own renderers. Lazy, same chunks App
 // splits out — opening the VTuber tab is what pulls in the heavy deps, and
@@ -61,6 +62,7 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
   }, [])
   const [tab, setTab] = useState<Tab>('assistant')
   const hostEnabled = useHostEnabled()
+  const aiBoxEnabled = useAiBoxEnabled()
   const [confirmClose, setConfirmClose] = useState(false)
   const [playingSoundId, setPlayingSoundId] = useState<string | null>(null)
   const [ttsTesting, setTtsTesting] = useState(false)
@@ -416,6 +418,8 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
     { id: 'drawing',   label: 'Drawing'   },
     { id: 'prompts',   label: 'Prompts'   },
     { id: 'system',    label: 'System'    },
+    // Only with AI_BOXES set: one box has nothing to choose between.
+    ...(aiBoxEnabled ? [{ id: 'aibox' as const, label: 'AI box' }] : []),
     // Only when the server says it is set up: an "update the host" tab that
     // can't reach a host is a tab full of broken buttons.
     ...(hostEnabled ? [{ id: 'server' as const, label: 'Server' }] : []),
@@ -1380,6 +1384,9 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
             {tab === 'drawing' && <DrawingTab />}
             {tab === 'prompts' && <PromptsTab />}
 
+            {/* AI box tab — which GPU box the local AI goes to */}
+            {tab === 'aibox' && <AiBoxTab />}
+
             {/* Server tab — updating the machine this runs on */}
             {tab === 'server' && <ServerTab />}
 
@@ -2151,6 +2158,216 @@ function DrawingTab() {
 function fmtUptime(sec: number): string {
   const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60)
   return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`
+}
+
+// ── AI box ──────────────────────────────────────────────────────────────────
+// Which GPU box the local AI goes to (server/src/ai-box.ts). One choice, made
+// with one tap: Auto, or a box by name. Each card says whether that box is
+// answering on every port a service here uses, because the reason to come to
+// this tab is almost always "one of them is off" — and "Right now" says where
+// each service is actually going, since under Auto that can differ by service.
+
+function agoText(iso: string | null): string {
+  if (!iso) return 'not checked yet'
+  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000))
+  return s < 5 ? 'checked just now' : s < 90 ? `checked ${s}s ago` : `checked ${Math.round(s / 60)} min ago`
+}
+
+function AiBoxTab() {
+  const { view, error, busy, select, check, power } = useAiBox()
+  // Turning a PC's AI off drops whatever it is doing (a render, a download),
+  // so it is asked twice. One slot: opening one confirmation closes another.
+  const [confirmOff, setConfirmOff] = useState<string | null>(null)
+  // Which way a switch was just asked to go, for the button's label while the
+  // request is in flight and the agent has not reported the new phase yet.
+  const [pending, setPending] = useState<{ id: string; on: boolean } | null>(null)
+  const switchPower = (id: string, on: boolean) => {
+    setPending({ id, on })
+    void power(id, on).finally(() => setPending(null))
+  }
+
+  if (!view) {
+    return (
+      <div className="max-w-lg mx-auto py-8 text-center text-white/40 text-sm">
+        {error ? `Could not ask the server: ${error}` : 'Loading…'}
+      </div>
+    )
+  }
+
+  const servicesOn = (port: number) => view.services.filter(s => s.port === port).map(s => s.label)
+  const boxName = (id: string | null) => view.boxes.find(b => b.id === id)?.name ?? 'as set in .env'
+  const gb = (mb: number) => (mb / 1024).toFixed(1)
+
+  const summary = (b: AiBoxView['boxes'][number]) => {
+    const phase = b.power?.status?.phase
+    if (phase === 'off') return { text: 'Off', tone: 'text-white/60 bg-white/10' }
+    if (phase === 'starting') return { text: 'Starting…', tone: 'text-cyan-200 bg-cyan-500/15' }
+    if (phase === 'stopping') return { text: 'Turning off…', tone: 'text-amber-200 bg-amber-500/15' }
+    const known = b.ports.filter(p => p.up !== null)
+    const up = known.filter(p => p.up).length
+    if (known.length === 0) return { text: 'Checking…', tone: 'text-white/40 bg-white/5' }
+    if (up === b.ports.length) return { text: 'Answering', tone: 'text-emerald-300 bg-emerald-500/15' }
+    if (up === 0) return { text: 'Not answering', tone: 'text-red-300 bg-red-500/15' }
+    return { text: `${up} of ${b.ports.length} answering`, tone: 'text-amber-300 bg-amber-500/15' }
+  }
+
+  const radio = (on: boolean) => (
+    <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${on ? 'border-cyan-300' : 'border-white/30'}`}>
+      {on && <span className="w-2.5 h-2.5 rounded-full bg-cyan-300" />}
+    </span>
+  )
+
+  const powerRow = (b: AiBoxView['boxes'][number]) => {
+    const p = b.power
+    if (!p) return null
+    const s = p.status
+    const phase = s?.phase
+    const working = busy === `power:${b.id}` || phase === 'starting' || phase === 'stopping'
+    const isOn = s?.desired === 'on'
+    const unreachable = !!p.error
+
+    let line: ReactNode
+    if (unreachable && !s) line = <>Can&apos;t reach this PC — it may be asleep or off. {p.error}</>
+    else if (unreachable) line = <>Can&apos;t reach this PC right now ({p.error}). Last known: {s!.desired}.</>
+    else if (phase === 'starting') line = <>Starting — {s!.detail || 'this takes a minute or two'}</>
+    else if (phase === 'stopping') line = <>Turning off — unloading models and freeing the VRAM</>
+    else if (phase === 'off') line = <>AI is off; its VRAM is free for the PC.{s!.gpu ? ` In use now: ${gb(s!.gpu.usedMb)} of ${gb(s!.gpu.totalMb)} GB.` : ''}</>
+    else line = <>AI is on.{s?.gpu ? ` VRAM in use: ${gb(s.gpu.usedMb)} of ${gb(s.gpu.totalMb)} GB.` : ''}{s?.detail ? ` ${s.detail}` : ''}</>
+
+    const models = s?.models
+    const downloading = models && models.total > 0 && models.done < models.total
+
+    return (
+      <div className="mt-3 pt-3 border-t border-white/8 space-y-2">
+        <div className="flex items-center gap-3">
+          <span className="text-white/60 text-sm flex-1 min-w-0">{line}</span>
+          {confirmOff === b.id ? (
+            <div className="flex gap-2 flex-shrink-0">
+              <button type="button" onClick={() => setConfirmOff(null)}
+                className="h-11 px-4 rounded-xl bg-white/10 text-white/60 text-sm font-medium">
+                Cancel
+              </button>
+              <button type="button"
+                onClick={() => { setConfirmOff(null); switchPower(b.id, false) }}
+                className="h-11 px-4 rounded-xl bg-red-500 text-white text-sm font-bold">
+                Yes, turn off
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              disabled={working || (unreachable && !isOn)}
+              onClick={() => { if (isOn) setConfirmOff(b.id); else switchPower(b.id, true) }}
+              className={`h-11 px-4 rounded-xl text-sm font-semibold flex items-center gap-2 flex-shrink-0 transition active:scale-95 ${
+                working ? 'bg-white/5 text-white/40'
+                : isOn ? 'bg-red-500/15 text-red-300 border border-red-400/30'
+                : 'bg-emerald-500/15 text-emerald-300 border border-emerald-400/30'
+              }`}
+            >
+              {working && <RotateCw size={14} className="animate-spin" />}
+              {working ? (phase === 'stopping' || (pending?.id === b.id && !pending.on) ? 'Turning off…' : 'Starting…') : isOn ? 'Turn off' : 'Turn on'}
+            </button>
+          )}
+        </div>
+        {downloading && isOn && (
+          <p className="text-white/40 text-xs">
+            Drawing models: {models!.done} of {models!.total} downloaded{models!.current ? ` · now ${models!.current.split('/').pop()}` : ''}
+            {models!.failed.length > 0 ? ` · ${models!.failed.length} failed` : ''}
+          </p>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-5 max-w-lg mx-auto pb-4">
+      <p className="text-white/50 text-sm leading-relaxed">
+        Where the local AI runs: speech, hearing, Miku&apos;s voice, drawing and the local language models.
+        Anything pointed at the cloud is not affected. A PC with a power switch can have its AI turned off,
+        which gives its graphics memory back.
+      </p>
+
+      <div className="space-y-2">
+        <button
+          type="button"
+          disabled={busy === 'select'}
+          onClick={() => { if (view.selected !== 'auto') void select('auto') }}
+          className={`w-full text-left rounded-2xl px-5 py-4 border transition active:scale-[0.99] ${
+            view.selected === 'auto' ? 'bg-cyan-500/10 border-cyan-400/50' : 'bg-white/5 border-white/8'
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            {radio(view.selected === 'auto')}
+            <span className="text-white/90 text-base font-semibold flex-1">Auto</span>
+          </div>
+          <div className="text-white/50 text-sm mt-1 pl-8">
+            First box that answers, in this order: {view.boxes.map(b => b.name).join(', then ')}. A service stays on its
+            box while that box keeps answering, and moves off one that is switched off.
+          </div>
+        </button>
+
+        {view.boxes.map(b => {
+          const on = view.selected === b.id
+          const badge = summary(b)
+          return (
+            <div key={b.id} className={`rounded-2xl px-5 py-4 border ${on ? 'bg-cyan-500/10 border-cyan-400/50' : 'bg-white/5 border-white/8'}`}>
+              <button
+                type="button"
+                disabled={busy === 'select'}
+                onClick={() => { if (!on) void select(b.id) }}
+                className="w-full text-left active:scale-[0.99] transition"
+              >
+                <div className="flex items-center gap-3">
+                  {radio(on)}
+                  <span className="text-white/90 text-base font-semibold flex-1 min-w-0 truncate">{b.name}</span>
+                  <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${badge.tone}`}>{badge.text}</span>
+                </div>
+                <div className="text-white/50 mt-1 pl-8 font-mono text-xs">{b.host}</div>
+                <div className="pl-8 mt-3 space-y-1.5">
+                  {b.ports.map(p => (
+                    <div key={p.port} className="flex items-start gap-2 text-sm">
+                      <span className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${p.up === null ? 'bg-white/25' : p.up ? 'bg-emerald-400' : 'bg-red-400'}`} />
+                      <span className="text-white/70 flex-1 min-w-0">
+                        {servicesOn(p.port).join(' · ')}
+                        <span className="text-white/35"> — :{p.port}{p.up && p.ms !== null ? ` · ${p.ms} ms` : ''}{p.up === false && p.error ? ` · ${p.error}` : ''}</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </button>
+              <div className="pl-8">{powerRow(b)}</div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Right now</span>
+        <div className="bg-white/5 rounded-2xl px-5 py-4 border border-white/8 space-y-2.5">
+          {view.services.map(s => (
+            <div key={s.key} className="flex items-baseline gap-3 text-sm">
+              <span className="text-white/60 flex-1 min-w-0">{s.label}</span>
+              <span className="text-white/90 font-medium">{boxName(s.box)}</span>
+            </div>
+          ))}
+          <div className="flex items-center gap-3 pt-2">
+            <span className="text-white/35 text-xs flex-1">{agoText(view.boxes[0]?.ports[0]?.checkedAt ?? null)}</span>
+            <button
+              type="button"
+              disabled={busy !== null}
+              onClick={() => { void check() }}
+              className="h-11 px-4 rounded-xl text-sm font-semibold flex items-center gap-2 bg-white/10 text-white/80 active:scale-95 transition"
+            >
+              <RotateCw size={14} className={busy === 'check' ? 'animate-spin' : ''} />
+              {busy === 'check' ? 'Checking…' : 'Check now'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {error && <p className="text-red-300 text-sm">{error}</p>}
+    </div>
+  )
 }
 
 function ServerTab() {

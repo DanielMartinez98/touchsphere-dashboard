@@ -29,9 +29,11 @@ import imageRouter from './routes/image'
 import plexRouter from './routes/plex'
 import hostRouter from './routes/host'
 import presenceRouter from './routes/presence'
+import aiBoxRouter from './routes/ai-box'
 import { elevenLabsKeyState } from './config/keys'
 import { sweepInterrupted } from './guides'
 import { startPlexWatch } from './plex-watch'
+import { startAiBoxProbe } from './ai-box'
 import { SEARCH_PROVIDERS } from './research'
 
 dotenv.config()
@@ -75,6 +77,7 @@ console.log('[startup] picture-side models   :', `${process.env['OLLAMA_IMAGE_MO
   ` / ${process.env['OLLAMA_VISION_MODEL'] || process.env['OLLAMA_IMAGE_MODEL'] || process.env['OLLAMA_MODEL'] || 'gemma3'} (vision)` +
   ` at ${process.env['OLLAMA_IMAGE_URL'] ?? process.env['OLLAMA_URL'] ?? 'http://host.docker.internal:11434'}` +
   (process.env['OLLAMA_IMAGE_URL'] ? '' : ' (same as chat — set OLLAMA_IMAGE_URL to move them)'))
+console.log('[startup] AI_BOXES              :', process.env['AI_BOXES'] ? `${process.env['AI_BOXES']} (Settings → AI box picks one)` : '— not set (AI URLs are used exactly as given)')
 console.log('[startup] OLLAMA_API_KEY        :', process.env['OLLAMA_API_KEY']       ? '✓ set' : '— not set (no auth header)')
 console.log('[startup] YOUTUBE_API_KEY       :', process.env['YOUTUBE_API_KEY']      ? '✓ set' : '— not set (video search falls back to scraping)')
 console.log('[startup] NOTION_API_KEY        :', process.env['NOTION_API_KEY']       ? '✓ set' : '— not set (Notion widget disabled)')
@@ -107,6 +110,8 @@ sweepInterrupted()
 // The Watch/Play list follows Plex: playing adds and starts a row, finishing
 // ticks it. No-op without a Plex URL.
 startPlexWatch()
+// Which GPU box the local AI goes to (Settings → AI box). No-op without AI_BOXES.
+startAiBoxProbe()
 
 // Fail fast if the required API key is missing
 if (!process.env['OPENWEATHER_API_KEY']) {
@@ -231,6 +236,10 @@ app.use('/api/host', dataLimiter, hostRouter)
 // The desk sensor on the Pi reports here (a change, plus a heartbeat every
 // 30 s) and the screen and the assistant read from it.
 app.use('/api/presence', dataLimiter, presenceRouter)
+// Settings → AI box. 404s wholesale without AI_BOXES (see ai-box.ts). No limiter,
+// like /api/system: every answer is in memory, a check shares one probe run, and
+// the 60/min data budget is easily spent by the corners while this tab is open.
+app.use('/api/ai-box', aiBoxRouter)
 // Generated images: the gallery pulls a file per thumbnail, so this sits behind
 // the generous tile limiter rather than the 60/min data one, same as artwork.
 app.use('/api/image', tileLimiter, imageRouter)

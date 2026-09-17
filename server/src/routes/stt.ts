@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import multer from 'multer'
+import { aiBoxDown, boxUrl, onAiBoxChange } from '../ai-box'
 
 // POST /api/stt   ── multipart/form-data, field "audio"
 //
@@ -76,12 +77,13 @@ export function sttProviders(): SttProvider[] {
 export function sttSummary(): string {
   const chain = sttProviders()
   if (chain.length === 0) return 'none — set WHISPER_URL (local) or ELEVENLABS_API_KEY'
-  return chain.map(p => p === 'whisper' ? `whisper (local, ${WHISPER_URL})` : 'elevenlabs (cloud)').join(' → ')
+  return chain.map(p => p === 'whisper' ? `whisper (local, ${whisperUrl()})` : 'elevenlabs (cloud)').join(' → ')
     + (FORCED ? ` (pinned by STT_PROVIDER=${FORCED})` : '')
 }
 
 /** Where the local transcriber is, for diagnostics. Empty when not configured. */
-export function whisperUrl(): string { return WHISPER_URL }
+// Re-pointed per call when that host is one of AI_BOXES (Settings → AI box).
+export function whisperUrl(): string { return boxUrl(WHISPER_URL) }
 
 if (FORCED && FORCED !== 'whisper' && FORCED !== 'elevenlabs') {
   console.warn(`[stt] unrecognised STT_PROVIDER="${FORCED}" — using the per-config chain`)
@@ -157,7 +159,7 @@ async function transcribeWhisper(clip: Clip, lang: string, timeoutMs = WHISPER_T
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   let res: Response
   try {
-    res = await fetch(`${WHISPER_URL}${WHISPER_PATH}`, { method: 'POST', body: fd, signal: ctrl.signal })
+    res = await fetch(`${whisperUrl()}${WHISPER_PATH}`, { method: 'POST', body: fd, signal: ctrl.signal })
   } finally {
     clearTimeout(timer)
   }
@@ -242,6 +244,13 @@ router.post('/', upload.single('audio'), async (req, res) => {
   // answered, so a failure always falls cleanly through to the next.
   const failures: string[] = []
   for (const provider of chain) {
+    // A GPU box switched off from Settings → AI box is skipped outright rather
+    // than waited on: the next provider answers now instead of after a timeout.
+    if (provider === 'whisper' && aiBoxDown(WHISPER_URL)) {
+      failures.push('whisper: its AI box is switched off or not answering')
+      console.log('[stt][whisper] skipped — its AI box is switched off or not answering')
+      continue
+    }
     const t0 = Date.now()
     try {
       console.log(`[stt][${provider}] transcribing ${clip.buffer.length} bytes (${clip.mimetype})`)
@@ -321,7 +330,7 @@ router.get('/check', async (_req, res) => {
     const { ms, text } = await probeWhisper(45_000)
     res.json({
       ok: true,
-      url: WHISPER_URL,
+      url: whisperUrl(),
       model: WHISPER_MODEL,
       ms,
       detail: `${WHISPER_MODEL} answered in ${(ms / 1000).toFixed(1)}s${text ? ` (heard "${text.slice(0, 40)}" in silence)` : ''}`,
@@ -329,7 +338,7 @@ router.get('/check', async (_req, res) => {
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
     console.warn('[stt] whisper check failed:', detail)
-    res.status(502).json({ error: `${WHISPER_URL}: ${detail.slice(0, 300)}` })
+    res.status(502).json({ error: `${whisperUrl()}: ${detail.slice(0, 300)}` })
   }
 })
 
@@ -347,5 +356,18 @@ if (WHISPER_URL && sttProviders().includes('whisper')) {
         err instanceof Error ? err.message : err))
   }, 15_000).unref()
 }
+
+// A box that has just become the one being asked has not loaded the model —
+// and may never have downloaded it. Spend that on the switch, like the boot
+// warm-up above, rather than on the next thing somebody says.
+let whisperWarmedFor = whisperUrl()
+onAiBoxChange(() => {
+  const url = whisperUrl()
+  if (!WHISPER_URL || url === whisperWarmedFor || !sttProviders().includes('whisper')) return
+  whisperWarmedFor = url
+  void probeWhisper(10 * 60_000)
+    .then(({ ms }) => console.log(`[stt][whisper] warm on ${url}: ${WHISPER_MODEL} ready (${ms}ms)`))
+    .catch(err => console.warn(`[stt][whisper] warm-up on ${url} failed:`, err instanceof Error ? err.message : err))
+})
 
 export default router

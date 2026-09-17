@@ -41,6 +41,7 @@ import {
   type SessionTurn,
 } from '../session'
 import { getSelectedProfile, type AssistantProfile } from '../config/assistant'
+import { aiBoxDown, boxUrl } from '../ai-box'
 
 const router = Router()
 
@@ -669,7 +670,7 @@ async function endConversation(history: ChatMessage[], finalReply: string): Prom
     const timer = setTimeout(() => ctrl.abort(), 15_000)
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
-    const res = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
+    const res = await fetch(`${boxUrl(OLLAMA_URL).replace(/\/$/, '')}/api/chat`, {
       method: 'POST',
       headers,
       signal: ctrl.signal,
@@ -720,10 +721,12 @@ interface OllamaResponse {
 let answeredBy = ''
 
 async function callOllama(messages: ChatMessage[]): Promise<OllamaResponse> {
-  const first = await callOllamaAt(OLLAMA_URL, OLLAMA_MODEL, messages)
+  const first = await callOllamaAt(boxUrl(OLLAMA_URL), OLLAMA_MODEL, messages)
   answeredBy = ''
   const canFallBack = OLLAMA_FALLBACK_URL && OLLAMA_FALLBACK_MODEL
     && (OLLAMA_FALLBACK_URL !== OLLAMA_URL || OLLAMA_FALLBACK_MODEL !== OLLAMA_MODEL)
+    // Its GPU box switched off (Settings → AI box): nothing to wait 120 s for.
+    && !aiBoxDown(OLLAMA_FALLBACK_URL)
   // 429 is a quota, 5xx is the service; a network failure comes back as 0.
   // 4xx other than 429 is our request being wrong, which the fallback would
   // get wrong too.
@@ -731,17 +734,17 @@ async function callOllama(messages: ChatMessage[]): Promise<OllamaResponse> {
     return first
   }
   console.warn(
-    `[chat] ${OLLAMA_URL} answered ${first.status || 'nothing'}` +
+    `[chat] ${boxUrl(OLLAMA_URL)} answered ${first.status || 'nothing'}` +
     `${first.detail ? ` (${first.detail.slice(0, 120).replace(/\s+/g, ' ')})` : ''} — ` +
-    `retrying on ${OLLAMA_FALLBACK_MODEL} at ${OLLAMA_FALLBACK_URL}`,
+    `retrying on ${OLLAMA_FALLBACK_MODEL} at ${boxUrl(OLLAMA_FALLBACK_URL)}`,
   )
   // The fallback is the last resort, and a local model that was evicted from
   // VRAM by a render or a guide takes 20-40 s to come back before it reads a
   // 14k-token prompt — well past the 30 s a cloud reply gets. It waits longer,
   // and asks Ollama to keep the model loaded so the next turn is warm.
-  const second = await callOllamaAt(OLLAMA_FALLBACK_URL, OLLAMA_FALLBACK_MODEL, messages, Math.max(TIMEOUT_MS, 120_000))
+  const second = await callOllamaAt(boxUrl(OLLAMA_FALLBACK_URL), OLLAMA_FALLBACK_MODEL, messages, Math.max(TIMEOUT_MS, 120_000))
   if (second.status !== 200) {
-    console.warn(`[chat] the fallback ${OLLAMA_FALLBACK_MODEL} at ${OLLAMA_FALLBACK_URL} answered ${second.status || 'nothing'}${second.detail ? ` (${second.detail.slice(0, 160).replace(/\s+/g, ' ')})` : ''} — nothing left to try`)
+    console.warn(`[chat] the fallback ${OLLAMA_FALLBACK_MODEL} at ${boxUrl(OLLAMA_FALLBACK_URL)} answered ${second.status || 'nothing'}${second.detail ? ` (${second.detail.slice(0, 160).replace(/\s+/g, ' ')})` : ''} — nothing left to try`)
   }
   if (second.status === 200) answeredBy = `${OLLAMA_FALLBACK_MODEL} (fallback)`
   return second.status === 200 ? second : first
@@ -876,7 +879,7 @@ router.post('/', async (req: Request, res: Response) => {
 
   const preview = last.content.slice(0, 80)
   console.log(
-    `[chat] → ${OLLAMA_URL} model=${OLLAMA_MODEL} as=${profile.id} turns=${history.length} ` +
+    `[chat] → ${boxUrl(OLLAMA_URL)} model=${OLLAMA_MODEL} as=${profile.id} turns=${history.length} ` +
     `carry=${carry ? (carry.turns.length > 0 ? `${carry.turns.length}turns` : 'recap') : 'none'} ` +
     `tools=dashboard${WEB_SEARCH_ENABLED ? '+web' : ''} think=${JSON.stringify(OLLAMA_THINK)} ` +
     `prompt=\"${preview}${last.content.length > 80 ? '\u2026' : ''}\"`,

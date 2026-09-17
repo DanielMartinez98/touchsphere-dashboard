@@ -40,6 +40,7 @@
 
 import fs from 'fs'
 import path from 'path'
+import { boxUrl } from './ai-box'
 
 // Where the PICTURE-side models live — the improver, the vision composer, the
 // region box finder and (in image-plan.ts) the edit planner. Separate from the
@@ -50,12 +51,13 @@ import path from 'path'
 // far better spent on talking than on rewriting "a cat in a hat". Defaults to
 // OLLAMA_URL so a setup with one Ollama is unchanged.
 //   OLLAMA_IMAGE_URL=http://<gpu-box>:11434
-const OLLAMA_URL     = process.env['OLLAMA_IMAGE_URL'] ?? process.env['OLLAMA_URL'] ?? 'http://host.docker.internal:11434'
+const OLLAMA_URL_ENV = process.env['OLLAMA_IMAGE_URL'] ?? process.env['OLLAMA_URL'] ?? 'http://host.docker.internal:11434'
 const OLLAMA_MODEL   = process.env['OLLAMA_MODEL']   ?? 'gemma3'
 const OLLAMA_API_KEY = process.env['OLLAMA_API_KEY'] ?? ''
 
 /** Where the picture-side model calls go — for the startup log and Settings. */
-export function imageModelUrl(): string { return OLLAMA_URL }
+// Re-pointed per call when that host is one of AI_BOXES (Settings → AI box).
+export function imageModelUrl(): string { return boxUrl(OLLAMA_URL_ENV) }
 
 /** The model that rewrites prompts. See the header for why it is not the chat one. */
 const ENV_MODEL = process.env['OLLAMA_IMAGE_MODEL'] ?? ''
@@ -326,7 +328,7 @@ export async function improvePrompt(prompt: string, style: StyleFacts): Promise<
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
 
     const ask = async (extra: string, temperature: number): Promise<string> => {
-      const res = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
+      const res = await fetch(`${imageModelUrl().replace(/\/$/, '')}/api/chat`, {
         method: 'POST',
         headers,
         signal: ctrl.signal,
@@ -551,7 +553,7 @@ export async function composeRedrawPrompt(
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
 
-    const res = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
+    const res = await fetch(`${imageModelUrl().replace(/\/$/, '')}/api/chat`, {
       method: 'POST',
       headers,
       signal: ctrl.signal,
@@ -628,7 +630,7 @@ export async function composeKontextInstruction(
   try {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
-    const res = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
+    const res = await fetch(`${imageModelUrl().replace(/\/$/, '')}/api/chat`, {
       method: 'POST',
       headers,
       signal: ctrl.signal,
@@ -689,7 +691,7 @@ export async function locateBox(image: Buffer, what: string): Promise<Box | null
   try {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
-    const res = await fetch(`${OLLAMA_URL.replace(/\/$/, '')}/api/chat`, {
+    const res = await fetch(`${imageModelUrl().replace(/\/$/, '')}/api/chat`, {
       method: 'POST', headers, signal: ctrl.signal,
       body: JSON.stringify({
         model, stream: false, think: false, format: 'json',
