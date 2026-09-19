@@ -150,11 +150,14 @@ function upAt(box: AiBox, port: number): boolean | undefined {
 }
 
 // ── Power (the box's own agent) ──────────────────────────────────────────────
-// A box can run a small agent (E:\ai\agent on lokloComputer) that switches its
-// AI on and off: off unloads the models and stops every process holding VRAM,
-// so a PC that is also a gaming PC gets its memory back. Declared per box:
-//   AI_BOX_AGENTS=lokloComputer=http://100.112.40.40:8190
-//   AI_BOX_AGENT_TOKEN=<the agent's token.txt>
+// A box can run a small agent (scripts/gpu-box/agent.js, started at sign-in
+// by start-agent.vbs on both Windows boxes; agent.json beside it says how the
+// containers and Ollama run there) that switches its AI on and off: off
+// unloads the models and stops every process holding VRAM, so a PC that is
+// also a gaming PC gets its memory back. Declared per box, one token shared
+// by every agent:
+//   AI_BOX_AGENTS=loklo-pc=http://100.98.235.63:8190, lokloComputer=http://100.112.40.40:8190
+//   AI_BOX_AGENT_TOKEN=<the agents' token.txt>
 // A box without an agent simply has no switch.
 
 export interface AgentStatus {
