@@ -36,11 +36,21 @@
 //     brings dockerd and the containers back; off terminates the distro. Only
 //     for a distro that runs nothing else.
 //   • "wsl-compose": the containers live in a WSL distro that also does other
-//     things (loklo-pc's Ubuntu). On holds the distro open and runs
-//     `docker compose up -d` inside it; off runs `docker compose stop` inside
-//     it and lets go of the distro, never terminates it.
+//     things. On holds the distro open and runs `docker compose up -d` inside
+//     it; off runs `docker compose stop` inside it and lets go of the distro,
+//     never terminates it.
 //   • "compose" (the Linux default): `docker compose up -d` / `stop` straight
-//     on this host — a Linux box, or Windows with Docker Desktop.
+//     on this host — a Linux box, or Windows with Docker Desktop (loklo-pc).
+//     On Windows, on starts Docker Desktop first when its engine is not
+//     answering: nothing else starts it at sign-in there. Off leaves Docker
+//     Desktop running; with the containers stopped it holds no VRAM.
+// Whatever the mode, a switch never builds, pulls or recreates: `up` runs with
+// `--no-build --pull never --no-recreate`, so a missing image is a line in
+// agent.log and a service that does not answer, not a multi-GB download nobody
+// asked for. No recreate because a container can hold what it fetched on first
+// use (loklo-pc's RVC keeps ~0.7 GB of base models in its own layer), and
+// Compose recreates on its own after an upgrade even with an unchanged config.
+// Applying a changed compose file stays a deliberate `up -d` by hand.
 // "ollama" says how Ollama runs: the Windows app (started and killed here), a
 // systemd service (on Windows, inside the distro), one of the compose
 // containers (comes and goes with them), or not on this box at all.
@@ -105,6 +115,14 @@ const MODELS_LOG = typeof cfg.modelsLog === 'string' && cfg.modelsLog
   ? path.resolve(DIR, cfg.modelsLog)
   : (MODELS_SCRIPT ? MODELS_SCRIPT.replace(/\.sh$/, '.log') : '')
 const OLLAMA_APP = path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Ollama', 'ollama app.exe')
+// "compose" on Windows means Docker Desktop, which "on" starts when it is not
+// running. "dockerDesktop" in agent.json overrides where it is installed.
+const DOCKER_DESKTOP = WINDOWS && CONTAINERS === 'compose'
+  ? (typeof cfg.dockerDesktop === 'string' && cfg.dockerDesktop
+    ? cfg.dockerDesktop
+    : path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Docker', 'Docker', 'Docker Desktop.exe'))
+  : ''
+const DOCKER_START_BUDGET_MS = 4 * 60_000
 const SERVICES = { ollama: 11434, kokoro: 8880, whisper: 8000, rvc: 5050, comfyui: 8188 }
 for (const [k, v] of Object.entries(cfg.services || {})) {
   if (Number.isInteger(v) && v > 0) SERVICES[k] = v
@@ -263,6 +281,33 @@ async function stopOllama() {
   // compose: it goes down with the rest of the stack. none: nothing to stop.
 }
 
+async function engineUp() {
+  return (await run('docker', ['info', '--format', '{{.ServerVersion}}'], 20_000)).code === 0
+}
+
+/** Docker Desktop's engine answering, starting Docker Desktop if it is not. */
+async function ensureDockerDesktop() {
+  if (await engineUp()) return true
+  try {
+    const app = spawn(DOCKER_DESKTOP, [], { detached: true, stdio: 'ignore', windowsHide: true })
+    app.on('error', e => log(`could not start Docker Desktop: ${e.message}`))
+    app.unref()
+    log('Docker Desktop started')
+  } catch (e) {
+    log(`could not start Docker Desktop: ${e.message}`)
+    return false
+  }
+  const deadline = Date.now() + DOCKER_START_BUDGET_MS
+  while (Date.now() < deadline) {
+    if (desired !== 'on') return false
+    detail = 'waiting for Docker Desktop'
+    await sleep(5000)
+    if (await engineUp()) { log('Docker engine answering'); return true }
+  }
+  log(`Docker Desktop's engine did not answer within ${DOCKER_START_BUDGET_MS / 60_000} minutes`)
+  return false
+}
+
 async function gpu() {
   const r = await run('nvidia-smi', ['--query-gpu=name,memory.used,memory.total', '--format=csv,noheader,nounits'], 15_000)
   const [name, used, total] = r.stdout.split(/\r?\n/)[0]?.split(',').map(s => s.trim()) ?? []
@@ -327,7 +372,9 @@ async function turnOn() {
   if (CONTAINERS !== 'wsl') {
     // "wsl" needs nothing more — the distro's own systemd brings dockerd and
     // the containers back once it is held open.
-    const r = await compose(['up', '-d'], 5 * 60_000)
+    if (DOCKER_DESKTOP) await ensureDockerDesktop()
+    // Never a build, a pull or a recreate from a switch (see the top of this file).
+    const r = await compose(['up', '-d', '--no-build', '--pull', 'never', '--no-recreate'], 5 * 60_000)
     if (r.code !== 0) log(`docker compose up failed (${r.code}): ${r.stderr.trim().slice(-400)}`)
   }
   const deadline = Date.now() + START_BUDGET_MS
@@ -461,7 +508,7 @@ server.on('error', e => {
 })
 
 server.listen(PORT, BIND, async () => {
-  log(`agent listening on ${BIND}:${PORT} (${WINDOWS ? 'windows' : 'linux'}, containers: ${CONTAINERS}${IN_DISTRO ? ` in ${DISTRO}` : ''}${CONTAINERS !== 'wsl' ? `, ${COMPOSE.dir}/${COMPOSE.file} --profile ${COMPOSE.profile}` : ''}, ollama: ${OLLAMA}); desired=${desired}`)
+  log(`agent listening on ${BIND}:${PORT} (${WINDOWS ? 'windows' : 'linux'}, containers: ${CONTAINERS}${IN_DISTRO ? ` in ${DISTRO}` : ''}${CONTAINERS !== 'wsl' ? `, ${COMPOSE.dir}/${COMPOSE.file} --profile ${COMPOSE.profile}` : ''}${DOCKER_DESKTOP ? ', starts Docker Desktop' : ''}, ollama: ${OLLAMA}); desired=${desired}`)
   const [containers, ollamaUp] = await Promise.all([containersRunning(), ollamaRunning()])
   if (desired === 'on') {
     serial(turnOn).catch(e => log(`start-up turn on failed: ${e && e.stack || e}`))

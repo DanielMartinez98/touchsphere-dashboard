@@ -2,13 +2,13 @@
 # dashboard's Settings -> AI box card gets an On/Off switch for it.
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\gpu-box\install-agent.ps1 `
-#       -Dir E:\ai\agent -Distro Ubuntu -Containers wsl-compose -ComposeDir /srv/touchsphere
+#       -Dir C:\ai\agent -Containers compose -ComposeDir C:\path\to\touchsphere-dashboard
 #
 #   -Dir         where the agent lives (agent.js, token.txt, agent.json, logs)
 #   -Distro      the WSL distro the GPU containers run in (`wsl -l -v` lists them)
 #   -Containers  wsl          the distro runs nothing else: on holds it open, off terminates it (lokloComputer)
-#                wsl-compose  a shared distro: on/off is `docker compose up -d` / `stop` inside it (loklo-pc)
-#                compose      Docker Desktop: `docker compose` straight from Windows
+#                wsl-compose  a shared distro: on/off is `docker compose up -d` / `stop` inside it
+#                compose      Docker Desktop: `docker compose` straight from Windows; on starts Docker Desktop (loklo-pc)
 #   -ComposeDir  the checkout inside the distro (wsl-compose) or on Windows (compose)
 #   -Ollama      app (the Windows app, default) | systemd (inside the distro) | compose | none
 #   -Token       the token; the dashboard has ONE for every box, so pass the
