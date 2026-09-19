@@ -7,24 +7,19 @@
 //         containers are stopped — every process holding VRAM for the AI is
 //         gone, so the memory goes back to whatever else the PC is doing (a game)
 //
-// Two shapes of box, one agent (2026-09-19 — until then only lokloComputer had
-// the switch, because this file knew only its layout):
-//   • Windows (lokloComputer): the Ollama app, and the containers inside a WSL
-//     distro that WSL shuts down once nothing is attached to it — so "on" holds
-//     the distro open and "off" terminates it.
-//   • Linux (loklo-pc): Ollama as a systemd service (or one of the containers,
-//     or not on this box at all), and the containers straight from
-//     docker-compose.voice.yml with `docker compose up -d` / `stop`.
-// Which shape is read from process.platform. Everything else that differs
-// between boxes comes from agent.json beside this file, and every key has a
-// default, so lokloComputer's install runs with no file at all:
+// One agent for every box (2026-09-19 — until then only lokloComputer had
+// the switch, because this file knew only its layout). What differs between
+// boxes is how the containers run and how Ollama runs, and both come from
+// agent.json beside this file. Every key has a default, so lokloComputer's
+// install runs with no file at all:
 //
 //   {
 //     "port": 8190,
 //     "bind": "127.0.0.1",                 // or the box's tailnet IP, to skip `tailscale serve`
-//     "distro": "touchsphere-ai",          // Windows: the WSL distro the containers live in
+//     "containers": "wsl",                 // how the GPU containers run — see below
+//     "distro": "touchsphere-ai",          // the WSL distro they live in (Windows)
 //     "ollama": "app",                     // app (the Windows app) | systemd | compose | none
-//     "compose": {                         // Linux: what on/off brings up and stops
+//     "compose": {                         // what `docker compose` is run on
 //       "dir": "/srv/touchsphere",         //   default: the checkout this file is in
 //       "file": "docker-compose.voice.yml",
 //       "profile": "gpu"
@@ -34,10 +29,27 @@
 //     "modelsLog": "../scripts/comfy-models.log"      //   (both optional; found beside this file)
 //   }
 //
+// "containers" is the setting that matters:
+//   • "wsl" (the Windows default; lokloComputer): the containers live in a WSL
+//     distro of their own. On holds the distro open (WSL shuts a distro down
+//     once nothing is attached to it, containers and all) and its systemd
+//     brings dockerd and the containers back; off terminates the distro. Only
+//     for a distro that runs nothing else.
+//   • "wsl-compose": the containers live in a WSL distro that also does other
+//     things (loklo-pc's Ubuntu). On holds the distro open and runs
+//     `docker compose up -d` inside it; off runs `docker compose stop` inside
+//     it and lets go of the distro, never terminates it.
+//   • "compose" (the Linux default): `docker compose up -d` / `stop` straight
+//     on this host — a Linux box, or Windows with Docker Desktop.
+// "ollama" says how Ollama runs: the Windows app (started and killed here), a
+// systemd service (on Windows, inside the distro), one of the compose
+// containers (comes and goes with them), or not on this box at all.
+//
 // Listens on 127.0.0.1 only; `tailscale serve --tcp=8190` puts it on the
 // tailnet. Every request needs `Authorization: Bearer <token.txt>`.
-// Started at logon by start-agent.vbs on Windows (Startup folder), at boot by
-// touchsphere-ai-agent.service on Linux (install-agent-linux.sh). No dependencies.
+// Started at logon by start-agent.vbs on Windows (install-agent.ps1 puts the
+// shortcut in the Startup folder), at boot by touchsphere-ai-agent.service on
+// Linux (install-agent-linux.sh). No dependencies.
 //
 //   GET  /status          what is running, VRAM in use, model download progress
 //   POST /power {on:bool} switch; answers at once, the work continues behind it
@@ -51,7 +63,9 @@ const crypto = require('crypto')
 const { spawn, execFile } = require('child_process')
 
 const DIR = __dirname
-const WINDOWS = process.platform === 'win32'
+// TS_AGENT_PLATFORM lets the Windows branches be exercised on a Linux box with
+// shimmed wsl.exe / tasklist.exe; it is for tests and nothing else.
+const WINDOWS = (process.env.TS_AGENT_PLATFORM || process.platform) === 'win32'
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -61,9 +75,14 @@ try { cfg = JSON.parse(fs.readFileSync(path.join(DIR, 'agent.json'), 'utf8')) ||
 const PORT = Number(cfg.port) || 8190
 const BIND = typeof cfg.bind === 'string' && cfg.bind ? cfg.bind : '127.0.0.1'
 const DISTRO = typeof cfg.distro === 'string' && cfg.distro ? cfg.distro : 'touchsphere-ai'
-// How Ollama runs on this box. The Windows app on Windows, a systemd service
-// on Linux, unless the file says otherwise.
+// How the containers run and how Ollama runs on this box — the two things
+// that differ between boxes. Defaults are lokloComputer's on Windows and a
+// plain Docker host's on Linux.
+const CONTAINERS = ['wsl', 'wsl-compose', 'compose'].includes(cfg.containers) ? cfg.containers : (WINDOWS ? 'wsl' : 'compose')
 const OLLAMA = ['app', 'systemd', 'compose', 'none'].includes(cfg.ollama) ? cfg.ollama : (WINDOWS ? 'app' : 'systemd')
+// The distro is only meaningful on Windows; "wsl" without one is a
+// misconfiguration that would terminate nothing and hold nothing.
+const IN_DISTRO = WINDOWS && CONTAINERS !== 'compose'
 const COMPOSE = {
   dir: typeof cfg.compose?.dir === 'string' && cfg.compose.dir ? cfg.compose.dir : path.resolve(DIR, '..', '..'),
   file: typeof cfg.compose?.file === 'string' && cfg.compose.file ? cfg.compose.file : 'docker-compose.voice.yml',
@@ -135,9 +154,20 @@ function run(cmd, args, timeoutMs = 60_000, cwd = undefined) {
   })
 }
 
+/**
+ * A command where the containers live: inside the distro on Windows (as root,
+ * in the checkout), straight on this host otherwise. `wsl.exe -d` starts a
+ * distro that is not running, so callers that only want to look check
+ * distroRunning() first.
+ */
+function inDistro(cmd, args, timeoutMs, cwd) {
+  if (!IN_DISTRO) return run(cmd, args, timeoutMs, cwd)
+  return run('wsl.exe', ['-d', DISTRO, '-u', 'root', ...(cwd ? ['--cd', cwd] : []), '--', cmd, ...args], timeoutMs)
+}
+
 /** docker compose against this box's voice stack, run in its checkout. */
 function compose(args, timeoutMs = 120_000) {
-  return run('docker', ['compose', '-f', COMPOSE.file, '--profile', COMPOSE.profile, ...args], timeoutMs, COMPOSE.dir)
+  return inDistro('docker', ['compose', '-f', COMPOSE.file, '--profile', COMPOSE.profile, ...args], timeoutMs, COMPOSE.dir)
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
@@ -172,15 +202,24 @@ function httpJson(method, port, pathname, body, timeoutMs = 10_000) {
   })
 }
 
-/** The containers' host is up: the WSL distro on Windows, a running compose service on Linux. */
-async function containersRunning() {
-  if (WINDOWS) {
-    // `-l --running` only lists; it never starts a distro (any `-d` call would).
-    const r = await run('wsl.exe', ['-l', '--running', '-q'], 15_000)
-    return r.stdout.replace(/\0/g, '').split(/\r?\n/).map(s => s.trim()).includes(DISTRO)
-  }
+async function distroRunning() {
+  // `-l --running` only lists; it never starts a distro (any `-d` call would).
+  const r = await run('wsl.exe', ['-l', '--running', '-q'], 15_000)
+  return r.stdout.replace(/\0/g, '').split(/\r?\n/).map(s => s.trim()).includes(DISTRO)
+}
+
+async function composeRunning() {
   const r = await compose(['ps', '--status', 'running', '-q'], 30_000)
   return r.code === 0 && r.stdout.trim().length > 0
+}
+
+/** The GPU containers are up. */
+async function containersRunning() {
+  if (CONTAINERS === 'wsl') return distroRunning()
+  // A distro that is not running has no running containers, and asking it
+  // would start it.
+  if (CONTAINERS === 'wsl-compose' && !(await distroRunning())) return false
+  return composeRunning()
 }
 
 async function ollamaProcesses() {
@@ -190,7 +229,10 @@ async function ollamaProcesses() {
 
 async function ollamaRunning() {
   if (OLLAMA === 'app') return (await ollamaProcesses()) > 0
-  if (OLLAMA === 'systemd') return (await run('systemctl', ['is-active', 'ollama'], 15_000)).stdout.trim() === 'active'
+  if (OLLAMA === 'systemd') {
+    if (IN_DISTRO && !(await distroRunning())) return false
+    return (await inDistro('systemctl', ['is-active', 'ollama'], 15_000)).stdout.trim() === 'active'
+  }
   if (OLLAMA === 'compose') return SERVICES.ollama ? answers(SERVICES.ollama) : false
   return false
 }
@@ -204,7 +246,7 @@ async function startOllama() {
       log('Ollama app started')
     } catch (e) { log(`could not start Ollama: ${e.message}`) }
   } else if (OLLAMA === 'systemd') {
-    const r = await run('systemctl', ['start', 'ollama'], 60_000)
+    const r = await inDistro('systemctl', ['start', 'ollama'], 60_000)
     log(r.code === 0 ? 'ollama service started' : `could not start the ollama service (${r.code}): ${r.stderr.trim()}`)
   }
   // compose: it comes up with the rest of the stack. none: nothing to start.
@@ -215,7 +257,7 @@ async function stopOllama() {
     await run('taskkill.exe', ['/IM', 'ollama app.exe', '/F'], 15_000)
     await run('taskkill.exe', ['/IM', 'ollama.exe', '/F'], 15_000)
   } else if (OLLAMA === 'systemd') {
-    const r = await run('systemctl', ['stop', 'ollama'], 60_000)
+    const r = await inDistro('systemctl', ['stop', 'ollama'], 60_000)
     log(r.code === 0 ? 'ollama service stopped' : `could not stop the ollama service (${r.code}): ${r.stderr.trim()}`)
   }
   // compose: it goes down with the rest of the stack. none: nothing to stop.
@@ -263,7 +305,7 @@ function ensureKeeper() {
   keeper.on('exit', code => {
     log(`keeper exited (${code})`)
     keeper = null
-    if (desired === 'on' && phase !== 'stopping') setTimeout(() => { if (desired === 'on') ensureKeeper() }, 5000)
+    if (desired === 'on' && phase !== 'stopping' && IN_DISTRO) setTimeout(() => { if (desired === 'on') ensureKeeper() }, 5000)
   })
 }
 
@@ -279,11 +321,12 @@ function serial(fn) {
 async function turnOn() {
   if (desired !== 'on') return
   setPhase('starting', 'starting Ollama and the GPU services')
+  // The distro first: an Ollama service inside it needs it up.
+  if (IN_DISTRO) ensureKeeper()
   if (!(await ollamaRunning())) await startOllama()
-  if (WINDOWS) {
-    // The distro's own systemd brings dockerd and the containers back.
-    ensureKeeper()
-  } else {
+  if (CONTAINERS !== 'wsl') {
+    // "wsl" needs nothing more — the distro's own systemd brings dockerd and
+    // the containers back once it is held open.
     const r = await compose(['up', '-d'], 5 * 60_000)
     if (r.code !== 0) log(`docker compose up failed (${r.code}): ${r.stderr.trim().slice(-400)}`)
   }
@@ -312,16 +355,21 @@ async function turnOff() {
     }
   }
   await stopOllama()
-  if (WINDOWS) {
+  if (CONTAINERS === 'wsl') {
     if (keeper) { try { keeper.kill() } catch { /* already gone */ } }
     await run('wsl.exe', ['--terminate', DISTRO], 60_000)
+    for (let i = 0; i < 20 && await distroRunning(); i++) await sleep(1500)
   } else {
     // stop, not down: the containers keep their state and come back in
     // seconds, and a volume is never at risk from a switch.
     const r = await compose(['stop'], 3 * 60_000)
     if (r.code !== 0) log(`docker compose stop failed (${r.code}): ${r.stderr.trim().slice(-400)}`)
+    for (let i = 0; i < 20 && await composeRunning(); i++) await sleep(1500)
+    // Only now let go of a shared distro: asked while the keeper was gone,
+    // the checks above would have started it again. It is never terminated —
+    // it is somebody's Ubuntu, not ours.
+    if (keeper) { try { keeper.kill() } catch { /* already gone */ } }
   }
-  for (let i = 0; i < 20 && await containersRunning(); i++) await sleep(1500)
   const g = await gpu()
   setPhase('off', g ? `VRAM in use now: ${(g.usedMb / 1024).toFixed(1)} of ${(g.totalMb / 1024).toFixed(0)} GB` : '')
 }
@@ -347,6 +395,7 @@ async function status() {
   return {
     host: os.hostname(),
     platform: WINDOWS ? 'windows' : 'linux',
+    containers: CONTAINERS,
     desired,
     phase,
     since,
@@ -412,7 +461,7 @@ server.on('error', e => {
 })
 
 server.listen(PORT, BIND, async () => {
-  log(`agent listening on ${BIND}:${PORT} (${WINDOWS ? `windows, distro ${DISTRO}` : `linux, ${path.join(COMPOSE.dir, COMPOSE.file)} --profile ${COMPOSE.profile}`}, ollama: ${OLLAMA}); desired=${desired}`)
+  log(`agent listening on ${BIND}:${PORT} (${WINDOWS ? 'windows' : 'linux'}, containers: ${CONTAINERS}${IN_DISTRO ? ` in ${DISTRO}` : ''}${CONTAINERS !== 'wsl' ? `, ${COMPOSE.dir}/${COMPOSE.file} --profile ${COMPOSE.profile}` : ''}, ollama: ${OLLAMA}); desired=${desired}`)
   const [containers, ollamaUp] = await Promise.all([containersRunning(), ollamaRunning()])
   if (desired === 'on') {
     serial(turnOn).catch(e => log(`start-up turn on failed: ${e && e.stack || e}`))
