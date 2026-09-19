@@ -19,6 +19,7 @@
 //     "containers": "wsl",                 // how the GPU containers run — see below
 //     "distro": "touchsphere-ai",          // the WSL distro they live in (Windows)
 //     "ollama": "app",                     // app (the Windows app) | systemd | compose | none
+//     "dockerDesktop": "keep",             // Windows with Docker Desktop: keep | quit | none
 //     "compose": {                         // what `docker compose` is run on
 //       "dir": "/srv/touchsphere",         //   default: the checkout this file is in
 //       "file": "docker-compose.voice.yml",
@@ -44,6 +45,12 @@
 // "ollama" says how Ollama runs: the Windows app (started and killed here), a
 // systemd service (on Windows, inside the distro), one of the compose
 // containers (comes and goes with them), or not on this box at all.
+// "dockerDesktop" is for a Windows box whose engine is Docker Desktop (loklo-pc:
+// an Ubuntu distro beside docker-desktop, the checkout in Ubuntu, the docker
+// CLI there being Docker Desktop's integration). Nothing can be composed while
+// the app is not running, so on starts it and waits for the engine; "quit"
+// also quits it on off, so its VM's memory goes back too, "keep" leaves it up.
+// Detected from its .exe when the file does not say.
 //
 // Listens on 127.0.0.1 only; `tailscale serve --tcp=8190` puts it on the
 // tailnet. Every request needs `Authorization: Bearer <token.txt>`.
@@ -105,6 +112,9 @@ const MODELS_LOG = typeof cfg.modelsLog === 'string' && cfg.modelsLog
   ? path.resolve(DIR, cfg.modelsLog)
   : (MODELS_SCRIPT ? MODELS_SCRIPT.replace(/\.sh$/, '.log') : '')
 const OLLAMA_APP = path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Ollama', 'ollama app.exe')
+const DOCKER_DESKTOP_EXE = firstExisting([path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Docker', 'Docker', 'Docker Desktop.exe')])
+const DOCKER_DESKTOP = ['none', 'keep', 'quit'].includes(cfg.dockerDesktop) ? cfg.dockerDesktop : (WINDOWS && DOCKER_DESKTOP_EXE ? 'keep' : 'none')
+const ENGINE_BUDGET_MS = 3 * 60_000
 const SERVICES = { ollama: 11434, kokoro: 8880, whisper: 8000, rvc: 5050, comfyui: 8188 }
 for (const [k, v] of Object.entries(cfg.services || {})) {
   if (Number.isInteger(v) && v > 0) SERVICES[k] = v
@@ -150,7 +160,9 @@ function saveDesired(v) {
 function run(cmd, args, timeoutMs = 60_000, cwd = undefined) {
   return new Promise(resolve => {
     execFile(cmd, args, { cwd, windowsHide: true, timeout: timeoutMs, env: { ...process.env, WSL_UTF8: '1' } },
-      (err, stdout, stderr) => resolve({ code: err ? (err.code ?? 1) : 0, stdout: String(stdout), stderr: String(stderr) }))
+      // A command that could not start at all (no such binary, no such cwd)
+      // has no stderr; its message is the only account of it.
+      (err, stdout, stderr) => resolve({ code: err ? (err.code ?? 1) : 0, stdout: String(stdout), stderr: String(stderr) || (err ? err.message : '') }))
   })
 }
 
@@ -292,6 +304,44 @@ function modelsProgress() {
   return { total, done: have.size, current, failed: [...failed] }
 }
 
+// ── Docker Desktop (Windows) ─────────────────────────────────────────────────
+
+/** The engine answers — from here, which with Docker Desktop is the same engine the distro's CLI reaches. */
+async function engineReady() {
+  return (await run('docker', ['info', '--format', '{{.ServerVersion}}'], 20_000)).code === 0
+}
+
+/** Start Docker Desktop if the engine is not up, and wait for it. */
+async function startDockerDesktop() {
+  if (DOCKER_DESKTOP === 'none' || await engineReady()) return
+  if (!DOCKER_DESKTOP_EXE) { log('Docker Desktop is not running and its .exe was not found'); return }
+  try {
+    const app = spawn(DOCKER_DESKTOP_EXE, [], { detached: true, stdio: 'ignore', windowsHide: true })
+    app.on('error', e => log(`could not start Docker Desktop: ${e.message}`))
+    app.unref()
+    log('Docker Desktop started')
+  } catch (e) { log(`could not start Docker Desktop: ${e.message}`); return }
+  detail = 'waiting for Docker Desktop'
+  const deadline = Date.now() + ENGINE_BUDGET_MS
+  while (Date.now() < deadline) {
+    if (desired !== 'on') return
+    if (await engineReady()) { log('Docker engine up'); return }
+    await sleep(5000)
+  }
+  log('Docker Desktop did not bring the engine up in time')
+}
+
+/** Quit Docker Desktop: its own CLI when it has one, else the processes and its distro. */
+async function quitDockerDesktop() {
+  if (DOCKER_DESKTOP !== 'quit') return
+  const r = await run('docker', ['desktop', 'stop'], 90_000)
+  if (r.code === 0) { log('Docker Desktop stopped'); return }
+  await run('taskkill.exe', ['/IM', 'Docker Desktop.exe', '/F'], 15_000)
+  await run('taskkill.exe', ['/IM', 'com.docker.backend.exe', '/F'], 15_000)
+  await run('wsl.exe', ['--terminate', 'docker-desktop'], 60_000)
+  log('Docker Desktop killed')
+}
+
 // ── Keeping the distro open (Windows) ────────────────────────────────────────
 // WSL terminates a distro once no wsl.exe client is attached, services and all.
 
@@ -327,8 +377,10 @@ async function turnOn() {
   if (CONTAINERS !== 'wsl') {
     // "wsl" needs nothing more — the distro's own systemd brings dockerd and
     // the containers back once it is held open.
+    await startDockerDesktop()
+    if (desired !== 'on') return
     const r = await compose(['up', '-d'], 5 * 60_000)
-    if (r.code !== 0) log(`docker compose up failed (${r.code}): ${r.stderr.trim().slice(-400)}`)
+    if (r.code !== 0) log(`docker compose up failed (${r.code}) in ${COMPOSE.dir}: ${r.stderr.trim().slice(-400)}`)
   }
   const deadline = Date.now() + START_BUDGET_MS
   let down = []
@@ -363,12 +415,13 @@ async function turnOff() {
     // stop, not down: the containers keep their state and come back in
     // seconds, and a volume is never at risk from a switch.
     const r = await compose(['stop'], 3 * 60_000)
-    if (r.code !== 0) log(`docker compose stop failed (${r.code}): ${r.stderr.trim().slice(-400)}`)
+    if (r.code !== 0) log(`docker compose stop failed (${r.code}) in ${COMPOSE.dir}: ${r.stderr.trim().slice(-400)}`)
     for (let i = 0; i < 20 && await composeRunning(); i++) await sleep(1500)
     // Only now let go of a shared distro: asked while the keeper was gone,
     // the checks above would have started it again. It is never terminated —
     // it is somebody's Ubuntu, not ours.
     if (keeper) { try { keeper.kill() } catch { /* already gone */ } }
+    await quitDockerDesktop()
   }
   const g = await gpu()
   setPhase('off', g ? `VRAM in use now: ${(g.usedMb / 1024).toFixed(1)} of ${(g.totalMb / 1024).toFixed(0)} GB` : '')
@@ -396,6 +449,7 @@ async function status() {
     host: os.hostname(),
     platform: WINDOWS ? 'windows' : 'linux',
     containers: CONTAINERS,
+    dockerDesktop: DOCKER_DESKTOP,
     desired,
     phase,
     since,
@@ -461,7 +515,7 @@ server.on('error', e => {
 })
 
 server.listen(PORT, BIND, async () => {
-  log(`agent listening on ${BIND}:${PORT} (${WINDOWS ? 'windows' : 'linux'}, containers: ${CONTAINERS}${IN_DISTRO ? ` in ${DISTRO}` : ''}${CONTAINERS !== 'wsl' ? `, ${COMPOSE.dir}/${COMPOSE.file} --profile ${COMPOSE.profile}` : ''}, ollama: ${OLLAMA}); desired=${desired}`)
+  log(`agent listening on ${BIND}:${PORT} (${WINDOWS ? 'windows' : 'linux'}, containers: ${CONTAINERS}${IN_DISTRO ? ` in ${DISTRO}` : ''}${CONTAINERS !== 'wsl' ? `, ${COMPOSE.dir}/${COMPOSE.file} --profile ${COMPOSE.profile}` : ''}, ollama: ${OLLAMA}${DOCKER_DESKTOP !== 'none' ? `, docker desktop: ${DOCKER_DESKTOP}` : ''}); desired=${desired}`)
   const [containers, ollamaUp] = await Promise.all([containersRunning(), ollamaRunning()])
   if (desired === 'on') {
     serial(turnOn).catch(e => log(`start-up turn on failed: ${e && e.stack || e}`))
