@@ -8,10 +8,10 @@ both, told what differs by `agent.json` beside it.
 - **lokloComputer** — the Ollama Windows app, and the containers inside a WSL
   distro of their own (`touchsphere-ai`) that runs nothing else. Everything in
   `E:\ai`. Had the switch first.
-- **loklo-pc** — the original GPU box: the containers in its own Ubuntu distro
-  from the repo checkout there, the way lokloComputer's distro was set up to
-  copy. Its switch arrived 2026-09-19; until then the agent knew only
-  lokloComputer's layout.
+- **loklo-pc** — the original GPU box: the Ollama Windows app, **Docker
+  Desktop** for the engine (a `docker-desktop` distro beside its `Ubuntu`), and
+  the containers composed from the repo checkout. Its switch arrived
+  2026-09-19; until then the agent knew only lokloComputer's layout.
 
 ## What the switch does
 
@@ -46,6 +46,7 @@ all. The installer writes it from its switches.
   "containers": "wsl",
   "distro": "touchsphere-ai",
   "ollama": "app",
+  "dockerDesktop": "keep",
   "compose": { "dir": "/srv/touchsphere", "file": "docker-compose.voice.yml", "profile": "gpu" },
   "services": { "comfyui": 8188 },
   "modelsScript": "../scripts/comfy-models.sh",
@@ -71,6 +72,12 @@ all. The installer writes it from its switches.
   the default on Linux), `compose` (one of the containers, so it comes and
   goes with them), or `none` (this box does not run Ollama, so it is neither
   started nor waited for).
+- `dockerDesktop` — a Windows box whose engine is Docker Desktop. Nothing can
+  be composed while the app is not running, so on starts it and waits for the
+  engine (up to three minutes); `keep` (the default when its .exe is found)
+  leaves it running on off, `quit` quits it too (`docker desktop stop`, else
+  its processes and its distro) so the VM's memory goes back as well; `none`
+  for a box without it.
 - `compose` — what `docker compose` is run on, for `wsl-compose` and `compose`.
   `dir` is a path inside the distro for `wsl-compose`, on the host otherwise;
   it defaults to the checkout this file is in.
@@ -82,30 +89,36 @@ all. The installer writes it from its switches.
   `../scripts` as on lokloComputer, or in this folder); a box whose models are
   already there has no log and shows no progress line.
 
-## loklo-pc (Windows, a shared Ubuntu distro)
+## loklo-pc (Windows, Docker Desktop, the checkout in Ubuntu)
 
-Three things to know first, in PowerShell:
+`wsl -l -v` shows `Ubuntu` and `docker-desktop`; `Get-Process ollama*` shows
+the Windows app. So: `-Containers wsl-compose` with `-Distro Ubuntu` if the
+checkout is inside Ubuntu (its docker CLI is Docker Desktop's integration), or
+`-Containers compose` if the checkout is on a Windows drive; `-Ollama app`;
+Docker Desktop is found on its own.
+
+Find the checkout, in PowerShell:
 
 ```powershell
-wsl -l -v                              # the distro's name (the one with Docker in it)
-wsl -d <distro> -- docker compose ls    # where the checkout is (its config file path)
-Get-Process ollama*                     # the Windows app running? else it is inside the distro
+wsl -d Ubuntu -- sh -c "find / -path /mnt -prune -o -name docker-compose.voice.yml -print 2>/dev/null"
+Get-ChildItem C:\, D:\, E:\ -Recurse -Depth 4 -Filter docker-compose.voice.yml -ErrorAction SilentlyContinue | ForEach-Object FullName
 ```
 
 Then, from a checkout of this repo on Windows (`git clone` it anywhere, say
-`C:\ai\touchsphere-dashboard`; the box's own checkout is inside the distro and
-PowerShell cannot run from there):
+`C:\ai\touchsphere-dashboard`; PowerShell cannot run the installer from inside
+the distro):
 
 1. ```powershell
    powershell -ExecutionPolicy Bypass -File scripts\gpu-box\install-agent.ps1 `
-     -Dir C:\ai\agent -Distro Ubuntu -Containers wsl-compose -ComposeDir /srv/touchsphere `
+     -Dir C:\ai\agent -Distro Ubuntu -Containers wsl-compose -ComposeDir /home/you/touchsphere-dashboard `
      -Token <lokloComputer's token.txt>
    ```
-   with the distro name, the checkout's directory inside it and, if Ollama is
-   not the Windows app, `-Ollama systemd` (a service inside the distro),
-   `compose` (one of the containers) or `none`. It copies the agent, writes
-   `agent.json` and `token.txt`, puts a "TouchSphere AI agent" shortcut in the
-   Startup folder, starts the agent and prints its status.
+   with the directory the find printed (without the file name). For a checkout
+   on Windows: `-Containers compose -ComposeDir C:\...\touchsphere-dashboard`.
+   Add `-DockerDesktop quit` to have off quit Docker Desktop as well. The
+   installer copies the agent, writes `agent.json` and `token.txt`, puts a
+   "TouchSphere AI agent" shortcut in the Startup folder, starts the agent and
+   prints its status.
 2. `tailscale serve --bg --tcp=8190 tcp://127.0.0.1:8190` (once).
 3. On lokloserver, in `.env`:
    ```
@@ -117,7 +130,8 @@ PowerShell cannot run from there):
    open of Settings → AI box.
 
 `C:\ai\agent\agent.log` says what the agent did; `supervisor.log` why it ever
-exited. The start-up line names the mode it read from `agent.json`.
+exited. The start-up line names the mode it read from `agent.json`. Turning on
+from cold takes a minute or two: Docker Desktop first, then the containers.
 
 ## lokloComputer (Windows, a distro of its own)
 

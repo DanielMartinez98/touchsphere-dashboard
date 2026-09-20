@@ -85,7 +85,11 @@ const DEFAULT_NEGATIVE = process.env['COMFYUI_NEGATIVE']
 
 // Unlike cover art — bounded by the length of the Watch/Play list — generated
 // images grow without limit, and this is a Docker volume on a Pi. Oldest out.
-const MAX_STORED = Number(process.env['IMAGE_MAX_STORED'] ?? 60)
+// 200 rather than the original 60 because the gallery is where a picture is
+// kept, and losing one to a run of renders nobody wanted is the cost people
+// actually notice; a megapixel PNG is a couple of MB, so a full gallery is a
+// few hundred MB of the volume. IMAGE_MAX_STORED lowers it on a tight disk.
+const MAX_STORED = Number(process.env['IMAGE_MAX_STORED'] ?? 200)
 
 // Guard rails on what the model is allowed to ask for. A model that emits
 // width: 8192 would OOM the card and take the container down with it.

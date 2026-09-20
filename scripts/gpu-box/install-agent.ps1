@@ -11,6 +11,8 @@
 #                compose      Docker Desktop: `docker compose` straight from Windows
 #   -ComposeDir  the checkout inside the distro (wsl-compose) or on Windows (compose)
 #   -Ollama      app (the Windows app, default) | systemd (inside the distro) | compose | none
+#   -DockerDesktop  keep (default when Docker Desktop is installed: on starts it, off leaves it)
+#                   quit (off also quits it) | none
 #   -Token       the token; the dashboard has ONE for every box, so pass the
 #                other box's when this is the second. Omitted: an existing
 #                token.txt is kept, else a new one is written.
@@ -27,6 +29,7 @@ param(
   [ValidateSet('wsl', 'wsl-compose', 'compose')][string]$Containers = 'wsl',
   [string]$ComposeDir = '',
   [ValidateSet('app', 'systemd', 'compose', 'none')][string]$Ollama = 'app',
+  [ValidateSet('', 'keep', 'quit', 'none')][string]$DockerDesktop = '',
   [string]$Token = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -51,6 +54,8 @@ if ($Token) {
 }
 
 $cfg = [ordered]@{ containers = $Containers; distro = $Distro; ollama = $Ollama }
+if ($DockerDesktop) { $cfg.dockerDesktop = $DockerDesktop }
+elseif (Test-Path "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe") { Write-Host 'Docker Desktop found: on will start it, off will leave it running (-DockerDesktop quit to quit it too)' }
 if ($ComposeDir) { $cfg.compose = [ordered]@{ dir = $ComposeDir; file = 'docker-compose.voice.yml'; profile = 'gpu' } }
 $cfg | ConvertTo-Json -Depth 3 | Set-Content -Path (Join-Path $Dir 'agent.json')
 
@@ -79,7 +84,7 @@ if (-not $running) {
 $tok = (Get-Content $tokenFile -Raw).Trim()
 try {
   $st = Invoke-RestMethod -Uri 'http://127.0.0.1:8190/status' -Headers @{ Authorization = "Bearer $tok" } -TimeoutSec 20
-  Write-Host "agent up: phase $($st.phase), containers $($st.containers) ($(if ($st.containersRunning) { 'running' } else { 'not running' })), ollama $(if ($st.ollamaRunning) { 'running' } else { 'not running' })"
+  Write-Host "agent up: phase $($st.phase), containers $($st.containers) ($(if ($st.containersRunning) { 'running' } else { 'not running' })), ollama $(if ($st.ollamaRunning) { 'running' } else { 'not running' }), docker desktop $($st.dockerDesktop)"
 } catch {
   Write-Host "agent not answering yet: $_  (see $Dir\agent.log and supervisor.log)"
 }
