@@ -12,6 +12,9 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    # A build that hangs (the emulated arm64 stage did, 2026-10-10, for the full
+    # six hours GitHub allows) should die in an hour, not block the next push.
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write    # needed to push to ghcr.io
