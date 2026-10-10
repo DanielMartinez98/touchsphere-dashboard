@@ -87,7 +87,12 @@ self.addEventListener('fetch', event => {
   if (NEVER.test(url.pathname)) return
 
   // Navigations: the shell, network-first so a new build lands, cache when dark.
+  // Except under /api/: the Gmail sign-in opens /api/mail/oauth/start as a page
+  // and Google sends the browser back to /api/mail/oauth/callback — both are
+  // redirects the server must answer, and serving the shell for them reloaded
+  // the dashboard instead of signing in.
   if (req.mode === 'navigate') {
+    if (url.pathname.startsWith('/api/')) return
     event.respondWith(networkFirst(new Request('/'), SHELL))
     return
   }
