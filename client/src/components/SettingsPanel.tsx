@@ -26,11 +26,12 @@ import { useTaskDbs, type TaskBoard, type BoardRole } from '../hooks/useTaskDbs'
 import { useNotionMe } from '../hooks/useNotionMe'
 import IdentityPicker from './widgets/NotionWidget/IdentityPicker'
 import { TouchInput } from './TouchInput'
+import DevicesTab from './DevicesTab'
 import { AutosaveInput } from './AutosaveInput'
 import { KeyboardCard } from './KeyboardCard'
 import { AppStoreTab } from './AppStoreTab'
 
-type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'prompts' | 'mail' | 'notion' | 'apps' | 'system' | 'aibox' | 'server' | 'debug'
+type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'prompts' | 'mail' | 'notion' | 'apps' | 'system' | 'aibox' | 'devices' | 'server' | 'debug'
 
 // The preview reuses the dashboard's own renderers. Lazy, same chunks App
 // splits out — opening the VTuber tab is what pulls in the heavy deps, and
@@ -424,6 +425,8 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
     { id: 'system',    label: 'System'    },
     // Only with AI_BOXES set: one box has nothing to choose between.
     ...(aiBoxEnabled ? [{ id: 'aibox' as const, label: 'AI box' }] : []),
+    // Always: picking a machine per service needs nothing set up first.
+    { id: 'devices',   label: 'Devices'   },
     // Only when the server says it is set up: an "update the host" tab that
     // can't reach a host is a tab full of broken buttons.
     ...(hostEnabled ? [{ id: 'server' as const, label: 'Server' }] : []),
@@ -1394,6 +1397,9 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
 
             {/* AI box tab — which GPU box the local AI goes to */}
             {tab === 'aibox' && <AiBoxTab />}
+
+            {/* Devices tab — which machine does each AI service, over the AI box */}
+            {tab === 'devices' && <DevicesTab />}
 
             {/* Server tab — updating the machine this runs on */}
             {tab === 'server' && <ServerTab />}

@@ -16,6 +16,8 @@ server/touchsphere-dashboard/
 .env
 .env.local
 .env.*.local
+# Written by scripts/local-ai/install.sh: where this machine keeps its AI models.
+.env.ai
 
 # Logs
 *.log

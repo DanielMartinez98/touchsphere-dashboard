@@ -30,7 +30,7 @@ import path from 'path'
 import { broadcast } from './routes/system'
 import { advanceSeed, paramsFor, type ImageParams } from './image-params'
 import { estimateRender, humanMs, recordRender } from './image-timing'
-import { boxUrl, boxUrlSettled, onAiBoxChange } from './ai-box'
+import { serviceUrl, serviceUrlSettled, onAiServiceChange } from './ai-devices'
 import { composeKontextInstruction, composeRedrawPrompt, visionModel, improvePrompt, prompterModel, readPrompter, locateBox } from './image-prompt'
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -38,16 +38,20 @@ import { composeKontextInstruction, composeRedrawPrompt, visionModel, improvePro
 // No sibling-container default, unlike KOKORO_URL. There is no CPU variant of
 // this worth running: SDXL on the dashboard box is minutes per image, which
 // isn't a fallback, it's a hang. Unset means the feature is off.
-const COMFY_URL = (process.env['COMFYUI_URL'] ?? '').replace(/\/$/, '')
+//
+// Where it is, per call (ai-devices.ts): a machine picked for pictures under
+// Settings → Devices, else COMFYUI_URL as the AI box re-points it. Nothing
+// here caches the answer, so a machine picked hours after boot draws the next
+// picture.
 
 /** Whether image generation is configured at all. */
 export function imagesEnabled(): boolean {
-  return COMFY_URL !== ''
+  return comfyUrl() !== ''
 }
 
-/** Where ComfyUI is right now — re-pointed per call when its host is one of AI_BOXES. */
+/** Where ComfyUI is right now: the picked device, else COMFYUI_URL through the AI box. */
 export function comfyUrl(): string {
-  return boxUrl(COMFY_URL)
+  return serviceUrl('image')
 }
 
 // A whole render, not a single HTTP call: queue wait + checkpoint load + steps.
@@ -301,7 +305,7 @@ export const HOLD_NODES: Record<HoldMode, string> = {
 let holdModesCache: { at: number; modes: Record<HoldMode, boolean> } | null = null
 /** Which hold modes this box can run. Cached a minute. */
 export async function holdModes(): Promise<Record<HoldMode, boolean>> {
-  if (!COMFY_URL) return { lines: false, body: false, pose: false }
+  if (!comfyUrl()) return { lines: false, body: false, pose: false }
   if (holdModesCache && Date.now() - holdModesCache.at < 60_000) return holdModesCache.modes
   const has = async (n: string) => comfyFetch(`/object_info/${n}`, undefined, 8000)
     .then(async r => r.ok && Object.keys(await r.json() as object).length > 0).catch(() => false)
@@ -314,7 +318,7 @@ export async function holdModes(): Promise<Record<HoldMode, boolean>> {
 let structureCache: { at: number; ok: boolean } | null = null
 /** Whether "keep the pose" can be offered: the nodes exist and a usable ControlNet is installed. Cached a minute. */
 export async function structureAvailable(): Promise<boolean> {
-  if (!COMFY_URL) return false
+  if (!comfyUrl()) return false
   if (structureCache && Date.now() - structureCache.at < 60_000) return structureCache.ok
   let ok = false
   try {
@@ -1572,8 +1576,8 @@ async function run(job: ImageJob): Promise<void> {
   // the promise chain was forged when it was queued — so the chain still calls
   // us and this is where the mark is honoured.
   if (job.status === 'cancelled') return
-  if (!COMFY_URL) {
-    return fail(job, 'COMFYUI_URL is not set — no image server is configured')
+  if (!comfyUrl()) {
+    return fail(job, 'no image server is configured — pick a picture machine under Settings → Devices, or set COMFYUI_URL')
   }
   job.status = 'running'
   job.startedAt = Date.now()   // reset: queue wait isn't render time
@@ -4097,7 +4101,7 @@ export function styleDefaults(style: string): StyleDefaults {
 async function comfyFetch(pathname: string, init?: RequestInit, timeoutMs = HTTP_MS): Promise<Response> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
-  const base = await boxUrlSettled(COMFY_URL)
+  const base = await serviceUrlSettled('image')
   try {
     return await fetch(`${base}${pathname}`, { ...init, signal: ctrl.signal })
   } catch (err) {
@@ -4151,7 +4155,7 @@ export async function toPng(bytes: Buffer, contentType = ''): Promise<Buffer> {
     }
   }
 
-  if (!COMFY_URL) throw new Error('that picture is not a PNG and there is no image server to convert it')
+  if (!comfyUrl()) throw new Error('that picture is not a PNG and there is no image server to convert it')
 
   // The extension has to match the bytes: ComfyUI picks its decoder from the
   // filename, so a JPEG called .png fails to load.
@@ -4668,7 +4672,7 @@ let segCache: { at: number; ok: boolean } | null = null
 export function segmentationCached(): boolean { return segCache?.ok ?? false }
 /** Whether the GPU box can turn a description into a mask. Cached for a minute. */
 export async function segmentationAvailable(): Promise<boolean> {
-  if (!COMFY_URL) return false
+  if (!comfyUrl()) return false
   if (segCache && Date.now() - segCache.at < 60_000) return segCache.ok
   let ok = false
   try {
@@ -4682,7 +4686,7 @@ export async function segmentationAvailable(): Promise<boolean> {
 let inpaintCache: { at: number; ok: boolean } | null = null
 /** Whether the graph nodes a masked edit needs exist. Core ComfyUI has them; an old build might not. */
 export async function inpaintAvailable(): Promise<boolean> {
-  if (!COMFY_URL) return false
+  if (!comfyUrl()) return false
   if (inpaintCache && Date.now() - inpaintCache.at < 300_000) return inpaintCache.ok
   let ok = false
   try {
@@ -4696,7 +4700,7 @@ export async function inpaintAvailable(): Promise<boolean> {
 
 // What one GPU box has installed says nothing about another, so every answer
 // above is dropped when ComfyUI moves (Settings → AI box).
-onAiBoxChange(() => {
+onAiServiceChange(() => {
   holdModesCache = null
   structureCache = null
   segCache = null
@@ -5002,7 +5006,7 @@ async function downloadOutput(ref: OutputRef): Promise<Buffer> {
 
 /** Is ComfyUI actually there? Used by the Debug tab's connection checks. */
 export async function comfyStats(): Promise<{ ok: boolean; detail: string }> {
-  if (!COMFY_URL) return { ok: false, detail: 'COMFYUI_URL not set — image generation is disabled' }
+  if (!comfyUrl()) return { ok: false, detail: 'no image server is configured (Settings → Devices, or COMFYUI_URL) — image generation is disabled' }
   try {
     const res = await comfyFetch('/system_stats', undefined, 8000)
     if (!res.ok) return { ok: false, detail: `HTTP ${res.status} from ${comfyUrl()}` }
