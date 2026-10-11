@@ -81,7 +81,7 @@ function verdict(st: ImageSettings | null): { tone: 'bad' | 'warn'; text: string
   if (st.controlnet && /·\s*lines/.test(st.controlnet)) {
     causes.push(
       'The pose hold was on Lines, which pins every contour of the original — including the thing you ' +
-      'asked to remove or replace. Settings → Drawing → Keeping the pose: Body holds the shape but ' +
+      'asked to remove or replace. Settings → Drawing → Changing a picture: Body holds the shape but ' +
       'frees the outlines, or set Line detail to coarse.',
     )
   }

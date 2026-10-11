@@ -40,7 +40,7 @@ import { composeKontextInstruction, composeRedrawPrompt, visionModel, improvePro
 // isn't a fallback, it's a hang. Unset means the feature is off.
 //
 // Where it is, per call (ai-devices.ts): a machine picked for pictures under
-// Settings → Devices, else COMFYUI_URL as the AI box re-points it. Nothing
+// Settings → AI devices, else COMFYUI_URL as the AI box re-points it. Nothing
 // here caches the answer, so a machine picked hours after boot draws the next
 // picture.
 
@@ -1600,7 +1600,7 @@ async function run(job: ImageJob): Promise<void> {
   // us and this is where the mark is honoured.
   if (job.status === 'cancelled') return
   if (!comfyUrl()) {
-    return fail(job, 'no image server is configured — pick a picture machine under Settings → Devices, or set COMFYUI_URL')
+    return fail(job, 'no image server is configured — pick a picture machine under Settings → AI devices, or set COMFYUI_URL')
   }
   job.status = 'running'
   job.startedAt = Date.now()   // reset: queue wait isn't render time
@@ -5032,7 +5032,7 @@ async function downloadOutput(ref: OutputRef): Promise<Buffer> {
 
 /** Is ComfyUI actually there? Used by the Debug tab's connection checks. */
 export async function comfyStats(): Promise<{ ok: boolean; detail: string }> {
-  if (!comfyUrl()) return { ok: false, detail: 'no image server is configured (Settings → Devices, or COMFYUI_URL) — image generation is disabled' }
+  if (!comfyUrl()) return { ok: false, detail: 'no image server is configured (Settings → AI devices, or COMFYUI_URL) — image generation is disabled' }
   try {
     const res = await comfyFetch('/system_stats', undefined, 8000)
     if (!res.ok) return { ok: false, detail: `HTTP ${res.status} from ${comfyUrl()}` }

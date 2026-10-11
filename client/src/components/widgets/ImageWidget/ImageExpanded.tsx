@@ -959,7 +959,7 @@ export default function ImageExpanded({
       )}
 
       {/* ── Which way of asking ──
-          The improver's options, made in Settings → Drawing and picked here,
+          The improver's options, made in Settings → Prompts and picked here,
           beside the switch they belong to. Only when there is a choice, and
           only when the improver will actually run on these instructions: a
           redraw is described by the picture-reading model instead, and an

@@ -1,4 +1,4 @@
-// Settings → Apps: the user's own apps on the App Store, from App Store
+// Settings → App Store: the user's own apps on the App Store, from App Store
 // Connect through the server (server/src/app-store.ts), which owns the key
 // and the history. One GET on mount, the `app-store` SSE frame after each
 // sync, and a slow poll while the tab is open so "synced 5 min ago" stays true.

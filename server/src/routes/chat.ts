@@ -45,11 +45,12 @@ import { getSelectedProfile, type AssistantProfile } from '../config/assistant'
 import { aiBoxDown, boxUrl, boxUrlSettled } from '../ai-box'
 import { ollamaUrlFor, ollamaUrlSettled } from '../ai-devices'
 import { imagesEnabled } from '../image'
+import { readOverrides, fillTemplate } from '../prompt-overrides'
 
 const router = Router()
 
 // The env value, kept for the fallback comparison below. Calls go to
-// ollamaUrlFor('chat'): the language-model device picked in Settings → Devices,
+// ollamaUrlFor('chat'): the language-model device picked in Settings → AI devices,
 // else this through the AI box, resolved per request.
 const OLLAMA_URL     = process.env['OLLAMA_URL']    ?? 'http://host.docker.internal:11434'
 const OLLAMA_MODEL   = process.env['OLLAMA_MODEL']  ?? 'gemma3'
@@ -104,7 +105,13 @@ const WEB_SEARCH_ENABLED = (() => {
 // Everything after the persona is identical across assistants. The persona
 // (name + personality) is prepended per-request from the user's selected
 // profile \u2014 see buildSystemPrompt below.
-function systemPromptBody(): string { return (
+// The instructions every assistant shares, as the built-in template. The
+// parts that depend on what is configured on THIS server are placeholders,
+// filled per request by assistantParts(): a user-edited copy (Settings →
+// Prompts, prompt-overrides.ts) keeps them live, so editing the wording can
+// never leave the model told about a tool that is not registered, or not told
+// about one that is.
+const ASSISTANT_CORE = (
   "You are a voice assistant living on the user's dashboard. " +
   "Reply in 1-2 short, natural-sounding sentences. " +
   "Avoid lists, markdown, code blocks, and emoji \u2014 your reply will be spoken aloud. " +
@@ -214,13 +221,24 @@ function systemPromptBody(): string { return (
   "forget matches by substring, so pass a distinctive phrase from the specific memory, not a broad word. " +
   "For any calendar question other than 'today', use get_calendar_day, get_calendar_week, or get_calendar_range — never guess what is on a date you haven't fetched. " +
   "CRITICAL: When you use a tool, base your answer strictly on what the tool actually returned. " +
-  "Do not invent facts, numbers, dates, names, titles, or quotes. After mutating tools (add/remove/mark) confirm what you did in one short sentence." +
-  (WEB_SEARCH_ENABLED
+  "Do not invent facts, numbers, dates, names, titles, or quotes. After mutating tools (add/remove/mark) confirm what you did in one short sentence."
+)
+
+export const DEFAULT_ASSISTANT_TEMPLATE =
+  // Paragraph breaks at the section headings, so the text is readable in the
+  // editor; the model reads them the same as the spaces they replace.
+  ASSISTANT_CORE.replace(/ (?=(SOUNDS:|BODY LANGUAGE:|TURN CONTROL|THE CLOSING OFFER|Call end_conversation WITHOUT|You have tools to read|GAME GUIDES:|DRIVING THE GUIDE|PERSISTENT MEMORY:|LEARNING HOW|For any calendar|CRITICAL:))/g, '\n\n') +
+  '\n\n{{web}}\n\n{{screen}}\n\n{{drawing}}\n\n{{plex}}'
+
+/** The configuration-dependent paragraphs, by placeholder name. */
+export function assistantParts(): Record<string, string> {
+  return {
+    web: ((WEB_SEARCH_ENABLED
     ? " You also have web_search and web_fetch tools for current events, recent news, live data, " +
       "or anything you don't reliably know. If a search snippet looks promising but lacks the exact " +
       "answer, call web_fetch on that URL to read the full page."
-    : "") +
-  " SHOWING THINGS ON SCREEN: you can put a page or a video on the dashboard with open_website and play_video. " +
+    : "")).trim(),
+    screen: (" SHOWING THINGS ON SCREEN: you can put a page or a video on the dashboard with open_website and play_video. " +
   "Answering out loud and showing something are not exclusive — showing is an extra, and you still speak one short sentence either way. " +
   "Use play_video for anything the user would rather WATCH: tutorials, how-tos, recipes, repairs, walkthroughs, " +
   "workouts, music, trailers, \"show me how to...\". " +
@@ -231,11 +249,11 @@ function systemPromptBody(): string { return (
     : "For open_website, pass a url you are confident is real (e.g. a wikipedia.org article); pass a query only if you have none. ") +
   "Do NOT speak URLs out loud — say what you put on screen (\"Put a ten-minute knife-sharpening tutorial up for you\"), never the address. " +
   "If the user only wants a quick fact, just answer — don't open a window for it. " +
-  "One window at a time: a new open_website or play_video replaces whatever is on screen." +
-  // Only described when there is a renderer behind it. Describing a tool the
-  // model cannot call is how you get an assistant that offers to draw and then
-  // silently doesn't.
-  (imagesEnabled()
+  "One window at a time: a new open_website or play_video replaces whatever is on screen.").trim(),
+    // Only described when there is a renderer behind it. Describing a tool the
+    // model cannot call is how you get an assistant that offers to draw and then
+    // silently doesn't.
+    drawing: ((imagesEnabled()
     ? " DRAWING: generate_image invents a picture and puts it on screen — use it when they ask you to draw, " +
       "paint, or imagine something, NOT to find a picture of something real (that is open_website). " +
       "It takes a few seconds and fills in on screen by itself, so tell them it is coming and " +
@@ -243,9 +261,9 @@ function systemPromptBody(): string { return (
       "FROM one already drawn — that is the tool for \"make it night time\", \"same cat but blue\", " +
       "\"add a hat\"; pass the whole picture you want, not just the change, because it redraws from " +
       "the description. show_last_image puts an earlier one back up."
-    : "") +
-  // Same rule: only described when the media stack is configured.
-  (PLEX_TOOLS.length > 0
+    : "")).trim(),
+    // Same rule: only described when the media stack is configured.
+    plex: ((PLEX_TOOLS.length > 0
     ? " PLEX: the house has a Plex library. play_media starts a film or episode full screen here " +
       "(or on a named Plex player) — use it for \"play\", \"put on\", \"continue\" with a title. " +
       "For a long film nobody has started it may come back with an OFFER instead of playing: then ask " +
@@ -260,8 +278,22 @@ function systemPromptBody(): string { return (
           "remux of…\") and numbers the results; grab_release downloads one BY NUMBER from that list. "
         : "") +
       "Speak the title, never ids or file names."
-    : "")
-) }
+    : "")).trim(),
+  }
+}
+
+// Everything after the persona is identical across assistants. The persona
+// (name + personality) is prepended per-request from the user's selected
+// profile \u2014 see buildSystemPrompt below.
+function systemPromptBody(): string {
+  const template = readOverrides().assistant ?? DEFAULT_ASSISTANT_TEMPLATE
+  return fillTemplate(template, assistantParts()).replace(/\n{3,}/g, '\n\n').trim()
+}
+
+/** The persona in effect for a profile: the user's wording, else the built-in. */
+export function personaFor(profile: AssistantProfile): string {
+  return readOverrides().personas[profile.id] ?? profile.persona
+}
 
 // Compose the full system prompt for a given assistant: its personality up
 // front, then the shared behaviour/tool instructions.
@@ -271,7 +303,7 @@ function buildSystemPrompt(profile: AssistantProfile): string {
   // and the user can change that between one drawing and the next. Empty
   // string when there is no image server, so nothing changes for a box
   // without one.
-  return `${profile.persona} ${systemPromptBody()}${imagePromptGuidance()}`
+  return `${personaFor(profile)} ${systemPromptBody()}${imagePromptGuidance()}`
 }
 
 /**

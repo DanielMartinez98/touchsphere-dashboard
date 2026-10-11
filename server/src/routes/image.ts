@@ -150,7 +150,7 @@ router.get('/file/:file', (req: Request, res: Response) => {
 // up here without touching the dashboard.
 router.get('/models', async (_req: Request, res: Response) => {
   if (!imagesEnabled()) {
-    res.status(503).json({ error: 'no image server is configured (Settings → Devices, or COMFYUI_URL)', models: [], selected: '' })
+    res.status(503).json({ error: 'no image server is configured (Settings → AI devices, or COMFYUI_URL)', models: [], selected: '' })
     return
   }
   try {
@@ -382,7 +382,7 @@ router.get('/active', (_req: Request, res: Response) => {
 // the steps arrive over the `image-plan` SSE event. With run:true the steps
 // start as soon as they exist; otherwise POST /plan/:id/run after reading it.
 router.post('/plan', (req: Request, res: Response) => {
-  if (!imagesEnabled()) { res.status(503).json({ error: 'no image server is configured (Settings → Devices, or COMFYUI_URL)' }); return }
+  if (!imagesEnabled()) { res.status(503).json({ error: 'no image server is configured (Settings → AI devices, or COMFYUI_URL)' }); return }
   const body = req.body as Record<string, unknown> | undefined
   const source = typeof body?.['source'] === 'string' && /^[a-f0-9]{32}$/.test(body['source']) ? body['source'] : ''
   const request = typeof body?.['request'] === 'string' ? body['request'].trim() : ''
@@ -447,7 +447,7 @@ router.post('/job/:id/cancel', (req: Request, res: Response) => {
 // and time out behind Caddy.
 router.post('/generate', (req: Request, res: Response) => {
   if (!imagesEnabled()) {
-    res.status(503).json({ error: 'no image server is configured — pick a picture machine under Settings → Devices, or set COMFYUI_URL' })
+    res.status(503).json({ error: 'no image server is configured — pick a picture machine under Settings → AI devices, or set COMFYUI_URL' })
     return
   }
   // Checked here as well as in startImage() so the panel gets a status it can
@@ -821,7 +821,7 @@ router.post(
 // picture it covers, so the panel can show the outline and the user can say
 // "no, not that" before a render is spent on it.
 router.post('/mask/find', async (req: Request, res: Response) => {
-  if (!imagesEnabled()) { res.status(503).json({ error: 'no image server is configured (Settings → Devices, or COMFYUI_URL)' }); return }
+  if (!imagesEnabled()) { res.status(503).json({ error: 'no image server is configured (Settings → AI devices, or COMFYUI_URL)' }); return }
   const body = req.body as Record<string, unknown> | undefined
   const source = typeof body?.['source'] === 'string' && /^[a-f0-9]{32}$/.test(body['source']) ? body['source'] : ''
   const what = typeof body?.['what'] === 'string' ? body['what'].trim().slice(0, 120) : ''

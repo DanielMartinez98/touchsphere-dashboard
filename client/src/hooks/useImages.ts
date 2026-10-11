@@ -265,7 +265,7 @@ export interface ImageCapabilities {
 }
 
 export type HoldMode = 'lines' | 'body' | 'pose'
-/** Settings → Drawing → Keeping the pose. Mirrors server/src/image-structure.ts. */
+/** Settings → Drawing → Changing a picture. Mirrors server/src/image-structure.ts. */
 export interface StructureSettings {
   enabled:  boolean
   mode:     HoldMode

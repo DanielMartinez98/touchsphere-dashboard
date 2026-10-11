@@ -60,7 +60,7 @@ function describe(app: AppView, period: 'yesterday' | 'week' | 'month', currency
 export function runAppStoreTool(name: string, args: Record<string, unknown>): string | null {
   if (name !== 'app_store_stats') return null
   if (!appStoreConfigured()) {
-    return 'App Store Connect is not set up yet. The key goes in Settings → Apps on the dashboard; until then there are no figures.'
+    return 'App Store Connect is not set up yet. The key goes in Settings → App Store on the dashboard; until then there are no figures.'
   }
   const view = appStoreView()
   const wanted = typeof args['app'] === 'string' ? args['app'].trim().toLowerCase() : ''

@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express'
 import { appStoreView, clearAppStoreConfig, setAppStoreConfig, syncNow } from '../app-store'
 
-// Settings → Apps: the user's own apps on the App Store — downloads, earnings,
+// Settings → App Store: the user's own apps on the App Store — downloads, earnings,
 // impressions. See app-store.ts. Unlike the Server and AI box tabs this one is
 // always present, because the key is pasted into it: there is nothing in .env
 // to make it appear. The view says `configured: false` until then.

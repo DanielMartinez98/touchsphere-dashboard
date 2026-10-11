@@ -246,9 +246,9 @@ async function main(): Promise<void> {
     await new Promise(r2 => setTimeout(r2, 1500))
     check('with Improve off, no option is asked anything', !chats.some(x => x.user.includes('a black cat')))
 
-    const prompts = await fetch(`${s.base}/api/prompts`).then(x => x.json()) as { prompts: { id: string; label: string; text: string }[] }
+    const prompts = await fetch(`${s.base}/api/prompts`).then(x => x.json()) as { prompts: { id: string; previewName?: string; text: string }[] }
     const imp = prompts.prompts.find(p => p.id === 'improver')
-    check('the Prompts tab shows the option in use', !!imp && imp.label.includes('Cinematic') && imp.text.startsWith('MARKER-B'), imp?.label)
+    check('the Prompts tab shows the option in use', !!imp && (imp.previewName ?? '').includes('Cinematic') && imp.text.startsWith('MARKER-B'), imp?.previewName)
 
     console.log('\nDeleting, and the limit')
     r = await call('DELETE', `/api/image/prompter/options/${b}`)

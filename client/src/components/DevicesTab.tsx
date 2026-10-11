@@ -1,4 +1,4 @@
-// Settings → Devices — which machine does each piece of AI work.
+// Settings → AI devices — which machine does each piece of AI work.
 //
 // Every AI service the dashboard uses is a URL, so the choice of machine is a
 // choice, not a deployment: the GPU desktop draws the pictures while the box
@@ -52,7 +52,7 @@ export default function DevicesTab() {
 
       {/* ── Which device does what ── */}
       <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+        <span className="set-label mb-2 px-1">
           Which device does what
         </span>
         <div className="space-y-3">
@@ -72,7 +72,7 @@ export default function DevicesTab() {
       {/* ── The devices ── */}
       <div>
         <div className="flex items-center justify-between mb-2">
-          <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Devices</span>
+          <span className="set-label">Devices</span>
           <button
             type="button"
             onClick={() => void reload()}
@@ -83,7 +83,7 @@ export default function DevicesTab() {
           </button>
         </div>
         {(data?.devices.length ?? 0) === 0 ? (
-          <p className="text-[12px] text-white/40 leading-relaxed bg-white/5 border border-white/8 rounded-2xl px-4 py-3">
+          <p className="set-card text-[12px] text-white/40 leading-relaxed px-4 py-3">
             No devices yet. Run <code className="text-white/60">scripts/local-ai/install.sh</code> on a
             machine to set the whole stack up there — given <code className="text-white/60">--dashboard</code>{' '}
             with this dashboard&rsquo;s address it adds itself here. Or add one by hand below.
@@ -120,7 +120,7 @@ function ServiceCard({ service, devices, chosen, busy, onPick }: {
 }) {
   const s = service
   return (
-    <div className="bg-white/5 rounded-2xl p-4 border border-white/8 space-y-2.5">
+    <div className="set-card p-4 space-y-2.5">
       <div>
         <div className="text-white/85 text-sm font-medium">{s.label}</div>
         <div className="text-[12px] text-white/40 leading-relaxed">{s.hint}</div>
@@ -199,7 +199,7 @@ function DeviceCard({ device, uses, busy, onProbe, onRemove }: {
   }
 
   return (
-    <div className="bg-white/5 rounded-2xl p-4 border border-white/8 space-y-3">
+    <div className="set-card p-4 space-y-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-white/85 text-sm font-medium truncate">{device.name}</div>
@@ -273,10 +273,10 @@ function AddDevice({ busy, onAdd }: {
 
   return (
     <div>
-      <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+      <span className="set-label mb-2 px-1">
         Add a device
       </span>
-      <div className="bg-white/5 rounded-2xl p-4 border border-white/8 space-y-3">
+      <div className="set-card p-4 space-y-3">
         <TouchInput
           value={name}
           onChange={setName}

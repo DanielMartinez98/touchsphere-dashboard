@@ -1,4 +1,4 @@
-// Settings → Devices: which machine does each piece of AI work.
+// Settings → AI devices: which machine does each piece of AI work.
 //
 //   GET    /api/ai-devices            the devices, and every service resolved
 //   POST   /api/ai-devices            add or edit a device { id?, name, host, ports?, assign? }

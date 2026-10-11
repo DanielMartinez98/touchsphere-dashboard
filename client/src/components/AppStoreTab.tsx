@@ -1,4 +1,4 @@
-// Settings → Apps: the App Store Connect key, and nothing else.
+// Settings → App Store: the App Store Connect key, and nothing else.
 //
 // The numbers live in the Apps corner (bottom-left while the screen is set to
 // work; the Apps tab on the phone) — this tab is the chore done once: an API
@@ -53,7 +53,7 @@ export function AppStoreTab() {
   return (
     <div className="space-y-5 max-w-lg mx-auto pb-4">
       <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+        <span className="set-label mb-2 px-1">
           Your apps on the App Store
         </span>
         <p className="text-[12px] text-white/45 leading-relaxed">
@@ -127,7 +127,7 @@ export function AppStoreTab() {
 
       {showForm && (
         <div>
-          <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          <span className="set-label mb-2 px-1">
             {view.configured ? 'Change the key' : '1 · An App Store Connect key'}
           </span>
           {!view.configured && (
