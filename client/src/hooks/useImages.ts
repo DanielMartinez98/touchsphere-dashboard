@@ -53,6 +53,8 @@ export interface ImageSettings {
   retriedWith?:    string
   retryFailed?:    string
   improvedBy?:     string
+  /** Which of the improver's ways of asking rewrote it: "Original" or an option's name. */
+  improvedWith?:   string
   /** Booster text that was appended to the prompt, when there was any. */
   optimizations?:  string
 }
@@ -95,6 +97,23 @@ export interface PrompterSettings {
   editModel:             string
   /** Redraw an edit that changed less than this fraction; 0 = never. */
   retryBelow:            number
+  /**
+   * More ways of asking the improver, beside the original `template`. Created
+   * and edited in Settings → Drawing; one is chosen in the Draw panel.
+   */
+  options:      PromptOption[]
+  /** The one new pictures are rewritten with: `originalId` or an option's id. */
+  active:       string
+  activeName:   string
+  originalId:   string
+  originalName: string
+  maxOptions:   number
+}
+
+export interface PromptOption {
+  id:       string
+  name:     string
+  template: string
 }
 
 export interface StoredImage {
@@ -800,6 +819,12 @@ export function useImages() {
     structure?: boolean,
     /** How it is held, for this picture only. Omitted = the saved setting. */
     hold?: { mode?: HoldMode; strength?: number; detail?: 'fine' | 'normal' | 'coarse' },
+    /**
+     * Which of the improver's options rewrites it. Sent even though the panel
+     * also saves the choice, so a chip tapped a moment before Draw cannot lose
+     * a race with its own save. Omitted = the one chosen.
+     */
+    promptOption?: string,
   ): Promise<string | null> => {
     const size = SIZES[orientation]
     setDrawError('')
@@ -820,6 +845,7 @@ export function useImages() {
           ...(source && typeof hold?.strength === 'number' ? { holdStrength: hold.strength } : {}),
           ...(source && hold?.detail ? { holdDetail: hold.detail } : {}),
           ...(typeof improve === 'boolean' ? { improve } : {}),
+          ...(improve && promptOption ? { promptOption } : {}),
         }),
       })
       if (!res.ok) {
@@ -926,6 +952,52 @@ export function useImages() {
       console.warn('[images] prompter save failed:', err)
     }
   }, [])
+
+  // Settings and the Draw panel are separate hooks, often on separate screens
+  // (a phone and the kiosk): an option created in one has to appear in the
+  // other without a reload, so every change on the server is announced.
+  useEffect(() => onServerEvent('image-prompter', () => {
+    fetch('/api/image/prompter')
+      .then(r => (r.ok ? r.json() : null))
+      .then((j: PrompterSettings | null) => { if (j) setPrompterState(j) })
+      .catch(() => { /* the next change or a reopen catches up */ })
+  }), [])
+
+  /**
+   * The improver's options. Each answers with the whole improver view, which
+   * replaces ours: deleting the option in use moves the choice back to the
+   * original, and the screen must not have to guess that. Resolves to an
+   * error sentence for the screen to show, or '' when it worked.
+   */
+  const promptOptionCall = useCallback(async (method: string, path: string, body?: unknown): Promise<string> => {
+    try {
+      const res = await fetch(path, {
+        method,
+        headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      })
+      const j = await res.json().catch(() => ({})) as PrompterSettings & { error?: string }
+      if (!res.ok) return j.error ?? `HTTP ${res.status}`
+      setPrompterState(j)
+      return ''
+    } catch (err) {
+      return err instanceof Error ? err.message : 'could not reach the server'
+    }
+  }, [])
+  const addPromptOption = useCallback(() => promptOptionCall('POST', '/api/image/prompter/options', {}), [promptOptionCall])
+  const updatePromptOption = useCallback((id: string, patch: { name?: string; template?: string }) =>
+    promptOptionCall('PATCH', `/api/image/prompter/options/${encodeURIComponent(id)}`, patch), [promptOptionCall])
+  const removePromptOption = useCallback((id: string) =>
+    promptOptionCall('DELETE', `/api/image/prompter/options/${encodeURIComponent(id)}`), [promptOptionCall])
+  /** The Draw panel's chips. Optimistic, like the Improve switch beside them. */
+  const setActivePrompt = useCallback((id: string) => {
+    setPrompterState(prev => {
+      if (!prev) return prev
+      const name = id === prev.originalId ? prev.originalName : prev.options.find(o => o.id === id)?.name ?? prev.activeName
+      return { ...prev, active: id, activeName: name }
+    })
+    return promptOptionCall('POST', '/api/image/prompter/active', { id })
+  }, [promptOptionCall])
 
   /**
    * Add a picture from the user's device to the gallery.
@@ -1037,6 +1109,7 @@ export function useImages() {
     params, defaults, loras, autoLora, inpaintPatchInfo, setParams, resetParams,
     generate, remove, clear, refresh,
     prompter, setPrompter, upload,
+    addPromptOption, updatePromptOption, removePromptOption, setActivePrompt,
     fetchParams, setParamsForStyle,
   }
 }

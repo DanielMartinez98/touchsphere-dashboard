@@ -5,7 +5,7 @@ import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
 import { getSelectedProfile, ASSISTANT_PROFILES, type AssistantId } from '../config/assistant'
-import { aiBoxDown, boxUrl, boxUrlSettled, onAiBoxChange } from '../ai-box'
+import { serviceDown, serviceUrl, serviceUrlSettled, onAiServiceChange } from '../ai-devices'
 
 // GET /api/tts?text=hello[&voice=...]
 //
@@ -52,7 +52,9 @@ const EL_MODEL_ID = process.env['ELEVENLABS_MODEL_ID'] ?? 'eleven_turbo_v2_5'
 // speech; it re-timbres existing speech. So her voice is a two-step LOCAL
 // pipeline: Kokoro speaks the words, then RVC converts that audio into Miku.
 // Free, offline, no API key, no per-word billing.
-const RVC_URL = (process.env['RVC_URL'] ?? '').replace(/\/$/, '')
+// Resolved per call (ai-devices.ts): the machine picked for Miku's voice under
+// Settings → Devices, else RVC_URL through the AI box.
+const rvcUrl = (): string => serviceUrl('rvc')
 // Conversion is much slower than plain synthesis (it's a second model pass over
 // the audio, on CPU), so it gets its own, longer budget.
 const RVC_TIMEOUT_MS = Number(process.env['RVC_TIMEOUT_MS'] ?? 45_000)
@@ -109,7 +111,9 @@ const RVC_PROTECT = Number(process.env['RVC_PROTECT'] ?? 0.33)
 // the preferred provider whenever it's configured — the cloud ones are only
 // there for voices Kokoro can't do (Miku) or when it isn't deployed.
 // It speaks the OpenAI /v1/audio/speech dialect.
-const KOKORO_URL = (process.env['KOKORO_URL'] ?? '').replace(/\/$/, '')
+// Resolved per call (ai-devices.ts): the machine picked for voice out under
+// Settings → Devices, else KOKORO_URL through the AI box.
+const kokoroUrl = (): string => serviceUrl('tts')
 
 type Provider = 'rvc' | 'kokoro' | 'elevenlabs' | 'espeak'
 
@@ -146,13 +150,13 @@ function providerChain(profile: { rvcModel?: string }): Provider[] {
   }
   const chain: Provider[] = []
   // RVC needs Kokoro to produce the source audio, so it's only viable with both.
-  if (profile.rvcModel && RVC_URL && KOKORO_URL) chain.push('rvc')
+  if (profile.rvcModel && rvcUrl() && kokoroUrl()) chain.push('rvc')
   if (PREFER_LOCAL) {
-    if (KOKORO_URL) chain.push('kokoro')
+    if (kokoroUrl()) chain.push('kokoro')
     if (EL_KEY) chain.push('elevenlabs')
   } else {
     if (EL_KEY) chain.push('elevenlabs')
-    if (KOKORO_URL) chain.push('kokoro')
+    if (kokoroUrl()) chain.push('kokoro')
   }
   chain.push('espeak')
   return chain
@@ -180,8 +184,8 @@ if (FORCED && !PREFER_LOCAL && !['elevenlabs', 'espeak', 'kokoro', 'rvc'].includ
   console.warn(`[tts] unrecognised TTS_PROVIDER="${FORCED}" — using the per-assistant chain`)
 }
 console.log(
-  `[tts] forced=${FORCED ?? 'no (per-assistant chain)'} kokoro=${KOKORO_URL || 'no'} ` +
-  `rvc=${RVC_URL || 'no'} elevenlabs=${EL_KEY ? 'yes' : 'no'} → ${ttsChainSummary()}`,
+  `[tts] forced=${FORCED ?? 'no (per-assistant chain)'} kokoro=${kokoroUrl() || 'no'} ` +
+  `rvc=${rvcUrl() || 'no'} elevenlabs=${EL_KEY ? 'yes' : 'no'} → ${ttsChainSummary()}`,
 )
 
 // ── Stage directions vs. spelled-out sounds ──────────────────────────────────
@@ -268,7 +272,7 @@ router.get('/', async (req, res) => {
   for (const provider of chain) {
     // Skip a local voice whose GPU box is switched off (Settings → AI box)
     // instead of spending SYNTH_TIMEOUT_MS finding out.
-    if ((provider === 'kokoro' && aiBoxDown(KOKORO_URL)) || (provider === 'rvc' && (aiBoxDown(RVC_URL) || aiBoxDown(KOKORO_URL)))) {
+    if ((provider === 'kokoro' && serviceDown('tts')) || (provider === 'rvc' && (serviceDown('rvc') || serviceDown('tts')))) {
       failures.push(`${provider}: its AI box is switched off or not answering`)
       continue
     }
@@ -402,7 +406,7 @@ async function kokoroSynth(text: string, voice: string, format: 'mp3' | 'wav'): 
   const timer = setTimeout(() => ctrl.abort(), SYNTH_TIMEOUT_MS)
 
   console.log(`[tts][kokoro] POST voice=${voice} format=${format} chars=${text.length}`)
-  const apiRes = await fetch(`${await boxUrlSettled(KOKORO_URL)}/v1/audio/speech`, {
+  const apiRes = await fetch(`${await serviceUrlSettled('tts')}/v1/audio/speech`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -570,7 +574,7 @@ async function convertWithRVCLocked(wav: Buffer, model: string, pitch: number): 
   // budget covers its own work rather than the clip ahead of it.
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), RVC_TIMEOUT_MS)
-  const url = await boxUrlSettled(RVC_URL)
+  const url = await serviceUrlSettled('rvc')
   if (rvcServer !== url) {
     rvcServer = url
     rvcLoadedModel = null
@@ -657,7 +661,7 @@ async function convertWithRVCLocked(wav: Buffer, model: string, pitch: number): 
 const WARM_TEXT = 'Hello.'
 
 async function warmRVC(): Promise<void> {
-  if (!RVC_URL || !KOKORO_URL) return
+  if (!rvcUrl() || !kokoroUrl()) return
   const profiles = Object.values(ASSISTANT_PROFILES).filter(p => p.rvcModel)
   if (profiles.length === 0) return
 
@@ -676,16 +680,16 @@ async function warmRVC(): Promise<void> {
 
 // Both containers need a moment to come up; the app doesn't wait on them, and a
 // warm-up that races them just fails for no reason.
-if (RVC_URL && KOKORO_URL) {
+if (rvcUrl() && kokoroUrl()) {
   setTimeout(() => { void warmRVC() }, 20_000).unref()
 }
 
 // Switching GPU box (Settings → AI box) lands on a server that has loaded no
 // voice at all, so the warm-up is spent again there.
-let rvcWarmedFor = boxUrl(RVC_URL)
-onAiBoxChange(() => {
-  const url = boxUrl(RVC_URL)
-  if (!RVC_URL || !KOKORO_URL || url === rvcWarmedFor) return
+let rvcWarmedFor = rvcUrl()
+onAiServiceChange(() => {
+  const url = rvcUrl()
+  if (!url || !kokoroUrl() || url === rvcWarmedFor) return
   rvcWarmedFor = url
   void warmRVC()
 })

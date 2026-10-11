@@ -615,7 +615,9 @@ function ImageDetails({
   // write very different prompts, and "why does this look nothing like what I
   // typed" has exactly one answer and it is this row.
   if (st?.promptOriginal && st.improvedBy) {
-    rows.push({ label: 'Prompt improved by', value: st.improvedBy })
+    // With the option that asked, when it was one: comparing options is the
+    // reason they exist, so a picture says which one it came from.
+    rows.push({ label: 'Prompt improved by', value: st.improvedWith ? `${st.improvedBy} · ${st.improvedWith}` : st.improvedBy })
   }
   const when = new Date(image.at)
   rows.push({

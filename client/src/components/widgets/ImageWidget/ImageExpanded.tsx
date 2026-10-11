@@ -117,6 +117,7 @@ interface Props {
     prompt: string, orientation: Orientation, source: string, denoise: number, improve: boolean,
     mask?: string, region?: string, structure?: boolean,
     hold?: { mode?: HoldMode; strength?: number; detail?: 'fine' | 'normal' | 'coarse' },
+    promptOption?: string,
   ) => void
   onDelete:   (id: string) => void
   /** Empty the whole gallery — every render and upload. */
@@ -130,6 +131,15 @@ interface Props {
   improveDefault: boolean | null
   /** Persist the switch, so it is remembered the next time the panel opens. */
   onImproveChange: (on: boolean) => void
+  /**
+   * The improver's ways of asking: the original first, then the options made
+   * in Settings → Drawing. Chosen here, never created here — making one is a
+   * paragraph of instructions, which belongs on the settings screen.
+   */
+  promptChoices: { id: string; name: string }[]
+  /** The one in use. */
+  activePrompt: string
+  onPromptOption: (id: string) => void
   /** Add a picture from this device to the gallery. Resolves to its id, or null. */
   onUpload: (file: File) => Promise<{ id: string; prompt: string; file: string } | null>
 }
@@ -269,6 +279,7 @@ export default function ImageExpanded({
   params, defaults, loras, autoLora, inpaintPatchInfo,
   onModel, onQuality, onParams, onResetParams, onGenerate, onDelete, onClear, onCancel,
   improveDefault, onImproveChange, onUpload,
+  promptChoices, activePrompt, onPromptOption,
 }: Props) {
   // The compose field lives in a module store rather than here, so the
   // full-screen viewer's "Use as prompt" can hand a finished picture's prompt
@@ -520,6 +531,7 @@ export default function ImageExpanded({
       '',
       capabilities.structure && mode !== 'instruct' ? keepPose : undefined,
       capabilities.structure && mode !== 'instruct' && keepPose ? hold.v : undefined,
+      activePrompt,
     )
     // The prompt is deliberately KEPT, not cleared: the common next action is
     // another go at the same idea with a word changed, and re-typing it on an
@@ -944,6 +956,45 @@ export default function ImageExpanded({
             </span>
           </span>
         </button>
+      )}
+
+      {/* ── Which way of asking ──
+          The improver's options, made in Settings → Drawing and picked here,
+          beside the switch they belong to. Only when there is a choice, and
+          only when the improver will actually run on these instructions: a
+          redraw is described by the picture-reading model instead, and an
+          editing style takes the words as typed, so a row of chips there would
+          be a choice that changes nothing. */}
+      {improve.on && !source && !editStyle && promptChoices.length > 1 && (
+        <div className="flex flex-col gap-2 shrink-0">
+          <span className="text-xs uppercase tracking-widest text-white/35 font-semibold flex items-center gap-1.5">
+            <Wand2 size={13} />
+            Rewrite with
+          </span>
+          <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1" role="radiogroup" aria-label="Which way the prompt is rewritten">
+            {promptChoices.map(choice => {
+              const on = choice.id === activePrompt
+              return (
+                <button
+                  key={choice.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  onClick={() => { if (!on) onPromptOption(choice.id) }}
+                  className={`shrink-0 h-12 px-4 rounded-2xl text-[13px] font-semibold whitespace-nowrap
+                              flex items-center gap-2 transition-colors active:scale-95 ${
+                    on
+                      ? 'bg-violet-500/25 text-white border border-violet-400/40'
+                      : 'bg-white/5 text-white/50 border border-transparent'
+                  }`}
+                >
+                  {on && <Check size={15} />}
+                  {choice.name}
+                </button>
+              )
+            })}
+          </div>
+        </div>
       )}
 
       {/* ── Start from a picture of your own ──

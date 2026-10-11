@@ -92,6 +92,7 @@ function App() {
     cancel: cancelImage,
     drawingEtaMs: imageEtaMs, drawingElapsedMs: imageElapsedMs,
     prompter: imagePrompter, setPrompter: setImagePrompter, upload: uploadImage,
+    setActivePrompt: setImagePromptOption,
     capabilities: imageCapabilities, structure: imageStructure,
   } = useImages()
 
@@ -103,8 +104,9 @@ function App() {
     prompt: string, orientation: Orientation, source: string, denoise: number, improve: boolean,
     mask = '', region = '', structure?: boolean,
     hold?: { mode?: 'lines' | 'body' | 'pose'; strength?: number; detail?: 'fine' | 'normal' | 'coarse' },
+    promptOption?: string,
   ) => {
-    const id = await generateImage(prompt, orientation, source, denoise, improve, mask, region, structure, hold)
+    const id = await generateImage(prompt, orientation, source, denoise, improve, mask, region, structure, hold, promptOption)
     // The prompt handed to the frame is the one the user typed. When the
     // improver is on, the server replaces it a second later and the frame picks
     // the new one up off the job's own SSE frames — so what is on screen while
@@ -478,6 +480,11 @@ function App() {
               onCancel={cancelImage}
               improveDefault={imagePrompter ? imagePrompter.enabled : null}
               onImproveChange={on => { void setImagePrompter({ enabled: on }) }}
+              promptChoices={imagePrompter
+                ? [{ id: imagePrompter.originalId, name: imagePrompter.originalName }, ...imagePrompter.options.map(o => ({ id: o.id, name: o.name }))]
+                : []}
+              activePrompt={imagePrompter?.active ?? ''}
+              onPromptOption={id => { void setImagePromptOption(id) }}
               onUpload={uploadImage}
             />
           }

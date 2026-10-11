@@ -80,7 +80,16 @@ import {
   visionModel,
   visionUserMessage,
   writePrompter,
+  addPromptOption,
+  updatePromptOption,
+  removePromptOption,
+  setActivePrompt,
+  resolvePromptOption,
+  MAX_PROMPT_OPTIONS,
+  ORIGINAL_NAME,
+  ORIGINAL_OPTION,
 } from '../image-prompt'
+import { broadcast } from './system'
 import {
   clearParamsFor,
   MEGAPIXEL_CHOICES,
@@ -141,7 +150,7 @@ router.get('/file/:file', (req: Request, res: Response) => {
 // up here without touching the dashboard.
 router.get('/models', async (_req: Request, res: Response) => {
   if (!imagesEnabled()) {
-    res.status(503).json({ error: 'COMFYUI_URL is not set', models: [], selected: '' })
+    res.status(503).json({ error: 'no image server is configured (Settings → Devices, or COMFYUI_URL)', models: [], selected: '' })
     return
   }
   try {
@@ -373,7 +382,7 @@ router.get('/active', (_req: Request, res: Response) => {
 // the steps arrive over the `image-plan` SSE event. With run:true the steps
 // start as soon as they exist; otherwise POST /plan/:id/run after reading it.
 router.post('/plan', (req: Request, res: Response) => {
-  if (!imagesEnabled()) { res.status(503).json({ error: 'COMFYUI_URL is not set' }); return }
+  if (!imagesEnabled()) { res.status(503).json({ error: 'no image server is configured (Settings → Devices, or COMFYUI_URL)' }); return }
   const body = req.body as Record<string, unknown> | undefined
   const source = typeof body?.['source'] === 'string' && /^[a-f0-9]{32}$/.test(body['source']) ? body['source'] : ''
   const request = typeof body?.['request'] === 'string' ? body['request'].trim() : ''
@@ -438,7 +447,7 @@ router.post('/job/:id/cancel', (req: Request, res: Response) => {
 // and time out behind Caddy.
 router.post('/generate', (req: Request, res: Response) => {
   if (!imagesEnabled()) {
-    res.status(503).json({ error: 'COMFYUI_URL is not set — no image server is configured' })
+    res.status(503).json({ error: 'no image server is configured — pick a picture machine under Settings → Devices, or set COMFYUI_URL' })
     return
   }
   // Checked here as well as in startImage() so the panel gets a status it can
@@ -500,6 +509,10 @@ router.post('/generate', (req: Request, res: Response) => {
     // Omitted rather than defaulted when the panel doesn't say: undefined means
     // "use the saved default", which is resolved in startImage() at queue time.
     ...(typeof body?.['improve'] === 'boolean' ? { improve: body['improve'] } : {}),
+    // Which of the improver's options to rewrite with. Shape-checked only; an
+    // id that no longer exists falls back to the original at queue time.
+    ...(typeof body?.['promptOption'] === 'string' && /^(original|opt-[a-f0-9]{6})$/.test(body['promptOption'])
+      ? { promptOption: body['promptOption'] } : {}),
   })
   res.status(202).json(jobWire(job))
 })
@@ -511,17 +524,39 @@ router.post('/generate', (req: Request, res: Response) => {
 // judge in the abstract — the preview is what shows that picking FLUX and
 // picking NoobAI produce two different system prompts from the same words.
 router.get('/prompter', (_req: Request, res: Response) => {
+  res.json(prompterView())
+})
+
+/**
+ * Everything the improver's two screens draw, in one shape: GET answers with
+ * it, and so does every change below, so a screen never has to guess what a
+ * save did to the rest (deleting the option in use moves the choice back to
+ * the original, for one).
+ */
+function prompterView() {
   const settings = readPrompter()
   const style = selectedModel()
-  res.json({
+  const active = resolvePromptOption()
+  return {
     ...settings,
+    // The improver's ways of asking. The original is `template` and is listed
+    // under its own fields; these are the extra ones, created in Settings and
+    // chosen in the Draw panel.
+    options:      settings.options,
+    active:       active.id,
+    activeName:   active.name,
+    originalId:   ORIGINAL_OPTION,
+    originalName: ORIGINAL_NAME,
+    maxOptions:   MAX_PROMPT_OPTIONS,
     defaultTemplate: DEFAULT_TEMPLATE,
     style:      style,
     styleLabel: styleLabel(style),
     // The model-specific half, shown separately so it is obvious it comes from
     // the app rather than from anything the user has to maintain.
     guidance:   stylePromptGuide(style),
-    preview:    buildSystemPrompt(settings.template, {
+    // What the improver will actually be told: the CHOSEN option's
+    // instructions expanded for this style, which is what a new picture gets.
+    preview:    buildSystemPrompt(active.template, {
       label:    styleLabel(style),
       guidance: stylePromptGuide(style),
     }),
@@ -544,7 +579,67 @@ router.get('/prompter', (_req: Request, res: Response) => {
     }),
     editUserMessage: editUserMessage('<what you typed>'),
     editModel: editModel(),
-  })
+  }
+}
+
+/** Tell every open screen the improver changed: the phone's Settings and the kiosk's Draw panel are two hooks. */
+function prompterChanged(): void {
+  broadcast('image-prompter', {})
+}
+
+// POST /api/image/prompter/options { name? } — a new way of asking, copied from the original.
+router.post('/prompter/options', (req: Request, res: Response) => {
+  const name = (req.body as { name?: unknown } | undefined)?.name
+  try {
+    const option = addPromptOption(typeof name === 'string' ? name : undefined)
+    console.log(`[image] prompt improver: added "${option.name}"`)
+    prompterChanged()
+    res.status(201).json({ ...prompterView(), created: option.id })
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+// PATCH /api/image/prompter/options/:id { name?, template? } — rename it, or change what it says.
+router.patch('/prompter/options/:id', (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as { name?: unknown; template?: unknown }
+  try {
+    const option = updatePromptOption(String(req.params['id']), body)
+    console.log(`[image] prompt improver: "${option.name}"${typeof body.name === 'string' ? ' renamed' : ''}${typeof body.template === 'string' ? ' edited' : ''}`)
+    prompterChanged()
+    res.json(prompterView())
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+// DELETE /api/image/prompter/options/:id — the original takes over if it was in use.
+router.delete('/prompter/options/:id', (req: Request, res: Response) => {
+  let removed = false
+  try {
+    removed = removePromptOption(String(req.params['id']))
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
+    return
+  }
+  if (!removed) { res.status(404).json({ error: 'That option no longer exists.' }); return }
+  console.log(`[image] prompt improver: removed ${req.params['id']}`)
+  prompterChanged()
+  res.json(prompterView())
+})
+
+// POST /api/image/prompter/active { id } — which way of asking new pictures use. The Draw panel's chips.
+router.post('/prompter/active', (req: Request, res: Response) => {
+  const id = (req.body as { id?: unknown } | undefined)?.id
+  if (typeof id !== 'string') { res.status(400).json({ error: 'id is required' }); return }
+  try {
+    setActivePrompt(id)
+    console.log(`[image] prompt improver: now using ${resolvePromptOption(id).name}`)
+    prompterChanged()
+    res.json(prompterView())
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+  }
 })
 
 // GET /api/image/lineage/:id — the chain of pictures this one came from, and
@@ -673,6 +768,7 @@ router.post('/prompter', (req: Request, res: Response) => {
     `${patch.retryBelow !== undefined ? `, retryBelow=${saved.retryBelow > 0 ? `${Math.round(saved.retryBelow * 100)}%` : 'never'}` : ''}` +
     `${patch.model !== undefined ? `, model=${saved.model || '(default)'}` : ''}`,
   )
+  prompterChanged()
   res.json(saved)
 })
 
@@ -725,7 +821,7 @@ router.post(
 // picture it covers, so the panel can show the outline and the user can say
 // "no, not that" before a render is spent on it.
 router.post('/mask/find', async (req: Request, res: Response) => {
-  if (!imagesEnabled()) { res.status(503).json({ error: 'COMFYUI_URL is not set' }); return }
+  if (!imagesEnabled()) { res.status(503).json({ error: 'no image server is configured (Settings → Devices, or COMFYUI_URL)' }); return }
   const body = req.body as Record<string, unknown> | undefined
   const source = typeof body?.['source'] === 'string' && /^[a-f0-9]{32}$/.test(body['source']) ? body['source'] : ''
   const what = typeof body?.['what'] === 'string' ? body['what'].trim().slice(0, 120) : ''

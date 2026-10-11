@@ -5,6 +5,7 @@ import { elevenLabsKeyState } from '../config/keys'
 import { sttProviders, sttSummary, whisperUrl } from './stt'
 import { ttsChainSummary } from './tts'
 import { aiBoxView, aiBoxesEnabled, boxUrl } from '../ai-box'
+import { ollamaUrlFor, resolveAll, serviceUrl } from '../ai-devices'
 import { SEARCH_PROVIDERS, SEARCH_LOCAL_FIRST } from '../research'
 
 const router = Router()
@@ -296,7 +297,7 @@ router.get('/debug', (_req: Request, res: Response) => {
       : 'ELEVENLABS_API_KEY is set but malformed — ElevenLabs keys start with "sk_". Voice input (STT) will fail on every utterance; TTS falls back to espeak-ng.')
   }
   if (sttProviders().length === 0) {
-    warnings.push('No speech-to-text provider is configured — set WHISPER_URL (local Whisper, the `whisper` compose service) or ELEVENLABS_API_KEY. Voice input is disabled until then.')
+    warnings.push('No speech-to-text provider is configured — pick a voice-in machine under Settings → Devices, set WHISPER_URL (local Whisper, the `whisper` compose service), or set ELEVENLABS_API_KEY. Voice input is disabled until then.')
   }
 
   res.json({
@@ -323,14 +324,15 @@ router.get('/debug', (_req: Request, res: Response) => {
       IGDB_CREDENTIALS:    !!(env['IGDB_CLIENT_ID'] && env['IGDB_CLIENT_SECRET']),
       // The local AI services. Each is "set" when a URL points at it; whether
       // it answers is what the connection checks below are for.
-      WHISPER_URL:         !!env['WHISPER_URL'],
-      KOKORO_URL:          !!env['KOKORO_URL'],
-      RVC_URL:             !!env['RVC_URL'],
-      COMFYUI_URL:         !!env['COMFYUI_URL'],
+      // "Set" from a machine picked under Settings → Devices or from the env var.
+      WHISPER_URL:         !!serviceUrl('stt'),
+      KOKORO_URL:          !!serviceUrl('tts'),
+      RVC_URL:             !!serviceUrl('rvc'),
+      COMFYUI_URL:         !!serviceUrl('image'),
       SEARXNG_URL:         !!env['SEARXNG_URL'],
     },
     ollama: {
-      url:   env['OLLAMA_URL']   ?? 'http://host.docker.internal:11434 (default)',
+      url:   ollamaUrlFor('chat'),
       model: env['OLLAMA_MODEL'] ?? 'gemma3 (default)',
     },
     // Which engines answer, in the order they are tried, with the local ones
@@ -342,11 +344,14 @@ router.get('/debug', (_req: Request, res: Response) => {
       tts:    ttsChainSummary(),
       search: SEARCH_PROVIDERS.map(p => p === 'ollama' ? 'ollama hosted (cloud)' : p === 'searxng' ? 'searxng (local)' : p).join(' → ')
         + (SEARCH_LOCAL_FIRST ? ' (SEARCH_PREFER_LOCAL)' : ''),
-      chat:   `${env['OLLAMA_MODEL'] ?? 'gemma3 (default)'} at ${env['OLLAMA_URL'] ? boxUrl(env['OLLAMA_URL']) : 'http://host.docker.internal:11434 (default)'}`
+      chat:   `${env['OLLAMA_MODEL'] ?? 'gemma3 (default)'} at ${ollamaUrlFor('chat')}`
         + (env['OLLAMA_FALLBACK_URL'] ? ` → ${env['OLLAMA_FALLBACK_MODEL'] ?? env['OLLAMA_MODEL'] ?? ''} at ${boxUrl(env['OLLAMA_FALLBACK_URL'])}` : ''),
     },
     // Where each box-bound service is going right now (Settings → AI box).
     aiBox: aiBoxesEnabled() ? aiBoxView() : null,
+    // Which machine each AI service is on and how that was decided: a device
+    // picked under Settings → Devices, else the env var (through the AI box).
+    devices: resolveAll().map(r => ({ id: r.id, label: r.label, url: r.url, source: r.source, device: r.device?.name ?? null, box: r.box ?? null })),
   })
 })
 

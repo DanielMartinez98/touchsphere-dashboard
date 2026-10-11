@@ -132,7 +132,7 @@ function Facts({ st, origin }: { st: ImageSettings | null; origin: string }) {
   else if (st?.mask) rows.push(['Inpainting patch', 'no'])
   if (st?.steps) rows.push(['Steps', String(st.steps)])
   if (st?.cfg) rows.push(['Guidance', String(st.cfg)])
-  if (st?.improvedBy) rows.push(['Prompt rewritten by', st.improvedBy])
+  if (st?.improvedBy) rows.push(['Prompt rewritten by', st.improvedWith ? `${st.improvedBy} · ${st.improvedWith}` : st.improvedBy])
   if (!rows.length) return null
   return (
     <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 mt-1.5">
