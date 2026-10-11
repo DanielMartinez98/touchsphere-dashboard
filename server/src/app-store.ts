@@ -1,5 +1,5 @@
 // App Store Connect: how the user's own apps are doing — downloads, what they
-// earned, how often they were seen — for Settings → Apps and the assistant.
+// earned, how often they were seen — for Settings → App Store and the assistant.
 //
 // TWO FEEDS, because Apple keeps them apart. SALES AND TRENDS is the ledger:
 // one gzipped TSV per day with a row per (app, product type, country, device),

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, lazy, Suspense, type ReactNode } from 'react'
-import { Check, X as XIcon, RotateCw, ClipboardCopy, MessageSquare, Trash2, Volume2, Download, Pin, ChevronDown, ChevronRight, Star, Plus, Eye, EyeOff, Pencil } from 'lucide-react'
+import { Check, X as XIcon, RotateCw, ClipboardCopy, MessageSquare, Trash2, Volume2, Download, Pin, ChevronDown, ChevronRight, Star, Plus, Eye, EyeOff, Pencil,
+  Smile, Brain, ScrollText, Keyboard, Clock, Mail, ListChecks, BarChart3, Palette, BookOpen, Cpu, Server, Network, HardDrive, Bug, type LucideIcon } from 'lucide-react'
 import { useAudioDevices } from '../hooks/useAudioDevices'
 import { useDevice } from '../hooks/useDevice'
 import { playSound, playRecordChime } from '../utils/sound'
@@ -15,8 +16,7 @@ import { useRipple } from '../hooks/useRipple'
 import { useDebugLog, clearDebugLog, getDebugLog } from '../utils/debugLog'
 import { useMemory, MEMORY_TOPICS, type MemoryItem, type MemoryKind, type MemoryTopic } from '../hooks/useMemory'
 import { useGuides } from '../hooks/useGuides'
-import { useImages, type StructureSettings, type PromptOption } from '../hooks/useImages'
-import type { ParamsResponse } from '../hooks/useImages'
+import { useImages, type StructureSettings } from '../hooks/useImages'
 import { useGuideActivity, type ActivityLevel } from '../hooks/useGuideActivity'
 import { useHost, useHostEnabled, type HostTask } from '../hooks/useHost'
 import {
@@ -31,11 +31,23 @@ import { useNotionMe } from '../hooks/useNotionMe'
 import IdentityPicker from './widgets/NotionWidget/IdentityPicker'
 import { TouchInput } from './TouchInput'
 import DevicesTab from './DevicesTab'
-import { AutosaveInput } from './AutosaveInput'
 import { KeyboardCard } from './KeyboardCard'
 import { AppStoreTab } from './AppStoreTab'
+import { PromptsTab } from './PromptsTab'
+import { Card, Hint, Section, Switch, SwitchRow } from './settings/ui'
+import { btn } from './settings/buttons'
 
 type Tab = 'assistant' | 'vtuber' | 'sounds' | 'hardware' | 'schedule' | 'memory' | 'guides' | 'drawing' | 'prompts' | 'mail' | 'notion' | 'apps' | 'system' | 'aibox' | 'devices' | 'server' | 'debug'
+
+const TAB_GROUPS = ['Assistant', 'This screen', 'Corners', 'Machines'] as const
+interface TabDef {
+  id:    Tab
+  group: typeof TAB_GROUPS[number]
+  label: string
+  icon:  LucideIcon
+  /** One line under the page title: what the settings on this page do. */
+  about: string
+}
 
 // The preview reuses the dashboard's own renderers. Lazy, same chunks App
 // splits out — opening the VTuber tab is what pulls in the heavy deps, and
@@ -413,29 +425,34 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
     setConfirmClose(false)
   }
 
-  const TABS: { id: Tab; label: string }[] = [
-    { id: 'assistant', label: 'Assistant' },
-    { id: 'vtuber',    label: 'VTuber'    },
-    { id: 'sounds',    label: 'Audio'     },
-    { id: 'hardware',  label: 'Hardware'  },
-    { id: 'schedule',  label: 'Schedule'  },
-    { id: 'memory',    label: 'Memory'    },
-    { id: 'guides',    label: 'Guides'    },
-    { id: 'mail',      label: 'Mail'      },
-    { id: 'notion',    label: 'Notion'    },
-    { id: 'apps',      label: 'Apps'      },
-    { id: 'drawing',   label: 'Drawing'   },
-    { id: 'prompts',   label: 'Prompts'   },
-    { id: 'system',    label: 'System'    },
+  // Grouped by what a tab is ABOUT, so eighteen tabs read as four short
+  // rows instead of a wall of buttons. Each carries a one-line description
+  // shown above its page: the label says where you are, the line says what
+  // the settings below it do.
+  const TABS: TabDef[] = [
+    { id: 'assistant', group: 'Assistant', label: 'Assistant', icon: MessageSquare, about: 'Who answers: name, personality and voice together, and the wake word that calls them.' },
+    { id: 'vtuber',    group: 'Assistant', label: 'VTuber',    icon: Smile,         about: 'The animated character that can stand in for the orb, with a live preview.' },
+    { id: 'memory',    group: 'Assistant', label: 'Memory',    icon: Brain,         about: 'What the assistant knows about you. Correct, pin or forget anything here.' },
+    { id: 'prompts',   group: 'Assistant', label: 'Prompts',   icon: ScrollText,    about: 'Every instruction a model is given, and the text added to every picture prompt. All editable.' },
+    { id: 'sounds',    group: 'This screen', label: 'Audio',    icon: Volume2,      about: 'Which microphone and speaker, how loud, and a test for the voice in and out.' },
+    { id: 'hardware',  group: 'This screen', label: 'Keyboard & sensor', icon: Keyboard, about: 'Which keyboard comes up for typing, and the desk sensor that dims the screen when you are away.' },
+    { id: 'schedule',  group: 'This screen', label: 'Schedule', icon: Clock,        about: 'When the screen switches between work and rest by itself, and the bedtime alert.' },
+    { id: 'mail',      group: 'Corners', label: 'Mail',      icon: Mail,            about: 'The Gmail accounts the Mail corner reads.' },
+    { id: 'notion',    group: 'Corners', label: 'Notion',    icon: ListChecks,      about: 'Who you are, which workspaces and boards feed the Tasks corner, and what each board is for.' },
+    { id: 'apps',      group: 'Corners', label: 'App Store', icon: BarChart3,       about: 'The App Store Connect key behind the App Store corner, and how far its numbers are read.' },
+    { id: 'drawing',   group: 'Corners', label: 'Drawing',   icon: Palette,         about: 'How the Draw corner and the drawing tools behave. What they tell each model is under Prompts.' },
+    { id: 'guides',    group: 'Corners', label: 'Guides',    icon: BookOpen,        about: 'What the game-guide researcher is doing right now, and every guide on disk.' },
+    { id: 'system',    group: 'Machines', label: 'System',    icon: Cpu,             about: 'The machine the dashboard server runs on (temperature, memory, load), and restarting the app on every screen.' },
     // Only with AI_BOXES set: one box has nothing to choose between.
-    ...(aiBoxEnabled ? [{ id: 'aibox' as const, label: 'AI box' }] : []),
+    ...(aiBoxEnabled ? [{ id: 'aibox' as const, group: 'Machines' as const, label: 'AI box', icon: Server, about: 'Which GPU box the local AI goes to, and switching a box on or off.' }] : []),
     // Always: picking a machine per service needs nothing set up first.
-    { id: 'devices',   label: 'Devices'   },
+    { id: 'devices',   group: 'Machines', label: 'AI devices', icon: Network,       about: 'Pick a machine for each AI service (language model, pictures, voice in and out) on top of the AI box.' },
     // Only when the server says it is set up: an "update the host" tab that
     // can't reach a host is a tab full of broken buttons.
-    ...(hostEnabled ? [{ id: 'server' as const, label: 'Server' }] : []),
-    { id: 'debug',     label: 'Debug'     },
+    ...(hostEnabled ? [{ id: 'server' as const, group: 'Machines' as const, label: 'Server', icon: HardDrive, about: 'Updating the machine the dashboard runs on, and the dashboard itself.' }] : []),
+    { id: 'debug',     group: 'Machines', label: 'Debug',    icon: Bug,             about: 'Is everything reachable? Connection checks, configuration and the error log.' },
   ]
+  const current = TABS.find(t => t.id === tab) ?? TABS[0]!
 
   const { schedule, updateSchedule } = useAutoSchedule()
   const { onPointerDown: gearPointerDown, rippleLayer: gearRipple } = useRipple()
@@ -462,58 +479,158 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
         <div className="fixed inset-0 z-[500] bg-black/90 backdrop-blur-md flex flex-col">
 
           {/* ── Header ── */}
-          <div className="flex items-center justify-between px-6 pt-6 pb-4 flex-shrink-0">
-            <h2 className="text-white/80 text-lg font-semibold tracking-wide">Settings</h2>
+          <div className="flex items-center justify-between px-6 pt-5 pb-3 flex-shrink-0">
+            <h2 className="text-white/90 text-xl font-display font-semibold tracking-tight">Settings</h2>
             <button
               onClick={closePanel}
-              className="w-9 h-9 rounded-full bg-white/10 border border-white/15 flex items-center justify-center text-white/50 hover:text-white/90 hover:bg-white/15 active:scale-90 transition-all"
+              className="w-11 h-11 rounded-full bg-white/10 border border-white/15 flex items-center justify-center text-white/60 hover:text-white/90 hover:bg-white/15 active:scale-90 transition-all"
               aria-label="Close settings"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
+              <XIcon size={18} strokeWidth={2.5} />
             </button>
           </div>
 
           {/* ── Tab bar ──
-              Wraps rather than squeezing: at nine tabs on a 720px screen, one
-              row puts every label under a fingertip's width. min-w keeps a
-              wrapped row from stretching two buttons across the panel. */}
-          <div className="flex flex-wrap gap-1.5 px-6 pb-4 flex-shrink-0">
-            {TABS.map(t => (
-              <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
-                className={`flex-1 min-w-[110px] py-2.5 rounded-xl text-sm font-medium transition-all active:scale-95 ${
-                  tab === t.id
-                    ? 'bg-white/15 text-white border border-white/20'
-                    : 'bg-white/5 text-white/40 border border-transparent hover:bg-white/8 hover:text-white/60'
-                }`}
-              >
-                {t.label}
-              </button>
+              One row per group, each a horizontal scroller with its name in
+              front: a long group scrolls rather than wrapping into a second
+              row, so the bar's height never changes between devices. */}
+          <nav className="flex-shrink-0 px-4 pb-3 space-y-1.5 border-b border-white/8" aria-label="Settings sections">
+            {TAB_GROUPS.map(group => (
+              <div key={group} className="flex items-center gap-2">
+                <span className="w-[74px] shrink-0 text-[10px] font-semibold uppercase tracking-[0.12em] text-white/35 pl-2 leading-tight">
+                  {group}
+                </span>
+                <div className="flex gap-1.5 overflow-x-auto scrollbar-hide min-w-0 py-0.5">
+                  {TABS.filter(t => t.group === group).map(t => {
+                    const Icon = t.icon
+                    const on = tab === t.id
+                    return (
+                      <button
+                        key={t.id}
+                        onClick={() => setTab(t.id)}
+                        aria-current={on ? 'page' : undefined}
+                        className={`shrink-0 h-10 px-3 rounded-xl flex items-center gap-1.5 text-[13px] font-medium transition-all active:scale-95 border ${
+                          on
+                            ? 'bg-cyan-500/20 text-white border-cyan-400/40'
+                            : 'bg-white/[0.04] text-white/55 border-white/[0.06] hover:text-white/75'
+                        }`}
+                      >
+                        <Icon size={15} className={on ? 'text-cyan-300' : 'text-white/40'} />
+                        {t.label}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
             ))}
-          </div>
+          </nav>
 
           {/* ── Tab content ── */}
           <div className="flex-1 overflow-y-auto px-6 pb-8 kb-room">
+            <header className={`${tab === 'vtuber' ? 'max-w-3xl' : 'max-w-lg'} mx-auto pt-5 pb-5 px-1`}>
+              <h3 className="text-white/90 text-lg font-display font-semibold tracking-tight">{current.label}</h3>
+              <p className="text-[13px] text-white/45 leading-relaxed mt-0.5">{current.about}</p>
+            </header>
 
             {/* Sounds tab (labeled "Audio" in the tab bar) */}
             {tab === 'sounds' && (
               <div className="space-y-4 max-w-lg mx-auto">
+                {/* ── Audio Devices (mic + speaker selectors) ── */}
+                <div className="flex items-center justify-between">
+                  <span className="set-label">Microphone and speaker</span>
+                  <button
+                    onClick={() => void refreshDevices()}
+                    disabled={devicesLoading}
+                    className="flex items-center gap-1.5 text-white/30 hover:text-white/60 active:scale-90 transition-all disabled:opacity-30 text-xs"
+                    aria-label="Refresh audio devices"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                      className={devicesLoading ? 'animate-spin' : ''}>
+                      <polyline points="23 4 23 10 17 10" />
+                      <polyline points="1 20 1 14 7 14" />
+                      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                    </svg>
+                    Refresh
+                  </button>
+                </div>
+
+                {/* Microphone */}
+                <div className="set-card p-5 space-y-3">
+                  <div className="flex items-center gap-2.5">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-cyan-400 flex-shrink-0">
+                      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                      <line x1="12" y1="19" x2="12" y2="23" />
+                      <line x1="8" y1="23" x2="16" y2="23" />
+                    </svg>
+                    <span className="text-white/70 text-sm font-medium">Microphone</span>
+                  </div>
+                  {devicesError ? (
+                    <p className="text-red-400/70 text-sm leading-relaxed">{devicesError}</p>
+                  ) : devicesLoading ? (
+                    <p className="text-white/30 text-sm">Scanning…</p>
+                  ) : inputDevices.length === 0 ? (
+                    <p className="text-white/30 text-sm">No microphones found</p>
+                  ) : (
+                    <select
+                      value={selectedInputId}
+                      onChange={e => setSelectedInput(e.target.value)}
+                      title="Select microphone"
+                      className="w-full bg-white/8 border border-white/12 rounded-xl px-4 py-3 text-white/80 text-sm appearance-none cursor-pointer focus:outline-none focus:border-cyan-500/50 focus:bg-white/10"
+                    >
+                      {inputDevices.map(d => (
+                        <option key={d.deviceId} value={d.deviceId} className="bg-[#1a1a1a]">
+                          {d.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
+                {/* Speaker */}
+                <div className="set-card p-5 space-y-3">
+                  <div className="flex items-center gap-2.5">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-400 flex-shrink-0">
+                      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                      <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                    </svg>
+                    <span className="text-white/70 text-sm font-medium">Speaker</span>
+                  </div>
+                  {devicesError ? (
+                    <p className="text-red-400/70 text-sm leading-relaxed">{devicesError}</p>
+                  ) : devicesLoading ? (
+                    <p className="text-white/30 text-sm">Scanning…</p>
+                  ) : outputDevices.length === 0 ? (
+                    <p className="text-white/30 text-sm">No speakers found</p>
+                  ) : (
+                    <select
+                      value={selectedOutputId}
+                      onChange={e => setSelectedOutput(e.target.value)}
+                      title="Select speaker"
+                      className="w-full bg-white/8 border border-white/12 rounded-xl px-4 py-3 text-white/80 text-sm appearance-none cursor-pointer focus:outline-none focus:border-amber-500/50 focus:bg-white/10"
+                    >
+                      {outputDevices.map(d => (
+                        <option key={d.deviceId} value={d.deviceId} className="bg-[#1a1a1a]">
+                          {d.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
                 {/* ── Volume sliders ── */}
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Volume</span>
-                <div className="bg-white/5 rounded-2xl border border-white/8 p-5 space-y-4">
+                <span className="set-label mb-2 px-1">Volume</span>
+                <div className="set-card p-5 space-y-4">
                   <VolumeSlider category="master" label="Master"        accent="text-white"        track="accent-white"          />
                   <VolumeSlider category="sfx"    label="Sound Effects" accent="text-amber-400"    track="accent-amber-400"      />
                   <VolumeSlider category="music"  label="Music"         accent="text-fuchsia-400"  track="accent-fuchsia-400"    />
                   <VolumeSlider category="voice"  label="Voice"         accent="text-emerald-400"  track="accent-emerald-400"    />
                 </div>
 
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Chimes</span>
+                <span className="set-label mt-6 mb-2 px-1">Chimes</span>
 
-                <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden divide-y divide-white/8">
+                <div className="set-card overflow-hidden divide-y divide-white/8">
                   {SOUNDS.map(s => {
                     const isPlaying = playingSoundId === s.id
                     const disabled  = playingSoundId !== null && !isPlaying
@@ -543,8 +660,8 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
 
                 {/* TTS test — hits /api/tts and plays via WebAudio.
                     Useful for debugging why voice replies aren't audible. */}
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Voice (TTS)</span>
-                <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
+                <span className="set-label mt-6 mb-2 px-1">Test the voice out</span>
+                <div className="set-card p-5 space-y-3">
                   <div className="flex items-center gap-2.5">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-400 flex-shrink-0">
                       <path d="M3 10v4a1 1 0 0 0 1 1h3l4 4V5L7 9H4a1 1 0 0 0-1 1z" />
@@ -571,8 +688,8 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
                     and shows what the server's transcriber heard — the local
                     Whisper, or ElevenLabs Scribe behind it — naming which one
                     answered. Tap once to start, again to stop and transcribe. */}
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Transcribe (STT)</span>
-                <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
+                <span className="set-label mt-6 mb-2 px-1">Test the voice in</span>
+                <div className="set-card p-5 space-y-3">
                   <div className="flex items-center gap-2.5">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-violet-400 flex-shrink-0">
                       <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
@@ -642,8 +759,8 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
                 {/* Assistant picker — selects the AI's name, wake word,
                     personality, and voice all at once. The choice is persisted
                     server-side so the chat persona and TTS voice follow it. */}
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Assistant</span>
-                <div className="bg-white/5 rounded-2xl p-3 space-y-2 border border-white/8">
+                <span className="set-label mb-2 px-1">Assistant</span>
+                <div className="set-card p-3 space-y-2">
                   {ASSISTANT_ORDER.map(id => {
                     const p = ASSISTANT_PROFILES[id]
                     const active = assistant.id === id
@@ -680,10 +797,10 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
                     right value is ear-tuned, hence a slider with a live preview. */}
                 {assistant.tunablePitch && (
                   <>
-                    <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">
+                    <span className="set-label mt-6 mb-2 px-1">
                       {assistant.name}'s pitch
                     </span>
-                    <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
+                    <div className="set-card p-5 space-y-3">
                       <div className="flex items-center justify-between">
                         <span className="text-white/70 text-sm font-medium">Transpose</span>
                         <span className="text-white/50 text-xs font-mono tabular-nums">
@@ -756,8 +873,8 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
                 {/* Avatar — swaps the centre particle sphere for a 3D VRM model
                     that lip-syncs to the reply. Off by default. Turning it off
                     restores the sphere and leaves the audio path untouched. */}
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Avatar</span>
-                <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
+                <span className="set-label mb-2 px-1">Avatar</span>
+                <div className="set-card p-5 space-y-3">
                   <div className="flex items-center justify-between gap-4">
                     <div className="min-w-0">
                       <p className="text-white/70 text-sm font-medium">Show avatar instead of the orb</p>
@@ -968,8 +1085,8 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
                     “Hey Martin”) activates it just like tapping the orb. The
                     model file (~40 MB) must be present at
                     /vosk-model-small-en-us-0.15.zip in public. */}
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Wake Word</span>
-                <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
+                <span className="set-label mt-6 mb-2 px-1">Wake Word</span>
+                <div className="set-card p-5 space-y-3">
                   <div className="flex items-center justify-between gap-4">
                     <div className="flex items-center gap-2.5 min-w-0">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-cyan-400 flex-shrink-0">
@@ -1011,7 +1128,7 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
                     the passive transcriber is hearing — useful for verifying
                     mic selection, distance, and pronunciation. */}
                 {wakeWordEnabled && (
-                  <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
+                  <div className="set-card p-5 space-y-3">
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-white/70 text-sm font-medium">Live transcription</span>
                       <span className={`text-xs font-mono px-2 py-1 rounded-md ${
@@ -1076,188 +1193,16 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
                 <KeyboardCard />
                 <DeskSensorCard />
 
-                {/* ── Audio Devices (mic + speaker selectors) ── */}
-                <div className="flex items-center justify-between">
-                  <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Audio Devices</span>
-                  <button
-                    onClick={() => void refreshDevices()}
-                    disabled={devicesLoading}
-                    className="flex items-center gap-1.5 text-white/30 hover:text-white/60 active:scale-90 transition-all disabled:opacity-30 text-xs"
-                    aria-label="Refresh audio devices"
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-                      className={devicesLoading ? 'animate-spin' : ''}>
-                      <polyline points="23 4 23 10 17 10" />
-                      <polyline points="1 20 1 14 7 14" />
-                      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-                    </svg>
-                    Refresh
-                  </button>
-                </div>
-
-                {/* Microphone */}
-                <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
-                  <div className="flex items-center gap-2.5">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-cyan-400 flex-shrink-0">
-                      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                      <line x1="12" y1="19" x2="12" y2="23" />
-                      <line x1="8" y1="23" x2="16" y2="23" />
-                    </svg>
-                    <span className="text-white/70 text-sm font-medium">Microphone</span>
-                  </div>
-                  {devicesError ? (
-                    <p className="text-red-400/70 text-sm leading-relaxed">{devicesError}</p>
-                  ) : devicesLoading ? (
-                    <p className="text-white/30 text-sm">Scanning…</p>
-                  ) : inputDevices.length === 0 ? (
-                    <p className="text-white/30 text-sm">No microphones found</p>
-                  ) : (
-                    <select
-                      value={selectedInputId}
-                      onChange={e => setSelectedInput(e.target.value)}
-                      title="Select microphone"
-                      className="w-full bg-white/8 border border-white/12 rounded-xl px-4 py-3 text-white/80 text-sm appearance-none cursor-pointer focus:outline-none focus:border-cyan-500/50 focus:bg-white/10"
-                    >
-                      {inputDevices.map(d => (
-                        <option key={d.deviceId} value={d.deviceId} className="bg-[#1a1a1a]">
-                          {d.label}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                </div>
-
-                {/* Speaker */}
-                <div className="bg-white/5 rounded-2xl p-5 space-y-3 border border-white/8">
-                  <div className="flex items-center gap-2.5">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-400 flex-shrink-0">
-                      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                      <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                    </svg>
-                    <span className="text-white/70 text-sm font-medium">Speaker</span>
-                  </div>
-                  {devicesError ? (
-                    <p className="text-red-400/70 text-sm leading-relaxed">{devicesError}</p>
-                  ) : devicesLoading ? (
-                    <p className="text-white/30 text-sm">Scanning…</p>
-                  ) : outputDevices.length === 0 ? (
-                    <p className="text-white/30 text-sm">No speakers found</p>
-                  ) : (
-                    <select
-                      value={selectedOutputId}
-                      onChange={e => setSelectedOutput(e.target.value)}
-                      title="Select speaker"
-                      className="w-full bg-white/8 border border-white/12 rounded-xl px-4 py-3 text-white/80 text-sm appearance-none cursor-pointer focus:outline-none focus:border-amber-500/50 focus:bg-white/10"
-                    >
-                      {outputDevices.map(d => (
-                        <option key={d.deviceId} value={d.deviceId} className="bg-[#1a1a1a]">
-                          {d.label}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                </div>
-
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">Pi Metrics</span>
-
-                {/* CPU Temp */}
-                <div className="bg-white/5 rounded-2xl px-5 py-4 flex items-center justify-between border border-white/8">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-rose-500/15 flex items-center justify-center">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-rose-400">
-                        <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z" />
-                      </svg>
-                    </div>
-                    <div>
-                      <p className="text-white/70 text-sm font-medium">CPU Temperature</p>
-                      <p className="text-white/30 text-xs">thermal_zone0</p>
-                    </div>
-                  </div>
-                  <span className="text-white/80 text-base font-mono font-semibold">
-                    {device ? (device.cpuTempC !== null ? `${device.cpuTempC}°C` : 'N/A') : '—'}
-                  </span>
-                </div>
-
-                {/* Memory */}
-                <div className="bg-white/5 rounded-2xl px-5 py-4 border border-white/8 space-y-3">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-sky-500/15 flex items-center justify-center">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-sky-400">
-                        <rect x="2" y="6" width="20" height="12" rx="2" />
-                        <line x1="6" y1="10" x2="6" y2="14" />
-                        <line x1="10" y1="10" x2="10" y2="14" />
-                        <line x1="14" y1="10" x2="14" y2="14" />
-                        <line x1="18" y1="10" x2="18" y2="14" />
-                      </svg>
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-white/70 text-sm font-medium">Memory</p>
-                      <p className="text-white/30 text-xs">
-                        {device ? `${device.memAvailableMB} MB free of ${device.memTotalMB} MB` : '—'}
-                      </p>
-                    </div>
-                    <span className="text-white/80 text-base font-mono font-semibold">
-                      {device ? `${device.memUsedPct}%` : '—'}
-                    </span>
-                  </div>
-                  {device && (
-                    <div className="h-2 bg-white/10 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-sky-500/60 rounded-full transition-all"
-                        style={{ width: `${device.memUsedPct}%` }}
-                      />
-                    </div>
-                  )}
-                </div>
-
-                {/* Load Average */}
-                <div className="bg-white/5 rounded-2xl px-5 py-4 flex items-center justify-between border border-white/8">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-violet-500/15 flex items-center justify-center">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-violet-400">
-                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-                      </svg>
-                    </div>
-                    <div>
-                      <p className="text-white/70 text-sm font-medium">Load Average</p>
-                      <p className="text-white/30 text-xs">{device ? `${device.cpuCount} cores` : '—'}</p>
-                    </div>
-                  </div>
-                  <span className="text-white/80 text-sm font-mono font-semibold">
-                    {device ? `${device.loadAvg1} · ${device.loadAvg5} · ${device.loadAvg15}` : '—'}
-                  </span>
-                </div>
-
-                {/* Uptime */}
-                <div className="bg-white/5 rounded-2xl px-5 py-4 flex items-center justify-between border border-white/8">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-emerald-500/15 flex items-center justify-center">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-400">
-                        <circle cx="12" cy="12" r="10" />
-                        <polyline points="12 6 12 12 16 14" />
-                      </svg>
-                    </div>
-                    <div>
-                      <p className="text-white/70 text-sm font-medium">Uptime</p>
-                      <p className="text-white/30 text-xs">{device?.hostname ?? '—'}</p>
-                    </div>
-                  </div>
-                  <span className="text-white/80 text-base font-mono font-semibold">
-                    {device ? formatUptime(device.uptimeSeconds) : '—'}
-                  </span>
-                </div>
               </div>
             )}
 
             {/* Schedule tab — Work & Rest hours + bedtime alert */}
             {tab === 'schedule' && (
               <div className="space-y-4 max-w-lg mx-auto">
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Work &amp; Rest Hours</span>
+                <span className="set-label mb-2 px-1">Work &amp; Rest Hours</span>
 
                 {/* Enable toggle */}
-                <div className="bg-white/5 rounded-2xl p-5 border border-white/8 flex items-center justify-between gap-4">
+                <div className="set-card p-5 flex items-center justify-between gap-4">
                   <div className="min-w-0">
                     <p className="text-white/70 text-sm font-medium">Auto switch modes</p>
                     <p className="text-white/30 text-xs mt-0.5">
@@ -1339,9 +1284,97 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
             {/* System tab */}
             {tab === 'system' && (
               <div className="space-y-4 max-w-lg mx-auto">
-                <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Actions</span>
+                <span className="set-label mb-2 px-1">Right now</span>
 
-                <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden">
+                {/* CPU Temp */}
+                <div className="set-card px-5 py-4 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-rose-500/15 flex items-center justify-center">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-rose-400">
+                        <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z" />
+                      </svg>
+                    </div>
+                    <div>
+                      <p className="text-white/70 text-sm font-medium">CPU Temperature</p>
+                      <p className="text-white/30 text-xs">thermal_zone0</p>
+                    </div>
+                  </div>
+                  <span className="text-white/80 text-base font-mono font-semibold">
+                    {device ? (device.cpuTempC !== null ? `${device.cpuTempC}°C` : 'N/A') : '—'}
+                  </span>
+                </div>
+
+                {/* Memory */}
+                <div className="set-card px-5 py-4 space-y-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-sky-500/15 flex items-center justify-center">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-sky-400">
+                        <rect x="2" y="6" width="20" height="12" rx="2" />
+                        <line x1="6" y1="10" x2="6" y2="14" />
+                        <line x1="10" y1="10" x2="10" y2="14" />
+                        <line x1="14" y1="10" x2="14" y2="14" />
+                        <line x1="18" y1="10" x2="18" y2="14" />
+                      </svg>
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-white/70 text-sm font-medium">Memory</p>
+                      <p className="text-white/30 text-xs">
+                        {device ? `${device.memAvailableMB} MB free of ${device.memTotalMB} MB` : '—'}
+                      </p>
+                    </div>
+                    <span className="text-white/80 text-base font-mono font-semibold">
+                      {device ? `${device.memUsedPct}%` : '—'}
+                    </span>
+                  </div>
+                  {device && (
+                    <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-sky-500/60 rounded-full transition-all"
+                        style={{ width: `${device.memUsedPct}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* Load Average */}
+                <div className="set-card px-5 py-4 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-violet-500/15 flex items-center justify-center">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-violet-400">
+                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                      </svg>
+                    </div>
+                    <div>
+                      <p className="text-white/70 text-sm font-medium">Load Average</p>
+                      <p className="text-white/30 text-xs">{device ? `${device.cpuCount} cores` : '—'}</p>
+                    </div>
+                  </div>
+                  <span className="text-white/80 text-sm font-mono font-semibold">
+                    {device ? `${device.loadAvg1} · ${device.loadAvg5} · ${device.loadAvg15}` : '—'}
+                  </span>
+                </div>
+
+                {/* Uptime */}
+                <div className="set-card px-5 py-4 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-emerald-500/15 flex items-center justify-center">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-400">
+                        <circle cx="12" cy="12" r="10" />
+                        <polyline points="12 6 12 12 16 14" />
+                      </svg>
+                    </div>
+                    <div>
+                      <p className="text-white/70 text-sm font-medium">Uptime</p>
+                      <p className="text-white/30 text-xs">{device?.hostname ?? '—'}</p>
+                    </div>
+                  </div>
+                  <span className="text-white/80 text-base font-mono font-semibold">
+                    {device ? formatUptime(device.uptimeSeconds) : '—'}
+                  </span>
+                </div>
+                <span className="set-label mt-6 mb-2 px-1">The app</span>
+
+                <div className="set-card overflow-hidden">
                   {!confirmClose ? (
                     <button
                       onClick={handleCloseApp}
@@ -1447,426 +1480,18 @@ function clockTime(iso: string): string {
 }
 
 /**
- * Settings → Drawing: the prompt improver's own system prompt.
- *
- * The reason this screen exists rather than a constant in the server is that
- * how you ask a model to write a prompt is a matter of taste, it changes faster
- * than this app ships, and the person using it has opinions. What is NOT
- * editable, and is shown read-only below the box, is the model-specific half:
- * {{style}} and {{guidance}} are substituted from the selected style's own
- * published guidance, so the same template does the right thing whether the
- * next picture goes to FLUX's T5-XXL or to a booru-tag model. Getting that
- * wrong is the one failure the user cannot debug from here, so it is not theirs
- * to get wrong.
- *
- * The preview underneath is the whole point of the layout: a template full of
- * placeholders cannot be judged on its own, and seeing it expanded for the
- * style that is actually selected is what makes the model-awareness visible
- * rather than a claim.
+ * Settings → Drawing: what the picture tools DO. Every piece of text they SAY
+ * to a model — the improver's instructions and its other ways of asking, the
+ * picture reader's, the edit rewriter's and planner's, and the per-model
+ * prefixes and negatives — is under Prompts, so each prompt has exactly one
+ * place to be edited. What is left here is behaviour: switches and numbers.
  */
-/**
- * Settings → Drawing → the per-model text: what this style avoids, and what is
- * silently added to every prompt for it.
- *
- * PER MODEL rather than global, for exactly the reason cfg is: this is
- * model-specific text. The booru terms NoobAI's card asks for are wasted on
- * FLUX, which has no negative at all; the house English prose is wasted on a
- * tag-trained model. One global negative would be quietly wrong for whichever
- * model it was not written for — which is the failure the whole per-style store
- * exists to prevent.
- *
- * Each field's PLACEHOLDER is the string that is actually in effect when you
- * leave it blank, not a hint. A blank box over a model that has a published
- * negative would read as "there isn't one", and the natural response to that is
- * to type a worse one from memory.
- */
-function StyleTextSection({ styles }: { styles: { id: string; label: string }[] }) {
-  const { fetchParams, setParamsForStyle } = useImages()
-  const [style, setStyle] = useState('')
-  const [data, setData] = useState<ParamsResponse | null>(null)
-  const [draft, setDraft] = useState<Overrides>(BLANK)
-  const [saved, setSaved] = useState(true)
-
-  // Settle on the first style once the list arrives. Derived in the render body
-  // rather than an effect, the pattern this file already uses elsewhere.
-  if (!style && styles.length > 0) setStyle(styles[0]!.id)
-
-  // Load whichever style is being edited. The cancelled guard is load-bearing
-  // for the same reason as the Draw panel's: tapping through three models fires
-  // three requests, and the slowest one winning would leave the fields
-  // describing one model while the next save wrote them against another.
-  useEffect(() => {
-    if (!style) return
-    let cancelled = false
-    void fetchParams(style).then(j => {
-      if (cancelled) return
-      setData(j)
-      setDraft({
-        prefix:         j?.values?.prefix         ?? null,
-        optimizations:  j?.values?.optimizations  ?? null,
-        negative:       j?.values?.negative       ?? null,
-        negativePrefix: j?.values?.negativePrefix ?? null,
-      })
-      setSaved(true)
-    })
-    return () => { cancelled = true }
-  }, [style, fetchParams])
-
-  const text = data?.text
-  // A style sampled at cfg 1 is not doing classifier-free guidance, so its
-  // negative is encoded and then ignored. Saying so beats a field that looks
-  // live and silently isn't — the same rule the Quality row follows when a
-  // distilled style takes it out of play.
-  const cfgOne = data?.defaults?.cfg === 1
-  // A model with no second text encode at all — FLUX zeroes the positive out
-  // instead. Undefined from a server that predates the field, which must read
-  // as "it has one", the behaviour every style had before this existed.
-  const hasNegative = text?.usesNegative !== false
-
-  const set = (key: keyof Overrides, v: string | null) => {
-    setDraft(d => ({ ...d, [key]: v }))
-    setSaved(false)
-  }
-
-  return (
-    <div className="space-y-5">
-      <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
-          Per-model text
-        </span>
-        <p className="text-[12px] text-white/45 leading-relaxed mb-3">
-          Everything this app adds to a render for you, for one model at a time. A box left
-          alone uses what that model's own documentation recommends — shown greyed inside it.
-          Type to replace it, or empty a box you have taken over to add nothing at all.
-        </p>
-        {/* A horizontal scroller, not a dropdown: a native select opens an OS
-            popup TouchKio renders badly, and this is the same control the Draw
-            panel's Style row already uses. */}
-        <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
-          {styles.map(st => (
-            <button
-              key={st.id}
-              type="button"
-              onClick={() => setStyle(st.id)}
-              className={`shrink-0 px-3 h-10 rounded-xl text-[12px] font-semibold border transition ${
-                style === st.id
-                  ? 'bg-white/20 text-white border-white/25'
-                  : 'bg-white/5 text-white/45 border-transparent'
-              }`}
-            >
-              {st.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <OverrideField
-        label="Added in front of your prompt"
-        hint={"Used exactly as written, with a comma put in for you \u2014 unless it ends in " +
-              "punctuation like \u201c>\u201d, which some models use as a separator that must not " +
-              "be followed by one."}
-        value={draft.prefix}
-        fallback={text?.prefix ?? ''}
-        rows={2}
-        onChange={v => set('prefix', v)}
-        onReset={() => set('prefix', null)}
-      />
-
-      <OverrideField
-        label="Added after your prompt"
-        hint="Where quality tags go for models whose documentation puts them at the end."
-        value={draft.optimizations}
-        fallback={text?.optimizations ?? ''}
-        rows={2}
-        onChange={v => set('optimizations', v)}
-        onReset={() => set('optimizations', null)}
-      />
-
-      {/* Not disabled — absent. A model that cannot have a negative gets a
-          sentence saying so instead of editable boxes whose contents could never
-          reach a picture, which is the same silent-override failure the
-          per-style params exist to prevent. */}
-      {hasNegative ? (
-        <>
-          <OverrideField
-            label="Negative prompt"
-            hint={cfgOne
-              ? 'This style samples at guidance 1, so it does no classifier-free guidance and ' +
-                'this has no effect on the picture yet. It is kept for the moment you raise ' +
-                "Guidance in the Draw panel's Advanced section."
-              : ''}
-            hintTone={cfgOne ? 'warn' : 'plain'}
-            value={draft.negative}
-            fallback={text?.negative ?? ''}
-            rows={3}
-            onChange={v => set('negative', v)}
-            onReset={() => set('negative', null)}
-          />
-
-          <OverrideField
-            label="Added in front of the negative"
-            hint="Only instruction-tuned models ship one of these; most leave it empty."
-            value={draft.negativePrefix}
-            fallback={text?.negativePrefix ?? ''}
-            rows={2}
-            onChange={v => set('negativePrefix', v)}
-            onReset={() => set('negativePrefix', null)}
-          />
-        </>
-      ) : (
-        <p className="text-[12px] text-white/45 leading-relaxed rounded-xl bg-white/[0.04]
-                      border border-hairline px-3 py-2.5">
-          This model has no negative prompt at all — its own guidance is to describe what
-          you want rather than what you don't, and there is nowhere in its pipeline for a
-          negative to go. Put anything you were going to avoid into the prompt as a
-          positive description instead.
-        </p>
-      )}
-
-      <button
-        type="button"
-        disabled={saved}
-        onClick={() => { void setParamsForStyle(style, draft).then(() => setSaved(true)) }}
-        className={`w-full h-12 rounded-xl text-sm font-semibold transition ${
-          saved ? 'bg-white/5 text-white/30' : 'bg-violet-500/80 text-white active:scale-95'
-        }`}
-      >
-        {saved ? 'Saved' : `Save for ${data?.styleLabel || 'this model'}`}
-      </button>
-    </div>
-  )
-}
-
-/** The four overridable strings, as the editor holds them. */
-interface Overrides {
-  prefix:         string | null
-  optimizations:  string | null
-  negative:       string | null
-  negativePrefix: string | null
-}
-
-const BLANK: Overrides = {
-  prefix: null, optimizations: null, negative: null, negativePrefix: null,
-}
-
-/**
- * One overridable piece of text, with its way back.
- *
- * The three states have to be visibly different or the field lies. `null` shows
- * the model's own string as a greyed placeholder, because a blank box over a
- * model that HAS a published prefix reads as "there isn't one". An override of
- * '' must NOT show that same placeholder — it would look like the built-in was
- * still in effect when the whole point of emptying the box was to switch it
- * off — so the placeholder changes to say what will actually happen.
- */
-function OverrideField({
-  label, hint, hintTone = 'plain', value, fallback, rows, onChange, onReset,
-}: {
-  label:     string
-  hint?:     string
-  hintTone?: 'plain' | 'warn'
-  /** null = no override. */
-  value:     string | null
-  /** What the model itself specifies, shown when there is no override. */
-  fallback:  string
-  rows:      number
-  onChange:  (v: string) => void
-  onReset:   () => void
-}) {
-  const overridden = value !== null
-  return (
-    <div>
-      <div className="flex items-baseline justify-between gap-3 mb-2">
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">
-          {label}
-        </span>
-        {/* Absent rather than disabled while nothing is overridden: a dead
-            control on a touchscreen is a tap that looks broken. */}
-        {overridden && (
-          <button
-            type="button"
-            onClick={onReset}
-            className="shrink-0 text-[11px] font-semibold text-violet-300/80 px-2 py-1
-                       rounded-lg active:bg-white/10"
-          >
-            Use the model's own
-          </button>
-        )}
-      </div>
-      <AutosaveInput
-        value={value ?? ''}
-        onSave={onChange}
-        // Each value is saved to the server and shown back as "overridden";
-        // half-typed text must not be.
-        multiline
-        rows={rows}
-        placeholder={overridden ? 'nothing will be added' : (fallback || 'nothing by default')}
-        ariaLabel={label}
-        className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px] leading-relaxed
-                   placeholder:text-white/30 border border-hairline"
-      />
-      {overridden && value === '' && (
-        <p className="text-[11px] text-amber-300/70 leading-snug mt-1.5">
-          Switched off — nothing will be added here. Tap "Use the model's own" to put it back.
-        </p>
-      )}
-      {hint && (
-        <p className={`text-[11px] leading-snug mt-1.5 ${
-          hintTone === 'warn' ? 'text-amber-300/70' : 'text-white/30'
-        }`}>
-          {hint}
-        </p>
-      )}
-    </div>
-  )
-}
-
-/**
- * One of the improver's extra ways of asking, as Settings → Drawing edits it.
- *
- * Name and instructions are saved together by one Save, not autosaved: a
- * rename typed on an on-screen keyboard passes through names that clash with
- * another option on its way to the one meant, and each would be a refusal.
- * The drafts follow the server while nothing is being typed here, so an edit
- * saved from a phone shows up on the kiosk's open screen.
- */
-function PromptOptionEditor({ option, inUse, onSave, onDelete }: {
-  option: PromptOption
-  inUse:  boolean
-  onSave:   (patch: { name?: string; template?: string }) => Promise<string>
-  onDelete: () => Promise<string>
-}) {
-  const [name, setName] = useState({ text: option.name, base: option.name })
-  const [text, setText] = useState({ text: option.template, base: option.template })
-  if (name.base !== option.name && name.text === name.base) setName({ text: option.name, base: option.name })
-  if (text.base !== option.template && text.text === text.base) setText({ text: option.template, base: option.template })
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [confirmDelete, setConfirmDelete] = useState(false)
-  const nameChanged = name.text.trim() !== option.name
-  const textChanged = text.text !== option.template
-  const dirty = nameChanged || textChanged
-
-  async function save() {
-    setBusy(true)
-    const err = await onSave({
-      ...(nameChanged ? { name: name.text } : {}),
-      ...(textChanged ? { template: text.text } : {}),
-    })
-    setBusy(false)
-    setError(err)
-    if (!err) {
-      setName(n => ({ text: n.text.trim(), base: n.text.trim() }))
-      setText(t => ({ text: t.text, base: t.text }))
-    }
-  }
-
-  return (
-    <div className={`rounded-2xl p-3 border space-y-2 ${inUse ? 'bg-violet-500/10 border-violet-400/40' : 'bg-white/5 border-hairline'}`}>
-      <div className="flex items-center gap-2">
-        <TouchInput
-          value={name.text}
-          onChange={t => setName(n => ({ ...n, text: t }))}
-          ariaLabel="Name of this option"
-          placeholder="A name for the Draw panel"
-          className="flex-1 min-w-0 bg-white/10 text-white rounded-xl px-3 py-2.5 text-sm font-semibold
-                     placeholder:text-white/30 border border-hairline"
-        />
-        {inUse && (
-          <span className="shrink-0 text-[11px] font-semibold text-violet-200 bg-violet-500/20 rounded-full px-2.5 py-1">
-            In use
-          </span>
-        )}
-      </div>
-      <TouchInput
-        value={text.text}
-        onChange={t => setText(x => ({ ...x, text: t }))}
-        multiline
-        rows={8}
-        ariaLabel={`Instructions for ${option.name}`}
-        className="w-full bg-white/10 text-white rounded-2xl px-4 py-3 text-[13px] leading-relaxed
-                   placeholder:text-white/30 border border-hairline font-mono"
-      />
-      <div className="flex gap-2">
-        <button
-          type="button"
-          disabled={!dirty || busy}
-          onClick={() => { void save() }}
-          className={`flex-1 h-12 rounded-xl text-sm font-semibold transition ${
-            dirty ? 'bg-violet-500/80 text-white active:scale-95' : 'bg-white/5 text-white/30'
-          }`}
-        >
-          {busy ? 'Saving…' : dirty ? 'Save' : 'Saved'}
-        </button>
-        {confirmDelete ? (
-          <>
-            <button
-              type="button"
-              onClick={() => setConfirmDelete(false)}
-              className="px-4 h-12 rounded-xl bg-white/10 text-white/70 text-sm font-semibold active:scale-95"
-            >
-              Keep
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => {
-                setConfirmDelete(false)
-                setBusy(true)
-                void onDelete().then(err => { setBusy(false); setError(err) })
-              }}
-              className="px-4 h-12 rounded-xl bg-red-500 text-white text-sm font-bold active:scale-95"
-            >
-              Delete
-            </button>
-          </>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setConfirmDelete(true)}
-            aria-label={`Delete ${option.name}`}
-            className="px-4 h-12 rounded-xl bg-white/10 text-white/60 text-sm font-semibold active:scale-95
-                       flex items-center gap-1.5"
-          >
-            <Trash2 size={15} /> Delete
-          </button>
-        )}
-      </div>
-      {confirmDelete && (
-        <p className="text-[12px] text-white/50">
-          {inUse ? 'This one is in use; the original takes over once it is gone.' : 'The original and the other options are not affected.'}
-        </p>
-      )}
-      {error && <p className="text-red-300/90 text-[12px]">{error}</p>}
-    </div>
-  )
-}
-
 function DrawingTab() {
   const {
-    prompter, setPrompter, styles, structure, setStructure, capabilities, safeTags, setSafeTags,
+    prompter, setPrompter, structure, setStructure, capabilities, safeTags, setSafeTags,
     inpaintPatchOn, setInpaintPatchOn,
-    addPromptOption, updatePromptOption, removePromptOption,
   } = useImages()
-  // Adding an option can be refused (the list is full); the sentence goes here.
-  const [optionError, setOptionError] = useState('')
-  // Edited locally and saved explicitly. A template is a paragraph typed on an
-  // on-screen keyboard, and saving per keystroke would write the store forty
-  // times and re-fetch the preview on each one.
-  const [draft, setDraft] = useState<{ text: string; seeded: boolean }>({ text: '', seeded: false })
-  if (!draft.seeded && prompter) setDraft({ text: prompter.template, seeded: true })
-  const dirty = prompter !== null && draft.text !== prompter.template
-  // The redraw's own template, edited the same way. A second draft rather than
-  // one shared one because the two are saved separately and a half-typed edit
-  // in one must not be lost by saving the other.
-  const [visionDraft, setVisionDraft] = useState<{ text: string; seeded: boolean }>({ text: '', seeded: false })
-  const [editDraft, setEditDraft] = useState<{ text: string; seeded: boolean }>({ text: '', seeded: false })
-  const [editModelDraft, setEditModelDraft] = useState<{ text: string; seeded: boolean }>({ text: '', seeded: false })
   const [retryDraft, setRetryDraft] = useState<{ text: string; seeded: boolean }>({ text: '', seeded: false })
-  if (!visionDraft.seeded && prompter) setVisionDraft({ text: prompter.visionTemplate, seeded: true })
-  const visionDirty = prompter !== null && visionDraft.text !== prompter.visionTemplate
-  if (!editDraft.seeded && prompter) setEditDraft({ text: prompter.editTemplate, seeded: true })
-  const editDirty = prompter !== null && editDraft.text !== prompter.editTemplate
 
   if (!prompter) {
     return (
@@ -1876,455 +1501,89 @@ function DrawingTab() {
     )
   }
 
+  const retryNow = String(Math.round((prompter.retryBelow ?? 0) * 100))
+  const retryDirty = retryDraft.seeded && retryDraft.text !== retryNow
+
   return (
-    <div className="space-y-5 max-w-lg mx-auto pb-4">
-      <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
-          Improve my prompt
-        </span>
-        <p className="text-[12px] text-white/45 leading-relaxed mb-3">
-          When this is on, a separate model rewrites what you type before the picture is
-          drawn — on a brand new conversation every time, so nothing you have said to the
-          assistant can colour it. The switch is also in the Draw panel; this is the same
-          setting.
-        </p>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={prompter.enabled}
-          onClick={() => { void setPrompter({ enabled: !prompter.enabled }) }}
-          className={`w-full flex items-center gap-3 rounded-2xl px-3 py-3 border text-left
-                      transition-colors active:scale-[0.99] ${
-            prompter.enabled ? 'bg-violet-500/15 border-violet-400/40' : 'bg-white/5 border-hairline'
-          }`}
-        >
-          <span className={`w-11 h-6 shrink-0 rounded-full p-0.5 flex transition-colors ${
-            prompter.enabled ? 'bg-violet-400/80 justify-end' : 'bg-white/15 justify-start'
-          }`}>
-            <span className="w-5 h-5 rounded-full bg-white shadow" />
-          </span>
-          <span className="text-[13px] font-semibold text-white/85">
-            {prompter.enabled ? 'On by default' : 'Off by default'}
-          </span>
-        </button>
-      </div>
+    <div className="space-y-7 max-w-lg mx-auto pb-6">
 
-      {/* The built-in safety tags. One switch for every style, because the
-          alternative — retyping each style's whole prefix minus one word — is
-          the kind of chore that gets the tag left in and the picture blamed. */}
-      <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
-          Safety tags in prompts
-        </span>
-        <p className="text-[12px] text-white/45 leading-relaxed mb-3">
-          Several models' built-in prefixes carry the booru rating tag{' '}
-          <code className="text-white/60">safe</code> and their negatives lead with{' '}
-          <code className="text-white/60">nsfw</code>, because the assistant draws on this
-          screen unprompted. They also push those models away from swimwear or bare skin.
-          Off strips both from every style's built-in text; anything you typed yourself in the
-          per-model boxes below is left exactly as it is.
-        </p>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={safeTags !== false}
+      <Section title="Writing the prompt">
+        <SwitchRow
+          title="Improve my prompt"
+          description={<>A separate model rewrites what you type for the style you picked, on a brand new
+            conversation every time. This is the default for the switch of the same name in the Draw
+            panel{prompter.options.length > 0 ? `, which also picks between your ${prompter.options.length + 1} ways of asking` : ''}.</>}
+          on={prompter.enabled}
+          onChange={enabled => { void setPrompter({ enabled }) }}
+        />
+        <SwitchRow
+          title="Safety tags"
+          description={<>Several styles' built-in text carries the rating tag <code className="text-white/60">safe</code> in
+            front and <code className="text-white/60">nsfw</code> in the negative, because the assistant draws
+            on this screen unprompted. They also push those models away from swimwear or bare skin. Off
+            strips both from every style's built-in text; anything you typed yourself is left alone.</>}
+          on={safeTags !== false}
           disabled={safeTags === null}
-          onClick={() => { if (safeTags !== null) void setSafeTags(!safeTags) }}
-          className={`w-full flex items-center gap-3 rounded-2xl px-3 py-3 border text-left
-                      transition-colors active:scale-[0.99] disabled:opacity-50 ${
-            safeTags !== false ? 'bg-violet-500/15 border-violet-400/40' : 'bg-white/5 border-hairline'
-          }`}
-        >
-          <span className={`w-11 h-6 shrink-0 rounded-full p-0.5 flex transition-colors ${
-            safeTags !== false ? 'bg-violet-400/80 justify-end' : 'bg-white/15 justify-start'
-          }`}>
-            <span className="w-5 h-5 rounded-full bg-white shadow" />
-          </span>
-          <span className="text-[13px] font-semibold text-white/85">
-            {safeTags === null ? 'Loading…' : safeTags ? 'Added — safe in front, nsfw in the negative' : 'Not added'}
-          </span>
-        </button>
-      </div>
-
-      {/* The inpainting patch, for every style at once. The precise per-style
-          switch lives in Draw → Advanced, but it only shows with an Anima style
-          selected and three taps deep, which is how it went unfound. This one
-          is always here. Off here wins; on here defers to the per-style one. */}
-      <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
-          Inpainting patch (Anima)
-        </span>
-        <p className="text-[12px] text-white/45 leading-relaxed mb-3">
-          When you change just a part of a picture in an Anima style, the model's own inpainting
-          patch (a ControlNet-LLLite file on the GPU box) paints that part to fit what surrounds it.
-          Off repaints the part the generic way, with only the mask telling the sampler where to
-          paint, which occasionally suits a picture better. Each style can also be switched on its
-          own under Draw → Advanced; this switch overrides them all.
-        </p>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={inpaintPatchOn !== false}
-          disabled={inpaintPatchOn === null}
-          onClick={() => { if (inpaintPatchOn !== null) void setInpaintPatchOn(!inpaintPatchOn) }}
-          className={`w-full flex items-center gap-3 rounded-2xl px-3 py-3 border text-left
-                      transition-colors active:scale-[0.99] disabled:opacity-50 ${
-            inpaintPatchOn !== false ? 'bg-pink-500/15 border-pink-400/40' : 'bg-white/5 border-hairline'
-          }`}
-        >
-          <span className={`w-11 h-6 shrink-0 rounded-full p-0.5 flex transition-colors ${
-            inpaintPatchOn !== false ? 'bg-pink-400/80 justify-end' : 'bg-white/15 justify-start'
-          }`}>
-            <span className="w-5 h-5 rounded-full bg-white shadow" />
-          </span>
-          <span className="text-[13px] font-semibold text-white/85">
-            {inpaintPatchOn === null ? 'Loading…' : inpaintPatchOn ? 'Used for masked edits on Anima styles' : 'Off — masked edits repaint the generic way'}
-          </span>
-        </button>
-      </div>
+          onChange={on => { void setSafeTags(on) }}
+        />
+      </Section>
 
       <FidelityCard />
 
-      {/* The template itself */}
-      <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
-          {prompter.options.length > 0 ? `How it is asked — ${prompter.originalName}` : 'How it is asked — one prompt, every model'}
-        </span>
-        <p className="text-[12px] text-white/45 leading-relaxed mb-2">
-          This is the whole system prompt. Two placeholders are filled in for you from
-          whichever style is selected:{' '}
-          <code className="text-violet-300">{'{{style}}'}</code> becomes its name, and{' '}
-          <code className="text-violet-300">{'{{guidance}}'}</code> becomes that model's own
-          published advice on how to prompt it. What you type is sent as the user message.
-        </p>
-        <TouchInput
-          value={draft.text}
-          onChange={text => setDraft({ text, seeded: true })}
-          multiline
-          rows={10}
-          ariaLabel="The prompt improver's instructions"
-          className="w-full bg-white/10 text-white rounded-2xl px-4 py-3 text-[13px] leading-relaxed
-                     placeholder:text-white/30 border border-hairline font-mono"
-        />
-        <div className="flex gap-2 mt-2">
-          <button
-            type="button"
-            disabled={!dirty}
-            onClick={() => { void setPrompter({ template: draft.text }); setDraft({ text: draft.text, seeded: true }) }}
-            className={`flex-1 h-12 rounded-xl text-sm font-semibold transition ${
-              dirty ? 'bg-violet-500/80 text-white active:scale-95' : 'bg-white/5 text-white/30'
-            }`}
-          >
-            {dirty ? 'Save' : 'Saved'}
-          </button>
-          <button
-            type="button"
-            onClick={() => setDraft({ text: prompter.defaultTemplate, seeded: true })}
-            className="px-4 h-12 rounded-xl bg-white/10 text-white/70 text-sm font-semibold active:scale-95"
-          >
-            Reset
-          </button>
-        </div>
-      </div>
-
-      {/* More ways of asking. Made and edited here; CHOSEN in the Draw panel,
-          under Improve my prompt, because which way suits a picture is decided
-          while composing it. Each starts as a copy of the original and nothing
-          done to it reaches the original. */}
-      <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
-          More ways of asking
-        </span>
-        <p className="text-[12px] text-white/45 leading-relaxed mb-3">
-          The box above is the original. Add options to try different instructions without
-          touching it: each starts as a copy of the original, with the same two placeholders.
-          Pick which one rewrites your prompts in the Draw panel, under Improve my prompt. They
-          apply to new pictures; a redraw is described by the picture-reading model further down.
-        </p>
-        <div className="space-y-3">
-          {prompter.options.map(option => (
-            <PromptOptionEditor
-              key={option.id}
-              option={option}
-              inUse={prompter.active === option.id}
-              onSave={patch => updatePromptOption(option.id, patch)}
-              onDelete={() => removePromptOption(option.id)}
-            />
-          ))}
-        </div>
-        <button
-          type="button"
-          disabled={prompter.options.length >= prompter.maxOptions}
-          onClick={() => { void addPromptOption().then(err => setOptionError(err)) }}
-          className="mt-3 w-full h-12 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold
-                     bg-violet-500/20 text-violet-100 border border-violet-400/30 active:scale-95 transition
-                     disabled:opacity-40 disabled:active:scale-100"
-        >
-          <Plus size={16} />
-          {prompter.options.length >= prompter.maxOptions
-            ? `${prompter.maxOptions} options is the most there can be`
-            : 'New option — a copy of the original'}
-        </button>
-        {optionError && <p className="text-red-300/90 text-[12px] mt-2">{optionError}</p>}
-      </div>
-
-      {/* Which model does it */}
-      <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
-          Which model
-        </span>
-        <p className="text-[12px] text-white/45 leading-relaxed mb-2">
-          Leave this empty to use whatever <code className="text-white/60">OLLAMA_IMAGE_MODEL</code>{' '}
-          is set to on the server, and the chat model after that. Nobody is waiting on this
-          call the way they are on a spoken reply, so a slower, better model costs nothing
-          you can perceive.
-        </p>
-        <AutosaveInput
-          value={prompter.model}
-          onSave={model => { void setPrompter({ model }) }}
-          plain
-          placeholder="(the server's default)"
-          ariaLabel="Model that rewrites prompts"
-          className="w-full bg-white/10 text-white rounded-xl px-4 py-3 text-sm
-                     placeholder:text-white/30 border border-hairline"
-        />
-      </div>
-
-      {/* What it actually turns into, for the style that is selected now */}
-      <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
-          Right now, for {prompter.styleLabel || 'this style'}
-          {prompter.options.length > 0 ? `, with ${prompter.activeName}` : ''}
-        </span>
-        <p className="text-[12px] text-white/45 leading-relaxed mb-2">
-          Exactly what the model is told before your prompt. Switch the style in the Draw
-          panel and this changes with it — that is the model-specific half doing its job.
-          {prompter.options.length > 0 && ' It shows the option chosen in the Draw panel.'}
-        </p>
-        <pre className="selectable-text whitespace-pre-wrap break-words text-[11px] leading-relaxed
-                        text-white/60 bg-black/30 border border-hairline rounded-2xl p-3
-                        max-h-72 overflow-y-auto">
-          {prompter.preview}
-        </pre>
-      </div>
-
-      {/* Keeping the pose: the ControlNet every redraw is conditioned on, and
-          the knobs that decide what it holds and how hard. Here rather than in
-          the Draw panel because they are a policy, not a per-picture choice —
-          the panel keeps the on/off toggle only. */}
-      <div className="border-t border-hairline pt-5">
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
-          Keeping the pose — when a picture is changed
-        </span>
-        <p className="text-[12px] text-white/45 leading-relaxed mb-3">
-          When part or all of a picture is redrawn, a ControlNet holds the original's structure
-          in place while the surfaces change, so "a pink jacket" doesn't move her arm. What it
-          holds is the choice that matters: <span className="text-white/70">lines</span> keep every
-          contour, garments included — right for recolours; <span className="text-white/70">body</span> keeps
-          the body's depth and lets the old clothes' lines go — right for swapping a shirt for a
-          bikini; <span className="text-white/70">pose</span> keeps only the skeleton.
-          {!capabilities.structure && ' No ControlNet is installed on the image server yet, so none of this applies until one is (an SDXL union ControlNet in ComfyUI/models/controlnet).'}
-          {' '}These are the defaults; the Draw panel carries the same controls for one picture at a time.
-        </p>
+      <Section
+        title="Changing a picture"
+        description={<>When part or all of a picture is redrawn, a ControlNet holds the original's structure in
+          place while the surfaces change, so "a pink jacket" doesn't move her arm. <span className="text-white/70">Lines</span> keep
+          every contour, garments included (right for recolours); <span className="text-white/70">body</span> keeps
+          the body's depth and lets the old clothes go (right for swapping clothes); <span className="text-white/70">pose</span> keeps
+          only the skeleton. These are the defaults; the Draw panel can change them for one picture.
+          {!capabilities.structure && ' No ControlNet is installed on the image server yet, so none of this applies until one is.'}</>}
+      >
         {structure && (
           <PoseHoldCard structure={structure} onChange={setStructure} modes={capabilities.holdModes} available={capabilities.structure} />
         )}
-      </div>
-
-      {/* The redraw's look-at-the-picture step. It is a different prompt for a
-          different job — describing a picture that exists rather than
-          embellishing words — and it runs whenever a picture is changed with
-          Improve on, or an uploaded one is redrawn at all, so it deserves to be
-          readable in the same place as the improver's rather than buried in
-          the server. Absent for an editing style (FLUX Kontext), which never
-          runs it: the instruction goes to the model verbatim. */}
-      <div className="border-t border-hairline pt-5">
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
-          Looking at the picture — before a redraw
-        </span>
-        <p className="text-[12px] text-white/45 leading-relaxed mb-2">
-          When you change a picture with a drawing style, the picture model never sees the
-          original: it only reads a prompt. So before the redraw, a model that can see is
-          shown the original and what you asked to change, and writes the description of the
-          whole result. This is what it is told. It runs whenever Improve is on, and always for
-          a picture of your own, since a photo has no prompt to start from. The same two
-          placeholders are filled in for you.
-        </p>
-        <TouchInput
-          value={visionDraft.text}
-          onChange={text => setVisionDraft({ text, seeded: true })}
-          multiline
-          rows={10}
-          ariaLabel="Instructions for the model that looks at the picture before a redraw"
-          className="w-full bg-white/10 text-white rounded-2xl px-4 py-3 text-[13px] leading-relaxed
-                     placeholder:text-white/30 border border-hairline font-mono"
+        <SwitchRow
+          title="Anima inpainting patch"
+          description="When you change just a part of a picture in an Anima style, the model's own inpainting patch paints it to fit what surrounds it. Off repaints the part the generic way. Each style can also be switched under Draw → Advanced; off here wins over all of them."
+          on={inpaintPatchOn !== false}
+          disabled={inpaintPatchOn === null}
+          onChange={on => { void setInpaintPatchOn(on) }}
         />
-        <div className="flex gap-2 mt-2">
-          <button
-            type="button"
-            disabled={!visionDirty}
-            onClick={() => {
-              void setPrompter({ visionTemplate: visionDraft.text })
-              setVisionDraft({ text: visionDraft.text, seeded: true })
-            }}
-            className={`flex-1 h-12 rounded-xl text-sm font-semibold transition ${
-              visionDirty ? 'bg-violet-500/80 text-white active:scale-95' : 'bg-white/5 text-white/30'
-            }`}
-          >
-            {visionDirty ? 'Save' : 'Saved'}
-          </button>
-          <button
-            type="button"
-            onClick={() => setVisionDraft({ text: prompter.defaultVisionTemplate, seeded: true })}
-            className="px-4 h-12 rounded-xl bg-white/10 text-white/70 text-sm font-semibold active:scale-95"
-          >
-            Reset
-          </button>
-        </div>
-        <p className="text-[12px] text-white/45 leading-relaxed mt-3 mb-2">
-          Right now, for {prompter.styleLabel || 'this style'}, the model{' '}
-          <code className="text-white/60">{prompter.visionModel}</code> is told this, then
-          shown the picture with the message{' '}
-          <code className="text-violet-300">{prompter.visionUserMessage}</code>. Set{' '}
-          <code className="text-white/60">OLLAMA_VISION_MODEL</code> on the server to use a
-          different model for this step; it has to be one that can see.
-        </p>
-        <pre className="selectable-text whitespace-pre-wrap break-words text-[11px] leading-relaxed
-                        text-white/60 bg-black/30 border border-hairline rounded-2xl p-3
-                        max-h-72 overflow-y-auto">
-          {prompter.visionPreview}
-        </pre>
-      </div>
+      </Section>
 
-      {/* The editing path's only model call. Kontext itself reads no LLM
-          output — it is a diffusion model handed an instruction — so this is
-          the one place a language model touches an edit, and it runs only
-          when an edit came back having changed almost nothing. */}
-      <div className="border-t border-hairline pt-5">
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
-          Rewriting an edit that did nothing
-        </span>
-        <p className="text-[12px] text-white/45 leading-relaxed mb-2">
-          FLUX Kontext is an editor, and it is literal: it returns the picture untouched when
-          the subject is not named the way it appears, or the change is vague. With a floor set
-          below, an edit that changes less than that share of the picture is handed to a model
-          that can see it, which says the same change the way the editor can act on it, and the
-          edit is drawn once more. This is what that model is told. Off by default: the change
-          is measured and shown on every picture, and nothing is judged from it.
-        </p>
-        <label className="block mb-3">
-          <span className="text-[12px] text-white/45 leading-relaxed block mb-1">
-            Draw again when an edit changes less than this much of the picture. 0 is never.
-            Measured as the brightest-moving 2% of a 64-wide grid, so a small real edit can
-            read as 3–10%; 5 was the old built-in.
-          </span>
+      <Section
+        title="Retrying an edit that did nothing"
+        description={<>An instruction editor (FLUX Kontext) returns the picture untouched when the subject is not
+          named the way it appears. With a floor set, an edit that changes less than that share of the picture is
+          reworded by a model that can see it and drawn once more. 0 is never, the default; a small real edit
+          can measure 3–10%. What that model is told is under Prompts.</>}
+      >
+        <Card className="p-4">
           <div className="flex items-center gap-2">
             <TouchInput
-              value={retryDraft.seeded ? retryDraft.text : String(Math.round((prompter.retryBelow ?? 0) * 100))}
+              value={retryDraft.seeded ? retryDraft.text : retryNow}
               onChange={text => setRetryDraft({ text, seeded: true })}
               numeric
               placeholder="0"
               ariaLabel="Redraw an edit that changed less than this percent"
-              className="w-28 h-12 rounded-xl bg-white/10 border border-hairline px-3 text-[14px] tabular-nums"
+              className="w-24 h-11 rounded-xl bg-white/10 border border-hairline px-3 text-[15px] tabular-nums"
             />
             <span className="text-sm text-white/50">%</span>
             <button
               type="button"
-              disabled={!retryDraft.seeded || String(Math.round((prompter.retryBelow ?? 0) * 100)) === retryDraft.text}
+              disabled={!retryDirty}
               onClick={() => {
                 const n = Math.min(50, Math.max(0, Number(retryDraft.text) || 0))
                 void setPrompter({ retryBelow: n / 100 })
                 setRetryDraft({ text: String(n), seeded: true })
               }}
-              className={`flex-1 h-12 rounded-xl text-sm font-semibold transition ${
-                retryDraft.seeded && String(Math.round((prompter.retryBelow ?? 0) * 100)) !== retryDraft.text
-                  ? 'bg-violet-500/80 text-white active:scale-95' : 'bg-white/5 text-white/30'
-              }`}
+              className={`flex-1 ${btn.primary}`}
             >
-              {(prompter.retryBelow ?? 0) > 0 ? `Floor is ${Math.round(prompter.retryBelow * 100)}%` : 'Floor is off'}
+              {retryDirty ? 'Save' : (prompter.retryBelow ?? 0) > 0 ? `Retrying below ${retryNow}%` : 'Never retried'}
             </button>
           </div>
-        </label>
-        <TouchInput
-          value={editDraft.text}
-          onChange={text => setEditDraft({ text, seeded: true })}
-          multiline
-          rows={10}
-          ariaLabel="Instructions for the model that rewrites a failed edit"
-          className="w-full bg-white/10 text-white rounded-2xl px-4 py-3 text-[13px] leading-relaxed
-                     placeholder:text-white/30 border border-hairline font-mono"
-        />
-        <div className="flex gap-2 mt-2">
-          <button
-            type="button"
-            disabled={!editDirty}
-            onClick={() => {
-              void setPrompter({ editTemplate: editDraft.text })
-              setEditDraft({ text: editDraft.text, seeded: true })
-            }}
-            className={`flex-1 h-12 rounded-xl text-sm font-semibold transition ${
-              editDirty ? 'bg-violet-500/80 text-white active:scale-95' : 'bg-white/5 text-white/30'
-            }`}
-          >
-            {editDirty ? 'Save' : 'Saved'}
-          </button>
-          <button
-            type="button"
-            onClick={() => setEditDraft({ text: prompter.defaultEditTemplate, seeded: true })}
-            className="px-4 h-12 rounded-xl bg-white/10 text-white/70 text-sm font-semibold active:scale-95"
-          >
-            Reset
-          </button>
-        </div>
-        <label className="block mt-3">
-          <span className="text-[12px] text-white/45 leading-relaxed block mb-1">
-            The model that does it. Leave empty to follow the one above (
-            <code className="text-white/60">{prompter.visionModel}</code>). It must be one that
-            can see a picture.
-          </span>
-          <TouchInput
-            value={editModelDraft.seeded ? editModelDraft.text : prompter.editModel}
-            onChange={text => setEditModelDraft({ text, seeded: true })}
-            placeholder={prompter.visionModel}
-            plain
-            ariaLabel="Model for rewriting a failed edit"
-            className="w-full h-12 rounded-xl bg-white/10 border border-hairline px-3 text-[14px]"
-          />
-        </label>
-        <button
-          type="button"
-          disabled={!editModelDraft.seeded || editModelDraft.text === prompter.editModel}
-          onClick={() => {
-            void setPrompter({ editModel: editModelDraft.text })
-            setEditModelDraft({ text: editModelDraft.text, seeded: true })
-          }}
-          className={`w-full h-11 mt-2 rounded-xl text-sm font-semibold transition ${
-            editModelDraft.seeded && editModelDraft.text !== prompter.editModel
-              ? 'bg-violet-500/80 text-white active:scale-95' : 'bg-white/5 text-white/30'
-          }`}
-        >
-          Save the model
-        </button>
-        <p className="text-[12px] text-white/45 leading-relaxed mt-3 mb-2">
-          Right now <code className="text-white/60">{prompter.editModel}</code> is told this,
-          then shown the picture with the message{' '}
-          <code className="text-violet-300">{prompter.editUserMessage}</code>.
-        </p>
-        <pre className="selectable-text whitespace-pre-wrap break-words text-[11px] leading-relaxed
-                        text-white/60 bg-black/30 border border-hairline rounded-2xl p-3
-                        max-h-72 overflow-y-auto">
-          {prompter.editPreview}
-        </pre>
-      </div>
-
-      {/* Everything above this line is ONE prompt shared by every model — the
-          generalised optimizer. Everything below is per model. Keeping them on
-          the same screen but visibly separated is the whole point: the reason
-          one template can serve every model is that the model-specific text
-          lives down here and is appended for you. */}
-      <div className="border-t border-hairline pt-5">
-        <StyleTextSection styles={styles} />
-      </div>
+        </Card>
+      </Section>
     </div>
   )
 }
@@ -2539,8 +1798,8 @@ function AiBoxTab() {
       </div>
 
       <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Right now</span>
-        <div className="bg-white/5 rounded-2xl px-5 py-4 border border-white/8 space-y-2.5">
+        <span className="set-label mb-2 px-1">Right now</span>
+        <div className="set-card px-5 py-4 space-y-2.5">
           {view.services.map(s => (
             <div key={s.key} className="flex items-baseline gap-3 text-sm">
               <span className="text-white/60 flex-1 min-w-0">{s.label}</span>
@@ -2648,8 +1907,8 @@ function ServerTab() {
 
   const card = (title: string, body: ReactNode, actions?: ReactNode) => (
     <div>
-      <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">{title}</span>
-      <div className="bg-white/5 rounded-2xl px-5 py-4 border border-white/8 space-y-3">
+      <span className="set-label mb-2 px-1">{title}</span>
+      <div className="set-card px-5 py-4 space-y-3">
         {body}
         {actions && <div className="flex flex-wrap gap-2 pt-1">{actions}</div>}
       </div>
@@ -2676,10 +1935,10 @@ function ServerTab() {
           every button below would fail the same way. */}
       {!status && (
         <div>
-          <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          <span className="set-label mb-2 px-1">
             {statusBusy ? 'Asking the server…' : 'Not connected'}
           </span>
-          <div className="bg-white/5 rounded-2xl px-5 py-4 border border-white/8 space-y-3">
+          <div className="set-card px-5 py-4 space-y-3">
             {statusError && <p className="text-amber-200/80 text-sm leading-snug">{statusError}</p>}
             <p className="text-white/50 text-[12px] leading-relaxed">
               The dashboard reaches <span className="text-white/80">{info.target}</span> over SSH with a key
@@ -2895,7 +2154,7 @@ function ServerTab() {
       {(lines.length > 0 || busy) && (
         <div>
           <div className="flex items-baseline justify-between mb-2">
-            <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">
+            <span className="set-label">
               {busy ? `Running: ${info.tasks[running]}` : state.last ? `Last: ${info.tasks[state.last.task]}` : 'Log'}
             </span>
             {state.last && !busy && (
@@ -2962,8 +2221,8 @@ function DeskSensorCard() {
   const [showTest, setShowTest] = useState(false)
   return (
     <div>
-      <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Desk sensor</span>
-      <div className="bg-white/5 rounded-2xl px-5 py-4 border border-white/8 space-y-3">
+      <span className="set-label mb-2 px-1">Desk sensor</span>
+      <div className="set-card px-5 py-4 space-y-3">
         <div className="flex items-center gap-3">
           <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
             !live ? 'bg-white/20' : presence.present ? 'bg-emerald-400' : 'bg-amber-400'}`} />
@@ -3070,7 +2329,7 @@ function PoseHoldCard({ structure, onChange, modes, available }: {
   const chip = (on: boolean, disabled = false) =>
     `flex-1 h-11 rounded-xl text-[13px] font-semibold active:scale-95 border ${
       disabled ? 'bg-white/[0.03] text-white/25 border-transparent line-through'
-      : on ? 'bg-cyan-500/25 text-cyan-100 border-cyan-400/40' : 'bg-white/5 text-white/50 border-transparent'}`
+      : on ? 'bg-cyan-500/20 text-cyan-50 border-cyan-400/45' : 'bg-white/5 text-white/50 border-transparent'}`
   const step = (key: 'strength' | 'end', delta: number, lo: number, hi: number) =>
     onChange({ [key]: Math.round(Math.min(hi, Math.max(lo, structure[key] + delta)) * 100) / 100 } as Partial<StructureSettings>)
   const row = (label: string, value: string, key: 'strength' | 'end', d: number, lo: number, hi: number, hint: string) => (
@@ -3087,26 +2346,19 @@ function PoseHoldCard({ structure, onChange, modes, available }: {
     </div>
   )
   return (
-    <div className={`bg-white/5 rounded-2xl px-4 py-4 border border-white/8 space-y-4 ${available ? '' : 'opacity-60'}`}>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={structure.enabled}
-        onClick={() => void onChange({ enabled: !structure.enabled })}
-        className={`w-full flex items-center gap-3 rounded-xl px-3 py-2.5 border text-left active:scale-[0.99] ${
-          structure.enabled ? 'bg-cyan-500/15 border-cyan-400/40' : 'bg-white/5 border-hairline'}`}
-      >
-        <span className={`w-11 h-6 shrink-0 rounded-full p-0.5 flex transition-colors ${
-          structure.enabled ? 'bg-cyan-400/80 justify-end' : 'bg-white/15 justify-start'}`}>
-          <span className="w-5 h-5 rounded-full bg-white shadow" />
-        </span>
-        <span className="text-[13px] font-semibold text-white/85">
-          {structure.enabled ? 'Held by default on every redraw' : 'Off by default — the Draw panel can still switch it on'}
-        </span>
-      </button>
+    <div className={`set-card p-4 space-y-4 ${available ? '' : 'opacity-60'}`}>
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-white/85 text-sm font-medium">Keep the pose</p>
+          <p className="text-white/40 text-xs mt-1 leading-relaxed">
+            {structure.enabled ? 'On for every redraw unless the Draw panel turns it off.' : 'Off by default; the Draw panel can still switch it on.'}
+          </p>
+        </div>
+        <Switch on={structure.enabled} onChange={enabled => void onChange({ enabled })} label="Keep the pose" />
+      </div>
 
       <div>
-        <div className="text-[11px] uppercase tracking-widest text-white/35 font-semibold mb-1.5">What is held</div>
+        <div className="set-label mb-1.5">What is held</div>
         <div className="flex gap-2">
           {(['lines', 'body', 'pose'] as const).map(m => (
             <button key={m} type="button" disabled={!modes[m]} onClick={() => modes[m] && void onChange({ mode: m })}
@@ -3131,7 +2383,7 @@ function PoseHoldCard({ structure, onChange, modes, available }: {
 
       {structure.mode === 'lines' && (
         <div>
-          <div className="text-[11px] uppercase tracking-widest text-white/35 font-semibold mb-1.5">Line detail</div>
+          <div className="set-label mb-1.5">Line detail</div>
           <div className="flex gap-2">
             {(['fine', 'normal', 'coarse'] as const).map(d => (
               <button key={d} type="button" onClick={() => void onChange({ detail: d })} className={chip(structure.detail === d)}>
@@ -3147,140 +2399,9 @@ function PoseHoldCard({ structure, onChange, modes, available }: {
       )}
       <p className="text-[11px] text-white/30 leading-snug">
         Also worth knowing for swimwear or bare skin: the anime styles' prompt prefixes carry the
-        booru rating tag "safe", which pushes those models away from it. The "Safety tags in
-        prompts" switch above removes it from every style at once.
+        booru rating tag "safe", which pushes those models away from it. The "Safety tags" switch
+        above removes it from every style at once.
       </p>
-    </div>
-  )
-}
-
-interface SystemPrompt {
-  id:    string
-  label: string
-  what:  string
-  model: string
-  text:  string
-  followedBy?: string
-  editable: boolean
-  editIn?:  string
-  note?:    string
-}
-
-/**
- * Every system prompt this app sends, as it stands right now.
- *
- * Four models are given four different sets of instructions before anything is
- * asked of them, and two of them lived only in the source — which is the wrong
- * place for the text that decides what the app says and draws. Composed on the
- * server by the same functions the real requests use, so this cannot drift
- * from what is actually sent.
- *
- * One open by default (the assistant, the one people mean when they ask), the
- * rest collapsed: these run to thousands of characters and a page that opens
- * on all four is a page nobody reads.
- */
-function PromptsTab() {
-  const [data, setData] = useState<{ prompts: SystemPrompt[]; style: { label: string } } | null>(null)
-  const [error, setError] = useState('')
-  const [open, setOpen] = useState<string>('assistant')
-  const [copied, setCopied] = useState('')
-
-  useEffect(() => {
-    let cancelled = false
-    fetch('/api/prompts')
-      .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then(j => { if (!cancelled) setData(j) })
-      .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : 'could not load them') })
-    return () => { cancelled = true }
-  }, [])
-
-  useEffect(() => {
-    if (!copied) return
-    const t = setTimeout(() => setCopied(''), 1600)
-    return () => clearTimeout(t)
-  }, [copied])
-
-  if (error) return <p className="max-w-lg mx-auto py-8 text-center text-sm text-red-300">{error}</p>
-  if (!data) return <p className="max-w-lg mx-auto py-8 text-center text-sm text-white/40">Loading the prompts…</p>
-
-  return (
-    <div className="space-y-4 max-w-lg mx-auto pb-4">
-      <p className="text-[12px] text-white/45 leading-relaxed">
-        Everything each model is told before it is asked anything. Built here by the same code the
-        real requests use, so this is what is actually sent — including the parts that change with
-        the selected style ({data.style.label || 'none'}), what is installed on the image server,
-        and what is in memory.
-      </p>
-
-      {data.prompts.map(p => {
-        const isOpen = open === p.id
-        return (
-          <div key={p.id} className="rounded-2xl bg-white/5 border border-white/8 overflow-hidden">
-            <button
-              type="button"
-              onClick={() => setOpen(isOpen ? '' : p.id)}
-              className="w-full px-4 py-3 flex items-start gap-3 text-left active:bg-white/5"
-            >
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-2">
-                  <span className="text-[14px] font-semibold text-white/90">{p.label}</span>
-                  {p.editable
-                    ? <span className="text-[10px] uppercase tracking-widest text-violet-300/80 font-semibold">editable</span>
-                    : <span className="text-[10px] uppercase tracking-widest text-white/25 font-semibold">read-only</span>}
-                </span>
-                <span className="block text-[12px] text-white/45 leading-snug mt-0.5">{p.what}</span>
-                <span className="block text-[11px] text-white/30 mt-1 tabular-nums">
-                  {p.model || 'the server default'} · {p.text.length.toLocaleString()} characters
-                </span>
-              </span>
-              {isOpen ? <ChevronDown size={16} className="text-white/40 mt-1 shrink-0" />
-                      : <ChevronRight size={16} className="text-white/40 mt-1 shrink-0" />}
-            </button>
-
-            {isOpen && (
-              <div className="px-4 pb-4">
-                <pre className="selectable-text whitespace-pre-wrap break-words text-[11px] leading-relaxed
-                                text-white/60 bg-black/30 border border-hairline rounded-xl p-3
-                                max-h-[26rem] overflow-y-auto">
-                  {p.text}
-                </pre>
-
-                {p.followedBy && (
-                  <div className="mt-2">
-                    <p className="text-[10px] uppercase tracking-widest text-white/30 font-semibold mb-1">
-                      Then, as the user turn
-                    </p>
-                    <pre className="selectable-text whitespace-pre-wrap break-words text-[11px]
-                                    text-white/50 bg-black/30 border border-hairline rounded-xl p-3">
-                      {p.followedBy}
-                    </pre>
-                  </div>
-                )}
-
-                <div className="flex items-center gap-2 mt-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      navigator.clipboard?.writeText(p.text).then(() => setCopied(p.id)).catch(() => setCopied(''))
-                    }}
-                    className="h-10 px-4 rounded-xl bg-white/10 border border-hairline text-white/70
-                               text-[12px] font-semibold active:scale-95"
-                  >
-                    {copied === p.id ? 'Copied' : 'Copy'}
-                  </button>
-                  {p.editable && p.editIn && (
-                    <span className="text-[11px] text-white/35">Edit it in the {p.editIn} tab.</span>
-                  )}
-                </div>
-
-                {p.note && (
-                  <p className="text-[11px] text-white/30 leading-snug mt-2">{p.note}</p>
-                )}
-              </div>
-            )}
-          </div>
-        )
-      })}
     </div>
   )
 }
@@ -3322,7 +2443,7 @@ function MailTab() {
   return (
     <div className="space-y-5 max-w-lg mx-auto pb-4">
       <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+        <span className="set-label mb-2 px-1">
           Gmail on the dashboard
         </span>
         <p className="text-[12px] text-white/45 leading-relaxed">
@@ -3340,7 +2461,7 @@ function MailTab() {
 
       {/* Step one: the Google app. */}
       <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+        <span className="set-label mb-2 px-1">
           1 · Register a Google app {status.configured && <span className="text-emerald-300 normal-case tracking-normal">· done</span>}
         </span>
         <ol className="text-[12px] text-white/45 leading-relaxed space-y-1 mb-3 list-decimal pl-4">
@@ -3402,7 +2523,7 @@ function MailTab() {
 
       {/* Step two: the accounts. */}
       <div className="border-t border-hairline pt-5">
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+        <span className="set-label mb-2 px-1">
           2 · Accounts
         </span>
         {!status.configured ? (
@@ -3483,10 +2604,10 @@ function GuidesTab() {
     <div className="space-y-5 max-w-lg mx-auto pb-4">
       {/* Working now — the answer to "is it doing anything?" without reading a log */}
       <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+        <span className="set-label mb-2 px-1">
           Working now
         </span>
-        <div className="bg-white/5 rounded-2xl px-5 py-4 border border-white/8">
+        <div className="set-card px-5 py-4">
           {working.length === 0 ? (
             <p className="text-white/25 text-sm">
               Nothing being generated. Guides are built from the Watch/Play list, or by asking out loud.
@@ -3510,10 +2631,10 @@ function GuidesTab() {
 
       {/* Every guide on disk, with its state */}
       <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+        <span className="set-label mb-2 px-1">
           Guides {guides.length > 0 && <span className="text-white/25 normal-case">· {guides.length}</span>}
         </span>
-        <div className="bg-white/5 rounded-2xl px-5 py-2 border border-white/8">
+        <div className="set-card px-5 py-2">
           {guides.length === 0 ? (
             <p className="text-white/25 text-sm py-4">No guides yet.</p>
           ) : guides.map(g => {
@@ -3545,7 +2666,7 @@ function GuidesTab() {
       {/* The feed */}
       <div>
         <div className="flex items-baseline justify-between mb-2">
-          <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">
+          <span className="set-label">
             Activity {shown.length > 0 && <span className="text-white/25 normal-case">· {shown.length}</span>}
           </span>
           {only && (
@@ -3553,7 +2674,7 @@ function GuidesTab() {
               className="text-cyan-300/70 text-xs active:text-cyan-200">show all</button>
           )}
         </div>
-        <div className="bg-white/5 rounded-2xl px-5 py-2 border border-white/8">
+        <div className="set-card px-5 py-2">
           {!live ? (
             <p className="text-white/25 text-sm py-4">Loading…</p>
           ) : shown.length === 0 ? (
@@ -3725,10 +2846,10 @@ function MemorySection({
 }) {
   return (
     <div>
-      <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+      <span className="set-label mb-2 px-1">
         {title} {items.length > 0 && <span className="text-white/25 normal-case">· {items.length}</span>}
       </span>
-      <div className="bg-white/5 rounded-2xl px-5 py-2 border border-white/8">
+      <div className="set-card px-5 py-2">
         {hint && <p className="text-white/30 text-xs pt-3 pb-1 leading-relaxed">{hint}</p>}
         {items.length === 0
           ? <p className="text-white/25 text-sm py-4">{empty}</p>
@@ -3769,10 +2890,10 @@ function MemoryTab() {
 
       {/* Current conversation window */}
       <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+        <span className="set-label mb-2 px-1">
           Last conversation
         </span>
-        <div className="bg-white/5 rounded-2xl p-5 border border-white/8">
+        <div className="set-card p-5">
           {session ? (
             <>
               <p className="text-white/80 text-sm leading-snug">
@@ -3812,10 +2933,10 @@ function MemoryTab() {
       {/* Facts, by topic. Tap a line to correct it, the pin to keep it, the
           topic chip to re-file it. */}
       <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+        <span className="set-label mb-2 px-1">
           Facts {facts.length > 0 && <span className="text-white/25 normal-case">· {facts.length}</span>}
         </span>
-        <div className="bg-white/5 rounded-2xl px-5 py-2 border border-white/8">
+        <div className="set-card px-5 py-2">
           {grouped.length === 0 && <p className="text-white/25 text-sm py-4">Nothing saved yet.</p>}
           {grouped.map(g => (
             <div key={g.topic} className="pt-3">
@@ -3830,10 +2951,10 @@ function MemoryTab() {
       </div>
 
       <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+        <span className="set-label mb-2 px-1">
           Preferences {preferences.length > 0 && <span className="text-white/25 normal-case">· {preferences.length}</span>}
         </span>
-        <div className="bg-white/5 rounded-2xl px-5 py-2 border border-white/8">
+        <div className="set-card px-5 py-2">
           <p className="text-white/30 text-xs pt-3 pb-1 leading-relaxed">
             How you like answers shaped. She learns these from what you ask for, and offers
             them rather than assuming — you always get the chance to say no.
@@ -3983,7 +3104,7 @@ function NotionConnections({ conns, error, onChanged, setConns }: {
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Teams</span>
+        <span className="set-label">Teams</span>
         <button
           type="button"
           onClick={onChanged}
@@ -4204,8 +3325,8 @@ function WhoYouAre({ conns }: { conns: NotionConnection[] }) {
 
   return (
     <div>
-      <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Who you are</span>
-      <div className="bg-white/5 rounded-2xl border border-white/8 p-4 space-y-3">
+      <span className="set-label mb-2 px-1">Who you are</span>
+      <div className="set-card p-4 space-y-3">
         <p className="text-[12px] text-white/45 leading-relaxed">
           Pick yourself once and My work puts your tasks first on every team's boards, the Calendar can show
           only yours, and a new task is assigned to you. Boards with no assignee field count as yours.
@@ -4324,7 +3445,7 @@ function NotionTab() {
     return (
       <div className="space-y-6 max-w-lg mx-auto pb-4">
         <div>
-          <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Notion</span>
+          <span className="set-label mb-2 px-1">Notion</span>
           <p className="text-[12px] text-white/45 leading-relaxed">
             No Notion workspace is connected yet. Connect one below with an integration token,
             and its boards appear here. (A token in the dashboard's .env as{' '}
@@ -4346,7 +3467,7 @@ function NotionTab() {
   return (
     <div className="space-y-6 max-w-lg mx-auto pb-4">
       <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Notion</span>
+        <span className="set-label mb-2 px-1">Notion</span>
         <p className="text-[12px] text-white/45 leading-relaxed">
           The work corner shows every team's boards at once: to-do boards feed My work, calendar boards
           feed the Calendar, and a new task, typed or spoken, goes to the board marked with the star.
@@ -4366,7 +3487,7 @@ function NotionTab() {
       {/* The boards in effect, by team, in the order that decides where a new task goes. */}
       <div>
         <div className="flex items-center justify-between mb-2">
-          <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Boards</span>
+          <span className="set-label">Boards</span>
           <button
             type="button"
             onClick={reloadAll}
@@ -4415,7 +3536,7 @@ function NotionTab() {
 
       {/* Boards that could be added: the rest of the workspaces, then a link. */}
       <div>
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Add a board</span>
+        <span className="set-label mb-2 px-1">Add a board</span>
         {wsError && <p className="text-[12px] text-amber-300/80 mb-2">Could not list the workspaces: {wsError}</p>}
         {workspace === null && !wsError && <p className="text-white/40 text-sm py-1">Looking through the workspaces…</p>}
         {workspace !== null && candidates.length === 0 && !wsError && (
@@ -4475,7 +3596,7 @@ function NotionTab() {
       {/* Hidden boards: kept out even when discovery would bring them back. */}
       {boards.hidden.length > 0 && (
         <div>
-          <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Hidden boards</span>
+          <span className="set-label mb-2 px-1">Hidden boards</span>
           <div className="flex flex-col gap-1.5">
             {boards.hidden.map(h => (
               <div key={h.id} className="flex items-center gap-3 px-3 py-2 rounded-xl bg-white/[0.03]">
@@ -4921,7 +4042,7 @@ function DebugTab() {
           "which build is this?" is the first thing you need when something on
           screen doesn't match the code you just pushed. */}
       <div className="flex items-center justify-between mb-2">
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Version</span>
+        <span className="set-label">Version</span>
         <button
           onClick={() => { void loadVersion(); void checkUpdate(true) }}
           disabled={update.state === 'checking'}
@@ -4930,7 +4051,7 @@ function DebugTab() {
           <RotateCw size={13} className={update.state === 'checking' ? 'animate-spin' : ''} /> Check
         </button>
       </div>
-      <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden divide-y divide-white/8">
+      <div className="set-card overflow-hidden divide-y divide-white/8">
         <div className={rowClass}>
           <span className="text-sm text-white/70">Running build</span>
           <span className="text-sm text-white/60 text-right">
@@ -4987,8 +4108,8 @@ function DebugTab() {
       </div>
 
       {/* ── Server configuration ── */}
-      <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">Server configuration</span>
-      <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden divide-y divide-white/8">
+      <span className="set-label mb-2 px-1">Server configuration</span>
+      <div className="set-card overflow-hidden divide-y divide-white/8">
         {serverErr && (
           <p className="px-5 py-4 text-sm text-red-400">{serverErr}</p>
         )}
@@ -5038,7 +4159,7 @@ function DebugTab() {
 
       {/* ── Endpoint checks ── */}
       <div className="flex items-center justify-between mt-6 mb-2">
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Connection checks</span>
+        <span className="set-label">Connection checks</span>
         <button
           onClick={() => { void loadServer(); void runChecks() }}
           disabled={checking}
@@ -5047,7 +4168,7 @@ function DebugTab() {
           <RotateCw size={13} className={checking ? 'animate-spin' : ''} /> Re-run
         </button>
       </div>
-      <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden divide-y divide-white/8">
+      <div className="set-card overflow-hidden divide-y divide-white/8">
         {CHECK_LABELS.map(ep => {
           const result = checks[ep.id]
           return (
@@ -5090,14 +4211,14 @@ function DebugTab() {
 
       {/* ── Voices (TTS) ── */}
       <div className="flex items-center justify-between mt-6 mb-2">
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Voices (TTS)</span>
+        <span className="set-label">Voices (TTS)</span>
         <button onClick={() => void testVoices()} disabled={testingVoices}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-500/20 text-blue-300 text-xs font-medium active:bg-blue-500/35 disabled:opacity-50">
           <Volume2 size={13} className={testingVoices ? 'animate-pulse' : ''} /> {testingVoices ? 'Testing…' : 'Test voices'}
         </button>
       </div>
       {(testingVoices || Object.keys(voices).length > 0) ? (
-        <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden divide-y divide-white/8">
+        <div className="set-card overflow-hidden divide-y divide-white/8">
           {ASSISTANT_ORDER.map(id => {
             const result = voices[id]
             return (
@@ -5127,14 +4248,14 @@ function DebugTab() {
           })}
         </div>
       ) : (
-        <p className="text-white/30 text-xs leading-relaxed bg-white/5 rounded-2xl border border-white/8 px-5 py-4">
+        <p className="set-card text-white/30 text-xs leading-relaxed px-5 py-4">
           Synthesizes a one-word clip for each assistant to check its voice. Reveals TTS errors — e.g. an ElevenLabs voice that isn't available to this server's account.
         </p>
       )}
 
       {/* ── Client environment ── */}
-      <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mt-6 mb-2">This screen</span>
-      <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden divide-y divide-white/8">
+      <span className="set-label mt-6 mb-2 px-1">This screen</span>
+      <div className="set-card overflow-hidden divide-y divide-white/8">
         <div className={rowClass}>
           <span className="text-sm text-white/70">Secure context (mic/camera)</span>
           <BoolChip ok={window.isSecureContext} />
@@ -5159,7 +4280,7 @@ function DebugTab() {
 
       {/* ── Runtime errors ── */}
       <div className="flex items-center justify-between mt-6 mb-2">
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Runtime errors ({errors.length})</span>
+        <span className="set-label">Runtime errors ({errors.length})</span>
         {errors.length > 0 && (
           <button onClick={clearDebugLog}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 text-white/60 text-xs font-medium active:bg-white/20">
@@ -5167,7 +4288,7 @@ function DebugTab() {
           </button>
         )}
       </div>
-      <div className="bg-white/5 rounded-2xl border border-white/8 overflow-hidden divide-y divide-white/8 max-h-64 overflow-y-auto">
+      <div className="set-card overflow-hidden divide-y divide-white/8 max-h-64 overflow-y-auto">
         {errors.length === 0 && (
           <p className="px-5 py-4 text-sm text-white/35">No errors captured since load.</p>
         )}
@@ -5336,89 +4457,61 @@ function FidelityCard() {
   }
 
   return (
-    <div>
-      <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
-        Characters look like the series
-      </span>
-      <p className="text-[12px] text-white/45 leading-relaxed mb-3">
-        On the Anima styles a named character is meant to come out as in its own series. The
-        improver is told so in a short guide: the Danbooru character tag with the series tag after
-        it, no guessed hair or eye colours, the signature outfit unless the scene says otherwise.
-        The three levers below are added by the dashboard itself, whether or not the improver is on.
-      </p>
-      <div className="flex flex-col gap-2">
-        <button
-          type="button"
-          role="switch"
-          aria-checked={f?.creator !== false}
-          disabled={!f}
-          onClick={() => { if (f) void save({ creator: !f.creator }) }}
-          className={`w-full flex items-center gap-3 rounded-2xl px-3 py-3 border text-left transition-colors
-                      active:scale-[0.99] disabled:opacity-50 ${
-            f?.creator !== false ? 'bg-violet-500/15 border-violet-400/40' : 'bg-white/5 border-hairline'}`}
-        >
-          <span className={`w-11 h-6 shrink-0 rounded-full p-0.5 flex transition-colors ${
-            f?.creator !== false ? 'bg-violet-400/80 justify-end' : 'bg-white/15 justify-start'}`}>
-            <span className="w-5 h-5 rounded-full bg-white shadow" />
-          </span>
-          <span className="min-w-0">
-            <span className="block text-[13px] font-semibold text-white/85">
-              {!f ? 'Loading…' : f.creator ? "The series' creator as an @artist tag" : 'No creator tag'}
-            </span>
-            <span className="block text-[11px] text-white/40 leading-snug">
-              "@masashi kishimoto" after "naruto", for the series the dashboard knows. Skipped when
-              the prompt already carries any @ tag of your own.
-            </span>
-          </span>
-        </button>
+    <Section
+      title="Named characters (Anima styles)"
+      description="A named character should come out as in its own series. These are added by the dashboard itself, whether or not Improve my prompt is on."
+    >
+      <SwitchRow
+        title="Add the series' creator as an @artist tag"
+        description={'"@masashi kishimoto" after "naruto", for the series the dashboard knows. Skipped when the prompt already has an @ tag of your own.'}
+        on={f?.creator !== false}
+        disabled={!f}
+        onChange={creator => { void save({ creator }) }}
+      />
 
-        <div className="rounded-2xl bg-white/5 border border-hairline px-3 py-3">
-          <span className="block text-[12px] font-semibold text-white/70 mb-2">Meta tag on every Anima prompt</span>
-          <div className="flex flex-wrap gap-2">
-            {META_CHOICES.map(c => (
-              <button
-                key={c.value || 'none'}
-                type="button"
-                disabled={!f}
-                onClick={() => void save({ meta: c.value })}
-                className={`h-10 px-3 rounded-xl text-[12px] font-semibold border transition-colors ${
-                  f?.meta === c.value ? 'bg-violet-500/25 text-white border-violet-400/40' : 'bg-white/5 text-white/50 border-transparent'}`}
-                title={c.what}
-              >
-                {c.label}
-              </button>
-            ))}
-          </div>
-          <p className="text-[11px] text-white/40 mt-2 leading-snug">
-            {META_CHOICES.find(c => c.value === f?.meta)?.what ?? ''}. Shown as the style's booster below; a booster you typed there wins.
-          </p>
+      <Card className="p-4 space-y-2.5">
+        <p className="text-white/85 text-sm font-medium">Meta tag on every Anima prompt</p>
+        <div className="flex flex-wrap gap-2">
+          {META_CHOICES.map(c => (
+            <button
+              key={c.value || 'none'}
+              type="button"
+              disabled={!f}
+              onClick={() => void save({ meta: c.value })}
+              className={btn.chip(f?.meta === c.value)}
+              title={c.what}
+            >
+              {c.label}
+            </button>
+          ))}
         </div>
+        <Hint>
+          {(META_CHOICES.find(c => c.value === f?.meta)?.what ?? '')}. It is the style's after-prompt text unless
+          you have typed your own under Prompts.
+        </Hint>
+      </Card>
 
-        <div className="rounded-2xl bg-white/5 border border-hairline px-3 py-3">
-          <span className="block text-[12px] font-semibold text-white/70 mb-2">Your own tags for named characters</span>
+      <Card className="p-4 space-y-2.5">
+        <p className="text-white/85 text-sm font-medium">Your own tags for named characters</p>
+        <div className="flex items-center gap-2">
           <TouchInput
             value={extra}
             onChange={setExtra}
             placeholder="e.g. anime coloring, detailed face"
             ariaLabel="Extra tags for named characters"
-            className="w-full h-11 rounded-xl bg-white/10 border border-hairline px-3 text-[14px]"
+            className="flex-1 min-w-0 h-11 rounded-xl bg-white/10 border border-hairline px-3 text-[14px]"
           />
-          <div className="flex items-center gap-2 mt-2">
-            <button
-              type="button"
-              disabled={!f || extra === (f.extra ?? '')}
-              onClick={() => void save({ extra })}
-              className="h-10 px-4 rounded-xl bg-violet-500/25 border border-violet-400/40 text-white text-[12px]
-                         font-semibold active:scale-95 disabled:opacity-40"
-            >
-              Save
-            </button>
-            <span className="text-[11px] text-white/40 leading-snug">
-              Added after a known series tag, never twice. Leave empty to add nothing.
-            </span>
-          </div>
+          <button
+            type="button"
+            disabled={!f || extra === (f.extra ?? '')}
+            onClick={() => void save({ extra })}
+            className={btn.primary}
+          >
+            Save
+          </button>
         </div>
-      </div>
-    </div>
+        <Hint>Added after a known series tag, never twice. Leave empty to add nothing.</Hint>
+      </Card>
+    </Section>
   )
 }

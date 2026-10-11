@@ -1,4 +1,4 @@
-// Formatting and the period table the App Store corner and Settings → Apps
+// Formatting and the period table the App Store corner and Settings → App Store
 // share. Kept apart from the components in parts.tsx so that file exports
 // components only (React's fast refresh wants it that way).
 

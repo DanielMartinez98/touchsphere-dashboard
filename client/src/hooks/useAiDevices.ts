@@ -1,4 +1,4 @@
-// Settings → Devices: which machine does each piece of AI work.
+// Settings → AI devices: which machine does each piece of AI work.
 //
 // Five services (the language model, pictures, voice out, voice in, Miku's
 // conversion), each resolved on the server to a URL — the device chosen here,

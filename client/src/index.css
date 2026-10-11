@@ -248,3 +248,24 @@
   padding-bottom: var(--ts-keyboard-h, 0px);
   transition: padding-bottom 120ms ease-out;
 }
+
+/* Settings — the two looks every tab shares (components/settings/ui.tsx).
+   Classes rather than repeated utility strings so a section title or a card is
+   one thing to change, and so tabs written before the shared components (and
+   the ones in their own files) can opt in by class name alone. */
+@layer components {
+  .set-label {
+    display: block;
+    color: rgb(255 255 255 / 0.5);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .set-card {
+    border-radius: 1rem;
+    background: linear-gradient(180deg, rgb(255 255 255 / 0.065), rgb(255 255 255 / 0.035));
+    border: 1px solid rgb(255 255 255 / 0.09);
+    box-shadow: 0 1px 0 rgb(255 255 255 / 0.04) inset;
+  }
+}

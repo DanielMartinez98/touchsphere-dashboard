@@ -123,7 +123,7 @@ sweepInterrupted()
 startPlexWatch()
 // Which GPU box the local AI goes to (Settings → AI box). No-op without AI_BOXES.
 startAiBoxProbe()
-// App Store Connect, hourly: a no-op until a key is saved in Settings → Apps.
+// App Store Connect, hourly: a no-op until a key is saved in Settings → App Store.
 startAppStoreSync()
 
 // Fail fast if the required API key is missing
@@ -253,10 +253,10 @@ app.use('/api/presence', dataLimiter, presenceRouter)
 // like /api/system: every answer is in memory, a check shares one probe run, and
 // the 60/min data budget is easily spent by the corners while this tab is open.
 app.use('/api/ai-box', aiBoxRouter)
-// Settings → Devices: which machine does each AI service. Its own small store;
+// Settings → AI devices: which machine does each AI service. Its own small store;
 // layered over the AI box (see ai-devices.ts).
 app.use('/api/ai-devices', dataLimiter, aiDevicesRouter)
-// Settings → Apps: the user's own apps on the App Store (see app-store.ts).
+// Settings → App Store: the user's own apps on the App Store (see app-store.ts).
 // Always mounted — the key is pasted into the tab, so there is no env var to
 // gate on; it answers `configured: false` until then.
 app.use('/api/app-store', dataLimiter, appStoreRouter)

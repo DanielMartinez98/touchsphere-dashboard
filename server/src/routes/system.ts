@@ -376,7 +376,7 @@ router.get('/debug', (_req: Request, res: Response) => {
       : 'ELEVENLABS_API_KEY is set but malformed — ElevenLabs keys start with "sk_". Voice input (STT) will fail on every utterance; TTS falls back to espeak-ng.')
   }
   if (sttProviders().length === 0) {
-    warnings.push('No speech-to-text provider is configured — pick a voice-in machine under Settings → Devices, set WHISPER_URL (local Whisper, the `whisper` compose service), or set ELEVENLABS_API_KEY. Voice input is disabled until then.')
+    warnings.push('No speech-to-text provider is configured — pick a voice-in machine under Settings → AI devices, set WHISPER_URL (local Whisper, the `whisper` compose service), or set ELEVENLABS_API_KEY. Voice input is disabled until then.')
   }
 
   res.json({
@@ -403,7 +403,7 @@ router.get('/debug', (_req: Request, res: Response) => {
       IGDB_CREDENTIALS:    !!(env['IGDB_CLIENT_ID'] && env['IGDB_CLIENT_SECRET']),
       // The local AI services. Each is "set" when a URL points at it; whether
       // it answers is what the connection checks below are for.
-      // "Set" from a machine picked under Settings → Devices or from the env var.
+      // "Set" from a machine picked under Settings → AI devices or from the env var.
       WHISPER_URL:         !!serviceUrl('stt'),
       KOKORO_URL:          !!serviceUrl('tts'),
       RVC_URL:             !!serviceUrl('rvc'),
@@ -429,7 +429,7 @@ router.get('/debug', (_req: Request, res: Response) => {
     // Where each box-bound service is going right now (Settings → AI box).
     aiBox: aiBoxesEnabled() ? aiBoxView() : null,
     // Which machine each AI service is on and how that was decided: a device
-    // picked under Settings → Devices, else the env var (through the AI box).
+    // picked under Settings → AI devices, else the env var (through the AI box).
     devices: resolveAll().map(r => ({ id: r.id, label: r.label, url: r.url, source: r.source, device: r.device?.name ?? null, box: r.box ?? null })),
   })
 })

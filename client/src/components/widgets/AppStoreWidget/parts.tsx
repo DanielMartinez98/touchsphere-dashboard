@@ -1,4 +1,4 @@
-// The pieces the App Store corner and the Settings → Apps tab share on
+// The pieces the App Store corner and the Settings → App Store tab share on
 // screen: the stat tile and the two small charts.
 //
 // One series, one mark, no legend: every chart here is a single measure of

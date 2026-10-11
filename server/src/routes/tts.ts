@@ -53,7 +53,7 @@ const EL_MODEL_ID = process.env['ELEVENLABS_MODEL_ID'] ?? 'eleven_turbo_v2_5'
 // pipeline: Kokoro speaks the words, then RVC converts that audio into Miku.
 // Free, offline, no API key, no per-word billing.
 // Resolved per call (ai-devices.ts): the machine picked for Miku's voice under
-// Settings → Devices, else RVC_URL through the AI box.
+// Settings → AI devices, else RVC_URL through the AI box.
 const rvcUrl = (): string => serviceUrl('rvc')
 // Conversion is much slower than plain synthesis (it's a second model pass over
 // the audio, on CPU), so it gets its own, longer budget.
@@ -112,7 +112,7 @@ const RVC_PROTECT = Number(process.env['RVC_PROTECT'] ?? 0.33)
 // there for voices Kokoro can't do (Miku) or when it isn't deployed.
 // It speaks the OpenAI /v1/audio/speech dialect.
 // Resolved per call (ai-devices.ts): the machine picked for voice out under
-// Settings → Devices, else KOKORO_URL through the AI box.
+// Settings → AI devices, else KOKORO_URL through the AI box.
 const kokoroUrl = (): string => serviceUrl('tts')
 
 type Provider = 'rvc' | 'kokoro' | 'elevenlabs' | 'espeak'

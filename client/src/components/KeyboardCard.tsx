@@ -26,7 +26,7 @@ export function KeyboardCard() {
     <div className="rounded-2xl bg-white/5 border border-hairline p-4 space-y-3">
       <div className="flex items-center gap-2">
         <Keyboard size={16} className="text-white/50" />
-        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Typing on this device</span>
+        <span className="set-label">Typing on this device</span>
       </div>
       <p className="text-[12px] text-white/50 leading-relaxed">
         Text is typed with {words(mode)}. Automatic picks {words(guess)} here because this looks

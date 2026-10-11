@@ -31,7 +31,7 @@ export function AppStoreCollapsed({ view, error }: Props) {
           ? <span className="text-sm text-ink-dim leading-tight">Server offline</span>
           : <span className="w-4 h-4 rounded-full border-2 border-white/20 border-t-indigo-400 animate-spin" />
       ) : !view.configured ? (
-        <span className="text-sm text-ink-dim leading-tight">Set up in Settings → Apps</span>
+        <span className="text-sm text-ink-dim leading-tight">Set up in Settings → App Store</span>
       ) : view.apps.length === 0 ? (
         <span className="text-sm text-ink-dim leading-tight">{view.syncing || !view.lastRun ? 'Reading from Apple…' : 'No apps yet'}</span>
       ) : (

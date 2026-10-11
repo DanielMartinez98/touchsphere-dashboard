@@ -40,7 +40,7 @@ const router = Router()
 
 // ── Config ───────────────────────────────────────────────────────────────────
 // The transcriber's URL is whisperUrl() below, resolved per call (ai-devices.ts):
-// a machine picked for voice in under Settings → Devices, else WHISPER_URL
+// a machine picked for voice in under Settings → AI devices, else WHISPER_URL
 // through the AI box.
 // The `model` field of the request. speaches and faster-whisper-server take a
 // Hugging Face repo id and download it on first use; whisper.cpp ignores the
@@ -78,7 +78,7 @@ export function sttProviders(): SttProvider[] {
 /** One line for the startup log and the Debug tab: "whisper (local) → elevenlabs". */
 export function sttSummary(): string {
   const chain = sttProviders()
-  if (chain.length === 0) return 'none — pick a voice-in machine under Settings → Devices, set WHISPER_URL, or set ELEVENLABS_API_KEY'
+  if (chain.length === 0) return 'none — pick a voice-in machine under Settings → AI devices, set WHISPER_URL, or set ELEVENLABS_API_KEY'
   return chain.map(p => p === 'whisper' ? `whisper (local, ${whisperUrl()})` : 'elevenlabs (cloud)').join(' → ')
     + (FORCED ? ` (pinned by STT_PROVIDER=${FORCED})` : '')
 }
@@ -231,7 +231,7 @@ router.post('/', upload.single('audio'), async (req, res) => {
   const chain = sttProviders()
   if (chain.length === 0) {
     return res.status(500).json({
-      error: 'no speech-to-text provider configured — pick a voice-in machine under Settings → Devices, set WHISPER_URL (local Whisper), or set ELEVENLABS_API_KEY',
+      error: 'no speech-to-text provider configured — pick a voice-in machine under Settings → AI devices, set WHISPER_URL (local Whisper), or set ELEVENLABS_API_KEY',
     })
   }
   if (!req.file) {

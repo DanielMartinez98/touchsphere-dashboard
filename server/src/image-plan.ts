@@ -38,6 +38,7 @@ import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
 import { ollamaUrlSettled } from './ai-devices'
+import { readOverrides, fillTemplate } from './prompt-overrides'
 
 // The planner is a picture-side call: same box as the improver and the vision
 // composer (see image-prompt.ts for why that is not the chat's URL).
@@ -190,18 +191,14 @@ async function availableTools(): Promise<{ tools: PlanMode[]; editor: string; st
   return { tools, editor, styles }
 }
 
-function plannerSystem(tools: PlanMode[], styles: DrawStyle[]): string {
-  const lines: string[] = []
-  lines.push(
-    'You plan edits to a picture for an image pipeline. You are shown the picture and told what the ' +
-    'user wants changed. Your job is the BEST RESULT, and that comes from small, precise steps: a ' +
-    'tool asked for one thing does it well, a tool asked for three does one of them. So first list ' +
-    'the atomic changes the request implies — even a single sentence usually implies several — then ' +
-    'write one or more steps per change. Each step is done by ONE tool and works on the previous ' +
-    'step\'s result.',
-    '',
-    'Tools available on this machine:',
-  )
+/**
+ * The structural half of the planner's prompt, filled into its template on
+ * every request: what this machine can do, which styles exist, and the JSON
+ * contract the answer is parsed against. Kept out of the editable wording
+ * (Settings → Prompts) so an edit can never lose them — see prompt-overrides.ts.
+ */
+function plannerParts(tools: PlanMode[], styles: DrawStyle[]): Record<string, string> {
+  const lines: string[] = ['Tools available on this machine:']
   if (tools.includes('edit')) {
     lines.push(
       '- "edit": an instruction edit (FLUX Kontext). Best for changes that alter shapes, add or remove ' +
@@ -231,6 +228,8 @@ function plannerSystem(tools: PlanMode[], styles: DrawStyle[]): string {
     'Rarely the best choice; use it only for a global restyle when "edit" is not available.',
     '',
   )
+  const toolList = lines.join('\n').trim()
+  lines.length = 0
   if (styles.length > 0 && (tools.includes('part') || tools.includes('whole'))) {
     lines.push(
       'Drawing styles for "part" and "whole" steps — set "style" to one id per such step, MATCHING THE ' +
@@ -246,7 +245,36 @@ function plannerSystem(tools: PlanMode[], styles: DrawStyle[]): string {
       '',
     )
   }
-  lines.push(
+  const styleList = lines.join('\n').trim()
+  return {
+    tools: toolList,
+    styles: styleList,
+    answer: [
+    'Answer with ONLY this JSON, no prose. List the atomic changes FIRST, then the steps:',
+    '{"changes":["one atomic change","another"],"summary":"one sentence of what you will do",' +
+    '"steps":[{"mode":"edit|part|whole","prompt":"...","region":"only for part",' +
+    '"strength":"light|balanced|strong","style":"a drawing style id, part/whole only","keepPose":true,"hold":"lines|body|pose","why":"one short reason"}]}',
+    ].join('\n'),
+  }
+}
+
+/**
+ * The built-in wording, for the tools this machine has (some advice differs
+ * with whether "part" exists). Reset in Settings → Prompts goes back to this.
+ */
+export function defaultPlannerTemplate(tools: PlanMode[]): string {
+  return [
+    'You plan edits to a picture for an image pipeline. You are shown the picture and told what the ' +
+    'user wants changed. Your job is the BEST RESULT, and that comes from small, precise steps: a ' +
+    'tool asked for one thing does it well, a tool asked for three does one of them. So first list ' +
+    'the atomic changes the request implies — even a single sentence usually implies several — then ' +
+    'write one or more steps per change. Each step is done by ONE tool and works on the previous ' +
+    'step\'s result.',
+    '',
+    '{{tools}}',
+    '',
+    '{{styles}}',
+    '',
     'How to write "edit" prompts (these go to Kontext verbatim, so this decides the result):',
     '- Name the subject explicitly — "the woman with orange hair", never "her" or "it".',
     '- State the RESULT, concretely: "The woman with orange hair now wears an open pink zip-up jacket over ' +
@@ -304,12 +332,13 @@ function plannerSystem(tools: PlanMode[], styles: DrawStyle[]): string {
     '- Name things as they actually appear in THIS picture (say "the man\'s jacket" only if there is one).',
     '- Prompts are in English, short and concrete.',
     '',
-    'Answer with ONLY this JSON, no prose. List the atomic changes FIRST, then the steps:',
-    '{"changes":["one atomic change","another"],"summary":"one sentence of what you will do",' +
-    '"steps":[{"mode":"edit|part|whole","prompt":"...","region":"only for part",' +
-    '"strength":"light|balanced|strong","style":"a drawing style id, part/whole only","keepPose":true,"hold":"lines|body|pose","why":"one short reason"}]}',
-  )
-  return lines.join('\n')
+    '{{answer}}',
+  ].join('\n')
+}
+
+function plannerSystem(tools: PlanMode[], styles: DrawStyle[]): string {
+  const template = readOverrides().planner ?? defaultPlannerTemplate(tools)
+  return fillTemplate(template, plannerParts(tools, styles)).replace(/\n{3,}/g, '\n\n')
 }
 
 function unwrapJson(raw: string): string {
@@ -633,4 +662,10 @@ async function execute(plan: EditPlan, editor: string): Promise<void> {
   plan.currentJobId = ''
   console.log(`[image-plan] ${plan.id} done → ${plan.resultId}`)
   push(plan)
+}
+
+/** The planner's built-in wording for this machine, for Settings → Prompts' Reset. */
+export async function plannerDefaultTemplate(): Promise<string> {
+  const { tools } = await availableTools()
+  return defaultPlannerTemplate(tools)
 }

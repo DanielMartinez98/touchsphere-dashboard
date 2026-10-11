@@ -1,6 +1,6 @@
 // The Apps panel: how each app is doing on the App Store, in detail.
 //
-// The corner is where the numbers live (Settings → Apps keeps only the key).
+// The corner is where the numbers live (Settings → App Store keeps only the key).
 // With several apps it opens on a card per app — the four numbers and the
 // month's downloads — and a tap on one goes to that app's page: the tiles
 // with their change against the stretch before, the month as bars and lines,
@@ -264,7 +264,7 @@ export default function AppStoreExpanded({ view, error, busy, onSync }: Props) {
       <div className="flex flex-col h-full items-center justify-center gap-3 px-8 text-center pt-16">
         <p className="text-white text-lg font-semibold">App Store Connect is not set up</p>
         <p className="text-white/50 text-sm leading-relaxed max-w-sm">
-          Settings → Apps takes the API key from App Store Connect. Once it is in, this corner shows each app&apos;s
+          Settings → App Store takes the API key from App Store Connect. Once it is in, this corner shows each app&apos;s
           downloads, earnings and impressions, and the assistant answers “how are my apps doing”.
         </p>
       </div>
