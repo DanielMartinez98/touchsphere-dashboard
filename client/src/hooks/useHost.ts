@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { onServerEvent } from './useServerEvents'
+import type { SelfUpdateLog } from './useUpdateCheck'
 
 export type HostTask =
   | 'apt-refresh' | 'apt-upgrade' | 'firmware-check' | 'firmware-update'
@@ -52,7 +53,7 @@ export interface HostStatus {
   containers?: { docker: string; projects: { file: string; name: string; running: number; total: number; services: { name: string; state: string; image: string }[] }[] }
   // fetchedAt: when the host last fetched the checkout's remote, which is all
   // `behind` can know — absent from a host script older than the field.
-  dashboard?: { dir: string; commit: string; behind: number | null; fetchedAt?: string; lastSelfUpdate: string }
+  dashboard?: { dir: string; commit: string; behind: number | null; fetchedAt?: string; lastSelfUpdate: string; selfUpdate?: SelfUpdateLog }
   /** The calendar app's checkout on the same box. Absent from a host script that predates it. */
   calendar?: {
     dir: string; present: boolean; git: boolean; commit: string; behind: number | null; fetchedAt?: string
