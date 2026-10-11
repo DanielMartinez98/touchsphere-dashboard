@@ -95,6 +95,27 @@ def run(cmd, timeout=30):
 def iso(ts):
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(ts))
 
+def fetch(who, repo):
+    # `behind` can only count what has been fetched, and nothing else on this
+    # box fetches — so a checkout read "up to date with the last fetch" after
+    # every merge until something pulled. At most once a minute, a few seconds
+    # at most, and never a password prompt: a remote that needs a credential
+    # this user lacks just stays as stale as it was. Returns when the remote was
+    # last fetched, which is what "up to date" is as of.
+    code, so, _ = run(['sudo', '-u', who, 'git', '-C', repo, 'rev-parse', '--git-path', 'FETCH_HEAD'], 10)
+    head = os.path.join(repo, so.strip()) if code == 0 and so.strip() else ''
+    try:
+        fresh = bool(head) and time.time() - os.path.getmtime(head) < 60
+    except OSError:
+        fresh = False
+    if not fresh:
+        run(['sudo', '-u', who, 'env', 'GIT_TERMINAL_PROMPT=0', 'GIT_SSH_COMMAND=ssh -o BatchMode=yes',
+             'git', '-C', repo, 'fetch', '--quiet'], 8)
+    try:
+        return iso(os.path.getmtime(head)) if head else ''
+    except OSError:
+        return ''
+
 out = {'at': iso(time.time())}
 
 # ── the box ──
@@ -231,8 +252,10 @@ if d['dir'] and os.environ.get('DASHBOARD_USER'):
     who = os.environ['DASHBOARD_USER']
     code, so, _ = run(['sudo', '-u', who, 'git', '-C', d['dir'], 'rev-parse', '--short', 'HEAD'], 15)
     d['commit'] = so.strip() if code == 0 else ''
-    # How far behind origin/main the checkout is, from what was last fetched —
-    # no network here, the status has to come back fast.
+    # How far behind origin/main the checkout is, after a fetch bounded so the
+    # status still comes back fast.
+    if d['commit']:
+        d['fetchedAt'] = fetch(who, d['dir'])
     code, so, _ = run(['sudo', '-u', who, 'git', '-C', d['dir'], 'rev-list', '--count', 'HEAD..@{upstream}'], 15)
     if code == 0 and so.strip().isdigit():
         d['behind'] = int(so.strip())
@@ -252,6 +275,7 @@ if cal['present'] and os.environ.get('DASHBOARD_USER'):
     if code == 0:
         cal['git'] = True
         cal['commit'] = so.strip()
+        cal['fetchedAt'] = fetch(who, cal_dir)
         code, so, _ = run(['sudo', '-u', who, 'git', '-C', cal_dir, 'rev-list', '--count', 'HEAD..@{upstream}'], 15)
         if code == 0 and so.strip().isdigit():
             cal['behind'] = int(so.strip())
@@ -405,14 +429,47 @@ case "$verb" in
     # that opened it) are gone, and logs to a file the next status reports.
     [[ -n "$DASHBOARD_DIR" && -n "$DASHBOARD_USER" ]] || { echo "DASHBOARD_DIR/USER not set in $CONF" >&2; exit 78; }
     log=/var/log/touchsphere-self-update.log
-    say "Pulling and rebuilding the dashboard in the background (log: $log)."
-    say "This screen will drop for a few minutes while the container is replaced."
+    say "Updating the dashboard in the background (log: $log)."
+    say "If the newest commit's image is still being built on GitHub, this waits for it (up to 20 minutes)."
+    say "This screen will drop for a few minutes when the container is replaced."
     # Pull the image CI published for the newest commit; build here only when
-    # the pull fails (no image yet, or a box with no registry access). A pull
-    # is seconds where a build is minutes — this is Watchtower's job, on demand.
-    nohup setsid sudo -u "$DASHBOARD_USER" -H bash -lc \
-      "cd '$DASHBOARD_DIR' && git pull --ff-only && (docker compose pull app || GIT_SHA=\$(git rev-parse HEAD) docker compose build app) && docker compose up -d app" \
-      >"$log" 2>&1 </dev/null &
+    # it never arrives (a failed build, or a box with no registry access). A
+    # pull is seconds where a build is minutes — this is Watchtower's job, on
+    # demand. "Arrives" is checked, not assumed: for the ~10 minutes after a
+    # merge, `latest` is still the PREVIOUS commit's image, so a bare pull
+    # succeeded, changed nothing, and the update quietly did nothing at all.
+    # The image says which commit it was built from (GIT_SHA in its env, set by
+    # CI and by the local build below alike).
+    nohup setsid sudo -u "$DASHBOARD_USER" -H bash -lc '
+      set -u
+      cd "$1" || exit 1
+      git pull --ff-only || exit 1
+      want=$(git rev-parse HEAD)
+      img=$(docker compose config --images app 2>/dev/null | head -1)
+      built() {
+        docker image inspect --format "{{range .Config.Env}}{{println .}}{{end}}" "$img" 2>/dev/null | sed -n "s/^GIT_SHA=//p"
+      }
+      got=""
+      if [ -z "$img" ]; then
+        # A compose too old for `config --images`: no way to read the image, so
+        # the old behaviour — pull, and build only when the pull fails.
+        docker compose pull app || GIT_SHA=$want docker compose build app || exit 1
+        got=$want
+      fi
+      for i in $(seq 1 "${TS_IMAGE_WAIT_TRIES:-40}"); do
+        [ "$got" = "$want" ] && break
+        docker compose pull app || break
+        got=$(built)
+        [ "$got" = "$want" ] && break
+        echo "▶ the published image is ${got:0:7}; waiting for ${want:0:7} to finish building ($((i * 30))s)"
+        sleep "${TS_IMAGE_WAIT_SECONDS:-30}"
+      done
+      if [ "$got" != "$want" ]; then
+        echo "▶ no published image for ${want:0:7} — building it here"
+        GIT_SHA=$want docker compose build app || exit 1
+      fi
+      docker compose up -d app
+    ' _ "$DASHBOARD_DIR" >"$log" 2>&1 </dev/null &
     disown
     sleep 1
     ;;
