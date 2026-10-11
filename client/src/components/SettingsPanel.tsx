@@ -19,7 +19,10 @@ import { useImages, type StructureSettings, type PromptOption } from '../hooks/u
 import type { ParamsResponse } from '../hooks/useImages'
 import { useGuideActivity, type ActivityLevel } from '../hooks/useGuideActivity'
 import { useHost, useHostEnabled, type HostTask } from '../hooks/useHost'
-import { describeImage, useUpdateCheck, type UpdateCheck } from '../hooks/useUpdateCheck'
+import {
+  describeImage, describeLastAttempt, useUpdateCheck, useUpdateHistory,
+  type SelfUpdateLog, type UpdateCheck, type UpdateHistory, type UpdateState,
+} from '../hooks/useUpdateCheck'
 import { useAiBox, useAiBoxEnabled, type AiBoxView } from '../hooks/useAiBox'
 import { usePresence, useLiveReadings } from '../hooks/usePresence'
 import { useMailSettings } from '../hooks/useMail'
@@ -2570,6 +2573,7 @@ function ServerTab() {
   // exists yet — the checkout line below only says where the files on disk are.
   const { update: version, check: checkVersion } = useUpdateCheck()
   useEffect(() => { void checkVersion() }, [checkVersion])
+  const { history, reload: reloadHistory } = useUpdateHistory()
   // The two destructive tasks are asked for twice. One slot rather than one
   // flag per task: opening a second confirmation closes the first.
   const [confirming, setConfirming] = useState<HostTask | null>(null)
@@ -2577,6 +2581,7 @@ function ServerTab() {
   const logRef = useRef<HTMLDivElement>(null)
   const running = state.running
   const busy = running !== null
+  useEffect(() => { void reloadHistory() }, [running, reloadHistory])
 
   // Follow the log as it grows — the interesting line is always the last one.
   useEffect(() => {
@@ -2812,30 +2817,17 @@ function ServerTab() {
       {status && dash && card(
         'This dashboard',
         <>
-          {/* Running first: it is what "Update the dashboard" changes. The
-              checkout is only where the compose file lives, and its "behind"
-              is whatever the host last fetched. */}
-          {version.data && (
-            <p className="text-white/80 text-sm">
-              {version.data.current.shortSha ? <>Running <span className="font-mono">{version.data.current.shortSha}</span></> : 'Running an unstamped build'}
-              {version.data.status === 'up-to-date'
-                ? <span className="text-emerald-300/90"> · the newest on {version.data.branch}</span>
-                : version.data.status === 'behind'
-                  ? <span className="text-cyan-200"> · {version.data.branch} is at <span className="font-mono">{version.data.latest.shortSha}</span>{version.data.behindBy ? `, ${version.data.behindBy} commit${version.data.behindBy === 1 ? '' : 's'} ahead` : ''}</span>
-                  : ''}
-            </p>
-          )}
-          {version.state === 'fail' && <p className="text-amber-200/80 text-xs">Couldn't ask GitHub for the newest commit: {version.error}</p>}
-          {version.data?.status === 'behind' && <p className="text-white/40 text-xs -mt-2">“{version.data.latest.message}”</p>}
-          <ImageLine check={version.data} />
+          <UpdateTimeline update={version} history={history} log={dash.selfUpdate} />
           <p className="text-white/50 text-xs">
-            {dash.commit ? `Checkout at ${dash.commit}` : 'Checkout not found'}
+            {/* The source folder, not what runs: it moves on "git pull" even
+                when no new image arrives, which is how it read as "stays on b814". */}
+            {dash.commit ? `Source folder on the server at ${dash.commit}` : 'Source folder not found'}
             {dash.behind != null && dash.behind > 0 ? <span className="text-cyan-200/80"> · {dash.behind} commit{dash.behind === 1 ? '' : 's'} behind</span>
               : dash.behind === 0 ? <span className="text-white/40"> · up to date{dash.fetchedAt ? ` as of ${ago(dash.fetchedAt)}` : ' with the last fetch'}</span> : ''}
           </p>
           <p className="text-white/25 text-xs leading-relaxed">
             Pulls the image for the newest commit — waiting up to 20 minutes if it is still being built, building it here if it never
-            arrives — and replaces this container. The screen goes dark for a few minutes and comes back on its own.{dash.lastSelfUpdate ? ` Last done ${ago(dash.lastSelfUpdate)}.` : ''}
+            arrives — and replaces this container. The screen goes dark for a few minutes and comes back on its own.
           </p>
         </>,
         dash.commit ? taskButton('self-update', 'Update the dashboard') : undefined,
@@ -4575,6 +4567,68 @@ function ImageLine({ check }: { check: UpdateCheck | undefined }) {
   return <p className={`text-xs mt-1.5 leading-relaxed ${tone}`}>{line.text}</p>
 }
 
+/** The three questions behind "I pressed Update and it's still on the same
+ *  version": what is the newest on GitHub, when did this server last actually
+ *  change build, and what did the last update do. One labelled row each, so
+ *  the answer can be read off at arm's length rather than pieced together. */
+function UpdateTimeline({ update, history, log, hideLatest = false }: {
+  update: UpdateState
+  history: UpdateHistory | null
+  log?: SelfUpdateLog
+  /** For a place that already shows the newest commit (the Debug tab). */
+  hideLatest?: boolean
+}) {
+  const check = update.data
+  const attempt = describeLastAttempt(history, log, check)
+  const up = history?.lastUpgrade ?? null
+  const running = history?.current.shortSha ?? check?.current.shortSha ?? null
+  const toneClass = (t: 'good' | 'info' | 'warn' | 'bad') =>
+    t === 'good' ? 'text-emerald-300/90' : t === 'bad' ? 'text-red-300/90' : t === 'warn' ? 'text-amber-200/90' : 'text-cyan-200/80'
+  const row = (label: string, body: ReactNode) => (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-white/40 text-xs font-semibold uppercase tracking-wider">{label}</span>
+      {body}
+    </div>
+  )
+  return (
+    <div className="flex flex-col gap-3">
+      {!hideLatest && row('Newest on GitHub',
+        update.state === 'fail'
+          ? <p className="text-amber-200/80 text-sm">Couldn’t ask GitHub: {update.error}</p>
+          : !check
+            ? <p className="text-white/40 text-sm">Asking GitHub…</p>
+            : <>
+                <p className="text-white/85 text-sm">
+                  <span className="font-mono">{check.latest.shortSha}</span>
+                  <span className="text-white/45"> · committed {formatAgo(check.latest.date)} on {check.branch}</span>
+                  {check.status === 'up-to-date' && <span className="text-emerald-300/90"> · running here</span>}
+                </p>
+                <p className="text-white/40 text-xs break-words">“{check.latest.message}”</p>
+                <ImageLine check={check} />
+              </>)}
+      {row('Last upgraded',
+        !up
+          ? <p className="text-white/40 text-sm">{running ? <>Running <span className="font-mono">{running}</span> — no upgrade recorded yet</> : 'Not recorded yet'}</p>
+          : up.firstSeen
+            ? <p className="text-white/85 text-sm">
+                No upgrade since records began — running <span className="font-mono">{up.shortSha ?? 'an unstamped build'}</span> since at least {formatAgo(up.at)}
+                {up.builtAt && <span className="text-white/45"> (built {formatAgo(up.builtAt)})</span>}
+              </p>
+            : <p className="text-white/85 text-sm">
+                {formatAgo(up.at)} to <span className="font-mono">{up.shortSha ?? 'an unstamped build'}</span>
+                <span className="text-white/45"> · {new Date(up.at).toLocaleString()}</span>
+              </p>)}
+      {row('Last update attempt',
+        !attempt
+          ? <p className="text-white/40 text-sm">None recorded — “Update the dashboard” below starts one.</p>
+          : <>
+              <p className="text-white/85 text-sm">{formatAgo(attempt.at)}<span className="text-white/45"> · {new Date(attempt.at).toLocaleString()}</span></p>
+              <p className={`text-sm leading-snug ${toneClass(attempt.tone)}`}>{attempt.text}</p>
+            </>)}
+    </div>
+  )
+}
+
 /** Coarse "how long ago" for a timestamp. Days is as fine-grained as anyone
  *  cares about for a deployment, and it has to read at arm's length. */
 function formatAgo(iso: string | null): string {
@@ -4682,6 +4736,7 @@ function DebugTab() {
   const [copied,    setCopied]    = useState<string | null>(null)
   const [version,   setVersion]   = useState<VersionInfo | null>(null)
   const { update, check: checkUpdate } = useUpdateCheck()
+  const { history } = useUpdateHistory()
   const errors = useDebugLog()
 
   async function loadVersion() {
@@ -4923,6 +4978,11 @@ function DebugTab() {
             </p>
           )}
           {update.state !== 'fail' && <ImageLine check={upd} />}
+        </div>
+
+        {/* When this server last changed build, and what the last update did. */}
+        <div className="px-5 py-3.5">
+          <UpdateTimeline update={update} history={history} hideLatest />
         </div>
       </div>
 

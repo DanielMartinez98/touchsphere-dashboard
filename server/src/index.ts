@@ -11,6 +11,7 @@ import airQualityRouter from './routes/airquality'
 import tilesRouter from './routes/tiles'
 import geoipRouter from './routes/geoip'
 import systemRouter from './routes/system'
+import { recordBoot } from './update-history'
 import stateRouter from './routes/state'
 import deviceRouter from './routes/device'
 import audioRouter from './routes/audio'
@@ -337,6 +338,7 @@ if (isProd) {
 }
 
 app.listen(PORT, () => {
+  recordBoot()
   console.log(`[startup] server listening on http://localhost:${PORT}`)
   console.log('[startup] routes: /api/weather /api/calendar /api/airquality /api/tiles /api/geoip /api/system /api/state /api/device /api/health')
 })

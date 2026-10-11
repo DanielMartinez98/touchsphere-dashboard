@@ -1,12 +1,11 @@
 import { Router, Request, Response } from 'express'
-import fs from 'fs'
-import path from 'path'
 import { elevenLabsKeyState } from '../config/keys'
 import { sttProviders, sttSummary, whisperUrl } from './stt'
 import { ttsChainSummary } from './tts'
 import { aiBoxView, aiBoxesEnabled, boxUrl } from '../ai-box'
 import { ollamaUrlFor, resolveAll, serviceUrl } from '../ai-devices'
 import { SEARCH_PROVIDERS, SEARCH_LOCAL_FIRST } from '../research'
+import { buildTime, gitSha, updateHistory } from '../update-history'
 
 const router = Router()
 
@@ -20,7 +19,6 @@ const router = Router()
 // its imports have been evaluated, so anything captured at import time misses
 // everything in server/.env. Harmless under Docker (env_file puts it all in the
 // real process env) and silently wrong under `npm run dev`.
-const gitSha       = () => (process.env['GIT_SHA'] ?? '').trim()
 const githubRepo   = () => process.env['GITHUB_REPO']   ?? 'DanielMartinez98/touchsphere-dashboard'
 const githubBranch = () => process.env['GITHUB_BRANCH'] ?? 'main'
 // Optional. Unauthenticated GitHub API calls are limited to 60/hour per IP,
@@ -30,18 +28,8 @@ const githubToken  = () => process.env['GITHUB_TOKEN'] ?? ''
 // Only ever changed by the test script, which stands a fake GitHub up locally.
 const githubApi    = () => (process.env['GITHUB_API'] ?? 'https://api.github.com').replace(/\/+$/, '')
 
-// Written by the final Dockerfile layer. The env var takes precedence so a
-// non-Docker deployment can supply it too; absent both (npm run dev) it stays
-// null, where "when was this built" isn't a meaningful question anyway.
-function buildTime(): string | null {
-  const fromEnv = (process.env['BUILD_TIME'] ?? '').trim()
-  if (fromEnv) return fromEnv
-  try {
-    return fs.readFileSync(path.join('/app', '.build-time'), 'utf8').trim() || null
-  } catch {
-    return null
-  }
-}
+// gitSha() and buildTime() (what this image is) live in update-history.ts,
+// which also records when it started running here.
 
 interface GitHubCommit { sha: string; date: string | null; message: string }
 
@@ -195,6 +183,14 @@ router.get('/version', (_req: Request, res: Response) => {
     repo:     githubRepo(),
     branch:   githubBranch(),
   })
+})
+
+// GET /api/system/version/history — when this server last changed build, and
+// what became of the last "Update the dashboard". No network; see
+// update-history.ts.
+router.get('/version/history', (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store')
+  res.json(updateHistory())
 })
 
 // GET /api/system/version/check — compare against the repo's HEAD.

@@ -263,6 +263,23 @@ try:
     d['lastSelfUpdate'] = iso(os.path.getmtime('/var/log/touchsphere-self-update.log'))
 except OSError:
     d['lastSelfUpdate'] = ''
+# How the last self-update ended, from the markers it writes. A log from before
+# the markers existed has neither, and reads as "result unknown".
+try:
+    with open('/var/log/touchsphere-self-update.log', errors='replace') as fh:
+        log_lines = [l.rstrip() for l in fh.read().replace('\r', '\n').split('\n') if l.strip()]
+    su = {'startedAt': '', 'endedAt': d['lastSelfUpdate'], 'result': '', 'detail': '', 'tail': []}
+    for l in log_lines:
+        if l.startswith('TS-START '):
+            su['startedAt'] = l[9:].strip()
+        elif l.startswith('TS-RESULT '):
+            parts = l[10:].strip().split(' ', 1)
+            su['result'] = parts[0]
+            su['detail'] = parts[1] if len(parts) > 1 else ''
+    su['tail'] = [l for l in log_lines if not l.startswith('TS-')][-6:]
+    d['selfUpdate'] = su
+except OSError:
+    pass
 out['dashboard'] = d
 
 # ── the calendar app's checkout (Smart Calendar) ──
@@ -442,8 +459,12 @@ case "$verb" in
     # CI and by the local build below alike).
     nohup setsid sudo -u "$DASHBOARD_USER" -H bash -lc '
       set -u
-      cd "$1" || exit 1
-      git pull --ff-only || exit 1
+      # TS-START / TS-RESULT lines are read back by `status` (dashboard.selfUpdate)
+      # so the screen can say how the last update ended, not just when.
+      echo "TS-START $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      fail() { echo "TS-RESULT fail $*"; exit 1; }
+      cd "$1" || fail "the dashboard folder $1 is missing"
+      git pull --ff-only || fail "git pull failed (see the lines above)"
       want=$(git rev-parse HEAD)
       img=$(docker compose config --images app 2>/dev/null | head -1)
       built() {
@@ -453,7 +474,7 @@ case "$verb" in
       if [ -z "$img" ]; then
         # A compose too old for `config --images`: no way to read the image, so
         # the old behaviour — pull, and build only when the pull fails.
-        docker compose pull app || GIT_SHA=$want docker compose build app || exit 1
+        docker compose pull app || GIT_SHA=$want docker compose build app || fail "the image could neither be pulled nor built"
         got=$want
       fi
       for i in $(seq 1 "${TS_IMAGE_WAIT_TRIES:-40}"); do
@@ -466,9 +487,10 @@ case "$verb" in
       done
       if [ "$got" != "$want" ]; then
         echo "▶ no published image for ${want:0:7} — building it here"
-        GIT_SHA=$want docker compose build app || exit 1
+        GIT_SHA=$want docker compose build app || fail "building ${want:0:7} here failed"
       fi
-      docker compose up -d app
+      docker compose up -d app || fail "the new container did not start"
+      echo "TS-RESULT ok $want"
     ' _ "$DASHBOARD_DIR" >"$log" 2>&1 </dev/null &
     disown
     sleep 1

@@ -148,3 +148,106 @@ export function describeImage(check: UpdateCheck | undefined, now = Date.now()):
       return null
   }
 }
+
+// ── History: when this server last changed build, and the last update ────────
+//
+// From GET /api/system/version/history (server/src/update-history.ts): the
+// server notes each new build it boots on and each "Update the dashboard" it
+// starts, so "last upgraded" and "what did the last update do" are answers
+// rather than guesses. The host script's own record of the run (status →
+// dashboard.selfUpdate) adds why it ended the way it did, when it has one.
+
+export interface UpdateHistory {
+  current: { sha: string | null; shortSha: string | null; builtAt: string | null }
+  lastUpgrade: { sha: string | null; shortSha: string | null; builtAt: string | null; at: string; firstSeen?: boolean } | null
+  lastAttempt: {
+    at: string
+    from: { sha: string | null; builtAt: string | null }
+    outcome: 'upgraded' | 'pending' | 'unchanged'
+    to: { sha: string | null; shortSha: string | null } | null
+  } | null
+}
+
+/** The host script's account of the last self-update (absent from older scripts). */
+export interface SelfUpdateLog {
+  startedAt: string
+  endedAt: string
+  /** 'ok' | 'fail', or '' when the run left no result line (still going, or killed). */
+  result: string
+  detail: string
+  tail: string[]
+}
+
+export function useUpdateHistory() {
+  const [history, setHistory] = useState<UpdateHistory | null>(null)
+  // A 404 is a server older than the history: say nothing rather than guess.
+  const load = useCallback(() => fetch(`${API}/api/system/version/history`, { cache: 'no-store' })
+    .then(res => (res.ok ? res.json() as Promise<UpdateHistory> : null))
+    .catch(() => null)
+    .then(setHistory), [])
+  useEffect(() => { void load() }, [load])
+  return { history, reload: load }
+}
+
+export interface AttemptSummary {
+  at: string
+  tone: 'good' | 'info' | 'warn' | 'bad'
+  text: string
+}
+
+const short = (s: string | null | undefined) => (s ? s.slice(0, 7) : null)
+
+/** One sentence on how the last update ended, from the server's record and the
+ *  host's log together. Null when neither has ever seen one. */
+export function describeLastAttempt(
+  history: UpdateHistory | null,
+  log: SelfUpdateLog | undefined,
+  check: UpdateCheck | undefined,
+): AttemptSummary | null {
+  const attempt = history?.lastAttempt ?? null
+  const running = history?.current.shortSha ?? check?.current.shortSha ?? null
+  const hostAt = log ? (log.startedAt || log.endedAt) : ''
+  // The host's log belongs to the server's attempt when they started within a
+  // few minutes of each other; otherwise whichever is newer is "the last one".
+  const hostMs = hostAt ? Date.parse(hostAt) : NaN
+  const attMs = attempt ? Date.parse(attempt.at) : NaN
+  const sameRun = Number.isFinite(hostMs) && Number.isFinite(attMs) && Math.abs(hostMs - attMs) < 5 * 60_000
+  const hostNewer = Number.isFinite(hostMs) && (!Number.isFinite(attMs) || hostMs - attMs > 5 * 60_000)
+
+  // Why nothing new arrived, when the update check can tell.
+  const why = (): string => {
+    if (!check) return ''
+    if (check.status === 'up-to-date') return ` It was already the newest on ${check.branch}.`
+    if (check.status === 'behind') {
+      const img = check.image?.state
+      if (img === 'building') return ` The image for ${check.latest.shortSha} is still being built on GitHub, so there was nothing new to install.`
+      if (img === 'failed' || img === 'none') return ` The image for ${check.latest.shortSha} was never published, so there was nothing new to install.`
+    }
+    return ''
+  }
+
+  if (hostNewer && log) {
+    // Only the host knows about this run (started before this server kept a record).
+    if (log.result === 'fail') return { at: hostAt, tone: 'bad', text: `Failed: ${log.detail || 'see the log on the server'}.` }
+    if (log.result === 'ok') {
+      const to = short(log.detail)
+      return to && to === running
+        ? { at: hostAt, tone: 'good', text: `Finished and installed ${to}.` }
+        : { at: hostAt, tone: 'warn', text: `Finished${to ? ` (installed ${to})` : ''}, but this server is running ${running ?? 'an unstamped build'}.${why()}` }
+    }
+    return { at: hostAt, tone: 'info', text: `Result not recorded${log.tail.length ? ` — last line: “${log.tail[log.tail.length - 1]}”` : ''}.` }
+  }
+  if (!attempt) return null
+
+  if (attempt.outcome === 'upgraded') {
+    return { at: attempt.at, tone: 'good', text: `Upgraded ${short(attempt.from.sha) ?? 'the old build'} → ${attempt.to?.shortSha ?? 'a new build'}.` }
+  }
+  if (sameRun && log?.result === 'fail') {
+    return { at: attempt.at, tone: 'bad', text: `Failed: ${log.detail || 'see the log on the server'}.` }
+  }
+  if (attempt.outcome === 'pending' && !(sameRun && log?.result === 'ok')) {
+    const last = sameRun && log?.tail.length ? ` Now: “${log.tail[log.tail.length - 1]}”` : ''
+    return { at: attempt.at, tone: 'info', text: `Still going — it can wait up to 20 minutes for GitHub's image.${last}` }
+  }
+  return { at: attempt.at, tone: 'warn', text: `Finished without installing anything new — still on ${running ?? 'the same build'}.${why()}` }
+}

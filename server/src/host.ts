@@ -31,6 +31,7 @@ import { execFileSync, spawn, type ChildProcess } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import { broadcast } from './routes/system'
+import { recordAttempt } from './update-history'
 
 const TARGET = (process.env['HOST_UPDATE_SSH'] ?? '').trim()
 
@@ -226,6 +227,9 @@ export function startTask(task: HostTask): { ok: true } | { ok: false; error: st
 
   state.running = task
   state.startedAt = new Date().toISOString()
+  // Remembered on the volume: this container is about to be replaced, and the
+  // next one decides from it whether the update changed anything.
+  if (task === 'self-update') recordAttempt()
   push(task, 'out', `▶ ${HOST_TASKS[task]}`)
   announce()
   console.log(`[host] ${task} started`)
