@@ -20,6 +20,7 @@ import { assistantSystemPrompt } from './chat'
 import { plannerSystemPrompt } from '../image-plan'
 import { imagesEnabled, selectedModel, styleLabel, stylePromptGuide } from '../image'
 import { buildSystemPrompt, readPrompter, prompterModel, visionModel, visionUserMessage, editModel, editUserMessage,
+  resolvePromptOption, ORIGINAL_OPTION,
 } from '../image-prompt'
 
 const router = Router()
@@ -28,6 +29,8 @@ router.get('/', async (_req: Request, res: Response) => {
   const style = selectedModel()
   const facts = { label: styleLabel(style), guidance: stylePromptGuide(style) }
   const prompter = readPrompter()
+  // The improver's instructions are whichever option the Draw panel has chosen.
+  const improver = resolvePromptOption()
 
   const planner = imagesEnabled()
     ? await plannerSystemPrompt().catch(err => `(could not be composed: ${err instanceof Error ? err.message : String(err)})`)
@@ -51,11 +54,14 @@ router.get('/', async (_req: Request, res: Response) => {
       },
       {
         id: 'improver',
-        label: 'The prompt improver',
+        label: improver.id === ORIGINAL_OPTION ? 'The prompt improver' : `The prompt improver — ${improver.name}`,
         what: 'Rewrites what you type in the Draw panel into a prompt for the picture model ' +
-              'about to draw it. A brand new conversation every time.',
+              'about to draw it. A brand new conversation every time.' +
+              (prompter.options.length > 0
+                ? ` Shown with the option chosen in the Draw panel; the others are under Drawing.`
+                : ''),
         model: prompterModel(),
-        text: buildSystemPrompt(prompter.template, facts),
+        text: buildSystemPrompt(improver.template, facts),
         editable: true,
         editIn: 'Drawing',
       },

@@ -15,7 +15,7 @@ import { useRipple } from '../hooks/useRipple'
 import { useDebugLog, clearDebugLog, getDebugLog } from '../utils/debugLog'
 import { useMemory, MEMORY_TOPICS, type MemoryItem, type MemoryKind, type MemoryTopic } from '../hooks/useMemory'
 import { useGuides } from '../hooks/useGuides'
-import { useImages, type StructureSettings } from '../hooks/useImages'
+import { useImages, type StructureSettings, type PromptOption } from '../hooks/useImages'
 import type { ParamsResponse } from '../hooks/useImages'
 import { useGuideActivity, type ActivityLevel } from '../hooks/useGuideActivity'
 import { useHost, useHostEnabled, type HostTask } from '../hooks/useHost'
@@ -1717,11 +1717,135 @@ function OverrideField({
   )
 }
 
+/**
+ * One of the improver's extra ways of asking, as Settings → Drawing edits it.
+ *
+ * Name and instructions are saved together by one Save, not autosaved: a
+ * rename typed on an on-screen keyboard passes through names that clash with
+ * another option on its way to the one meant, and each would be a refusal.
+ * The drafts follow the server while nothing is being typed here, so an edit
+ * saved from a phone shows up on the kiosk's open screen.
+ */
+function PromptOptionEditor({ option, inUse, onSave, onDelete }: {
+  option: PromptOption
+  inUse:  boolean
+  onSave:   (patch: { name?: string; template?: string }) => Promise<string>
+  onDelete: () => Promise<string>
+}) {
+  const [name, setName] = useState({ text: option.name, base: option.name })
+  const [text, setText] = useState({ text: option.template, base: option.template })
+  if (name.base !== option.name && name.text === name.base) setName({ text: option.name, base: option.name })
+  if (text.base !== option.template && text.text === text.base) setText({ text: option.template, base: option.template })
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const nameChanged = name.text.trim() !== option.name
+  const textChanged = text.text !== option.template
+  const dirty = nameChanged || textChanged
+
+  async function save() {
+    setBusy(true)
+    const err = await onSave({
+      ...(nameChanged ? { name: name.text } : {}),
+      ...(textChanged ? { template: text.text } : {}),
+    })
+    setBusy(false)
+    setError(err)
+    if (!err) {
+      setName(n => ({ text: n.text.trim(), base: n.text.trim() }))
+      setText(t => ({ text: t.text, base: t.text }))
+    }
+  }
+
+  return (
+    <div className={`rounded-2xl p-3 border space-y-2 ${inUse ? 'bg-violet-500/10 border-violet-400/40' : 'bg-white/5 border-hairline'}`}>
+      <div className="flex items-center gap-2">
+        <TouchInput
+          value={name.text}
+          onChange={t => setName(n => ({ ...n, text: t }))}
+          ariaLabel="Name of this option"
+          placeholder="A name for the Draw panel"
+          className="flex-1 min-w-0 bg-white/10 text-white rounded-xl px-3 py-2.5 text-sm font-semibold
+                     placeholder:text-white/30 border border-hairline"
+        />
+        {inUse && (
+          <span className="shrink-0 text-[11px] font-semibold text-violet-200 bg-violet-500/20 rounded-full px-2.5 py-1">
+            In use
+          </span>
+        )}
+      </div>
+      <TouchInput
+        value={text.text}
+        onChange={t => setText(x => ({ ...x, text: t }))}
+        multiline
+        rows={8}
+        ariaLabel={`Instructions for ${option.name}`}
+        className="w-full bg-white/10 text-white rounded-2xl px-4 py-3 text-[13px] leading-relaxed
+                   placeholder:text-white/30 border border-hairline font-mono"
+      />
+      <div className="flex gap-2">
+        <button
+          type="button"
+          disabled={!dirty || busy}
+          onClick={() => { void save() }}
+          className={`flex-1 h-12 rounded-xl text-sm font-semibold transition ${
+            dirty ? 'bg-violet-500/80 text-white active:scale-95' : 'bg-white/5 text-white/30'
+          }`}
+        >
+          {busy ? 'Saving…' : dirty ? 'Save' : 'Saved'}
+        </button>
+        {confirmDelete ? (
+          <>
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(false)}
+              className="px-4 h-12 rounded-xl bg-white/10 text-white/70 text-sm font-semibold active:scale-95"
+            >
+              Keep
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setConfirmDelete(false)
+                setBusy(true)
+                void onDelete().then(err => { setBusy(false); setError(err) })
+              }}
+              className="px-4 h-12 rounded-xl bg-red-500 text-white text-sm font-bold active:scale-95"
+            >
+              Delete
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirmDelete(true)}
+            aria-label={`Delete ${option.name}`}
+            className="px-4 h-12 rounded-xl bg-white/10 text-white/60 text-sm font-semibold active:scale-95
+                       flex items-center gap-1.5"
+          >
+            <Trash2 size={15} /> Delete
+          </button>
+        )}
+      </div>
+      {confirmDelete && (
+        <p className="text-[12px] text-white/50">
+          {inUse ? 'This one is in use; the original takes over once it is gone.' : 'The original and the other options are not affected.'}
+        </p>
+      )}
+      {error && <p className="text-red-300/90 text-[12px]">{error}</p>}
+    </div>
+  )
+}
+
 function DrawingTab() {
   const {
     prompter, setPrompter, styles, structure, setStructure, capabilities, safeTags, setSafeTags,
     inpaintPatchOn, setInpaintPatchOn,
+    addPromptOption, updatePromptOption, removePromptOption,
   } = useImages()
+  // Adding an option can be refused (the list is full); the sentence goes here.
+  const [optionError, setOptionError] = useState('')
   // Edited locally and saved explicitly. A template is a paragraph typed on an
   // on-screen keyboard, and saving per keystroke would write the store forty
   // times and re-fetch the preview on each one.
@@ -1860,7 +1984,7 @@ function DrawingTab() {
       {/* The template itself */}
       <div>
         <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
-          How it is asked — one prompt, every model
+          {prompter.options.length > 0 ? `How it is asked — ${prompter.originalName}` : 'How it is asked — one prompt, every model'}
         </span>
         <p className="text-[12px] text-white/45 leading-relaxed mb-2">
           This is the whole system prompt. Two placeholders are filled in for you from
@@ -1899,6 +2023,47 @@ function DrawingTab() {
         </div>
       </div>
 
+      {/* More ways of asking. Made and edited here; CHOSEN in the Draw panel,
+          under Improve my prompt, because which way suits a picture is decided
+          while composing it. Each starts as a copy of the original and nothing
+          done to it reaches the original. */}
+      <div>
+        <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
+          More ways of asking
+        </span>
+        <p className="text-[12px] text-white/45 leading-relaxed mb-3">
+          The box above is the original. Add options to try different instructions without
+          touching it: each starts as a copy of the original, with the same two placeholders.
+          Pick which one rewrites your prompts in the Draw panel, under Improve my prompt. They
+          apply to new pictures; a redraw is described by the picture-reading model further down.
+        </p>
+        <div className="space-y-3">
+          {prompter.options.map(option => (
+            <PromptOptionEditor
+              key={option.id}
+              option={option}
+              inUse={prompter.active === option.id}
+              onSave={patch => updatePromptOption(option.id, patch)}
+              onDelete={() => removePromptOption(option.id)}
+            />
+          ))}
+        </div>
+        <button
+          type="button"
+          disabled={prompter.options.length >= prompter.maxOptions}
+          onClick={() => { void addPromptOption().then(err => setOptionError(err)) }}
+          className="mt-3 w-full h-12 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold
+                     bg-violet-500/20 text-violet-100 border border-violet-400/30 active:scale-95 transition
+                     disabled:opacity-40 disabled:active:scale-100"
+        >
+          <Plus size={16} />
+          {prompter.options.length >= prompter.maxOptions
+            ? `${prompter.maxOptions} options is the most there can be`
+            : 'New option — a copy of the original'}
+        </button>
+        {optionError && <p className="text-red-300/90 text-[12px] mt-2">{optionError}</p>}
+      </div>
+
       {/* Which model does it */}
       <div>
         <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
@@ -1925,10 +2090,12 @@ function DrawingTab() {
       <div>
         <span className="text-white/40 text-xs font-semibold uppercase tracking-widest block mb-2">
           Right now, for {prompter.styleLabel || 'this style'}
+          {prompter.options.length > 0 ? `, with ${prompter.activeName}` : ''}
         </span>
         <p className="text-[12px] text-white/45 leading-relaxed mb-2">
           Exactly what the model is told before your prompt. Switch the style in the Draw
           panel and this changes with it — that is the model-specific half doing its job.
+          {prompter.options.length > 0 && ' It shows the option chosen in the Draw panel.'}
         </p>
         <pre className="selectable-text whitespace-pre-wrap break-words text-[11px] leading-relaxed
                         text-white/60 bg-black/30 border border-hairline rounded-2xl p-3

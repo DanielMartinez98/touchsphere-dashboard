@@ -31,7 +31,7 @@ import { broadcast } from './routes/system'
 import { advanceSeed, paramsFor, type ImageParams } from './image-params'
 import { estimateRender, humanMs, recordRender } from './image-timing'
 import { serviceUrl, serviceUrlSettled, onAiServiceChange } from './ai-devices'
-import { composeKontextInstruction, composeRedrawPrompt, visionModel, improvePrompt, prompterModel, readPrompter, locateBox } from './image-prompt'
+import { composeKontextInstruction, composeRedrawPrompt, visionModel, improvePrompt, prompterModel, readPrompter, locateBox, resolvePromptOption, ORIGINAL_OPTION, ORIGINAL_NAME } from './image-prompt'
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -507,6 +507,12 @@ export interface ImageSettings {
   promptOriginal?: string
   /** Which model did the rewriting. Two models give very different prompts. */
   improvedBy?:     string
+  /**
+   * Which of the improver's ways of asking rewrote it — "Original" or an
+   * option's name. Kept because the point of having options is comparing
+   * them, and a picture that cannot say which one made it compares nothing.
+   */
+  improvedWith?:   string
   /** Booster text appended to the prompt for this style, when there was any. */
   optimizations?:  string
 }
@@ -908,6 +914,14 @@ export interface ImageJob {
   promptOriginal: string
   /** Which model rewrote it. '' when nothing did. */
   improvedBy:     string
+  /**
+   * The improver option to rewrite with, resolved at QUEUE time like `improve`
+   * itself, so choosing another one in the panel can't change a picture that
+   * is already waiting. ORIGINAL_OPTION or an option's id.
+   */
+  promptOption:   string
+  /** The name of the option that actually rewrote it. '' when nothing did. */
+  improvedWith:   string
   /** The rewritten instruction an unchanged edit was retried with, and why not if it wasn't. */
   retriedWith?:   string
   retryFailed?:   string
@@ -1217,6 +1231,13 @@ export interface ImageRequest {
    */
   improve?:  boolean
   /**
+   * Which of the improver's ways of asking to use: 'original' or an option's
+   * id. Omitted means the one chosen in the Draw panel. The panel sends it
+   * anyway, so a chip tapped a moment before Draw can't lose a race with its
+   * own save.
+   */
+  promptOption?: string
+  /**
    * REDRAW: the id of a picture in the gallery to start from. The size comes
    * from that picture and `width`/`height` are ignored — an img2img latent is
    * the source's own shape, and quietly rendering a different one would be the
@@ -1495,6 +1516,8 @@ export function startImage(req: ImageRequest): ImageJob {
     improve:   typeof req.improve === 'boolean' ? req.improve : readPrompter().enabled,
     promptOriginal: '',
     improvedBy:     '',
+    promptOption:   resolvePromptOption(req.promptOption).id,
+    improvedWith:   '',
     improveMs:      0,
     queuedAt:  Date.now(),
     startedAt: Date.now(),
@@ -1654,21 +1677,24 @@ async function run(job: ImageJob): Promise<void> {
     // that appears to do nothing here reads as deliberate.
     if (job.improve) improveNote = ' The prompt is used as written: this style takes instructions, not descriptions.'
   } else if (job.improve) {
+    const option = resolvePromptOption(job.promptOption)
+    const withOption = option.id === ORIGINAL_OPTION ? '' : ` with "${option.name}"`
     push(job, 'improving',
-      `Rewriting the prompt for ${styleLabel(job.model)} before drawing it. This is a ` +
+      `Rewriting the prompt for ${styleLabel(job.model)}${withOption} before drawing it. This is a ` +
       `separate model (${prompterModel()}) on a brand new conversation, so nothing else ` +
       'you have asked for today can colour it.')
     const better = await improvePrompt(job.prompt, {
       label:    styleLabel(job.model),
       guidance: stylePromptGuide(job.model),
-    })
+    }, job.promptOption)
     job.improveMs += better.ms
     if (better.changed) {
       job.promptOriginal = better.original
       job.improvedBy = better.model
+      job.improvedWith = better.option ?? ''
       job.prompt = better.prompt
-      improveNote = ' The prompt was rewritten for this style first.'
-      console.log(`[image] ${job.id} prompt improved by ${better.model}: "${better.prompt.slice(0, 80)}"`)
+      improveNote = ` The prompt was rewritten for this style first${better.option && better.option !== ORIGINAL_NAME ? `, using "${better.option}"` : ''}.`
+      console.log(`[image] ${job.id} prompt improved by ${better.model} (${better.option ?? ORIGINAL_NAME}): "${better.prompt.slice(0, 80)}"`)
     } else if (better.why) {
       improveNote = ` The prompt was left exactly as you wrote it — ${better.why}.`
       console.warn(`[image] ${job.id} prompt not improved — ${better.why}`)
@@ -4008,7 +4034,7 @@ function renderedWith(job: ImageJob, graph: ComfyGraph, changed?: number | null)
     // stored `prompt` is the rewritten one, because that is what the sampler
     // read and what "use as prompt" should hand back.
     ...(job.promptOriginal
-      ? { promptOriginal: job.promptOriginal, improvedBy: job.improvedBy }
+      ? { promptOriginal: job.promptOriginal, improvedBy: job.improvedBy, ...(job.improvedWith ? { improvedWith: job.improvedWith } : {}) }
       : {}),
     // Recorded only when there was one, so its presence is the record — the
     // same rule as promptOriginal. Without it the stored prompt and the picture

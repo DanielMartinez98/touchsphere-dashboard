@@ -38,6 +38,7 @@
 // image router to avoid. This module knows how to talk to a model; it does not
 // need to know what a style is.
 
+import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
 import { ollamaUrlFor, ollamaUrlSettled } from './ai-devices'
@@ -162,7 +163,36 @@ export interface PrompterSettings {
    * the user did not ask for costs a minute of GPU.
    */
   retryBelow:     number
+  /**
+   * More ways to ask, beside the original `template`. Each is a named copy of
+   * the instructions that can be changed without touching the original, so two
+   * approaches can be tried side by side on the same request. Created, renamed,
+   * edited and deleted in Settings → Drawing; CHOSEN in the Draw panel, because
+   * which way of asking suits a picture is decided while composing it.
+   */
+  options:        PromptOption[]
+  /** Which one rewrites prompts: ORIGINAL_OPTION, or an option's id. */
+  active:         string
 }
+
+/** One extra way of asking the improver. Same placeholders and rules as `template`. */
+export interface PromptOption {
+  /** Stable, never shown: `opt-` and six hex. The name can change; the id cannot. */
+  id:       string
+  /** What the Draw panel's chip says. "Option B" until renamed. */
+  name:     string
+  /** The system prompt. Cleared means the house default, exactly as for the original. */
+  template: string
+}
+
+/** The id that means "the original instructions" — `template` itself. */
+export const ORIGINAL_OPTION = 'original'
+/** What the original is called beside the options. */
+export const ORIGINAL_NAME = 'Original'
+/** Original plus eight: A to I. More is a list nobody can compare on a 7" screen. */
+export const MAX_PROMPT_OPTIONS = 8
+const OPTION_ID = /^opt-[a-f0-9]{6}$/
+const MAX_NAME = 40
 
 const DEFAULTS: PrompterSettings = {
   enabled:  false,
@@ -172,6 +202,8 @@ const DEFAULTS: PrompterSettings = {
   editTemplate:   DEFAULT_EDIT_TEMPLATE,
   editModel:      '',
   retryBelow:     0,
+  options:        [],
+  active:         ORIGINAL_OPTION,
 }
 
 function storePath(): string {
@@ -205,10 +237,40 @@ export function readPrompter(): PrompterSettings {
       editModel: typeof raw.editModel === 'string' ? raw.editModel.trim().slice(0, 120) : '',
       retryBelow: typeof raw.retryBelow === 'number' && Number.isFinite(raw.retryBelow)
         ? Math.min(0.5, Math.max(0, raw.retryBelow)) : 0,
+      ...readOptions(raw.options, raw.active),
     }
   } catch {
-    return { ...DEFAULTS }
+    return { ...DEFAULTS, options: [] }
   }
+}
+
+/**
+ * The options as stored, re-validated on every read: a hand-edited file or an
+ * older build's must never put a nameless option, a duplicate id or an active
+ * choice that no longer exists in front of the Draw panel.
+ */
+function readOptions(rawOptions: unknown, rawActive: unknown): { options: PromptOption[]; active: string } {
+  const options: PromptOption[] = []
+  const seen = new Set<string>()
+  for (const o of Array.isArray(rawOptions) ? rawOptions : []) {
+    if (!o || typeof o !== 'object') continue
+    const { id, name, template } = o as Partial<PromptOption>
+    if (typeof id !== 'string' || !OPTION_ID.test(id) || seen.has(id)) continue
+    seen.add(id)
+    options.push({
+      id,
+      name: typeof name === 'string' && name.trim() ? name.trim().slice(0, MAX_NAME) : `Option ${optionLetter(options.length + 1)}`,
+      template: typeof template === 'string' && template.trim() ? template.slice(0, 8000) : DEFAULT_TEMPLATE,
+    })
+    if (options.length >= MAX_PROMPT_OPTIONS) break
+  }
+  const active = typeof rawActive === 'string' && options.some(o => o.id === rawActive) ? rawActive : ORIGINAL_OPTION
+  return { options, active }
+}
+
+/** A, B, C… by position, the original being A. */
+function optionLetter(position: number): string {
+  return String.fromCharCode(65 + Math.max(0, Math.min(25, position)))
 }
 
 /** Patch one or more fields. Write-then-rename, the memory.ts pattern. */
@@ -229,7 +291,13 @@ export function writePrompter(patch: Partial<PrompterSettings>): PrompterSetting
   if (typeof patch.retryBelow === 'number' && Number.isFinite(patch.retryBelow)) {
     next.retryBelow = Math.min(0.5, Math.max(0, patch.retryBelow))
   }
+  // `options` and `active` are not patched here: each has its own function
+  // below with its own rules, and a stray field in a settings patch must not
+  // be able to replace the whole list.
+  try { return save(next) } catch { return next }   // logged in save(); as before, never a 500
+}
 
+function save(next: PrompterSettings): PrompterSettings {
   const p = storePath()
   const tmp = `${p}.tmp-${process.pid}`
   try {
@@ -238,8 +306,100 @@ export function writePrompter(patch: Partial<PrompterSettings>): PrompterSetting
   } catch (err) {
     try { fs.unlinkSync(tmp) } catch { /* nothing to clean up */ }
     console.error('[image-prompt] failed to write settings:', err)
+    throw new Error('could not save the prompt improver settings')
   }
   return next
+}
+
+// ── Options: more ways to ask, beside the original ───────────────────────────
+
+/**
+ * Add an option. It starts as a COPY of the original's current instructions,
+ * because the usual reason to make one is "the same, but…" — and the original
+ * itself is never touched by anything an option does.
+ */
+export function addPromptOption(name?: string): PromptOption {
+  const current = readPrompter()
+  if (current.options.length >= MAX_PROMPT_OPTIONS) {
+    throw new Error(`There can be at most ${MAX_PROMPT_OPTIONS} options besides the original.`)
+  }
+  const taken = new Set(current.options.map(o => o.name.toLowerCase()))
+  // "Option B" for the first, then the next letter nobody is using, so deleting
+  // B and adding again gives B back rather than skipping to E.
+  let letter = 1
+  while (taken.has(`option ${optionLetter(letter).toLowerCase()}`) && letter < 25) letter++
+  const option: PromptOption = {
+    id: `opt-${crypto.randomBytes(3).toString('hex')}`,
+    name: name && name.trim() ? checkName(name, current.options) : `Option ${optionLetter(letter)}`,
+    template: current.template,
+  }
+  save({ ...current, options: [...current.options, option] })
+  return option
+}
+
+/** A name the Draw panel can show as its own chip: not empty, not the original's, not another option's. */
+function checkName(name: string, options: PromptOption[], self?: string): string {
+  const n = name.trim().slice(0, MAX_NAME)
+  if (!n) throw new Error('An option needs a name — it is what the Draw panel shows.')
+  if (n.toLowerCase() === ORIGINAL_NAME.toLowerCase()) throw new Error(`"${ORIGINAL_NAME}" is the name of the original.`)
+  if (options.some(o => o.id !== self && o.name.toLowerCase() === n.toLowerCase())) {
+    throw new Error(`There is already an option called "${n}".`)
+  }
+  return n
+}
+
+/** Rename an option or change its instructions. Cleared instructions mean the house default. */
+export function updatePromptOption(id: string, patch: { name?: unknown; template?: unknown }): PromptOption {
+  const current = readPrompter()
+  const at = current.options.findIndex(o => o.id === id)
+  if (at < 0) throw new Error('That option no longer exists.')
+  const option = { ...current.options[at]! }
+  if (typeof patch.name === 'string') option.name = checkName(patch.name, current.options, id)
+  if (typeof patch.template === 'string') {
+    option.template = patch.template.trim() ? patch.template.slice(0, 8000) : DEFAULT_TEMPLATE
+  }
+  const options = [...current.options]
+  options[at] = option
+  save({ ...current, options })
+  return option
+}
+
+/** Delete an option. If it was the one in use, the original takes over. */
+export function removePromptOption(id: string): boolean {
+  const current = readPrompter()
+  if (!current.options.some(o => o.id === id)) return false
+  save({
+    ...current,
+    options: current.options.filter(o => o.id !== id),
+    active: current.active === id ? ORIGINAL_OPTION : current.active,
+  })
+  return true
+}
+
+/** Choose which way of asking rewrites prompts from now on. */
+export function setActivePrompt(id: string): string {
+  const current = readPrompter()
+  if (id !== ORIGINAL_OPTION && !current.options.some(o => o.id === id)) {
+    throw new Error('That option no longer exists.')
+  }
+  save({ ...current, active: id })
+  return id
+}
+
+/**
+ * The option a render will be rewritten with: the one asked for, or with none
+ * asked for, the one chosen in the Draw panel. One that no longer exists falls
+ * back to the original. Never fails, because the improver never fails a render:
+ * a deleted option costs the picture its chosen instructions, not the picture.
+ */
+export function resolvePromptOption(id?: string): { id: string; name: string; template: string } {
+  const s = readPrompter()
+  const original = { id: ORIGINAL_OPTION, name: ORIGINAL_NAME, template: s.template }
+  // Asked for by the picture (including an explicit "original"), else chosen in the panel.
+  const want = id ? id : s.active
+  if (want === ORIGINAL_OPTION) return original
+  const o = s.options.find(x => x.id === want)
+  return o ? { id: o.id, name: o.name, template: o.template } : original
 }
 
 /** Which model will do the rewriting, by precedence. */
@@ -304,6 +464,8 @@ export interface Improvement {
   ms:       number
   /** Why it fell back, for the job's detail line. '' when it worked. */
   why:      string
+  /** Which way of asking the improver used — "Original" or an option's name. Only the improver has options. */
+  option?:  string
 }
 
 /**
@@ -314,12 +476,16 @@ export interface Improvement {
  * toggle actively dangerous to leave on. A dead Ollama box should cost you a
  * better prompt, not your picture.
  */
-export async function improvePrompt(prompt: string, style: StyleFacts): Promise<Improvement> {
+export async function improvePrompt(prompt: string, style: StyleFacts, optionId?: string): Promise<Improvement> {
   const started = Date.now()
   const settings = readPrompter()
   const model = settings.model || ENV_MODEL || OLLAMA_MODEL
+  // Which way of asking: the option this picture was queued with, resolved
+  // again here so an option deleted while the picture waited falls back to the
+  // original instead of failing the render.
+  const option = resolvePromptOption(optionId)
   const give = (changed: boolean, text: string, why: string): Improvement => ({
-    prompt: text, original: prompt, changed, model, ms: Date.now() - started, why,
+    prompt: text, original: prompt, changed, model, ms: Date.now() - started, why, option: option.name,
   })
 
   const ctrl = new AbortController()
@@ -343,7 +509,7 @@ export async function improvePrompt(prompt: string, style: StyleFacts): Promise<
           // TWO MESSAGES, BUILT HERE, EVERY TIME. No history is threaded in and
           // none is kept: see the header. This is the whole of the conversation.
           messages: [
-            { role: 'system', content: buildSystemPrompt(settings.template, style) + extra },
+            { role: 'system', content: buildSystemPrompt(option.template, style) + extra },
             { role: 'user',   content: prompt },
           ],
           // Warmer than the guide generator's 0.3: this is a creative rewrite
