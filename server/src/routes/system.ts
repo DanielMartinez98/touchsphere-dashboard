@@ -27,6 +27,8 @@ const githubBranch = () => process.env['GITHUB_BRANCH'] ?? 'main'
 // which the 5-minute cache below keeps us far beneath — a token is only worth
 // setting if this server shares an outbound IP with other API consumers.
 const githubToken  = () => process.env['GITHUB_TOKEN'] ?? ''
+// Only ever changed by the test script, which stands a fake GitHub up locally.
+const githubApi    = () => (process.env['GITHUB_API'] ?? 'https://api.github.com').replace(/\/+$/, '')
 
 // Written by the final Dockerfile layer. The env var takes precedence so a
 // non-Docker deployment can supply it too; absent both (npm run dev) it stays
@@ -47,6 +49,11 @@ interface GitHubCommit { sha: string; date: string | null; message: string }
 // user tapping it repeatedly would both burn the hourly GitHub budget for no
 // new information — commits don't land that fast.
 const REMOTE_TTL_MS = 5 * 60 * 1000
+// A tap on "Check" asks GitHub again rather than repeating what it said up to
+// five minutes ago — which, in the minutes after a merge, was "up to date" and
+// read as the dashboard not seeing the merge at all. Still never more often
+// than this, so a finger on the button cannot spend the hour's budget.
+const FRESH_MIN_MS = 15_000
 let remoteCache: { at: number; commit: GitHubCommit } | null = null
 
 function githubHeaders(): Record<string, string> {
@@ -58,12 +65,13 @@ function githubHeaders(): Record<string, string> {
   return headers
 }
 
-async function fetchLatestCommit(): Promise<GitHubCommit> {
-  if (remoteCache && Date.now() - remoteCache.at < REMOTE_TTL_MS) return remoteCache.commit
+async function fetchLatestCommit(fresh = false): Promise<GitHubCommit> {
+  const ttl = fresh ? FRESH_MIN_MS : REMOTE_TTL_MS
+  if (remoteCache && Date.now() - remoteCache.at < ttl) return remoteCache.commit
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 10_000)
   try {
-    const url = `https://api.github.com/repos/${githubRepo()}/commits/${encodeURIComponent(githubBranch())}`
+    const url = `${githubApi()}/repos/${githubRepo()}/commits/${encodeURIComponent(githubBranch())}`
     const res = await fetch(url, { headers: githubHeaders(), signal: ctrl.signal })
     if (!res.ok) {
       const detail = await res.text().catch(() => '')
@@ -89,22 +97,92 @@ async function fetchLatestCommit(): Promise<GitHubCommit> {
 // How far behind, when both ends are real commits GitHub knows about. Best
 // effort: a locally-built image can be running a commit that was never pushed,
 // and GitHub answers 404 for it — that's a "behind, count unknown", not an error.
+// Cached per pair: the answer for two fixed commits never changes, and the
+// Debug and Server tabs both ask.
+const behindCache = new Map<string, number>()
 async function fetchBehindBy(base: string, head: string): Promise<number | null> {
+  const key = `${base}...${head}`
+  const hit = behindCache.get(key)
+  if (hit !== undefined) return hit
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 10_000)
   try {
-    const url = `https://api.github.com/repos/${githubRepo()}/compare/${base}...${head}`
+    const url = `${githubApi()}/repos/${githubRepo()}/compare/${base}...${head}`
     const res = await fetch(url, { headers: githubHeaders(), signal: ctrl.signal })
     if (!res.ok) return null
     const json = await res.json() as { ahead_by?: number }
     // base=running, head=branch tip → ahead_by counts commits the tip has that
     // the running build doesn't. That is what "behind" means from here.
-    return typeof json.ahead_by === 'number' ? json.ahead_by : null
+    if (typeof json.ahead_by !== 'number') return null
+    if (behindCache.size > 50) behindCache.clear()
+    behindCache.set(key, json.ahead_by)
+    return json.ahead_by
   } catch {
     return null
   } finally {
     clearTimeout(timer)
   }
+}
+
+// Whether CI has published the image for a commit yet. A merge is on GitHub
+// the moment it lands, but the image Watchtower installs is about ten minutes
+// of building behind it, and until it exists there is nothing any update can
+// pull — "behind" alone, in those minutes, reads as the dashboard failing to
+// find the merge. The publish workflow's run for that exact commit answers it:
+// still building, published (so Watchtower's next look installs it), failed
+// (so nothing will until the next push), or never run.
+type ImageState = 'published' | 'building' | 'failed' | 'none' | 'unknown'
+interface ImageBuild {
+  state:      ImageState
+  startedAt:  string | null
+  finishedAt: string | null
+  conclusion: string | null   // GitHub's word for a finished run: success, failure, cancelled, timed_out…
+  url:        string | null
+}
+const PUBLISH_WORKFLOW = 'docker-publish.yml'
+// A published image is final. Anything else can still change — a build in
+// progress finishes, and a failed one can be re-run — so it is asked about
+// again after this, or after FRESH_MIN_MS when someone taps Check.
+const BUILDING_TTL_MS  = 30_000
+const buildCache = new Map<string, { at: number; build: ImageBuild }>()
+
+async function fetchImageBuild(sha: string, fresh = false): Promise<ImageBuild> {
+  const hit = buildCache.get(sha)
+  const ttl = fresh ? FRESH_MIN_MS : hit?.build.state === 'building' ? BUILDING_TTL_MS : REMOTE_TTL_MS
+  if (hit && (hit.build.state === 'published' || Date.now() - hit.at < ttl)) return hit.build
+  const empty: ImageBuild = { state: 'unknown', startedAt: null, finishedAt: null, conclusion: null, url: null }
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 10_000)
+  let build = empty
+  try {
+    const url = `${githubApi()}/repos/${githubRepo()}/actions/workflows/${PUBLISH_WORKFLOW}/runs?head_sha=${encodeURIComponent(sha)}&per_page=5`
+    const res = await fetch(url, { headers: githubHeaders(), signal: ctrl.signal })
+    if (res.ok) {
+      const json = await res.json() as { workflow_runs?: {
+        status?: string; conclusion?: string | null; run_started_at?: string; updated_at?: string; html_url?: string
+      }[] }
+      // Newest first, so a re-run after a failure is the one that counts.
+      const run = json.workflow_runs?.[0]
+      if (!run) build = { ...empty, state: 'none' }
+      else {
+        const finished = run.status === 'completed'
+        build = {
+          state:      !finished ? 'building' : run.conclusion === 'success' ? 'published' : 'failed',
+          startedAt:  run.run_started_at ?? null,
+          finishedAt: finished ? (run.updated_at ?? null) : null,
+          conclusion: finished ? (run.conclusion ?? null) : null,
+          url:        run.html_url ?? null,
+        }
+      }
+    }
+  } catch {
+    // unknown: the line is left off rather than guessed at
+  } finally {
+    clearTimeout(timer)
+  }
+  if (buildCache.size > 20) buildCache.clear()
+  buildCache.set(sha, { at: Date.now(), build })
+  return build
 }
 
 // GET /api/system/version — what this container is, no network required.
@@ -126,11 +204,12 @@ router.get('/version', (_req: Request, res: Response) => {
 //   2. only buildTime() exists → a build predating the newest commit is behind
 // Neither available (dev server) → 'unknown', reported honestly rather than
 // guessed at.
-router.get('/version/check', async (_req: Request, res: Response) => {
+router.get('/version/check', async (req: Request, res: Response) => {
   const sha   = gitSha()
   const built = buildTime()
+  const fresh = req.query['fresh'] === '1'
   try {
-    const latest = await fetchLatestCommit()
+    const latest = await fetchLatestCommit(fresh)
 
     let status: 'up-to-date' | 'behind' | 'unknown' = 'unknown'
     let behindBy: number | null = null
@@ -149,11 +228,15 @@ router.get('/version/check', async (_req: Request, res: Response) => {
         : 'unknown'
     }
 
-    console.log(`[system] version check: ${status} (basis=${basis}${behindBy !== null ? `, behind ${behindBy}` : ''})`)
+    // Only worth asking when there is something newer to install.
+    const image = status === 'behind' && latest.sha ? await fetchImageBuild(latest.sha, fresh) : null
+
+    console.log(`[system] version check: ${status} (basis=${basis}${behindBy !== null ? `, behind ${behindBy}` : ''}${image ? `, image ${image.state}` : ''})`)
     res.json({
       status,
       basis,
       behindBy,
+      image,
       current: { sha: sha || null, shortSha: sha ? sha.slice(0, 7) : null, builtAt: built },
       latest:  { ...latest, shortSha: latest.sha.slice(0, 7) },
       repo:    githubRepo(),

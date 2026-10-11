@@ -1,5 +1,16 @@
+# ─── Why the build stages pin $BUILDPLATFORM ─────────────────────────────────
+# CI builds linux/amd64 and linux/arm64 (the Pi) on an amd64 runner, so every
+# step of an arm64 stage runs under QEMU — npm ci, Vite, tsc, all of it, tens of
+# times slower and flaky (the AES-GCM retries below, and on 2026-10-10 a build
+# that sat in the emulated stage for the full six hours). None of it needs to:
+# the client bundle, the compiled server and the server's production
+# node_modules are plain JavaScript, identical for both platforms. So those
+# three stages run on the runner's own platform, once, and the arm64 image only
+# emulates its last few lines (adduser, apk add). On a box building for itself
+# BUILDPLATFORM is the target, and nothing changes.
+
 # ─── Stage 1: Build the React/Vite client ───────────────────────────────────
-FROM node:22-alpine AS client-builder
+FROM --platform=$BUILDPLATFORM node:22-alpine AS client-builder
 
 # URL of the API the browser should hit (must match how users open the app).
 # Passed in from docker-compose `build.args.VITE_AUDIO_API`.
@@ -9,17 +20,16 @@ ENV VITE_AUDIO_API=$VITE_AUDIO_API
 WORKDIR /build/client
 COPY client/package*.json ./
 # Retry: under QEMU emulation OpenSSL's AES-GCM can intermittently corrupt the
-# TLS stream to the npm registry (ERR_SSL_CIPHER_OPERATION_FAILED). The failure
-# is flaky, so a couple of retries reliably gets a clean run. Root cause is the
-# emulator — update host QEMU (`tonistiigi/binfmt --install all`) and/or build
-# the native platform only to avoid it entirely.
+# TLS stream to the npm registry (ERR_SSL_CIPHER_OPERATION_FAILED). These stages
+# no longer run emulated in CI (see the top of the file), but a builder without
+# BuildKit's platform args would still emulate them, and a retry costs nothing.
 RUN npm ci || npm ci || npm ci
 COPY client/ ./
 RUN npm run build          # outputs to /build/client/dist
 
 
 # ─── Stage 2: Build the TypeScript server ────────────────────────────────────
-FROM node:22-alpine AS server-builder
+FROM --platform=$BUILDPLATFORM node:22-alpine AS server-builder
 
 WORKDIR /build/server
 COPY server/package*.json ./
@@ -29,7 +39,23 @@ COPY server/ ./
 RUN npm run build          # outputs to /build/server/dist
 
 
-# ─── Stage 3: Production image ───────────────────────────────────────────────
+# ─── Stage 3: The server's production dependencies ───────────────────────────
+# Installed natively and copied into the image, which is only right while none
+# of them is a native addon: an amd64 .node file in an arm64 image would fail
+# at require() on the Pi. The check makes that a build failure instead — if it
+# fires, move this `npm ci --omit=dev` back into the production stage.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS server-deps
+
+WORKDIR /build/server
+COPY server/package*.json ./
+RUN npm ci --omit=dev || npm ci --omit=dev || npm ci --omit=dev
+RUN if find node_modules -name '*.node' | grep -q .; then \
+      echo "A production dependency ships a native addon; it can't be installed on the build platform for every target:" >&2; \
+      find node_modules -name '*.node' >&2; exit 1; \
+    fi
+
+
+# ─── Stage 4: Production image ───────────────────────────────────────────────
 FROM node:22-alpine AS production
 
 # Non-root user for security
@@ -37,10 +63,9 @@ RUN addgroup -S app && adduser -S app -G app
 
 WORKDIR /app
 
-# Install only production dependencies
+# Production dependencies, installed natively in the stage above
 COPY server/package*.json ./server/
-# See client stage: retry guards against flaky AES-GCM/TLS failures under QEMU.
-RUN cd server && { npm ci --omit=dev || npm ci --omit=dev || npm ci --omit=dev; }
+COPY --from=server-deps /build/server/node_modules ./server/node_modules
 
 # Copy compiled server
 COPY --from=server-builder /build/server/dist ./server/dist

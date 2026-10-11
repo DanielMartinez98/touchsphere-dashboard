@@ -50,10 +50,12 @@ export interface HostStatus {
   tailscale?: { installed: boolean; version?: string; latest?: string; updateAvailable?: boolean; online?: boolean; ip?: string; health?: string[] }
   firmware?: { installed: boolean; devices: number; updates: { device: string; current: string; to: string }[] }
   containers?: { docker: string; projects: { file: string; name: string; running: number; total: number; services: { name: string; state: string; image: string }[] }[] }
-  dashboard?: { dir: string; commit: string; behind: number | null; lastSelfUpdate: string }
+  // fetchedAt: when the host last fetched the checkout's remote, which is all
+  // `behind` can know — absent from a host script older than the field.
+  dashboard?: { dir: string; commit: string; behind: number | null; fetchedAt?: string; lastSelfUpdate: string }
   /** The calendar app's checkout on the same box. Absent from a host script that predates it. */
   calendar?: {
-    dir: string; present: boolean; git: boolean; commit: string; behind: number | null
+    dir: string; present: boolean; git: boolean; commit: string; behind: number | null; fetchedAt?: string
     services: { name: string; state: string; image: string }[]; lastUpdate: string
     /** Where the checkout's path came from: "conf" (the installer wrote it) or "found" (the running container named it). */
     via?: string

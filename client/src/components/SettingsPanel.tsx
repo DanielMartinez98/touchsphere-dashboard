@@ -19,6 +19,7 @@ import { useImages, type StructureSettings, type PromptOption } from '../hooks/u
 import type { ParamsResponse } from '../hooks/useImages'
 import { useGuideActivity, type ActivityLevel } from '../hooks/useGuideActivity'
 import { useHost, useHostEnabled, type HostTask } from '../hooks/useHost'
+import { describeImage, useUpdateCheck, type UpdateCheck } from '../hooks/useUpdateCheck'
 import { useAiBox, useAiBoxEnabled, type AiBoxView } from '../hooks/useAiBox'
 import { usePresence, useLiveReadings } from '../hooks/usePresence'
 import { useMailSettings } from '../hooks/useMail'
@@ -2565,6 +2566,10 @@ function AiBoxTab() {
 
 function ServerTab() {
   const { info, status, statusError, statusBusy, refreshStatus, lines, state, run, runError } = useHost()
+  // What is running against the tip of main, and whether that tip's image
+  // exists yet — the checkout line below only says where the files on disk are.
+  const { update: version, check: checkVersion } = useUpdateCheck()
+  useEffect(() => { void checkVersion() }, [checkVersion])
   // The two destructive tasks are asked for twice. One slot rather than one
   // flag per task: opening a second confirmation closes the first.
   const [confirming, setConfirming] = useState<HostTask | null>(null)
@@ -2708,7 +2713,7 @@ function ServerTab() {
           {statusError && <p className="text-amber-200/80 text-xs">{statusError}</p>}
         </>,
         <>
-          <button type="button" onClick={() => { void refreshStatus() }} disabled={statusBusy || busy}
+          <button type="button" onClick={() => { void refreshStatus(); void checkVersion(true) }} disabled={statusBusy || busy}
             className="h-11 px-4 rounded-xl bg-white/10 text-white/80 text-sm font-semibold flex items-center gap-2 active:scale-95">
             <RotateCw size={14} className={statusBusy ? 'animate-spin' : ''} />
             Refresh
@@ -2807,14 +2812,30 @@ function ServerTab() {
       {status && dash && card(
         'This dashboard',
         <>
-          <p className="text-white/80 text-sm">
+          {/* Running first: it is what "Update the dashboard" changes. The
+              checkout is only where the compose file lives, and its "behind"
+              is whatever the host last fetched. */}
+          {version.data && (
+            <p className="text-white/80 text-sm">
+              {version.data.current.shortSha ? <>Running <span className="font-mono">{version.data.current.shortSha}</span></> : 'Running an unstamped build'}
+              {version.data.status === 'up-to-date'
+                ? <span className="text-emerald-300/90"> · the newest on {version.data.branch}</span>
+                : version.data.status === 'behind'
+                  ? <span className="text-cyan-200"> · {version.data.branch} is at <span className="font-mono">{version.data.latest.shortSha}</span>{version.data.behindBy ? `, ${version.data.behindBy} commit${version.data.behindBy === 1 ? '' : 's'} ahead` : ''}</span>
+                  : ''}
+            </p>
+          )}
+          {version.state === 'fail' && <p className="text-amber-200/80 text-xs">Couldn't ask GitHub for the newest commit: {version.error}</p>}
+          {version.data?.status === 'behind' && <p className="text-white/40 text-xs -mt-2">“{version.data.latest.message}”</p>}
+          <ImageLine check={version.data} />
+          <p className="text-white/50 text-xs">
             {dash.commit ? `Checkout at ${dash.commit}` : 'Checkout not found'}
-            {dash.behind != null && dash.behind > 0 ? <span className="text-cyan-200"> · {dash.behind} commit{dash.behind === 1 ? '' : 's'} behind</span>
-              : dash.behind === 0 ? <span className="text-white/40"> · up to date with the last fetch</span> : ''}
+            {dash.behind != null && dash.behind > 0 ? <span className="text-cyan-200/80"> · {dash.behind} commit{dash.behind === 1 ? '' : 's'} behind</span>
+              : dash.behind === 0 ? <span className="text-white/40"> · up to date{dash.fetchedAt ? ` as of ${ago(dash.fetchedAt)}` : ' with the last fetch'}</span> : ''}
           </p>
           <p className="text-white/25 text-xs leading-relaxed">
-            Pulls the newest published image (or rebuilds it here if there is none) and replaces this container. The screen goes dark for a few
-            minutes and comes back on its own.{dash.lastSelfUpdate ? ` Last done ${ago(dash.lastSelfUpdate)}.` : ''}
+            Pulls the image for the newest commit — waiting up to 20 minutes if it is still being built, building it here if it never
+            arrives — and replaces this container. The screen goes dark for a few minutes and comes back on its own.{dash.lastSelfUpdate ? ` Last done ${ago(dash.lastSelfUpdate)}.` : ''}
           </p>
         </>,
         dash.commit ? taskButton('self-update', 'Update the dashboard') : undefined,
@@ -2851,7 +2872,7 @@ function ServerTab() {
               {status.calendar.commit ? `Checkout at ${status.calendar.commit}` : 'Checkout is not a git repository'}
               {status.calendar.behind != null && status.calendar.behind > 0
                 ? <span className="text-cyan-200"> · {status.calendar.behind} commit{status.calendar.behind === 1 ? '' : 's'} behind</span>
-                : status.calendar.behind === 0 ? <span className="text-white/40"> · up to date with the last fetch</span> : ''}
+                : status.calendar.behind === 0 ? <span className="text-white/40"> · up to date{status.calendar.fetchedAt ? ` as of ${ago(status.calendar.fetchedAt)}` : ' with the last fetch'}</span> : ''}
             </p>
             {status.calendar.via === 'found' && (
               <p className="text-white/30 text-xs leading-relaxed">
@@ -4544,17 +4565,14 @@ interface VersionInfo {
   branch: string
 }
 
-interface UpdateCheck {
-  status: 'up-to-date' | 'behind' | 'unknown'
-  // Which comparison produced `status` — an exact commit match, or the weaker
-  // "was this built before the newest commit landed?". Worth showing, because
-  // the two justify different amounts of confidence.
-  basis: 'sha' | 'build-time' | 'none'
-  behindBy: number | null
-  current: { sha: string | null; shortSha: string | null; builtAt: string | null }
-  latest: { sha: string; shortSha: string; date: string | null; message: string }
-  repo: string
-  branch: string
+
+/** What became of the newest commit's image, for a dashboard that is behind —
+ *  still building, published, failed. See useUpdateCheck. */
+function ImageLine({ check }: { check: UpdateCheck | undefined }) {
+  const line = describeImage(check)
+  if (!line) return null
+  const tone = line.tone === 'bad' ? 'text-red-300/90' : line.tone === 'warn' ? 'text-amber-200/80' : 'text-cyan-200/80'
+  return <p className={`text-xs mt-1.5 leading-relaxed ${tone}`}>{line.text}</p>
 }
 
 /** Coarse "how long ago" for a timestamp. Days is as fine-grained as anyone
@@ -4663,7 +4681,7 @@ function DebugTab() {
   const [testingVoices, setTestingVoices] = useState(false)
   const [copied,    setCopied]    = useState<string | null>(null)
   const [version,   setVersion]   = useState<VersionInfo | null>(null)
-  const [update,    setUpdate]    = useState<{ state: 'idle' | 'checking' | 'done' | 'fail'; data?: UpdateCheck; error?: string }>({ state: 'idle' })
+  const { update, check: checkUpdate } = useUpdateCheck()
   const errors = useDebugLog()
 
   async function loadVersion() {
@@ -4675,25 +4693,6 @@ function DebugTab() {
       // Endpoint is missing on servers older than this feature, which is itself
       // the answer to "am I up to date?" — handled in the render below.
       setVersion(null)
-    }
-  }
-
-  // Hits GitHub (through the server, which caches for 5 min). Runs once on open
-  // so the answer is just there, and again on demand.
-  async function checkUpdate() {
-    setUpdate({ state: 'checking' })
-    try {
-      const res = await fetch(`${DEBUG_API}/api/system/version/check`)
-      if (!res.ok) {
-        // A 404 isn't a failed check so much as the answer to it: this server
-        // is old enough to predate the endpoint, so it is definitely behind.
-        if (res.status === 404) throw new Error('This server predates the update check — it is out of date. Rebuild the container.')
-        const j = await res.json().catch(() => ({})) as { detail?: string; error?: string }
-        throw new Error(j.detail ?? j.error ?? `HTTP ${res.status}`)
-      }
-      setUpdate({ state: 'done', data: await res.json() as UpdateCheck })
-    } catch (err) {
-      setUpdate({ state: 'fail', error: err instanceof Error ? err.message : String(err) })
     }
   }
 
@@ -4869,7 +4868,7 @@ function DebugTab() {
       <div className="flex items-center justify-between mb-2">
         <span className="text-white/40 text-xs font-semibold uppercase tracking-widest">Version</span>
         <button
-          onClick={() => { void loadVersion(); void checkUpdate() }}
+          onClick={() => { void loadVersion(); void checkUpdate(true) }}
           disabled={update.state === 'checking'}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 text-white/60 text-xs font-medium active:bg-white/20 disabled:opacity-40"
         >
@@ -4923,6 +4922,7 @@ function DebugTab() {
               )}
             </p>
           )}
+          {update.state !== 'fail' && <ImageLine check={upd} />}
         </div>
       </div>
 
