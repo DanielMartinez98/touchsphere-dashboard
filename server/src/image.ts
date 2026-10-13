@@ -1869,7 +1869,8 @@ async function run(job: ImageJob): Promise<void> {
     // overrides were patched into it. Re-estimating against it costs nothing and
     // keeps the bar honest for a job that overrode steps or cfg.
     const sampled = findNode(graph, ['KSampler', 'KSamplerAdvanced', 'SamplerCustom'])
-    const realSteps = sampled ? graph[sampled]!.inputs['steps'] : undefined
+    const stepsAt = stepsNodeOf(graph, sampled)
+    const realSteps = stepsAt ? graph[stepsAt]!.inputs['steps'] : undefined
     if (typeof realSteps === 'number' && realSteps > 0 && realSteps !== job.plannedSteps) {
       job.plannedSteps = realSteps
       refreshEstimate(job)
@@ -2306,10 +2307,12 @@ function fluxGraph(unet: string, weightDtype: string, t5: string): ComfyGraph {
  * The size an editor will hand back, for the frame's size text before the
  * render starts (the PNG header has the final say once it lands). Kontext
  * snaps to its published list; every other editor here fits the source to one
- * megapixel at its own shape, in multiples of eight.
+ * megapixel at its own shape, in multiples of eight (32 for Qwen-Image 2.1).
  */
 function editSize(style: string, w: number, h: number): { width: number; height: number } {
   if (style === `${WORKFLOW_PREFIX}flux-kontext-dev`) return kontextSize(w, h)
+  // Qwen-Image 2.1's encoder snaps to multiples of 32 rather than 8.
+  if (style === `${WORKFLOW_PREFIX}qwen-image-2.1-edit`) return sizeForMegapixels(w, h, 1, 32)
   return sizeForMegapixels(w, h, 1, 8)
 }
 
@@ -2406,6 +2409,159 @@ function qwenEditGraph(): ComfyGraph {
     },
     '11': { class_type: 'VAEDecode', inputs: { samples: ['10', 0], vae: ['3', 0] } },
     '12': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['11', 0] } },
+  }
+}
+
+/**
+ * Z-Image Turbo (Tongyi-MAI, 6B, Apache 2.0) — the fast photographic painter.
+ *
+ * Transcribed from ComfyUI's own `image_z_image_turbo` template with its
+ * subgraph flattened. Distilled: 8 steps at cfg 1 with `res_multistep` are the
+ * model, not a preference, so the quality row has no say. Its text encoder is
+ * Qwen-3 4B loaded as `lumina2` (the same S3-DiT family as Lumina), and like
+ * FLUX it has no negative: the sampler's negative is a ConditioningZeroOut of
+ * the positive. The VAE is the FLUX autoencoder, so a box with FLUX dev
+ * installed already has `ae.safetensors`.
+ */
+function zImageTurboGraph(): ComfyGraph {
+  return {
+    '1': { class_type: 'UNETLoader', inputs: { unet_name: 'z_image_turbo_bf16.safetensors', weight_dtype: 'default' } },
+    '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen_3_4b.safetensors', type: 'lumina2', device: 'default' } },
+    '3': { class_type: 'VAELoader', inputs: { vae_name: 'ae.safetensors' } },
+    '4': { class_type: 'ModelSamplingAuraFlow', inputs: { model: ['1', 0], shift: 3 } },
+    '5': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
+    '6': { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['5', 0] } },
+    '7': { class_type: 'EmptySD3LatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
+    '8': {
+      class_type: 'KSampler',
+      inputs: {
+        seed: 0, steps: 8, cfg: 1, sampler_name: 'res_multistep', scheduler: 'simple', denoise: 1,
+        model: ['4', 0], positive: ['5', 0], negative: ['6', 0], latent_image: ['7', 0],
+      },
+    },
+    '9': { class_type: 'VAEDecode', inputs: { samples: ['8', 0], vae: ['3', 0] } },
+    '10': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['9', 0] } },
+  }
+}
+
+/**
+ * Qwen-Image 2.1 (Sept 2026, 7B, Qwen Research License — non-commercial, which
+ * is what this kiosk is) — one model that both draws and edits.
+ *
+ * Transcribed from ComfyUI's own `image_qwen_image_2_1_t2i` and
+ * `image_qwen_image_2_1_image_edit` templates, subgraphs flattened and the
+ * optional prompt-enhancer branch dropped (the template ships it switched off,
+ * and this app's own improver does that job). Both halves share three loaders —
+ * the int8 diffusion model, Qwen3-VL 8B as the text encoder and the 2.1 VAE —
+ * and one encoder node, `TextEncodeQwenImage21`, which returns the positive,
+ * the negative AND (when handed a picture) the source's latent. Positive and
+ * negative coming out of the same node is why conditioningText() resolves both
+ * to it and buildGraph leaves the negative alone: the card runs cfg 1, where
+ * the negative is "unused".
+ *
+ * Needs a ComfyUI new enough to have `TextEncodeQwenImage21` and
+ * `QwenImage21Cache`; an older box fails the render naming the missing node.
+ */
+function qwenImage21Loaders(): ComfyGraph {
+  return {
+    '1': { class_type: 'UNETLoader', inputs: { unet_name: 'qwen_image_2.1_int8_convrot.safetensors', weight_dtype: 'default' } },
+    '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen3vl_8b_int8_convrot.safetensors', type: 'qwen_image', device: 'default' } },
+    '3': { class_type: 'VAELoader', inputs: { vae_name: 'qwen_image_2.1_vae_bf16.safetensors' } },
+    '4': { class_type: 'QwenImage21Cache', inputs: { model: ['1', 0], device: 'auto', dtype: 'default' } },
+  }
+}
+
+/** Qwen-Image 2.1 drawing from nothing. 25 steps is the template's; the card's own pipeline uses 40–50. */
+function qwenImage21Graph(): ComfyGraph {
+  return {
+    ...qwenImage21Loaders(),
+    '5': { class_type: 'TextEncodeQwenImage21', inputs: { clip: ['2', 0], prompt: '', negative_prompt: '', resolution: 1024 } },
+    '6': { class_type: 'EmptyLatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
+    '7': {
+      class_type: 'KSampler',
+      inputs: {
+        seed: 0, steps: 25, cfg: 1, sampler_name: 'euler', scheduler: 'simple', denoise: 1,
+        model: ['4', 0], positive: ['5', 0], negative: ['5', 1], latent_image: ['6', 0],
+      },
+    },
+    '8': { class_type: 'VAEDecode', inputs: { samples: ['7', 0], vae: ['3', 0] } },
+    '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['8', 0] } },
+  }
+}
+
+/**
+ * Qwen-Image 2.1 as an EDITOR. The source is `image_1` on the encoder, which
+ * fits it to `resolution`² pixels at its own shape (1024 is the card's
+ * default) and hands back its latent on output 2; the sampler starts from that
+ * at denoise 1, exactly as the 2511 editor does from its VAEEncode.
+ */
+function qwenImage21EditGraph(): ComfyGraph {
+  return {
+    ...qwenImage21Loaders(),
+    '5': { class_type: 'LoadImage', inputs: { image: '' } },
+    '6': {
+      class_type: 'TextEncodeQwenImage21',
+      inputs: { clip: ['2', 0], vae: ['3', 0], 'images.image_1': ['5', 0], prompt: '', negative_prompt: '', resolution: 1024 },
+    },
+    '7': {
+      class_type: 'KSampler',
+      inputs: {
+        seed: 0, steps: 25, cfg: 1, sampler_name: 'euler', scheduler: 'simple', denoise: 1,
+        model: ['4', 0], positive: ['6', 0], negative: ['6', 1], latent_image: ['6', 2],
+      },
+    },
+    '8': { class_type: 'VAEDecode', inputs: { samples: ['7', 0], vae: ['3', 0] } },
+    '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['8', 0] } },
+  }
+}
+
+/**
+ * FLUX.2 [klein] 9B distilled (Jan 2026, FLUX Non-Commercial License) — the
+ * fast EDITOR: 4 steps, about five seconds an edit where Qwen-Image-Edit 2511
+ * takes thirty, and in published side-by-sides the one that cleanly removes
+ * text and logos.
+ *
+ * Transcribed from ComfyUI's `image_flux2_klein_image_edit_9b_distilled`
+ * template, subgraph flattened. Same edit shape as Kontext — the source,
+ * fitted to one megapixel, is VAE-encoded and handed to BOTH conditionings
+ * through `ReferenceLatent`, the "negative" is a zeroed positive, and the
+ * sampler draws a fresh latent the source's size — with two FLUX.2 facts:
+ * the encoder is Qwen-3 8B loaded as `flux2`, and the sigmas come from
+ * `Flux2Scheduler`, whose shift depends on the resolution. That scheduler is
+ * why this graph samples through `SamplerCustom` (the template's
+ * SamplerCustomAdvanced + CFGGuider + RandomNoise, folded into the one node
+ * buildGraph knows how to seed) and why its step count lives on the scheduler
+ * — `stepsNodeOf()` follows the sampler's `sigmas` link to find it.
+ *
+ * The VAE is the full FLUX.2 one from Comfy-Org's ungated repo rather than the
+ * template's small-decoder variant, which only BFL's gated repo serves.
+ */
+function klein9bEditGraph(): ComfyGraph {
+  return {
+    '1': { class_type: 'UNETLoader', inputs: { unet_name: 'flux-2-klein-9b-fp8.safetensors', weight_dtype: 'default' } },
+    '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen_3_8b_fp8mixed.safetensors', type: 'flux2', device: 'default' } },
+    '3': { class_type: 'VAELoader', inputs: { vae_name: 'flux2-vae.safetensors' } },
+    '4': { class_type: 'LoadImage', inputs: { image: '' } },
+    '5': { class_type: 'ImageScaleToTotalPixels', inputs: { image: ['4', 0], upscale_method: 'lanczos', megapixels: 1.0, resolution_steps: 1 } },
+    '6': { class_type: 'GetImageSize', inputs: { image: ['5', 0] } },
+    '7': { class_type: 'VAEEncode', inputs: { pixels: ['5', 0], vae: ['3', 0] } },
+    '8': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
+    '9': { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['8', 0] } },
+    '10': { class_type: 'ReferenceLatent', inputs: { conditioning: ['8', 0], latent: ['7', 0] } },
+    '11': { class_type: 'ReferenceLatent', inputs: { conditioning: ['9', 0], latent: ['7', 0] } },
+    '12': { class_type: 'EmptyFlux2LatentImage', inputs: { width: ['6', 0], height: ['6', 1], batch_size: 1 } },
+    '13': { class_type: 'Flux2Scheduler', inputs: { steps: 4, width: ['6', 0], height: ['6', 1] } },
+    '14': { class_type: 'KSamplerSelect', inputs: { sampler_name: 'euler' } },
+    '15': {
+      class_type: 'SamplerCustom',
+      inputs: {
+        add_noise: true, noise_seed: 0, cfg: 1,
+        model: ['1', 0], positive: ['10', 0], negative: ['11', 0],
+        sampler: ['14', 0], sigmas: ['13', 0], latent_image: ['12', 0],
+      },
+    },
+    '16': { class_type: 'VAEDecode', inputs: { samples: ['15', 0], vae: ['3', 0] } },
+    '17': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['16', 0] } },
   }
 }
 
@@ -2842,6 +2998,91 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'text_encoders/clip_l.safetensors',
       'text_encoders/t5xxl_fp8_e4m3fn.safetensors',
       'vae/ae.safetensors',
+    ],
+  },
+  'qwen-image-2.1': {
+    label: 'Qwen-Image 2.1',
+    graph: qwenImage21Graph(),
+    // Read by Qwen3-VL 8B, a language model: sentences, not tags.
+    promptStyle: 'prose',
+    promptGuide:
+      'Write one long, specific paragraph of plain English (or Chinese), never a tag list. ' +
+      'This model reads its prompt with the Qwen3-VL language model and was trained on long ' +
+      'descriptions of the finished picture: describe it as if you were looking at it — the ' +
+      'subject and what it is doing, the setting, the lighting, the composition and camera ' +
+      'angle, the mood, and the art style (photograph, anime illustration, watercolour…). It ' +
+      'renders legible text very well, so put any words that should appear in the picture in ' +
+      'double quotes. Named characters and series may be used by name. There is no negative ' +
+      'prompt at its recommended settings, so only ever describe what you want.',
+    // cfg 1 is the card's official path, where the negative is computed and unused.
+    negative: '',
+    needs: [
+      'diffusion_models/qwen_image_2.1_int8_convrot.safetensors',
+      'text_encoders/qwen3vl_8b_int8_convrot.safetensors',
+      'vae/qwen_image_2.1_vae_bf16.safetensors',
+    ],
+  },
+  'z-image-turbo': {
+    label: 'Z-Image Turbo',
+    graph: zImageTurboGraph(),
+    // Distilled to 8 steps at cfg 1.
+    ignoresQuality: true,
+    promptStyle: 'prose',
+    promptGuide:
+      'Write a short, concrete paragraph of plain English (or Chinese), never a tag list. This ' +
+      'model reads its prompt with a Qwen-3 language model and is strongest at photorealism: ' +
+      'name the subject, what it is doing, the setting, the light (golden hour, overcast, ' +
+      'studio flash), the framing (close-up, wide shot) and the mood. It renders text, so put ' +
+      'any words that should appear in quotes. It has NO negative prompt, so never write what ' +
+      'you do not want. It is weaker at anime than the anime styles; say "anime illustration" ' +
+      'explicitly when that is wanted.',
+    // No negative: the sampler's is a ConditioningZeroOut of the positive.
+    needs: [
+      'diffusion_models/z_image_turbo_bf16.safetensors',
+      'text_encoders/qwen_3_4b.safetensors',
+      'vae/ae.safetensors',
+    ],
+  },
+  'qwen-image-2.1-edit': {
+    label: 'Qwen-Image 2.1 (edit)',
+    graph: qwenImage21EditGraph(),
+    edits: true,
+    promptStyle: 'prose',
+    promptGuide:
+      'This model EDITS the picture it is shown, so the prompt is an instruction, not a ' +
+      'description of a scene. Its text encoder is Qwen3-VL, a vision-language model that ' +
+      'looks at the picture while reading the instruction, so name the subject as it appears ' +
+      '("the girl with pink hair", "the man on the left") and say the change concretely: ' +
+      '"change her jacket to red leather", "make it night with rain", "remove the text on the ' +
+      'sign". It knows anime and named characters. Keep it to one or two sentences, do not ' +
+      'describe what is not changing, and put any text to add in double quotes.',
+    negative: '',
+    // Shares all three files with the Qwen-Image 2.1 painter.
+    needs: [
+      'diffusion_models/qwen_image_2.1_int8_convrot.safetensors',
+      'text_encoders/qwen3vl_8b_int8_convrot.safetensors',
+      'vae/qwen_image_2.1_vae_bf16.safetensors',
+    ],
+  },
+  'flux2-klein-9b-edit': {
+    label: 'FLUX.2 klein 9B (edit)',
+    graph: klein9bEditGraph(),
+    edits: true,
+    // Distilled: 4 steps at cfg 1 are the model.
+    ignoresQuality: true,
+    promptStyle: 'prose',
+    promptGuide:
+      'This model EDITS the picture it is shown, so the prompt is an instruction, not a ' +
+      'description of a scene. Say the change in plain English, precisely, and name the ' +
+      'subject as it appears: "replace the background with a quiet coastal cliff at sunset", ' +
+      '"change the woman\'s coat to yellow", "remove all the text and logos". One short clause ' +
+      'about what must not move is fine ("keep her pose and framing unchanged"); never list ' +
+      'everything to keep and never write a full scene description. Text to add goes in quotes.',
+    // No negative: a zeroed positive, as on every FLUX graph here.
+    needs: [
+      'diffusion_models/flux-2-klein-9b-fp8.safetensors',
+      'text_encoders/qwen_3_8b_fp8mixed.safetensors',
+      'vae/flux2-vae.safetensors',
     ],
   },
   'qwen-image-edit': {
@@ -3545,6 +3786,21 @@ function findNode(graph: ComfyGraph, classes: string[]): string | null {
  * Depth-limited because a workflow is user-supplied data: a cycle in one must
  * come back as null rather than hang the render thread.
  */
+/**
+ * The node whose `steps` input is the step count: the sampler itself for a
+ * KSampler, or — for a SamplerCustom, which takes its schedule as `sigmas` —
+ * the scheduler node that link leads to (FLUX.2's Flux2Scheduler). Null when
+ * neither declares one.
+ */
+function stepsNodeOf(graph: ComfyGraph, samplerId: string | null): string | null {
+  if (!samplerId || !graph[samplerId]) return null
+  const inputs = graph[samplerId]!.inputs
+  if ('steps' in inputs) return samplerId
+  const sig = inputs['sigmas']
+  const id = Array.isArray(sig) && typeof sig[0] === 'string' ? sig[0] : null
+  return id && graph[id] && 'steps' in graph[id]!.inputs ? id : null
+}
+
 function conditioningText(graph: ComfyGraph, startId: string | null): string | null {
   let id = startId
   for (let hop = 0; id && hop < 8; hop++) {
@@ -3627,7 +3883,8 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
   if ('noise_seed' in sampler.inputs) sampler.inputs['noise_seed'] = job.seed
   // Job steps win; COMFYUI_STEPS is the fallback for a server with no UI choice.
   const steps = job.steps > 0 ? job.steps : STEPS
-  if (steps > 0 && 'steps' in sampler.inputs) sampler.inputs['steps'] = steps
+  const stepsAt = stepsNodeOf(graph, samplerId)
+  if (steps > 0 && stepsAt) graph[stepsAt]!.inputs['steps'] = steps
   // cfg is only ever set when someone explicitly asked for one. Left alone the
   // graph keeps its own value, which for a style like Anima is the model
   // author's number and not something to overwrite with a house default.
@@ -4004,6 +4261,7 @@ function renderedWith(job: ImageJob, graph: ComfyGraph, changed?: number | null)
   const samplerId = findNode(graph, ['KSampler', 'KSamplerAdvanced', 'SamplerCustom'])
   const inputs = samplerId ? graph[samplerId]!.inputs : {}
   const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+  const stepsAt = stepsNodeOf(graph, samplerId)
   const t = (v: unknown) => (typeof v === 'string' ? v : '')
 
   // Guidance and the negative are both read the way buildGraph wrote them,
@@ -4025,7 +4283,7 @@ function renderedWith(job: ImageJob, graph: ComfyGraph, changed?: number | null)
   return {
     style:      job.model,
     styleLabel: styleLabel(job.model),
-    steps:      n(inputs['steps']),
+    steps:      n(stepsAt ? graph[stepsAt]!.inputs['steps'] : undefined),
     cfg:        guidance || n(inputs['cfg']),
     sampler:    t(inputs['sampler_name']),
     scheduler:  t(inputs['scheduler']),
@@ -4097,6 +4355,7 @@ export function styleDefaults(style: string): StyleDefaults {
 
   const samplerId = findNode(graph, ['KSampler', 'KSamplerAdvanced', 'SamplerCustom'])
   const inputs = samplerId ? graph[samplerId]!.inputs : {}
+  const stepsAt = stepsNodeOf(graph, samplerId)
   const latentId = findNode(graph, ['EmptyLatentImage', 'EmptySD3LatentImage', 'EmptyLatentImageAdvanced'])
   const latent = latentId ? graph[latentId]!.inputs : {}
   const n = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d)
@@ -4110,7 +4369,7 @@ export function styleDefaults(style: string): StyleDefaults {
   const guidance = guidanceId ? graph[guidanceId]!.inputs['guidance'] : undefined
 
   return {
-    steps:     n(inputs['steps'], fallback.steps),
+    steps:     n(stepsAt ? graph[stepsAt]!.inputs['steps'] : undefined, fallback.steps),
     cfg:       n(guidance, n(inputs['cfg'], fallback.cfg)),
     width:     n(latent['width'], fallback.width),
     height:    n(latent['height'], fallback.height),

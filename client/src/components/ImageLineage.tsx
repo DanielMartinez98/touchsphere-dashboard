@@ -38,7 +38,7 @@ function toolOf(st: ImageSettings | null, origin: string): { label: string; icon
   if (origin === 'web') return { label: 'Found on the web', icon: <Globe size={13} /> }
   if (!st?.source) return { label: 'Drawn from scratch', icon: <Sparkles size={13} /> }
   if (st.mask) return { label: 'Changed a part', icon: <Lasso size={13} /> }
-  if (/kontext/i.test(st.styleLabel ?? '')) return { label: 'Instruction edit', icon: <Wand2 size={13} /> }
+  if (/kontext|\(edit\)/i.test(st.styleLabel ?? '')) return { label: 'Instruction edit', icon: <Wand2 size={13} /> }
   return { label: 'Redrawn whole', icon: <Brush size={13} /> }
 }
 
@@ -60,7 +60,7 @@ function verdict(st: ImageSettings | null): { tone: 'bad' | 'warn'; text: string
   const tone = 'warn' as const
   const lead = `This measured ${pct}% change.`
   const causes: string[] = []
-  const isEdit = /kontext/i.test(st.styleLabel ?? '')
+  const isEdit = /kontext|\(edit\)/i.test(st.styleLabel ?? '')
   const prompt = (st.promptOriginal ?? st.fullPrompt ?? '').toLowerCase()
 
   if (isEdit && /\b(keep|keeping|unchanged|the same|preserve|don't change|do not change)\b/.test(prompt)) {
