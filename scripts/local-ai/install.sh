@@ -69,7 +69,8 @@ usage() {
 
 Options:
   --data DIR             where the models and caches go (default: the largest non-system disk)
-  --models SET[,SET…]    picture models to download: anime (default), edit, flux, all, none
+  --models SET[,SET…]    picture models to download: anime (default), edit, flux,
+                         qwen21, zimage, klein (gated: set HF_TOKEN), all, none
   --llm MODEL            Ollama chat model (default: OLLAMA_MODEL from .env, else qwen3:8b)
   --vision MODEL         Ollama vision model for the picture tools (default: OLLAMA_VISION_MODEL, else gemma4)
   --whisper-model ID     Whisper model to warm (default: WHISPER_MODEL from .env, else Systran/faster-whisper-small)
@@ -340,15 +341,37 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
     "vae/ae.safetensors|https://huggingface.co/Comfy-Org/Lumina_Image_2.0_Repackaged/resolve/main/split_files/vae/ae.safetensors|0.35"
   )
 
+  # Qwen-Image 2.1: one set of files serves both the painter and the editor.
+  QWEN21_FILES=(
+    "diffusion_models/qwen_image_2.1_int8_convrot.safetensors|https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/diffusion_models/qwen_image_2.1_int8_convrot.safetensors|6.8"
+    "text_encoders/qwen3vl_8b_int8_convrot.safetensors|https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/text_encoders/qwen3vl_8b_int8_convrot.safetensors|8.7"
+    "vae/qwen_image_2.1_vae_bf16.safetensors|https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors|0.65"
+  )
+  ZIMAGE_FILES=(
+    "diffusion_models/z_image_turbo_bf16.safetensors|https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/diffusion_models/z_image_turbo_bf16.safetensors|11.5"
+    "text_encoders/qwen_3_4b.safetensors|https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors|7.5"
+    "vae/ae.safetensors|https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors|0.35"
+  )
+  # The klein 9B weights are only on Black Forest Labs' own repo, which is
+  # GATED: accept the licence on huggingface.co once and run with HF_TOKEN set.
+  KLEIN_FILES=(
+    "diffusion_models/flux-2-klein-9b-fp8.safetensors|https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-fp8/resolve/main/flux-2-klein-9b-fp8.safetensors|9.5"
+    "text_encoders/qwen_3_8b_fp8mixed.safetensors|https://huggingface.co/Comfy-Org/flux2-klein-9B/resolve/main/split_files/text_encoders/qwen_3_8b_fp8mixed.safetensors|8.7"
+    "vae/flux2-vae.safetensors|https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/vae/flux2-vae.safetensors|0.35"
+  )
+
   WANT=()
   for set in ${MODELS//,/ }; do
     case "$set" in
       anime) WANT+=("${ANIME_FILES[@]}") ;;
       edit)  WANT+=("${EDIT_FILES[@]}") ;;
       flux)  WANT+=("${FLUX_FILES[@]}") ;;
-      all)   WANT+=("${ANIME_FILES[@]}" "${EDIT_FILES[@]}" "${FLUX_FILES[@]}") ;;
+      qwen21) WANT+=("${QWEN21_FILES[@]}") ;;
+      zimage) WANT+=("${ZIMAGE_FILES[@]}") ;;
+      klein) WANT+=("${KLEIN_FILES[@]}") ;;
+      all)   WANT+=("${ANIME_FILES[@]}" "${EDIT_FILES[@]}" "${FLUX_FILES[@]}" "${QWEN21_FILES[@]}" "${ZIMAGE_FILES[@]}" "${KLEIN_FILES[@]}") ;;
       none)  ;;
-      *) die "unknown model set '$set' (anime, edit, flux, all, none)" ;;
+      *) die "unknown model set '$set' (anime, edit, flux, qwen21, zimage, klein, all, none)" ;;
     esac
   done
 
@@ -387,7 +410,8 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
         echo "   downloading $rel…"
         # Resumable, with retries; the .part is renamed only when complete, so a
         # cut download can never be mistaken for a model by ComfyUI.
-        if curl -fL --retry 5 --retry-delay 5 -C - -o "$dest.part" "$url"; then
+        # HF_TOKEN reaches the gated repos (klein); harmless on the open ones.
+        if curl -fL --retry 5 --retry-delay 5 -C - ${HF_TOKEN:+-H "Authorization: Bearer $HF_TOKEN"} -o "$dest.part" "$url"; then
           mv "$dest.part" "$dest"
         else
           warn "   failed: $url — re-run to resume; the rest continue"
