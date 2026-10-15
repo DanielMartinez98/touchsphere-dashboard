@@ -164,6 +164,12 @@ export interface PrompterSettings {
    */
   retryBelow:     number
   /**
+   * Let the improver reword the request: skip the check that every name and
+   * noun the user typed survives the rewrite. Off by default, because that
+   * check is what stops "launch from dragon ball" becoming "goku".
+   */
+  rewordFreely:   boolean
+  /**
    * More ways to ask, beside the original `template`. Each is a named copy of
    * the instructions that can be changed without touching the original, so two
    * approaches can be tried side by side on the same request. Created, renamed,
@@ -202,6 +208,7 @@ const DEFAULTS: PrompterSettings = {
   editTemplate:   DEFAULT_EDIT_TEMPLATE,
   editModel:      '',
   retryBelow:     0,
+  rewordFreely:   false,
   options:        [],
   active:         ORIGINAL_OPTION,
 }
@@ -237,6 +244,7 @@ export function readPrompter(): PrompterSettings {
       editModel: typeof raw.editModel === 'string' ? raw.editModel.trim().slice(0, 120) : '',
       retryBelow: typeof raw.retryBelow === 'number' && Number.isFinite(raw.retryBelow)
         ? Math.min(0.5, Math.max(0, raw.retryBelow)) : 0,
+      rewordFreely: raw.rewordFreely === true,
       ...readOptions(raw.options, raw.active),
     }
   } catch {
@@ -291,6 +299,7 @@ export function writePrompter(patch: Partial<PrompterSettings>): PrompterSetting
   if (typeof patch.retryBelow === 'number' && Number.isFinite(patch.retryBelow)) {
     next.retryBelow = Math.min(0.5, Math.max(0, patch.retryBelow))
   }
+  if (typeof patch.rewordFreely === 'boolean') next.rewordFreely = patch.rewordFreely
   // `options` and `active` are not patched here: each has its own function
   // below with its own rules, and a stray field in a settings patch must not
   // be able to replace the whole list.
@@ -592,7 +601,7 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
     if (!text.includes(',') && text.split(/\s+/).length > 8 && /\btags?\b/i.test(style.guidance)) {
       return give(false, prompt, 'the rewrite came back as one run of words with no commas, so your own words were kept')
     }
-    let lost = missingWords(prompt, text)
+    let lost = settings.rewordFreely ? [] : missingWords(prompt, text)
     if (lost.length > 0) {
       // One more go, colder and told what went wrong. On an 8B model the
       // first answer misspells a surname ("hiyuga") often enough that always
@@ -633,7 +642,22 @@ const KEEP_STOPWORDS = new Set([
   'their', 'them', 'they', 'she', 'him', 'who', 'while', 'when', 'where', 'some', 'very', 'like', 'just',
   'please', 'draw', 'make', 'picture', 'image', 'photo', 'render', 'wearing', 'holding', 'sitting',
   'standing', 'looking', 'background', 'style', 'anime', 'original', 'character', 'series', 'version',
+  // Intensifiers and hedges: they shade a request but name nothing in it, and
+  // a rewrite that says "completely" for "fully" lost nothing worth a fallback.
+  'fully', 'really', 'quite', 'totally', 'completely', 'extremely', 'super', 'pretty', 'rather', 'somewhat',
+  'slightly', 'highly', 'much', 'more', 'most', 'also', 'even', 'still', 'only', 'then', 'than', 'there',
+  'here', 'about', 'around', 'each', 'other', 'both', 'being', 'have', 'having', 'doing', 'going', 'should',
+  'would', 'could', 'want', 'need', 'something', 'someone', 'thing', 'things', 'kind', 'sort', 'make',
+  'made', 'look', 'looks', 'show', 'showing', 'shows', 'together', 'against', 'behind', 'between',
 ])
+
+/**
+ * Adverbs and -ful adjectives ("beautifully", "colourful"). They shade the
+ * subject rather than name it, and the model's synonym keeps the request; a
+ * name or a noun still has to survive. Seven letters or more and not -ily, so
+ * short names like Emily, Kelly or Holly are never waved through.
+ */
+const SOFT_ENDINGS = /^(?=.{7,}$).*(?:[^i]ly|ful)$/
 
 /**
  * The significant words of the request that the rewrite no longer contains.
@@ -649,8 +673,12 @@ export function missingWords(original: string, rewrite: string): string[] {
     s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/['’]s/g, '').replace(/[^a-z0-9\s-]/g, ' '),
   )
   const have = norm(rewrite)
-  const words = [...new Set(norm(original).split(/[\s-]+/).filter(w => w.length >= 4 && !KEEP_STOPWORDS.has(w) && !/^\d+$/.test(w)))]
-  return words.filter(w => !have.includes(w) && !have.includes(w.replace(/s$/, '')))
+  const words = [...new Set(norm(original).split(/[\s-]+/).filter(w =>
+    w.length >= 4 && !KEEP_STOPWORDS.has(w) && !/^\d+$/.test(w) && !SOFT_ENDINGS.test(w)))]
+  // Matched on the stem as well, so "fighting" survives as "fight" or
+  // "fights" and "dueling" as "duel".
+  const stem = (w: string) => w.replace(/(ing|ed|es|s)$/, '')
+  return words.filter(w => !have.includes(w) && !have.includes(stem(w)))
 }
 
 /** Hair and eye colours, and artist tags, that the user never asked for. */

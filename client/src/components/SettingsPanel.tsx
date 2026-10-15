@@ -1517,6 +1517,14 @@ function DrawingTab() {
           onChange={enabled => { void setPrompter({ enabled }) }}
         />
         <SwitchRow
+          title="Let it reword freely"
+          description={<>Off: every name and noun you typed has to survive the rewrite, or your own words are
+            drawn instead (filler like "fully" or "really" doesn't count). That is what stops "launch from
+            dragon ball" coming back as Goku. On: the rewrite may reword anything.</>}
+          on={prompter.rewordFreely === true}
+          onChange={rewordFreely => { void setPrompter({ rewordFreely }) }}
+        />
+        <SwitchRow
           title="Safety tags"
           description={<>Several styles' built-in text carries the rating tag <code className="text-white/60">safe</code> in
             front and <code className="text-white/60">nsfw</code> in the negative, because the assistant draws
