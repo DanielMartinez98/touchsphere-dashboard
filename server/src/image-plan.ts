@@ -29,7 +29,7 @@
 import { broadcast } from './routes/system'
 import {
   cancelJob, getJob, imageDifference, listImages, listModels, listWorkflowStyles, missingFiles, selectedModel, startImage,
-  styleEdits, styleLabel, styleNeeds, stylePromptStyle, supersededCheckpoints,
+  styleEdits, styleIsAnima, styleLabel, styleNeeds, stylePromptStyle, supersededCheckpoints,
   segmentationAvailable, inpaintAvailable,
   type ImageJob,
 } from './image'
@@ -50,6 +50,8 @@ const PLAN_TIMEOUT_MS = Number(process.env['OLLAMA_IMAGE_TIMEOUT_MS'] ?? 45_000)
 const STEP_TIMEOUT_MS = 20 * 60_000
 const MAX_STEPS = 8
 const MAX_PLANS = 30
+/** Longest prompt a step keeps, except a step drawn with Anima, which keeps all of it. */
+const MAX_STEP_PROMPT = 600
 
 export type PlanMode = 'edit' | 'part' | 'whole'
 export type Strength = 'light' | 'balanced' | 'strong'
@@ -387,7 +389,8 @@ async function askPlanner(image: Buffer, request: string, tools: PlanMode[], sty
     const steps: PlanStep[] = []
     for (const s of raw.slice(0, MAX_STEPS)) {
       const mode = String(s['mode'] ?? '').toLowerCase() as PlanMode
-      const prompt = String(s['prompt'] ?? '').trim().slice(0, 600)
+      // Cut to MAX_STEP_PROMPT once the step's style is settled — see createPlan().
+      const prompt = String(s['prompt'] ?? '').trim()
       if (!prompt) continue
       const region = String(s['region'] ?? '').trim().slice(0, 120)
       const strengthRaw = String(s['strength'] ?? '').toLowerCase()
@@ -498,6 +501,10 @@ export function createPlan(source: string, request: string, run: boolean, minSte
       const fallback = await pickDrawStyle()
       for (const st of steps) {
         if (st.mode !== 'edit' && !st.style && fallback) { st.style = fallback; st.styleLabel = styleLabel(fallback) }
+        // A step drawn with Anima keeps its whole prompt, as a typed one does
+        // (promptLimit() in image.ts); every other step is cut. Done here and
+        // not when the answer is parsed, because only now is the style known.
+        if (!(st.style && styleIsAnima(st.style))) st.prompt = st.prompt.slice(0, MAX_STEP_PROMPT)
       }
       plan.summary = summary
       plan.steps = steps
