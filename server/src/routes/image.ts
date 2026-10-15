@@ -749,7 +749,7 @@ router.post('/prompter', (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown> | undefined
   const patch: {
     enabled?: boolean; template?: string; model?: string
-    visionTemplate?: string; editTemplate?: string; editModel?: string; retryBelow?: number
+    visionTemplate?: string; editTemplate?: string; editModel?: string; retryBelow?: number; rewordFreely?: boolean
   } = {}
   if (typeof body?.['enabled']  === 'boolean') patch.enabled  = body['enabled']
   if (typeof body?.['template'] === 'string')  patch.template = body['template']
@@ -758,6 +758,7 @@ router.post('/prompter', (req: Request, res: Response) => {
   if (typeof body?.['editTemplate'] === 'string') patch.editTemplate = body['editTemplate']
   if (typeof body?.['editModel']    === 'string') patch.editModel    = body['editModel']
   if (typeof body?.['retryBelow']   === 'number') patch.retryBelow   = body['retryBelow']
+  if (typeof body?.['rewordFreely'] === 'boolean') patch.rewordFreely = body['rewordFreely']
   const saved = writePrompter(patch)
   console.log(
     `[image] prompt improver ${saved.enabled ? 'on' : 'off'}` +

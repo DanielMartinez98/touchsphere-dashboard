@@ -109,6 +109,8 @@ export interface PrompterSettings {
   editModel:             string
   /** Redraw an edit that changed less than this fraction; 0 = never. */
   retryBelow:            number
+  /** Skip the check that every name and noun you typed survives the rewrite. */
+  rewordFreely?:         boolean
   /**
    * More ways of asking the improver, beside the original `template`. Created
    * and edited in Settings → Drawing; one is chosen in the Draw panel.
