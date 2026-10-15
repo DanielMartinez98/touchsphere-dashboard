@@ -1367,6 +1367,7 @@ export function startImage(req: ImageRequest): ImageJob {
   // the knobs are stored PER STYLE — see image-params.ts.
   const style = (req.model ?? '').trim() || selectedModel()
   const p = paramsFor(style)
+  const limit = promptLimit(style)
 
   // A redraw starts from a picture already in the gallery. Resolved here rather
   // than in run() so a bad id is refused while someone is still looking at the
@@ -1439,17 +1440,18 @@ export function startImage(req: ImageRequest): ImageJob {
 
   const job: ImageJob = {
     id:        crypto.randomBytes(16).toString('hex'),
-    prompt:    req.prompt.slice(0, MAX_PROMPT),
+    // Cut to MAX_PROMPT, except on Anima, which takes the whole thing — see promptLimit().
+    prompt:    req.prompt.slice(0, limit),
     // Precedence, widest to narrowest: this request → the user's per-style
     // override from Settings → the style's own published text → the house
     // default. `??` and not `||` throughout, because an override of '' is a
     // real answer meaning "add nothing" and must not fall through to the
     // built-in it was set to switch off.
     negative:  (req.negative ?? p.negative ?? (styleNegative(style) || DEFAULT_NEGATIVE))
-      .slice(0, MAX_PROMPT),
-    prefix:         (p.prefix ?? stylePrefixFor(style)).slice(0, MAX_PROMPT),
-    optimizations:  (p.optimizations ?? styleOptimizations(style)).slice(0, MAX_PROMPT),
-    negativePrefix: (p.negativePrefix ?? styleNegativePrefixFor(style)).slice(0, MAX_PROMPT),
+      .slice(0, limit),
+    prefix:         (p.prefix ?? stylePrefixFor(style)).slice(0, limit),
+    optimizations:  (p.optimizations ?? styleOptimizations(style)).slice(0, limit),
+    negativePrefix: (p.negativePrefix ?? styleNegativePrefixFor(style)).slice(0, limit),
     width:     size.width,
     height:    size.height,
     // Random by default: a fixed seed makes every image of "a cat" identical,
@@ -1684,7 +1686,7 @@ async function run(job: ImageJob): Promise<void> {
     try { bytes = fs.readFileSync(path.join(imagesDir(), job.sourceFile)) } catch { bytes = null }
     const seen = bytes
       ? await composeRedrawPrompt(bytes, job.prompt, {
-          label: styleLabel(job.model), guidance: stylePromptGuide(job.model),
+          label: styleLabel(job.model), guidance: stylePromptGuide(job.model), maxChars: promptLimit(job.model),
         })
       : null
     job.improveMs += seen?.ms ?? 0
@@ -1721,6 +1723,7 @@ async function run(job: ImageJob): Promise<void> {
     const better = await improvePrompt(job.prompt, {
       label:    styleLabel(job.model),
       guidance: stylePromptGuide(job.model),
+      maxChars: promptLimit(job.model),
     }, job.promptOption)
     job.improveMs += better.ms
     if (better.changed) {
@@ -1886,7 +1889,7 @@ async function run(job: ImageJob): Promise<void> {
 
     // Anima only: the creator tag the improver was asked for and may have
     // dropped. Applied to job.prompt so the gallery shows the prompt as drawn.
-    if (BUILTIN_WORKFLOWS[job.model.slice(WORKFLOW_PREFIX.length)]?.promptStyle === 'mixed') {
+    if (styleIsAnima(job.model)) {
       const fixed = applyAnimaFidelity(job.prompt, job.promptOriginal ?? '')
       if (fixed.added) {
         console.log(`[image] ${job.id} added the series' creator for fidelity: ${fixed.added}`)
@@ -3715,6 +3718,33 @@ export function styleInpaintPatch(style: string): string {
 export function styleUpscales(style: string): boolean {
   if (!style.startsWith(WORKFLOW_PREFIX)) return false
   return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.upscales === true
+}
+
+/**
+ * True for the Anima family (base, aesthetic, turbo, the 2.9B preview).
+ *
+ * `promptStyle: 'mixed'` is what marks one — the field exists for Anima and
+ * nothing else carries it. Not a test on the id: `anima` is also the start of
+ * `animagine-xl-4`, an SDXL checkpoint with a CLIP encoder.
+ */
+export function styleIsAnima(style: string): boolean {
+  return stylePromptStyle(style) === 'mixed'
+}
+
+/**
+ * The longest prompt, negative or prefix a style is handed, in characters.
+ *
+ * MAX_PROMPT for every style except Anima, which has no limit. The cap was set
+ * for CLIP, which reads a prompt 77 tokens at a time and weights the front of
+ * it, so the tail of a long prompt is tokens spent on very little. Anima reads
+ * its prompt with Qwen-3 0.6B, a language model with a context far longer than
+ * any prompt, and its guide asks for tags plus sentences of at least two — on
+ * Anima the cap only ever cut real words off the end, the part the user typed
+ * last. The same limit is handed to the improver and the redraw composer, so a
+ * long rewrite for Anima is kept rather than refused for its length.
+ */
+export function promptLimit(style: string): number {
+  return styleIsAnima(style) ? Infinity : MAX_PROMPT
 }
 
 /** True for a style that edits an existing picture rather than drawing one. */

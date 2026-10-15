@@ -422,6 +422,14 @@ export interface StyleFacts {
   label:    string
   /** That model's published prompting guidance. */
   guidance: string
+  /**
+   * The longest rewrite accepted, in characters. MAX_PROMPT_CHARS when absent;
+   * Infinity for Anima, whose encoder reads a prompt of any length (see
+   * promptLimit() in image.ts) — the improver and the redraw composer then
+   * keep a long answer instead of refusing it, and the model may write as
+   * much as it wants.
+   */
+  maxChars?: number
 }
 
 /**
@@ -522,6 +530,7 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
   const give = (changed: boolean, text: string, why: string): Improvement => ({
     prompt: text, original: prompt, changed, model, ms: Date.now() - started, why, option: option.name,
   })
+  const maxChars = style.maxChars ?? MAX_PROMPT_CHARS
 
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
@@ -558,7 +567,10 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
         // and a render that starts while 5 GB of language model is still resident
         // runs in paged mode — a 53 s edit took 6 minutes that way.
         keep_alive: 0,
-        options: { num_ctx: 8192, temperature, num_predict: 400 },
+        // No cap on the answer for a style with no length limit (Anima): 400
+        // tokens would cut a long rewrite off mid-tag. TIMEOUT_MS still ends
+        // a model that never stops.
+        options: { num_ctx: 8192, temperature, num_predict: Number.isFinite(maxChars) ? 400 : -1 },
         }),
       })
       if (!res.ok) {
@@ -580,7 +592,8 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
     if (looksLikeRefusal(text)) return give(false, prompt, `${model} refused to rewrite this prompt`)
     // A rewrite that came back enormous is a model that started explaining
     // itself. The sampler would spend its whole context on the explanation.
-    if (text.length > MAX_PROMPT_CHARS) {
+    // Not checked for Anima (maxChars is Infinity), whose encoder reads it all.
+    if (text.length > maxChars) {
       return give(false, prompt, `the rewrite came back ${text.length} characters long`)
     }
     // A model that refuses, or answers the question instead of rewriting it,
@@ -613,7 +626,7 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
           `Danbooru spells that name. Answer with the prompt only.`,
           0.3,
         )
-        if (again && again.length <= MAX_PROMPT_CHARS && missingWords(prompt, again).length === 0) {
+        if (again && again.length <= maxChars && missingWords(prompt, again).length === 0) {
           text = again
           lost = []
         }
@@ -767,6 +780,7 @@ export async function composeRedrawPrompt(
   const give = (changed: boolean, text: string, why: string): Improvement => ({
     prompt: text, original: change, changed, model, ms: Date.now() - started, why,
   })
+  const maxChars = style.maxChars ?? MAX_PROMPT_CHARS
 
   // The user's own template (Settings → Drawing), read per call for the same
   // reason the improver's is: an edit has to reach the NEXT redraw.
@@ -800,7 +814,8 @@ export async function composeRedrawPrompt(
         // and a render that starts while 5 GB of language model is still resident
         // runs in paged mode — a 53 s edit took 6 minutes that way.
         keep_alive: 0,
-        options: { num_ctx: 8192, temperature: 0.4, num_predict: 500 },
+        // Uncapped for Anima, as in improvePrompt().
+        options: { num_ctx: 8192, temperature: 0.4, num_predict: Number.isFinite(maxChars) ? 500 : -1 },
       }),
     })
 
@@ -813,7 +828,7 @@ export async function composeRedrawPrompt(
     const text = unwrap(json.message?.content ?? json.response ?? '')
     if (!text) return give(false, change, `${model} returned an empty answer`)
     if (looksLikeRefusal(text)) return give(false, change, `${model} refused to describe this picture`)
-    if (text.length > MAX_PROMPT_CHARS) {
+    if (text.length > maxChars) {
       return give(false, change, `the description came back ${text.length} characters long`)
     }
     // A description of a whole picture is never shorter than the change asked
