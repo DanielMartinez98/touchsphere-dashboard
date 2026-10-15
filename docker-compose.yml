@@ -183,7 +183,13 @@ services:
 
   # ── Watchtower — auto-pulls new image when GitHub Actions publishes one ────
   watchtower:
-    image: containrrr/watchtower
+    # The maintained fork, a drop-in for containrrr/watchtower: the original was
+    # archived in December 2025 and speaks Docker API 1.25, which Docker 29
+    # refuses ("client version 1.25 is too old"), so on an up-to-date host it
+    # stops updating anything without saying so where anyone looks. Same
+    # environment variables and arguments; apply with
+    #   docker compose up -d watchtower
+    image: nickfedor/watchtower:latest
     container_name: watchtower
     restart: unless-stopped
     volumes:
