@@ -133,6 +133,9 @@ function Facts({ st, origin }: { st: ImageSettings | null; origin: string }) {
   if (st?.steps) rows.push(['Steps', String(st.steps)])
   if (st?.cfg) rows.push(['Guidance', String(st.cfg)])
   if (st?.improvedBy) rows.push(['Prompt rewritten by', st.improvedWith ? `${st.improvedBy} · ${st.improvedWith}` : st.improvedBy])
+  else if (st?.improver && st.improver.state !== 'rewritten') {
+    rows.push(['Prompt improver', `${st.improver.state === 'failed' ? 'did not run' : 'skipped'}${st.improver.why ? ` · ${st.improver.why}` : ''}`])
+  }
   if (!rows.length) return null
   return (
     <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 mt-1.5">

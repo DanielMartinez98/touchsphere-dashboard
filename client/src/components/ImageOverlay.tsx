@@ -39,7 +39,7 @@ import ImageLineage from './ImageLineage'
 import { redrawImage, reuseImagePrompt } from '../hooks/useImagePrompt'
 import { enhanceImage, upscalerStyle } from '../hooks/useImages'
 import { onServerEvent } from '../hooks/useServerEvents'
-import type { StoredImage } from '../hooks/useImages'
+import type { ImproverOutcome, StoredImage } from '../hooks/useImages'
 
 /**
  * The gallery entry, whole.
@@ -265,6 +265,11 @@ export function ImageOverlay() {
             <p className="selectable-text text-sm text-white/85 leading-snug line-clamp-3">
               {planStep ? planStep.prompt : target.prompt}
             </p>
+            {/* What the prompt improver did, on the picture itself rather than
+                behind the details button: a fallback to the typed words used to
+                show only in the passing status line, so a picture the improver
+                never reached looked exactly like one it had rewritten. */}
+            <ImproverLine outcome={job?.improver ?? entry?.settings?.improver} />
           </div>
           <CloseImageButton onClick={closeImage} />
         </div>
@@ -618,6 +623,11 @@ function ImageDetails({
     // With the option that asked, when it was one: comparing options is the
     // reason they exist, so a picture says which one it came from.
     rows.push({ label: 'Prompt improved by', value: st.improvedWith ? `${st.improvedBy} · ${st.improvedWith}` : st.improvedBy })
+  } else if (st?.improver && st.improver.state !== 'rewritten') {
+    rows.push({
+      label: 'Prompt improver',
+      value: `${st.improver.state === 'failed' ? 'did not run' : 'skipped'}${st.improver.why ? ` · ${st.improver.why}` : ''}`,
+    })
   }
   const when = new Date(image.at)
   rows.push({
@@ -961,4 +971,24 @@ function planAsJob(plan: EditPlan): ImageJobState | null {
     return { ...base, status: 'ready', phase: 'done', detail: plan.summary, ...(plan.resultUrl ? { url: plan.resultUrl } : {}) }
   }
   return null
+}
+
+/**
+ * One line under the caption saying what the prompt improver did. Nothing when
+ * it was off; amber when it failed, because that is the case that used to be
+ * silent and is the one worth noticing.
+ */
+function ImproverLine({ outcome }: { outcome: ImproverOutcome | undefined }) {
+  if (!outcome) return null
+  const text = outcome.state === 'rewritten' ? 'Prompt improved'
+    : outcome.state === 'skipped' ? `Prompt used as typed${outcome.why ? ` · ${outcome.why}` : ''}`
+    : `Prompt not improved${outcome.why ? ` · ${outcome.why}` : ''}`
+  const tone = outcome.state === 'failed' ? 'text-amber-300/90'
+    : outcome.state === 'rewritten' ? 'text-violet-300/80' : 'text-white/40'
+  return (
+    <p className={`selectable-text flex items-start gap-1.5 mt-1 text-[12px] leading-snug ${tone}`}>
+      <Wand2 size={12} className="shrink-0 mt-[2px]" />
+      <span className="min-w-0 break-words">{text}</span>
+    </p>
+  )
 }

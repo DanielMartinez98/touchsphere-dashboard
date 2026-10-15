@@ -57,6 +57,18 @@ export interface ImageSettings {
   improvedWith?:   string
   /** Booster text that was appended to the prompt, when there was any. */
   optimizations?:  string
+  /** What the prompt improver did, when it was on for this picture. Absent when it was off. */
+  improver?:       ImproverOutcome
+}
+
+/**
+ * What the prompt improver did to one picture: rewrote the prompt, skipped it
+ * on purpose (a marked part, an editing style), or failed and drew the words
+ * as typed — with the reason, which used to live only in a passing status line.
+ */
+export interface ImproverOutcome {
+  state: 'rewritten' | 'skipped' | 'failed'
+  why?:  string
 }
 
 /**

@@ -130,7 +130,6 @@ interface Props {
    */
   improveDefault: boolean | null
   /** Persist the switch, so it is remembered the next time the panel opens. */
-  onImproveChange: (on: boolean) => void
   /**
    * The improver's ways of asking: the original first, then the options made
    * in Settings → Drawing. Chosen here, never created here — making one is a
@@ -278,7 +277,7 @@ export default function ImageExpanded({
   styles, capabilities, keepPoseDefault, holdDefaults, model, quality,
   params, defaults, loras, autoLora, inpaintPatchInfo,
   onModel, onQuality, onParams, onResetParams, onGenerate, onDelete, onClear, onCancel,
-  improveDefault, onImproveChange, onUpload,
+  improveDefault, onUpload,
   promptChoices, activePrompt, onPromptOption,
 }: Props) {
   // The compose field lives in a module store rather than here, so the
@@ -918,9 +917,12 @@ export default function ImageExpanded({
 
       {/* ── Improve my prompt ──
           Directly under the field it acts on, because it changes what that text
-          becomes. A switch rather than a checkbox: this is a setting that
-          persists, not a one-off, and the label says which model does it so it
-          is obvious this is not the assistant reading over your shoulder. */}
+          becomes. The label says which model does it so it is obvious this is not the assistant reading over your shoulder.
+          It applies to the pictures asked for from this panel only and is NOT
+          saved: the default it starts from is Settings → Drawing's. It used to
+          write the default too, so turning it off for one picture quietly
+          turned it off for every later one, which read as "the improver
+          sometimes does nothing". */}
       {improveDefault !== null && (
         <button
           type="button"
@@ -929,7 +931,6 @@ export default function ImageExpanded({
           onClick={() => {
             const on = !improve.on
             setImprove({ on, seeded: true })
-            onImproveChange(on)
           }}
           className={`shrink-0 flex items-center gap-3 rounded-2xl px-3 py-3 border text-left
                       transition-colors active:scale-[0.99] ${

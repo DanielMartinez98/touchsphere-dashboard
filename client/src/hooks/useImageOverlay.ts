@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 import { onServerEvent } from './useServerEvents'
+import type { ImproverOutcome } from './useImages'
 
 export interface ImageTarget {
   jobId:  string
@@ -92,6 +93,9 @@ export interface ImageJobState {
   /** Set only on a REDRAW: the gallery id this one started from, and how far it went. */
   source?:   string
   denoise?:  number
+  /** Whether the improver was asked for on this picture, and once it has run, what it did. */
+  improve?:  boolean
+  improver?: ImproverOutcome
 }
 
 /**
@@ -134,6 +138,8 @@ export function useImageJob(jobId: string | null, alreadyDone: boolean): ImageJo
       // one that failed, which is the one substitution this feature must not make.
       ...(typeof d['source']  === 'string' ? { source:  d['source']  as string } : {}),
       ...(typeof d['denoise'] === 'number' ? { denoise: d['denoise'] as number } : {}),
+      ...(typeof d['improve'] === 'boolean' ? { improve: d['improve'] as boolean } : {}),
+      ...(d['improver'] && typeof d['improver'] === 'object' ? { improver: d['improver'] as ImproverOutcome } : {}),
     })
   }, [jobId])
 
