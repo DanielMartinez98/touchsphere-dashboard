@@ -2764,10 +2764,29 @@ const CHARACTER_ALIASES: Array<[RegExp, string]> = [
   [/\blaunch\b(?=[\s\S]*\bdragon ?ball\b)/i, 'lunch (dragon ball)'],
   [/\b(?:gogetsu )?power\b(?=[\s\S]*\bchainsaw man\b)/i, 'power (chainsaw man)'],
   [/\bnami\b(?=[\s\S]*\bone piece\b)/i, 'nami (one piece)'],
+  [/\battack on titan\b/i, 'shingeki no kyojin'],
   [/\bkrillin\b/i, 'kuririn'],
   [/\bbulma\b/i, 'bulma'],
   [/\bzoro\b(?=[\s\S]*\bone piece\b)/i, 'roronoa zoro'],
   [/\bluffy\b(?=[\s\S]*\bone piece\b)/i, 'monkey d. luffy'],
+  // Characters a small local model keeps getting wrong in fight prompts: the
+  // Western name order, a dropped surname, or a garbled romanisation
+  // ("roro nozoro"). Danbooru files Japanese names family-name first, with
+  // long vowels written out (gojou, ryoumen, tanjirou).
+  [/\b(?:roro ?nozoro|roro rojin|zoro rojin|roronoa)\b/i, 'roronoa zoro'],
+  [/\bmihawk\b(?=[\s\S]*\bone piece\b)/i, 'dracule mihawk'],
+  [/\b(?:son )?goku\b(?=[\s\S]*\bdragon ?ball\b)/i, 'son goku'],
+  [/\bgojo(?: satoru)?\b(?=[\s\S]*\bjujutsu kaisen\b)/i, 'gojou satoru'],
+  [/\b(?:ryomen )?sukuna\b(?=[\s\S]*\bjujutsu kaisen\b)/i, 'ryoumen sukuna'],
+  [/\bitadori(?: yuji)?\b(?=[\s\S]*\bjujutsu kaisen\b)/i, 'itadori yuuji'],
+  [/\blevi(?: ackerman)?\b(?=[\s\S]*\b(?:attack on titan|shingeki no kyojin)\b)/i, 'levi (shingeki no kyojin)'],
+  [/\bmikasa\b(?=[\s\S]*\b(?:attack on titan|shingeki no kyojin)\b)/i, 'mikasa ackerman'],
+  [/\beren(?: jaeger| yeager)?\b(?=[\s\S]*\b(?:attack on titan|shingeki no kyojin)\b)/i, 'eren yeager'],
+  [/\bsasuke(?: uchiha)?\b/i, 'uchiha sasuke'],
+  [/\bitachi(?: uchiha)?\b/i, 'uchiha itachi'],
+  [/\bkakashi(?: hatake)?\b/i, 'hatake kakashi'],
+  [/\btanjiro(?: kamado)?\b/i, 'kamado tanjirou'],
+  [/\bnezuko(?: kamado)?\b/i, 'kamado nezuko'],
 ]
 
 export function applyAnimaFidelity(prompt: string, original = ''): { prompt: string; added: string } {
@@ -2787,6 +2806,11 @@ export function applyAnimaFidelity(prompt: string, original = ''): { prompt: str
   // "lunch (dragon ball) (dragon ball)": the model had already written the
   // bracketed series after the dub name the alias replaced.
   out = out.replace(/(\([^)]+\))\s*\1/g, '$1')
+  // The model glues the series straight onto a character ("gojou satoru
+  // jujutsu kaisen"), which the encoder reads as one unknown name.
+  out = out.replace(
+    /\b(gojou satoru|ryoumen sukuna|itadori yuuji|roronoa zoro|dracule mihawk|monkey d\. luffy|son goku)\s+(jujutsu kaisen|one piece|dragon ?ball)\b/gi,
+    '$1, $2')
   if (f.creator && !/(^|[,\s])@/.test(out)) {
     for (const [series, creator] of ANIMA_CREATORS) {
       const m = series.exec(out)
