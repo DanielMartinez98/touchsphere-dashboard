@@ -888,7 +888,10 @@ export async function composeKontextInstruction(
         // Unloaded the moment it answers: this model shares the card with
         // ComfyUI, and the render it is about to trigger needs the VRAM.
         keep_alive: 0,
-        options: { num_ctx: 8192, temperature: 0.3, num_predict: 200 },
+        // No cap on the answer and no length check below: an instruction is
+        // used however long it comes back. TIMEOUT_MS still ends a model that
+        // never stops.
+        options: { num_ctx: 8192, temperature: 0.3, num_predict: -1 },
       }),
     })
     if (!res.ok) {
@@ -898,7 +901,6 @@ export async function composeKontextInstruction(
     const json = (await res.json()) as { message?: { content?: string }; response?: string }
     const text = unwrap(json.message?.content ?? json.response ?? '').replace(/\s+/g, ' ').trim()
     if (!text) return give(false, request, `${model} returned nothing`)
-    if (text.length > 600) return give(false, request, `the instruction came back ${text.length} characters long`)
     if (text.toLowerCase() === request.toLowerCase()) return give(false, request, `${model} gave the same words back`)
     return give(true, text, '')
   } catch (err) {
