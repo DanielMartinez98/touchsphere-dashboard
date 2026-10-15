@@ -451,6 +451,32 @@ function unwrap(raw: string): string {
   return text
 }
 
+/**
+ * A failed call, said the way a person needs it. An abort is our own deadline
+ * firing, and "This operation was aborted" read as a crash; the model is loaded
+ * fresh for every picture (keep_alive 0), so a slow first answer is usually
+ * the load, not the model being gone. Undici hides the real cause of
+ * "fetch failed" (refused, unknown host, timeout) one level down.
+ */
+export function describeCallError(err: unknown, who: string, url: string): string {
+  const e = err as { name?: string; message?: string; cause?: { code?: string; message?: string } }
+  if (e?.name === 'AbortError' || /aborted/i.test(e?.message ?? '')) {
+    return `${who} took longer than ${Math.round(TIMEOUT_MS / 1000)}s to answer (it is loaded fresh for each picture, so it may still have been loading)`
+  }
+  const cause = e?.cause?.code || e?.cause?.message || ''
+  let host = url
+  try { host = new URL(url).host } catch { /* keep as is */ }
+  return `${who} could not be reached at ${host}${cause ? ` (${cause})` : e?.message ? ` (${String(e.message).slice(0, 80)})` : ''}`
+}
+
+/**
+ * A model that declined, rather than one that broke. Told apart so the
+ * picture says "refused" plainly instead of reading as a fault to fix.
+ */
+export function looksLikeRefusal(text: string): boolean {
+  return /^(i'?m sorry|sorry,|i can(?:no|')t|i cannot|i won'?t|i am unable|i'?m unable|as an ai)\b/i.test(text.trim())
+}
+
 export interface Improvement {
   /** The prompt to actually render. Always non-empty. */
   prompt:   string
@@ -490,12 +516,14 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
 
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
+  let url = imageModelUrl()
   try {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
 
     const ask = async (extra: string, temperature: number): Promise<string> => {
-      const res = await fetch(`${(await ollamaUrlSettled('image')).replace(/\/$/, '')}/api/chat`, {
+      url = (await ollamaUrlSettled('image')).replace(/\/$/, '')
+      const res = await fetch(`${url}/api/chat`, {
         method: 'POST',
         headers,
         signal: ctrl.signal,
@@ -527,7 +555,7 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
       if (!res.ok) {
         const body = await res.text().catch(() => '')
         console.warn(`[image-prompt] ollama ${res.status}: ${body.slice(0, 200)}`)
-        throw new Error(`the prompt model answered ${res.status}`)
+        throw new Error(`${model} answered HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ''}`)
       }
       const json = (await res.json()) as { message?: { content?: string }; response?: string }
       return unwrap(json.message?.content ?? json.response ?? '')
@@ -536,9 +564,11 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
     try {
       text = await ask('', 0.7)
     } catch (err) {
-      return give(false, prompt, err instanceof Error ? err.message : String(err))
+      const httpErr = err instanceof Error && err.message.startsWith(`${model} answered HTTP`)
+      return give(false, prompt, httpErr ? (err as Error).message : describeCallError(err, model, url))
     }
-    if (!text) return give(false, prompt, 'the prompt model returned nothing')
+    if (!text) return give(false, prompt, `${model} returned an empty answer`)
+    if (looksLikeRefusal(text)) return give(false, prompt, `${model} refused to rewrite this prompt`)
     // A rewrite that came back enormous is a model that started explaining
     // itself. The sampler would spend its whole context on the explanation.
     if (text.length > MAX_PROMPT_CHARS) {
@@ -592,7 +622,7 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.warn('[image-prompt] error:', msg)
-    return give(false, prompt, `the prompt model could not be reached (${msg.slice(0, 80)})`)
+    return give(false, prompt, describeCallError(err, model, url))
   } finally {
     clearTimeout(timer)
   }
@@ -716,11 +746,13 @@ export async function composeRedrawPrompt(
 
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
+  let url = imageModelUrl()
   try {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
 
-    const res = await fetch(`${(await ollamaUrlSettled('image')).replace(/\/$/, '')}/api/chat`, {
+    url = (await ollamaUrlSettled('image')).replace(/\/$/, '')
+    const res = await fetch(`${url}/api/chat`, {
       method: 'POST',
       headers,
       signal: ctrl.signal,
@@ -747,11 +779,12 @@ export async function composeRedrawPrompt(
     if (!res.ok) {
       const body = await res.text().catch(() => '')
       console.warn(`[image-prompt] vision ${res.status}: ${body.slice(0, 200)}`)
-      return give(false, change, `the vision model answered ${res.status}`)
+      return give(false, change, `${model} answered HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ''}`)
     }
     const json = (await res.json()) as { message?: { content?: string }; response?: string }
     const text = unwrap(json.message?.content ?? json.response ?? '')
-    if (!text) return give(false, change, 'the vision model returned nothing')
+    if (!text) return give(false, change, `${model} returned an empty answer`)
+    if (looksLikeRefusal(text)) return give(false, change, `${model} refused to describe this picture`)
     if (text.length > MAX_PROMPT_CHARS) {
       return give(false, change, `the description came back ${text.length} characters long`)
     }
@@ -764,7 +797,7 @@ export async function composeRedrawPrompt(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.warn('[image-prompt] vision error:', msg)
-    return give(false, change, `the vision model could not be reached (${msg.slice(0, 80)})`)
+    return give(false, change, describeCallError(err, model, url))
   } finally {
     clearTimeout(timer)
   }

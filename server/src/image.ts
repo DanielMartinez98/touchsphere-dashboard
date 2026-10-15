@@ -515,6 +515,12 @@ export interface ImageSettings {
   improvedWith?:   string
   /** Booster text appended to the prompt for this style, when there was any. */
   optimizations?:  string
+  /**
+   * What the prompt improver did, when it was switched on for this picture:
+   * rewrote it, skipped it on purpose, or failed — with the reason. Absent
+   * when it was off.
+   */
+  improver?: { state: 'rewritten' | 'skipped' | 'failed'; why?: string }
 }
 
 export interface StoredImage {
@@ -932,6 +938,17 @@ export interface ImageJob {
    * rather than with the GPU.
    */
   improveMs:      number
+  /**
+   * What the improver did to THIS picture, when it was asked to: rewrote the
+   * prompt, skipped it on purpose (a masked part, an editing style), or failed
+   * and fell back to the words as typed. '' when it was off. Kept on the job
+   * and the stored picture because the fallback used to be visible only in the
+   * passing detail line, so a picture drawn from the typed words looked exactly
+   * like one the improver had chosen to leave alone.
+   */
+  improveState:   '' | 'rewritten' | 'skipped' | 'failed'
+  /** Why it was skipped or failed, in a sentence. '' when it rewrote the prompt. */
+  improveWhy:     string
   /** When it was asked for. Distinct from startedAt, which run() resets. */
   queuedAt: number
   /** Set once status is 'ready'. Serve via /api/image/file/<file>. */
@@ -1153,6 +1170,10 @@ function wire(job: ImageJob) {
     } : {}),
     ...(job.file  ? { file: job.file, url: `/api/image/file/${job.file}` } : {}),
     ...(job.error ? { error: job.error } : {}),
+    // Whether the improver was asked for, and what it did. Sent from the first
+    // frame so the queue and the frame can say "will be improved" before it runs.
+    improve:   job.improve,
+    ...(job.improveState ? { improver: { state: job.improveState, ...(job.improveWhy ? { why: job.improveWhy } : {}) } } : {}),
     // The client orders its own copy of the queue by this. Position can't be
     // sent instead: a frame is pushed when ONE job changes, and every other
     // job's position moves when the one in front of it finishes.
@@ -1519,6 +1540,8 @@ export function startImage(req: ImageRequest): ImageJob {
     promptOption:   resolvePromptOption(req.promptOption).id,
     improvedWith:   '',
     improveMs:      0,
+    improveState:   '',
+    improveWhy:     '',
     queuedAt:  Date.now(),
     startedAt: Date.now(),
   }
@@ -1646,7 +1669,11 @@ async function run(job: ImageJob): Promise<void> {
     // improver would embellish a whole scene, and the vision composer would
     // describe the whole picture — both are ways of telling the sampler to
     // repaint more than was asked for.
-    if (job.improve) improveNote = ' The prompt is used as written: it describes what goes in the marked part.'
+    if (job.improve) {
+      improveNote = ' The prompt is used as written: it describes what goes in the marked part.'
+      job.improveState = 'skipped'
+      job.improveWhy = 'a change to one part of a picture uses your words as typed'
+    }
   } else if (job.source && !edits && (job.improve || job.sourceUpload)) {
     push(job, 'looking at the picture',
       `Showing the original to ${visionModel()} so it can describe the whole picture with ` +
@@ -1665,17 +1692,25 @@ async function run(job: ImageJob): Promise<void> {
       job.promptOriginal = seen.original
       job.improvedBy = seen.model
       job.prompt = seen.prompt
+      job.improveState = 'rewritten'
       improveNote = ' The prompt was written from the original picture plus your change.'
       console.log(`[image] ${job.id} redraw prompt composed by ${seen.model}: "${seen.prompt.slice(0, 80)}"`)
-    } else if (seen?.why) {
-      improveNote = ` The prompt was left exactly as you wrote it — ${seen.why}.`
-      console.warn(`[image] ${job.id} redraw prompt not composed — ${seen.why}`)
+    } else {
+      const why = seen?.why || (bytes ? `${seen?.model ?? visionModel()} handed back your words unchanged` : 'the original picture could not be read from the gallery')
+      job.improveState = 'failed'
+      job.improveWhy = why
+      improveNote = ` The prompt was left exactly as you wrote it — ${why}.`
+      console.warn(`[image] ${job.id} redraw prompt not composed — ${why}`)
     }
   } else if (edits) {
     // Nothing to improve: an instruction is the format, and the user's own
     // words are the instruction. Said in the detail so a switched-on improver
     // that appears to do nothing here reads as deliberate.
-    if (job.improve) improveNote = ' The prompt is used as written: this style takes instructions, not descriptions.'
+    if (job.improve) {
+      improveNote = ' The prompt is used as written: this style takes instructions, not descriptions.'
+      job.improveState = 'skipped'
+      job.improveWhy = `${styleLabel(job.model)} takes your words as an instruction, so they are used as typed`
+    }
   } else if (job.improve) {
     const option = resolvePromptOption(job.promptOption)
     const withOption = option.id === ORIGINAL_OPTION ? '' : ` with "${option.name}"`
@@ -1693,11 +1728,18 @@ async function run(job: ImageJob): Promise<void> {
       job.improvedBy = better.model
       job.improvedWith = better.option ?? ''
       job.prompt = better.prompt
+      job.improveState = 'rewritten'
       improveNote = ` The prompt was rewritten for this style first${better.option && better.option !== ORIGINAL_NAME ? `, using "${better.option}"` : ''}.`
       console.log(`[image] ${job.id} prompt improved by ${better.model} (${better.option ?? ORIGINAL_NAME}): "${better.prompt.slice(0, 80)}"`)
-    } else if (better.why) {
-      improveNote = ` The prompt was left exactly as you wrote it — ${better.why}.`
-      console.warn(`[image] ${job.id} prompt not improved — ${better.why}`)
+    } else {
+      // Every fallback is recorded, including a rewrite that came back
+      // identical: "the improver ran and agreed with you" and "the improver
+      // never answered" must not look the same on the finished picture.
+      const why = better.why || `${better.model} handed back your words unchanged`
+      job.improveState = 'failed'
+      job.improveWhy = why
+      improveNote = ` The prompt was left exactly as you wrote it — ${why}.`
+      console.warn(`[image] ${job.id} prompt not improved by ${better.model} (${better.ms}ms) — ${why}`)
     }
   }
 
@@ -4294,6 +4336,9 @@ function renderedWith(job: ImageJob, graph: ComfyGraph, changed?: number | null)
     ...(job.promptOriginal
       ? { promptOriginal: job.promptOriginal, improvedBy: job.improvedBy, ...(job.improvedWith ? { improvedWith: job.improvedWith } : {}) }
       : {}),
+    // What the improver did, whenever it was asked to run — absent when it was
+    // off, so a picture drawn with it off says nothing about it.
+    ...(job.improveState ? { improver: { state: job.improveState, ...(job.improveWhy ? { why: job.improveWhy } : {}) } } : {}),
     // Recorded only when there was one, so its presence is the record — the
     // same rule as promptOriginal. Without it the stored prompt and the picture
     // disagree for no visible reason.

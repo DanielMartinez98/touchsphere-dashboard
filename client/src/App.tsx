@@ -91,7 +91,7 @@ function App() {
     queue: imageQueue, queueMax: imageQueueMax, drawError: imageDrawError,
     cancel: cancelImage,
     drawingEtaMs: imageEtaMs, drawingElapsedMs: imageElapsedMs,
-    prompter: imagePrompter, setPrompter: setImagePrompter, upload: uploadImage,
+    prompter: imagePrompter, upload: uploadImage,
     setActivePrompt: setImagePromptOption,
     capabilities: imageCapabilities, structure: imageStructure,
   } = useImages()
@@ -479,7 +479,6 @@ function App() {
               onClear={clearImages}
               onCancel={cancelImage}
               improveDefault={imagePrompter ? imagePrompter.enabled : null}
-              onImproveChange={on => { void setImagePrompter({ enabled: on }) }}
               promptChoices={imagePrompter
                 ? [{ id: imagePrompter.originalId, name: imagePrompter.originalName }, ...imagePrompter.options.map(o => ({ id: o.id, name: o.name }))]
                 : []}
