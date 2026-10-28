@@ -439,6 +439,11 @@ export interface StyleFacts {
   /** That model's published prompting guidance. */
   guidance: string
   /**
+   * The improver's best practices for this model (styleImproverGuide() in
+   * image.ts): appended after the chosen way of asking, never written into it.
+   */
+  bestPractices?: string
+  /**
    * The longest rewrite accepted, in characters. MAX_PROMPT_CHARS when absent;
    * Infinity for Anima, whose encoder reads a prompt of any length (see
    * promptLimit() in image.ts) — the improver and the redraw composer then
@@ -488,9 +493,30 @@ export function thinkingLine(long: boolean): string {
     : '\n3. Think fast: a few short notes on the essentials only, then the prompt.'
 }
 
-/** The improver's whole system prompt: the chosen instructions, the answer format, how long to think. */
+/**
+ * The model's best practices, appended after the chosen way of asking.
+ *
+ * A step of its own rather than the {{guidance}} placeholder, because a way of
+ * asking the user wrote need not contain that placeholder at all — and then the
+ * improver was writing for a model it had been told nothing about. Every way of
+ * asking now ends on the same per-model page, which leads with what matters
+ * most here: a named character must come out looking like their series.
+ */
+export function bestPracticesBlock(style: StyleFacts): string {
+  const text = style.bestPractices?.trim()
+  if (!text) return ''
+  return `\n\nBEST PRACTICES FOR ${style.label || 'THIS MODEL'} (added by the app for this model; ` +
+    `they take priority over anything above that disagrees with them):\n${text}`
+}
+
+/** The improver's whole system prompt: the chosen instructions, the model's best practices, the answer format, how long to think. */
 export function improverSystemPrompt(template: string, style: StyleFacts, long = readPrompter().thinkLong): string {
-  return buildSystemPrompt(template, style) + ANSWER_FORMAT + thinkingLine(long)
+  const built = buildSystemPrompt(template, style)
+  // A way of asking that already carries the same page through {{guidance}}
+  // (Anima's two are one text) does not need it twice.
+  const page = style.bestPractices?.trim()
+  const block = page && built.includes(page) ? '' : bestPracticesBlock(style)
+  return built + block + ANSWER_FORMAT + thinkingLine(long)
 }
 
 /**

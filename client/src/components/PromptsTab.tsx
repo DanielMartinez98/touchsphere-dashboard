@@ -512,6 +512,7 @@ function StyleTextSection() {
         optimizations:  j?.values?.optimizations  ?? null,
         negative:       j?.values?.negative       ?? null,
         negativePrefix: j?.values?.negativePrefix ?? null,
+        improverGuide:  j?.values?.improverGuide  ?? null,
       })
       setSaved(true)
     })
@@ -603,6 +604,21 @@ function StyleTextSection() {
             </p>
           )}
 
+          {/* Not added to the picture prompt: told to the prompt improver,
+              after whichever way of asking is chosen. Absent for an editor or
+              the upscaler, where the improver never runs. */}
+          {(text?.improverGuide || draft.improverGuide !== null) && (
+            <OverrideField
+              label="Best practices told to the prompt improver"
+              hint="Added after whichever way of asking is chosen in the Draw panel, so it reaches every one of them. Leads with keeping characters looking like their series."
+              value={draft.improverGuide}
+              fallback={text?.improverGuide ?? ''}
+              rows={8}
+              onChange={v => set('improverGuide', v)}
+              onReset={() => set('improverGuide', null)}
+            />
+          )}
+
           <button
             type="button"
             disabled={saved}
@@ -623,9 +639,10 @@ interface Overrides {
   optimizations:  string | null
   negative:       string | null
   negativePrefix: string | null
+  improverGuide:  string | null
 }
 
-const BLANK: Overrides = { prefix: null, optimizations: null, negative: null, negativePrefix: null }
+const BLANK: Overrides = { prefix: null, optimizations: null, negative: null, negativePrefix: null, improverGuide: null }
 
 /**
  * One overridable piece of text, with its way back. `null` shows the model's

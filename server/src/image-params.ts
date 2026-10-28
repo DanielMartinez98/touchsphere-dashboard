@@ -80,6 +80,12 @@ export interface ImageParams {
   negative:      string | null
   /** Glued in front of the NEGATIVE — only instruction-tuned models ship one. */
   negativePrefix: string | null
+  /**
+   * Not glued to the picture prompt at all: the best practices the prompt
+   * IMPROVER is told for this model, appended after whichever way of asking is
+   * chosen (styleImproverGuide() in image.ts). Same null/'' contract.
+   */
+  improverGuide: string | null
 }
 
 export const DEFAULT_PARAMS: ImageParams = {
@@ -98,6 +104,7 @@ export const DEFAULT_PARAMS: ImageParams = {
   optimizations:  null,
   negative:       null,
   negativePrefix: null,
+  improverGuide:  null,
 }
 
 // Bounds. These are operator settings, not model-supplied ones, so they're
@@ -139,6 +146,8 @@ export const MAX_SEED = 2 ** 31 - 1
  * the store stays a small JSON file the volume can hold a style-key per model.
  */
 const MAX_TEXT = 2000
+/** The improver's best practices are a page of instructions, not a tag line. */
+const MAX_GUIDE = 8000
 
 const num = (v: unknown): number | null =>
   typeof v === 'number' && Number.isFinite(v) ? v : null
@@ -187,6 +196,7 @@ export function normalizeParams(raw: unknown, base: ImageParams = DEFAULT_PARAMS
     optimizations:  text(o, 'optimizations', base.optimizations),
     negative:       text(o, 'negative', base.negative),
     negativePrefix: text(o, 'negativePrefix', base.negativePrefix),
+    improverGuide:  text(o, 'improverGuide', base.improverGuide, MAX_GUIDE),
   }
 }
 
@@ -200,11 +210,11 @@ export function normalizeParams(raw: unknown, base: ImageParams = DEFAULT_PARAMS
  * string and a trailing space is invisible in a text box; `joinPrefix` and
  * `joinPrompt` put the right separator back.
  */
-function text(o: Record<string, unknown>, key: string, fallback: string | null): string | null {
+function text(o: Record<string, unknown>, key: string, fallback: string | null, max = MAX_TEXT): string | null {
   if (!(key in o)) return fallback
   const v = o[key]
   if (v === null) return null
-  return typeof v === 'string' ? v.trim().slice(0, MAX_TEXT) : fallback
+  return typeof v === 'string' ? v.trim().slice(0, max) : fallback
 }
 
 // ── Store ────────────────────────────────────────────────────────────────────
@@ -312,9 +322,11 @@ export function clearParamsFor(style: string): ImageParams {
     ...(cur ? {
       prefix: cur.prefix, optimizations: cur.optimizations,
       negative: cur.negative, negativePrefix: cur.negativePrefix,
+      improverGuide: cur.improverGuide,
     } : {}),
   }
-  const hasText = [kept.prefix, kept.optimizations, kept.negative, kept.negativePrefix].some(v => v !== null)
+  const hasText = [kept.prefix, kept.optimizations, kept.negative, kept.negativePrefix, kept.improverGuide]
+    .some(v => v !== null)
   if (hasText) store[style] = kept
   else delete store[style]
   writeStore(store)

@@ -1736,6 +1736,7 @@ async function run(job: ImageJob): Promise<void> {
     const better = await improvePrompt(job.prompt, {
       label:    styleLabel(job.model),
       guidance: stylePromptGuide(job.model),
+      bestPractices: styleImproverGuide(job.model),
       maxChars: promptLimit(job.model),
     }, job.promptOption)
     job.improveMs += better.ms
@@ -2836,6 +2837,147 @@ const ANIMA_SHARED = [
  */
 const ANIMA_INPAINT_PATCH = 'anima-lllite-inpainting-v2.safetensors'
 
+// ── What the prompt improver is told about each model ────────────────────────
+//
+// Appended after whichever way of asking is chosen in the Draw panel — never
+// written into it — so every way of asking ends on the same per-model page
+// (bestPracticesBlock() in image-prompt.ts). Overridable per style in
+// Settings → Prompts, like the negative.
+//
+// One priority runs through all of them, because it is the one the user set:
+// a named character must come out looking like they do in their own series.
+// Three lessons from this box shape every page, each learned the hard way:
+//   • the character's TAG (or full name) plus the SERIES is what reaches the
+//     character the model knows; a description instead draws a lookalike;
+//   • a wrong colour beats the name — an 8B model "remembering" Sakura's pink
+//     hair onto Ino drew a stranger — so appearance only when certain;
+//   • no worked example names clothing, because a page with example outfits
+//     had the improver dressing unrelated characters in them.
+// Sources are each model's own card or prompt book, cited beside each one.
+
+/**
+ * The Illustrious family on SDXL (WAI-Illustrious, NoobAI eps and v-pred).
+ * Order and escaping are NoobAI's card (`<1girl>, <character>, <series>,
+ * <artists>, …`, `arlecchino \(genshin impact\)`); the token budget and the
+ * check-the-tag rule are the Illustrious prompting guides'. ComfyUI reads an
+ * unescaped `(…)` as a weight and throws the brackets away, which turns a
+ * character tag into a different string from the one the model learned.
+ */
+const ILLUSTRIOUS_IMPROVER_GUIDE =
+  'GOAL: a named character must look exactly as they do in their own series. Everything else bends to that.\n' +
+  'REGISTER: lowercase Danbooru tags separated by commas, never sentences — this model does not read ' +
+  'natural language. Spaces instead of underscores.\n' +
+  'ORDER (earlier tags weigh more, and past roughly 60 tags the end is diluted): the count (1girl, 1boy, ' +
+  '2girls, solo), then the CHARACTER tag, then its SERIES tag, then an artist tag if any, then appearance, ' +
+  'clothing, expression, pose and action, framing and camera, background, lighting.\n' +
+  'CHARACTER: the tag exactly as Danbooru files it — Japanese names family name first — followed at once ' +
+  'by the series tag. Brackets inside a tag MUST be escaped with backslashes, or they are read as a weight ' +
+  'and the tag stops matching: write <name> \\(<series>\\), never <name> (<series>). Never describe a ' +
+  'character instead of naming them, never invent a surname, never add a character the user did not name. ' +
+  'If you do not know the tag, keep the name exactly as the user typed it.\n' +
+  'APPEARANCE: hair, eyes and signature marks only when you are certain; a wrong colour overrides the ' +
+  'character tag and draws a stranger, so when unsure write none and let the character and series tags ' +
+  'carry the face.\n' +
+  'CLOTHES: the signature outfit comes with the character tag. When the scene needs something else, name ' +
+  'that garment as one plain tag and invent no details of it.\n' +
+  'LOOK OF THE SHOW: add "anime screencap" when the user wants it to look like a frame of the show, ' +
+  '"official art" for a key visual. Add the series creator as an artist tag only when you are certain of ' +
+  'their Danbooru artist name.\n' +
+  'TWO OR MORE CHARACTERS: the count tag (2girls, 1boy 1girl), then each character tag with its series ' +
+  'directly after it, then the shared action. Keep per-character appearance tags to a minimum — they bleed ' +
+  'between characters.\n' +
+  'ACTION AND FIGHTS: as tags — fighting, punching, kicking, sword fight, clash, dodging, dynamic pose, ' +
+  'motion lines, motion blur, impact, speed lines, debris, from side, from below, dutch angle — plus who ' +
+  'faces whom (facing another, looking at another).\n' +
+  'IF A CHARACTER IS LITTLE-KNOWN: weight their tag up a little with (tag:1.2) — never above 1.3 on SDXL, ' +
+  'which burns the picture.\n' +
+  'NEVER: quality, score, rating or year tags (masterpiece, best quality, newest, safe — added for you), ' +
+  'realistic, photorealistic, 3d, or text longer than one word.'
+
+/**
+ * NetaYume Lumina. From the Neta Lumina prompt book: tags OR natural language
+ * for stable results (mixing is "out of distribution"), the nine-part tag
+ * order, spaces for underscores, escaped brackets, Danbooru character names,
+ * one or two artists at most.
+ */
+const NETAYUME_IMPROVER_GUIDE =
+  'GOAL: a named character must look exactly as they do in their own series. Everything else bends to that.\n' +
+  'REGISTER: lowercase Danbooru tags separated by commas. The model book says to use tags OR sentences, ' +
+  'not a mix, for stable results, so stay with tags. Spaces instead of underscores.\n' +
+  'ORDER: the count (1girl, 1boy, solo), the CHARACTER tag and its SERIES tag, an artist if any, then ' +
+  'appearance, outfit, expression and action, camera view, effects, scene.\n' +
+  'CHARACTER: the Danbooru name — Japanese names family name first — immediately followed by the series ' +
+  'tag. Brackets inside a tag are escaped with backslashes: <name> \\(<series>\\). Name the character ' +
+  'rather than describing them; never invent a surname, never add a character the user did not name, and ' +
+  'if you do not know the tag keep the name exactly as typed.\n' +
+  'APPEARANCE: only what you are certain of (hair, eyes, signature marks); a wrong colour beats the name ' +
+  'and draws a stranger.\n' +
+  'CLOTHES: the signature outfit by default; when the scene contradicts it, one plain tag for the garment ' +
+  'the scene calls for.\n' +
+  'STYLE: at most one or two @artist tags, only when asked for or certain of the series creator. Lumina ' +
+  'reacts strongly to its negative, which is handled for you.\n' +
+  'TWO OR MORE CHARACTERS: the count tag, then each character tag with its series after it, then what ' +
+  'they do to each other.\n' +
+  'ACTION AND FIGHTS: fighting, punching, kicking, clash, dynamic pose, motion lines, impact, debris, ' +
+  'from side, from below, facing another.\n' +
+  'NEVER: an instruction line or <Prompt Start> (added for you), quality tags (best quality is appended ' +
+  'for you), realistic or photo tags.'
+
+/**
+ * The prose models — read by a Qwen language model rather than CLIP — share
+ * the character rules; what differs is how much each knows about characters
+ * and which way its look drifts, said in the per-model line in front.
+ * Structure from BFL's Klein upsampler and the Qwen-Image cards: subject
+ * first, one definite paragraph, positions in the frame, no negative.
+ */
+const PROSE_CHARACTER_RULES =
+  'GOAL: a named character must look exactly as they do in their own series. Everything else bends to that.\n' +
+  'FIRST SENTENCE: the medium and the series\' own look, then the character by their full name and their ' +
+  'series — "An anime illustration in the official style of <series>: <character> from <series>…". The ' +
+  'name together with the series is what reaches the character the model knows; never replace it with a ' +
+  'description, never invent a surname, never add a character the user did not name, and if you do not ' +
+  'know the character keep the name exactly as typed.\n' +
+  'SECOND SENTENCE: the character\'s defining features (hair colour and style, eye colour, signature ' +
+  'marks or accessories) — ONLY those you are certain of. A wrong colour overrides the name and draws a ' +
+  'stranger; when unsure, write none.\n' +
+  'CLOTHES: the signature outfit unless the scene calls for something else; then say plainly what they ' +
+  'wear and invent no details of it.\n' +
+  'THEN: what they are doing, the setting, the light, the camera and framing. Say where each figure is in ' +
+  'the frame (on the left, in the foreground) and how they relate (faces, holds, strikes).\n' +
+  'TWO OR MORE CHARACTERS: one sentence per character, each with their name, series and position, then a ' +
+  'sentence on what passes between them.\n' +
+  'ACTION AND FIGHTS: one frozen instant, said definitely — who strikes, with what, where it lands, how ' +
+  'the other reacts — then the motion around it (speed lines, impact flash, debris, dust).\n' +
+  'NEVER: tag lists, quality words (masterpiece, 8k, best quality), hedging, a closing sentence about ' +
+  'mood, or anything about what you do NOT want (there is no negative prompt).'
+
+const FLUX3_KLEIN_IMPROVER_GUIDE =
+  'THIS MODEL: FLUX 3 Klein reads one paragraph of plain English with Qwen3-VL 4B; 100 to 300 words, the ' +
+  'subject first, every detail definite. It is small, so it knows fewer characters by name than the anime ' +
+  'models: the name and series still go first, and the certain defining features matter more here. Say ' +
+  '"2D anime illustration, cel shading, clean line art" explicitly for anything from an anime, or it drifts ' +
+  'towards a painterly, semi-real look.\n' + PROSE_CHARACTER_RULES
+
+const QWEN_IMAGE_IMPROVER_GUIDE =
+  'THIS MODEL: Qwen-Image 2.1 reads long, specific English (or Chinese) through Qwen3-VL 8B and was ' +
+  'trained on long descriptions of finished pictures; it knows many anime characters and series by name. ' +
+  'Describe the picture as if you were looking at it. Any words that should appear in the picture go in ' +
+  'double quotes.\n' + PROSE_CHARACTER_RULES
+
+const Z_IMAGE_IMPROVER_GUIDE =
+  'THIS MODEL: Z-Image Turbo reads a short, concrete English paragraph through Qwen-3 4B and leans hard ' +
+  'towards photographs. For any character from an anime or game, open with "2D anime illustration in the ' +
+  'style of <series>, cel shading, flat colours" or it will draw a cosplayer; it knows fewer characters by ' +
+  'name than the anime models, so the certain defining features carry more of the likeness. Keep it to ' +
+  'about 80 to 150 words.\n' + PROSE_CHARACTER_RULES
+
+/** For a style with no page of its own — a workflow dropped on the volume. */
+const GENERIC_IMPROVER_GUIDES: Record<'tags' | 'prose' | 'mixed', string> = {
+  tags:  ILLUSTRIOUS_IMPROVER_GUIDE,
+  prose: PROSE_CHARACTER_RULES,
+  mixed: ANIMA_PROMPT_GUIDE,
+}
+
 /**
  * Styles that are a whole graph rather than a checkpoint name.
  *
@@ -2900,6 +3042,13 @@ const BUILTIN_WORKFLOWS: Record<string, {
    */
   promptGuide?: string
   /**
+   * The page of best practices the prompt improver is told for this model,
+   * appended after the chosen way of asking. Longer and more insistent than
+   * `promptGuide` because it is the one place every way of asking is
+   * guaranteed to reach. Absent → the generic page for its promptStyle.
+   */
+  improverGuide?: string
+  /**
    * Booster text APPENDED to the positive prompt, after whatever the user or
    * the improver wrote.
    *
@@ -2960,6 +3109,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
     promptStyle: 'prose',
     // Condensed from the template's own prompt-upsampler instructions, which are
     // BFL's description of the caption this model was trained to receive.
+    improverGuide: FLUX3_KLEIN_IMPROVER_GUIDE,
     promptGuide:
       'Write one continuous paragraph of plain English, never a tag list, 100 to 300 words. Lead ' +
       'with the medium and style (photograph, anime illustration, oil painting…), then the scene, ' +
@@ -2980,6 +3130,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
     graph: qwenImage21Graph(),
     // Read by Qwen3-VL 8B, a language model: sentences, not tags.
     promptStyle: 'prose',
+    improverGuide: QWEN_IMAGE_IMPROVER_GUIDE,
     promptGuide:
       'Write one long, specific paragraph of plain English (or Chinese), never a tag list. ' +
       'This model reads its prompt with the Qwen3-VL language model and was trained on long ' +
@@ -3003,6 +3154,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
     // Distilled to 8 steps at cfg 1.
     ignoresQuality: true,
     promptStyle: 'prose',
+    improverGuide: Z_IMAGE_IMPROVER_GUIDE,
     promptGuide:
       'Write a short, concrete paragraph of plain English (or Chinese), never a tag list. This ' +
       'model reads its prompt with a Qwen-3 language model and is strongest at photorealism: ' +
@@ -3117,6 +3269,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
     negative: 'nsfw, bad quality, worst quality, worst detail, sketch, censor, ' +
       'signature, watermark, username, bad hands, extra digits',
     promptStyle: 'tags',
+    improverGuide: ILLUSTRIOUS_IMPROVER_GUIDE,
     promptGuide:
       'Write lowercase Danbooru tags separated by commas, never sentences. Lead with the ' +
       'subject count and framing (1girl, solo, upper body), then — for a named character — ' +
@@ -3145,10 +3298,12 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'username, logo, bad hands, mutated hands, mammal, anthro, furry, ' +
       'ambiguous form, feral, semi-anthro',
     promptStyle: 'tags',
+    improverGuide: ILLUSTRIOUS_IMPROVER_GUIDE,
     promptGuide:
       'Write lowercase Danbooru tags separated by commas, never sentences. Lead with the ' +
       'subject count and framing (1girl, solo, upper body), then — for a named character — ' +
-      'its booru tag AND its series, both underscored (haruno_sakura, naruto_(series)), ' +
+      'its booru tag AND its series, with spaces and any brackets escaped (haruno sakura, ' +
+      'naruto \\(series\\)), ' +
       'then appearance, clothing, pose, expression, background and lighting tags. An ' +
       'artist tag written as "by <artist>" steers the style hard. The quality ladder is ' +
       'already prepended for you, so do not repeat masterpiece or best quality.',
@@ -3169,10 +3324,12 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'username, logo, bad hands, mutated hands, mammal, anthro, furry, ' +
       'ambiguous form, feral, semi-anthro',
     promptStyle: 'tags',
+    improverGuide: ILLUSTRIOUS_IMPROVER_GUIDE,
     promptGuide:
       'Write lowercase Danbooru tags separated by commas, never sentences. Lead with the ' +
       'subject count and framing (1girl, solo, upper body), then — for a named character — ' +
-      'its booru tag AND its series, both underscored (haruno_sakura, naruto_(series)), ' +
+      'its booru tag AND its series, with spaces and any brackets escaped (haruno sakura, ' +
+      'naruto \\(series\\)), ' +
       'then appearance, clothing, pose, expression, background and lighting tags. An ' +
       'artist tag written as "by <artist>" steers the style hard. The quality ladder is ' +
       'already prepended for you, so do not repeat masterpiece or best quality.',
@@ -3190,12 +3347,13 @@ const BUILTIN_WORKFLOWS: Record<string, {
     // Fine-tuned on Danbooru, so it answers to the same character tags NoobAI
     // does — it drew the Byakugō seal on Sakura from the tag alone.
     promptStyle: 'tags',
+    improverGuide: NETAYUME_IMPROVER_GUIDE,
     promptGuide:
       'Write lowercase Danbooru tags separated by commas. This is an anime fine-tune and ' +
-      'answers to character tags directly (hatsune_miku, vocaloid), so name the character ' +
+      'answers to character tags directly (hatsune miku, vocaloid), so name the character ' +
       'and its series rather than describing the look. Lead with subject count and ' +
-      'framing, then appearance, clothing, pose and background. A short natural-language ' +
-      'clause about the scene at the end is fine. Do not write an instruction line — the ' +
+      'framing, then appearance, clothing, pose and background. Stay with tags: its prompt ' +
+      'book says mixing in sentences is unstable. Do not write an instruction line — the ' +
       'model is instruction-tuned and its system line is added for you.',
     // The Neta Lumina prompt book's own recommendation, and the one style here
     // whose booster genuinely belongs at the END: its `prefixes` slot is already
@@ -3209,6 +3367,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
   'anima-aesthetic-v1-1': {
     label: 'Anima Aesthetic v1.1',
     promptStyle: 'mixed',
+    improverGuide: ANIMA_PROMPT_GUIDE,
     promptGuide: ANIMA_PROMPT_GUIDE,
     prefixes: ANIMA_AES_PREFIX,
     optimizations: ANIMA_OPTIMIZATIONS,
@@ -3223,6 +3382,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
   'anima-turbo-v1-1': {
     label: 'Anima Turbo v1.1',
     promptStyle: 'mixed',
+    improverGuide: ANIMA_PROMPT_GUIDE,
     promptGuide: ANIMA_PROMPT_GUIDE,
     prefixes: ANIMA_PREFIX,
     optimizations: ANIMA_OPTIMIZATIONS,
@@ -3243,6 +3403,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
   'anima-base-v1': {
     label: 'Anima Base v1',
     promptStyle: 'mixed',
+    improverGuide: ANIMA_PROMPT_GUIDE,
     promptGuide: ANIMA_PROMPT_GUIDE,
     prefixes: ANIMA_PREFIX,
     optimizations: ANIMA_OPTIMIZATIONS,
@@ -3293,6 +3454,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
   'anima-2-9b-preview-v1': {
     label: 'Anima 2.9B preview v1',
     promptStyle: 'mixed',
+    improverGuide: ANIMA_PROMPT_GUIDE,
     promptGuide: ANIMA_PROMPT_GUIDE,
     prefixes: ANIMA_AES_PREFIX,
     optimizations: ANIMA_OPTIMIZATIONS,
@@ -3467,6 +3629,29 @@ export function stylePromptGuide(style: string): string {
     if (own) return own
   }
   return GENERIC_PROMPT_GUIDES[stylePromptStyle(style)]
+}
+
+/**
+ * What the prompt improver is told about this model, after the chosen way of
+ * asking: the user's per-style override when there is one (null = none, '' =
+ * deliberately nothing), else the style's own page, else the generic one for
+ * its register. Empty for editors and the upscaler, where the improver never
+ * runs.
+ */
+export function styleImproverGuide(style: string): string {
+  const own = paramsFor(style).improverGuide
+  if (own !== null) return own
+  return styleImproverGuideDefault(style)
+}
+
+/** The built-in page, ignoring any override — the Settings placeholder. */
+export function styleImproverGuideDefault(style: string): string {
+  if (style.startsWith(WORKFLOW_PREFIX)) {
+    const wf = BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]
+    if (wf?.edits || wf?.upscales) return ''
+    if (wf?.improverGuide) return wf.improverGuide
+  }
+  return GENERIC_IMPROVER_GUIDES[stylePromptStyle(style)]
 }
 
 /**
