@@ -2274,9 +2274,12 @@ function sdxlAnimeGraph(
   // washed out, which reads as a broken model. ModelSamplingDiscrete says it,
   // with zero-terminal-SNR as the card asks, and sits between the loader and
   // the sampler so the turbo-LoRA and ControlNet splices wrap it like any model.
+  // RescaleCFG 0.7 is the usual companion for a zsnr v-pred model: without it
+  // the first test render on the GPU box came back dark and nearly monochrome.
   if (vpred) {
     graph['8'] = { class_type: 'ModelSamplingDiscrete', inputs: { model: ['1', 0], sampling: 'v_prediction', zsnr: true } }
-    graph['5']!.inputs['model'] = ['8', 0]
+    graph['9'] = { class_type: 'RescaleCFG', inputs: { model: ['8', 0], multiplier: 0.7 } }
+    graph['5']!.inputs['model'] = ['9', 0]
   }
   return graph
 }
