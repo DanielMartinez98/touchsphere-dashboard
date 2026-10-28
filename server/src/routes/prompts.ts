@@ -19,7 +19,7 @@
 import { Router, type Request, type Response } from 'express'
 import { assistantSystemPrompt, DEFAULT_ASSISTANT_TEMPLATE } from './chat'
 import { plannerSystemPrompt, plannerDefaultTemplate } from '../image-plan'
-import { imagesEnabled, selectedModel, styleLabel, stylePromptGuide } from '../image'
+import { imagesEnabled, selectedModel, styleImproverGuide, styleLabel, stylePromptGuide } from '../image'
 import {
   buildSystemPrompt, improverSystemPrompt, readPrompter, writePrompter, prompterModel, visionModel, visionUserMessage,
   editModel, editUserMessage, resolvePromptOption, ORIGINAL_OPTION,
@@ -38,7 +38,7 @@ const STYLE_PLACEHOLDERS = [
 
 async function view() {
   const style = selectedModel()
-  const facts = { label: styleLabel(style), guidance: stylePromptGuide(style) }
+  const facts = { label: styleLabel(style), guidance: stylePromptGuide(style), bestPractices: styleImproverGuide(style) }
   const prompter = readPrompter()
   const overrides = readOverrides()
   // The improver's instructions are whichever option the Draw panel has chosen.

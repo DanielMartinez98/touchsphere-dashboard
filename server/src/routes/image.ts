@@ -57,6 +57,8 @@ import {
   styleNeeds,
   styleLabel,
   stylePromptGuide,
+  styleImproverGuide,
+  styleImproverGuideDefault,
   styleOptimizations,
   styleNegativeFor,
   stylePrefixFor,
@@ -328,6 +330,9 @@ router.get('/params', async (req: Request, res: Response) => {
       // False for a style with no second text encode at all (FLUX). The field
       // is then shown as not applicable rather than as an empty editable box.
       usesNegative:  styleUsesNegative(style),
+      // What the prompt improver is told about this model when nothing is
+      // overridden. Empty for an editor or the upscaler, where it never runs.
+      improverGuide: styleImproverGuideDefault(style),
     },
     loras,
     // What turbo would use if the user leaves the LoRA on "Auto" — shown in the
@@ -560,6 +565,7 @@ function prompterView() {
     preview:    improverSystemPrompt(active.template, {
       label:    styleLabel(style),
       guidance: stylePromptGuide(style),
+      bestPractices: styleImproverGuide(style),
     }),
     // The look-at-the-picture half of a redraw: its template, the default
     // for "reset", what it expands to for this style, the fixed user turn it
