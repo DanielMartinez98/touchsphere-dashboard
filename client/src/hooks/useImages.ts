@@ -57,10 +57,28 @@ export interface ImageSettings {
   improvedWith?:   string
   /** What the improver worked out before writing the prompt. */
   improverNotes?:  string
+  /** Every model conversation behind the prompt, verbatim. Only /lineage sends it; the gallery list leaves it out. */
+  conversation?:   AiExchange[]
   /** Booster text that was appended to the prompt, when there was any. */
   optimizations?:  string
   /** What the prompt improver did, when it was on for this picture. Absent when it was off. */
   improver?:       ImproverOutcome
+}
+
+/** One message of a conversation with a language model, exactly as sent or answered. */
+export interface AiTurn {
+  role: 'system' | 'user' | 'assistant'
+  text: string
+  /** The source picture rode along with this message. */
+  picture?: boolean
+  note?: string
+}
+
+/** A whole conversation behind a picture's prompt: why it was asked, which model, every turn. */
+export interface AiExchange {
+  purpose: string
+  model:   string
+  turns:   AiTurn[]
 }
 
 /**
