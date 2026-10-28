@@ -203,7 +203,7 @@ function plannerParts(tools: PlanMode[], styles: DrawStyle[]): Record<string, st
   const lines: string[] = ['Tools available on this machine:']
   if (tools.includes('edit')) {
     lines.push(
-      '- "edit": an instruction edit (FLUX Kontext). Best for changes that alter shapes, add or remove ' +
+      '- "edit": an instruction edit (an editing model). Best for changes that alter shapes, add or remove ' +
       'things, change pose, expression, lighting, weather, season, time of day, or the style of the whole ' +
       'picture — anything that spans many regions or has no fixed outline. The prompt is a short literal ' +
       'instruction that names the subject ("make it night", "add rain", "put a leather jacket on the man"). ' +
@@ -277,7 +277,7 @@ export function defaultPlannerTemplate(tools: PlanMode[]): string {
     '',
     '{{styles}}',
     '',
-    'How to write "edit" prompts (these go to Kontext verbatim, so this decides the result):',
+    'How to write "edit" prompts (these go to the editor verbatim, so this decides the result):',
     '- Name the subject explicitly — "the woman with orange hair", never "her" or "it".',
     '- State the RESULT, concretely: "The woman with orange hair now wears an open pink zip-up jacket over ' +
     'her striped top, sleeves on both arms." Type, colour, material, how it is worn or placed.',
@@ -285,7 +285,7 @@ export function defaultPlannerTemplate(tools: PlanMode[]): string {
     'of everything to keep — an editor told to keep everything changes nothing, and the picture comes ' +
     'back untouched.',
     '- One instruction per step. Vague verbs ("put", "make it nice") produce vague results.',
-    '- Kontext is weak at adding clothing to a drawn character in a foreshortened pose. On an anime or ' +
+    '- Editors are weak at adding clothing to a drawn character in a foreshortened pose. On an anime or ' +
     'illustrated picture, prefer a "part" step with an anime style for garments: region = the area the ' +
     'garment will cover (e.g. "her striped top and shoulders"), prompt = the garment over what is there.',
     '',

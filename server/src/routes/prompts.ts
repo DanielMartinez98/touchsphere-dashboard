@@ -21,7 +21,7 @@ import { assistantSystemPrompt, DEFAULT_ASSISTANT_TEMPLATE } from './chat'
 import { plannerSystemPrompt, plannerDefaultTemplate } from '../image-plan'
 import { imagesEnabled, selectedModel, styleLabel, stylePromptGuide } from '../image'
 import {
-  buildSystemPrompt, readPrompter, writePrompter, prompterModel, visionModel, visionUserMessage,
+  buildSystemPrompt, improverSystemPrompt, readPrompter, writePrompter, prompterModel, visionModel, visionUserMessage,
   editModel, editUserMessage, resolvePromptOption, ORIGINAL_OPTION,
   DEFAULT_TEMPLATE, DEFAULT_VISION_TEMPLATE, DEFAULT_EDIT_TEMPLATE,
 } from '../image-prompt'
@@ -96,7 +96,7 @@ async function view() {
           overridden: prompter.template !== DEFAULT_TEMPLATE,
           placeholders: STYLE_PLACEHOLDERS,
           previewName: improver.id === ORIGINAL_OPTION ? '' : improver.name,
-          text: buildSystemPrompt(improver.template, facts),
+          text: improverSystemPrompt(improver.template, facts),
         },
         {
           id: 'vision',

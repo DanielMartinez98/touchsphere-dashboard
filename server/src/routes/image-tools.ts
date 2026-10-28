@@ -64,7 +64,7 @@ function baseImagePromptGuidance(): string {
   // an instruction rather than a description. The tool schemas are fixed at
   // module load, so this is the only place that can say so.
   if (styleEdits(selectedModel())) {
-    return ' DRAWING STYLE: the current picture model is an EDITOR (FLUX Kontext). It changes ' +
+    return ' DRAWING STYLE: the current picture model is an EDITOR. It changes ' +
       'an existing picture and cannot draw one from nothing, so generate_image will be refused ' +
       '— offer redraw_image instead, or tell the user to pick a drawing style. For ' +
       "redraw_image write the prompt as a plain-English INSTRUCTION saying what to change, " +

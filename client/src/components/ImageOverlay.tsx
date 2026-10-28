@@ -623,6 +623,9 @@ function ImageDetails({
     // With the option that asked, when it was one: comparing options is the
     // reason they exist, so a picture says which one it came from.
     rows.push({ label: 'Prompt improved by', value: st.improvedWith ? `${st.improvedBy} · ${st.improvedWith}` : st.improvedBy })
+    // What it worked out before writing — who does what, where, in which
+    // instant. The answer to "why did it write that".
+    if (st.improverNotes) rows.push({ label: 'Improver\'s thinking', value: st.improverNotes })
   } else if (st?.improver && st.improver.state !== 'rewritten') {
     rows.push({
       label: 'Prompt improver',

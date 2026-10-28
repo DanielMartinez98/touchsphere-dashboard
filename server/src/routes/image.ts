@@ -71,6 +71,7 @@ import { findAndFetch } from '../image-web'
 import { readStructure, writeStructure, DEFAULT_STRUCTURE } from '../image-structure'
 import {
   buildSystemPrompt,
+  improverSystemPrompt,
   DEFAULT_TEMPLATE,
   DEFAULT_VISION_TEMPLATE,
   DEFAULT_EDIT_TEMPLATE,
@@ -556,7 +557,7 @@ function prompterView() {
     guidance:   stylePromptGuide(style),
     // What the improver will actually be told: the CHOSEN option's
     // instructions expanded for this style, which is what a new picture gets.
-    preview:    buildSystemPrompt(active.template, {
+    preview:    improverSystemPrompt(active.template, {
       label:    styleLabel(style),
       guidance: stylePromptGuide(style),
     }),
@@ -749,7 +750,7 @@ router.post('/prompter', (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown> | undefined
   const patch: {
     enabled?: boolean; template?: string; model?: string
-    visionTemplate?: string; editTemplate?: string; editModel?: string; retryBelow?: number; rewordFreely?: boolean
+    visionTemplate?: string; editTemplate?: string; editModel?: string; retryBelow?: number; rewordFreely?: boolean; thinkLong?: boolean
   } = {}
   if (typeof body?.['enabled']  === 'boolean') patch.enabled  = body['enabled']
   if (typeof body?.['template'] === 'string')  patch.template = body['template']
@@ -759,6 +760,7 @@ router.post('/prompter', (req: Request, res: Response) => {
   if (typeof body?.['editModel']    === 'string') patch.editModel    = body['editModel']
   if (typeof body?.['retryBelow']   === 'number') patch.retryBelow   = body['retryBelow']
   if (typeof body?.['rewordFreely'] === 'boolean') patch.rewordFreely = body['rewordFreely']
+  if (typeof body?.['thinkLong']    === 'boolean') patch.thinkLong    = body['thinkLong']
   const saved = writePrompter(patch)
   console.log(
     `[image] prompt improver ${saved.enabled ? 'on' : 'off'}` +
