@@ -1525,6 +1525,15 @@ function DrawingTab() {
           onChange={rewordFreely => { void setPrompter({ rewordFreely }) }}
         />
         <SwitchRow
+          title="Take as long as it takes"
+          description={<>The improver works the picture out in notes before it writes the prompt: who does
+            what, where everything is, the exact moment of a fight. On: it thinks as long as it needs,
+            with no length limit. Off: it thinks fast, a few notes and the usual time limit. Either
+            way only the prompt reaches the picture model, and the notes are kept on the picture.</>}
+          on={prompter.thinkLong !== false}
+          onChange={thinkLong => { void setPrompter({ thinkLong }) }}
+        />
+        <SwitchRow
           title="Safety tags"
           description={<>Several styles' built-in text carries the rating tag <code className="text-white/60">safe</code> in
             front and <code className="text-white/60">nsfw</code> in the negative, because the assistant draws
@@ -1561,7 +1570,7 @@ function DrawingTab() {
 
       <Section
         title="Retrying an edit that did nothing"
-        description={<>An instruction editor (FLUX Kontext) returns the picture untouched when the subject is not
+        description={<>An instruction editor returns the picture untouched when the subject is not
           named the way it appears. With a floor set, an edit that changes less than that share of the picture is
           reworded by a model that can see it and drawn once more. 0 is never, the default; a small real edit
           can measure 3–10%. What that model is told is under Prompts.</>}

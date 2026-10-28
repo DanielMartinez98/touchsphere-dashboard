@@ -55,6 +55,8 @@ export interface ImageSettings {
   improvedBy?:     string
   /** Which of the improver's ways of asking rewrote it: "Original" or an option's name. */
   improvedWith?:   string
+  /** What the improver worked out before writing the prompt. */
+  improverNotes?:  string
   /** Booster text that was appended to the prompt, when there was any. */
   optimizations?:  string
   /** What the prompt improver did, when it was on for this picture. Absent when it was off. */
@@ -111,6 +113,8 @@ export interface PrompterSettings {
   retryBelow:            number
   /** Skip the check that every name and noun you typed survives the rewrite. */
   rewordFreely?:         boolean
+  /** The improver thinks as long as it takes (true) or fast (false). */
+  thinkLong?:            boolean
   /**
    * More ways of asking the improver, beside the original `template`. Created
    * and edited in Settings → Drawing; one is chosen in the Draw panel.

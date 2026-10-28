@@ -77,6 +77,12 @@ const ENV_VISION_MODEL = process.env['OLLAMA_VISION_MODEL'] ?? ''
 // indefinitely, because the picture behind it is what the user actually wanted.
 const TIMEOUT_MS = Number(process.env['OLLAMA_IMAGE_TIMEOUT_MS'] ?? 45_000)
 
+// The improver reasons before it answers (see ANSWER_FORMAT). Told to think
+// fast it keeps TIMEOUT_MS; told to take as long as it takes it gets this,
+// which is not a budget but the line past which a model is assumed hung —
+// a queued picture is still waiting behind it.
+const THINK_LONG_TIMEOUT_MS = Number(process.env['OLLAMA_IMAGE_THINK_TIMEOUT_MS'] ?? 15 * 60_000)
+
 /** Longer than this and the "prompt" is an essay the sampler will truncate anyway. */
 const MAX_PROMPT_CHARS = 1200
 
@@ -170,6 +176,13 @@ export interface PrompterSettings {
    */
   rewordFreely:   boolean
   /**
+   * How long the improver may think before it writes the prompt: true = as
+   * long as it takes (no length cap, a hung-model deadline only), false =
+   * a few quick notes within the usual time limit. Appended after the
+   * answer format, never written into the user's instructions.
+   */
+  thinkLong:      boolean
+  /**
    * More ways to ask, beside the original `template`. Each is a named copy of
    * the instructions that can be changed without touching the original, so two
    * approaches can be tried side by side on the same request. Created, renamed,
@@ -209,6 +222,7 @@ const DEFAULTS: PrompterSettings = {
   editModel:      '',
   retryBelow:     0,
   rewordFreely:   false,
+  thinkLong:      true,
   options:        [],
   active:         ORIGINAL_OPTION,
 }
@@ -245,6 +259,7 @@ export function readPrompter(): PrompterSettings {
       retryBelow: typeof raw.retryBelow === 'number' && Number.isFinite(raw.retryBelow)
         ? Math.min(0.5, Math.max(0, raw.retryBelow)) : 0,
       rewordFreely: raw.rewordFreely === true,
+      thinkLong: raw.thinkLong !== false,
       ...readOptions(raw.options, raw.active),
     }
   } catch {
@@ -300,6 +315,7 @@ export function writePrompter(patch: Partial<PrompterSettings>): PrompterSetting
     next.retryBelow = Math.min(0.5, Math.max(0, patch.retryBelow))
   }
   if (typeof patch.rewordFreely === 'boolean') next.rewordFreely = patch.rewordFreely
+  if (typeof patch.thinkLong === 'boolean') next.thinkLong = patch.thinkLong
   // `options` and `active` are not patched here: each has its own function
   // below with its own rules, and a stray field in a settings patch must not
   // be able to replace the whole list.
@@ -446,6 +462,55 @@ export function buildSystemPrompt(template: string, style: StyleFacts): string {
 }
 
 /**
+ * How the improver must hand its answer back — appended by the app AFTER the
+ * user's chosen instructions, never part of them, so whichever way of asking
+ * is picked in the Draw panel stays exactly as written.
+ *
+ * It exists because a one-shot "reply with the prompt and nothing else" makes
+ * the model compose the picture in the same breath as writing it, and the
+ * first thing to suffer is anything with more than one moving part: a fight
+ * came back as two characters standing near each other, because nobody had
+ * decided who swings, who is hit and in which instant. So the model is told to
+ * work that out first, in the open, and then to put only the finished prompt
+ * between tags the server can find. The notes never reach the image model;
+ * they are kept on the picture so "why did it write that" has an answer.
+ */
+export const ANSWER_FORMAT = `
+
+HOW TO ANSWER (this replaces any earlier instruction about replying with the prompt alone):
+1. First think it through as plain notes, as long as you need. Decide everything the picture must show: who and what is in it, where each is in the frame, and what each is doing at this exact instant. For a fight or any action: who attacks and who defends, the single frozen moment shown (wind-up, impact, dodge, aftermath), each body's pose and facing, what hits what and where, and the motion and effects around it (speed lines, debris, sparks, dust). Check that every word of the request is accounted for.
+2. Then write the finished prompt for the image model between <prompt> and </prompt>, following the instructions above. Only the text between those tags is sent to the image model and everything else is thrown away, so the prompt must stand on its own and must not mention your notes.`
+
+/** The last line, from Settings → Drawing → "Take as long as it takes". */
+export function thinkingLine(long: boolean): string {
+  return long
+    ? '\n3. Take as long as it takes. There is no limit on your notes: work through every part of the picture until nothing is left undecided, then write the prompt.'
+    : '\n3. Think fast: a few short notes on the essentials only, then the prompt.'
+}
+
+/** The improver's whole system prompt: the chosen instructions, the answer format, how long to think. */
+export function improverSystemPrompt(template: string, style: StyleFacts, long = readPrompter().thinkLong): string {
+  return buildSystemPrompt(template, style) + ANSWER_FORMAT + thinkingLine(long)
+}
+
+/**
+ * Split an improver answer into its notes and its prompt. The LAST <prompt>
+ * block wins, since a model thinking aloud sometimes drafts one in its notes;
+ * an unclosed tag (the answer ran out) takes everything after it. No tag at
+ * all is a model that ignored the format: the whole answer is treated as the
+ * prompt, which is how this behaved before, and the length check after it
+ * catches one that was really an essay.
+ */
+export function splitAnswer(raw: string): { prompt: string; notes: string } {
+  const text = raw.trim()
+  const open = text.toLowerCase().lastIndexOf('<prompt>')
+  if (open < 0) return { prompt: unwrap(text), notes: '' }
+  const close = text.toLowerCase().indexOf('</prompt>', open)
+  const body = text.slice(open + '<prompt>'.length, close < 0 ? undefined : close)
+  return { prompt: unwrap(body), notes: text.slice(0, open).trim().slice(0, 8000) }
+}
+
+/**
  * Strip the wrapping a chat model puts around a one-line answer.
  *
  * Asked for "the prompt and nothing else", a local model still routinely
@@ -475,10 +540,10 @@ function unwrap(raw: string): string {
  * the load, not the model being gone. Undici hides the real cause of
  * "fetch failed" (refused, unknown host, timeout) one level down.
  */
-export function describeCallError(err: unknown, who: string, url: string): string {
+export function describeCallError(err: unknown, who: string, url: string, timeoutMs = TIMEOUT_MS): string {
   const e = err as { name?: string; message?: string; cause?: { code?: string; message?: string } }
   if (e?.name === 'AbortError' || /aborted/i.test(e?.message ?? '')) {
-    return `${who} took longer than ${Math.round(TIMEOUT_MS / 1000)}s to answer (it is loaded fresh for each picture, so it may still have been loading)`
+    return `${who} took longer than ${Math.round(timeoutMs / 1000)}s to answer (it is loaded fresh for each picture, so it may still have been loading)`
   }
   const cause = e?.cause?.code || e?.cause?.message || ''
   let host = url
@@ -509,6 +574,8 @@ export interface Improvement {
   why:      string
   /** Which way of asking the improver used — "Original" or an option's name. Only the improver has options. */
   option?:  string
+  /** What the improver worked out before writing the prompt. '' when it wrote none. */
+  notes?:   string
 }
 
 /**
@@ -527,19 +594,21 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
   // again here so an option deleted while the picture waited falls back to the
   // original instead of failing the render.
   const option = resolvePromptOption(optionId)
+  let notes = ''
   const give = (changed: boolean, text: string, why: string): Improvement => ({
-    prompt: text, original: prompt, changed, model, ms: Date.now() - started, why, option: option.name,
+    prompt: text, original: prompt, changed, model, ms: Date.now() - started, why, option: option.name, notes,
   })
   const maxChars = style.maxChars ?? MAX_PROMPT_CHARS
 
   const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
+  const timeoutMs = settings.thinkLong ? THINK_LONG_TIMEOUT_MS : TIMEOUT_MS
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   let url = imageModelUrl()
   try {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
 
-    const ask = async (extra: string, temperature: number): Promise<string> => {
+    const ask = async (extra: string, temperature: number): Promise<{ prompt: string; notes: string }> => {
       url = (await ollamaUrlSettled('image')).replace(/\/$/, '')
       const res = await fetch(`${url}/api/chat`, {
         method: 'POST',
@@ -555,7 +624,7 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
           // TWO MESSAGES, BUILT HERE, EVERY TIME. No history is threaded in and
           // none is kept: see the header. This is the whole of the conversation.
           messages: [
-            { role: 'system', content: buildSystemPrompt(option.template, style) + extra },
+            { role: 'system', content: improverSystemPrompt(option.template, style, settings.thinkLong) + extra },
             { role: 'user',   content: prompt },
           ],
           // Warmer than the guide generator's 0.3: this is a creative rewrite
@@ -567,10 +636,15 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
         // and a render that starts while 5 GB of language model is still resident
         // runs in paged mode — a 53 s edit took 6 minutes that way.
         keep_alive: 0,
-        // No cap on the answer for a style with no length limit (Anima): 400
-        // tokens would cut a long rewrite off mid-tag. TIMEOUT_MS still ends
-        // a model that never stops.
-        options: { num_ctx: 8192, temperature, num_predict: Number.isFinite(maxChars) ? 400 : -1 },
+        // Room for the notes as well as the prompt. Thinking fast, 1000 tokens
+        // is a few notes and a full prompt; taking as long as it takes, and on
+        // a style with no length limit (Anima), there is no cap — the deadline
+        // above still ends a model that never stops. num_ctx is raised with it
+        // so a long think is not truncated from the front, where the rules are.
+        options: {
+          num_ctx: settings.thinkLong ? 16384 : 8192, temperature,
+          num_predict: settings.thinkLong || !Number.isFinite(maxChars) ? -1 : 1000,
+        },
         }),
       })
       if (!res.ok) {
@@ -579,14 +653,16 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
         throw new Error(`${model} answered HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ''}`)
       }
       const json = (await res.json()) as { message?: { content?: string }; response?: string }
-      return unwrap(json.message?.content ?? json.response ?? '')
+      return splitAnswer(json.message?.content ?? json.response ?? '')
     }
     let text: string
     try {
-      text = await ask('', 0.7)
+      const first = await ask('', 0.7)
+      text = first.prompt
+      notes = first.notes
     } catch (err) {
       const httpErr = err instanceof Error && err.message.startsWith(`${model} answered HTTP`)
-      return give(false, prompt, httpErr ? (err as Error).message : describeCallError(err, model, url))
+      return give(false, prompt, httpErr ? (err as Error).message : describeCallError(err, model, url, timeoutMs))
     }
     if (!text) return give(false, prompt, `${model} returned an empty answer`)
     if (looksLikeRefusal(text)) return give(false, prompt, `${model} refused to rewrite this prompt`)
@@ -623,11 +699,12 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
         const again = await ask(
           `\n\nYOUR PREVIOUS ANSWER DROPPED THE WORD(S) "${lost.join('", "')}" FROM THE REQUEST. Every ` +
           `word of the request must appear in the prompt, spelled exactly as the user spelled it or as ` +
-          `Danbooru spells that name. Answer with the prompt only.`,
+          `Danbooru spells that name. Put the corrected prompt between <prompt> and </prompt>.`,
           0.3,
         )
-        if (again && again.length <= maxChars && missingWords(prompt, again).length === 0) {
-          text = again
+        if (again.prompt && again.prompt.length <= maxChars && missingWords(prompt, again.prompt).length === 0) {
+          text = again.prompt
+          if (again.notes) notes = again.notes
           lost = []
         }
       } catch { /* the fallback below */ }
@@ -644,7 +721,7 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.warn('[image-prompt] error:', msg)
-    return give(false, prompt, describeCallError(err, model, url))
+    return give(false, prompt, describeCallError(err, model, url, timeoutMs))
   } finally {
     clearTimeout(timer)
   }

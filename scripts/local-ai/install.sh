@@ -69,8 +69,8 @@ usage() {
 
 Options:
   --data DIR             where the models and caches go (default: the largest non-system disk)
-  --models SET[,SET…]    picture models to download: anime (default), edit, flux,
-                         qwen21, zimage, klein (gated: set HF_TOKEN), all, none
+  --models SET[,SET…]    picture models to download: anime (default), edit,
+                         flux (FLUX 3 Klein; set HF_TOKEN if gated), qwen21, zimage, all, none
   --llm MODEL            Ollama chat model (default: OLLAMA_MODEL from .env, else qwen3:8b)
   --vision MODEL         Ollama vision model for the picture tools (default: OLLAMA_VISION_MODEL, else gemma4)
   --whisper-model ID     Whisper model to warm (default: WHISPER_MODEL from .env, else Systran/faster-whisper-small)
@@ -320,25 +320,23 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
     "text_encoders/qwen_3_06b_base.safetensors|https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/text_encoders/qwen_3_06b_base.safetensors|1.2"
     "vae/qwen_image_vae.safetensors|https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/vae/qwen_image_vae.safetensors|0.3"
     "model_patches/anima-lllite-inpainting-v2.safetensors|https://huggingface.co/Comfy-Org/Anima-LLLite/resolve/main/model_patches/anima-lllite-inpainting-v2.safetensors|0.1"
-    "checkpoints/animagine-xl-4.0.safetensors|https://huggingface.co/cagliostrolab/animagine-xl-4.0/resolve/main/animagine-xl-4.0.safetensors|6.9"
+    "checkpoints/waiIllustriousSDXL_v160.safetensors|${WAI_ILLUSTRIOUS_URL}|6.9"
     "checkpoints/NoobAI-XL-v1.1.safetensors|https://huggingface.co/Laxhar/noobai-XL-1.1/resolve/main/NoobAI-XL-v1.1.safetensors|6.9"
+    "checkpoints/NoobAI-XL-Vpred-v1.0.safetensors|https://huggingface.co/Laxhar/noobai-XL-Vpred-1.0/resolve/main/NoobAI-XL-Vpred-v1.0.safetensors|6.9"
     "controlnet/controlnet-union-sdxl-1.0-promax.safetensors|https://huggingface.co/xinsir/controlnet-union-sdxl-1.0/resolve/main/diffusion_pytorch_model_promax.safetensors|2.5"
     "upscale_models/4x-UltraSharpV2.safetensors|https://huggingface.co/Kim2091/UltraSharpV2/resolve/main/4x-UltraSharpV2.safetensors|0.1"
   )
   EDIT_FILES=(
-    "diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors|https://huggingface.co/Comfy-Org/flux1-kontext-dev_ComfyUI/resolve/main/split_files/diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors|11.9"
-    "text_encoders/clip_l.safetensors|https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors|0.25"
-    "text_encoders/t5xxl_fp8_e4m3fn.safetensors|https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp8_e4m3fn.safetensors|4.9"
-    "vae/ae.safetensors|https://huggingface.co/Comfy-Org/Lumina_Image_2.0_Repackaged/resolve/main/split_files/vae/ae.safetensors|0.35"
     "diffusion_models/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_comfyui_4steps_v1.0.safetensors|https://huggingface.co/Comfy-Org/Qwen-Image-Edit_ComfyUI/resolve/main/split_files/diffusion_models/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_comfyui_4steps_v1.0.safetensors|20.4"
     "text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors|https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors|9.4"
     "vae/qwen_image_vae.safetensors|https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors|0.3"
   )
+  # FLUX 3 Image Klein, painter and editor from one set. Black Forest Labs'
+  # own repo; if it asks for a login, accept the licence once and set HF_TOKEN.
   FLUX_FILES=(
-    "diffusion_models/flux1-dev.safetensors|https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/flux1-dev.safetensors|23.8"
-    "text_encoders/clip_l.safetensors|https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors|0.25"
-    "text_encoders/t5xxl_fp8_e4m3fn.safetensors|https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp8_e4m3fn.safetensors|4.9"
-    "vae/ae.safetensors|https://huggingface.co/Comfy-Org/Lumina_Image_2.0_Repackaged/resolve/main/split_files/vae/ae.safetensors|0.35"
+    "diffusion_models/flux3-image-klein-int8-convrot.safetensors|https://huggingface.co/black-forest-labs/flux-3-image-klein-comfy/resolve/main/diffusion_models/flux3-image-klein-int8-convrot.safetensors|6.0"
+    "text_encoders/qwen3vl_4b_int8_convrot.safetensors|https://huggingface.co/black-forest-labs/flux-3-image-klein-comfy/resolve/main/text_encoders/qwen3vl_4b_int8_convrot.safetensors|4.5"
+    "vae/flux2-vae.safetensors|https://huggingface.co/black-forest-labs/flux-3-image-klein-comfy/resolve/main/vae/flux2-vae.safetensors|0.35"
   )
 
   # Qwen-Image 2.1: one set of files serves both the painter and the editor.
@@ -352,13 +350,6 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
     "text_encoders/qwen_3_4b.safetensors|https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors|7.5"
     "vae/ae.safetensors|https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors|0.35"
   )
-  # The klein 9B weights are only on Black Forest Labs' own repo, which is
-  # GATED: accept the licence on huggingface.co once and run with HF_TOKEN set.
-  KLEIN_FILES=(
-    "diffusion_models/flux-2-klein-9b-fp8.safetensors|https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-fp8/resolve/main/flux-2-klein-9b-fp8.safetensors|9.5"
-    "text_encoders/qwen_3_8b_fp8mixed.safetensors|https://huggingface.co/Comfy-Org/flux2-klein-9B/resolve/main/split_files/text_encoders/qwen_3_8b_fp8mixed.safetensors|8.7"
-    "vae/flux2-vae.safetensors|https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/vae/flux2-vae.safetensors|0.35"
-  )
 
   WANT=()
   for set in ${MODELS//,/ }; do
@@ -368,10 +359,9 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
       flux)  WANT+=("${FLUX_FILES[@]}") ;;
       qwen21) WANT+=("${QWEN21_FILES[@]}") ;;
       zimage) WANT+=("${ZIMAGE_FILES[@]}") ;;
-      klein) WANT+=("${KLEIN_FILES[@]}") ;;
-      all)   WANT+=("${ANIME_FILES[@]}" "${EDIT_FILES[@]}" "${FLUX_FILES[@]}" "${QWEN21_FILES[@]}" "${ZIMAGE_FILES[@]}" "${KLEIN_FILES[@]}") ;;
+      all)   WANT+=("${ANIME_FILES[@]}" "${EDIT_FILES[@]}" "${FLUX_FILES[@]}" "${QWEN21_FILES[@]}" "${ZIMAGE_FILES[@]}") ;;
       none)  ;;
-      *) die "unknown model set '$set' (anime, edit, flux, qwen21, zimage, klein, all, none)" ;;
+      *) die "unknown model set '$set' (anime, edit, flux, qwen21, zimage, all, none)" ;;
     esac
   done
 
@@ -410,8 +400,10 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
         echo "   downloading $rel…"
         # Resumable, with retries; the .part is renamed only when complete, so a
         # cut download can never be mistaken for a model by ComfyUI.
-        # HF_TOKEN reaches the gated repos (klein); harmless on the open ones.
-        if curl -fL --retry 5 --retry-delay 5 -C - ${HF_TOKEN:+-H "Authorization: Bearer $HF_TOKEN"} -o "$dest.part" "$url"; then
+        # HF_TOKEN reaches a gated repo (FLUX 3 Klein); harmless on the open ones.
+        auth=()
+        case "$url" in https://huggingface.co/*) [ -n "${HF_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $HF_TOKEN") ;; esac
+        if curl -fL --retry 5 --retry-delay 5 -C - "${auth[@]}" -o "$dest.part" "$url"; then
           mv "$dest.part" "$dest"
         else
           warn "   failed: $url — re-run to resume; the rest continue"

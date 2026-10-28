@@ -200,7 +200,15 @@ export function setSelectedQuality(quality: string): void {
 
 /** The checkpoint currently in effect, by precedence. '' = whatever the workflow says. */
 export function selectedModel(): string {
-  return savedModel() || MODEL
+  const saved = savedModel()
+  // A built-in style that has since been retired (FLUX.1 dev, Kontext…) would
+  // fail every render as an unknown workflow; fall back as if nothing were
+  // picked rather than leave the panel stuck on a style it no longer lists.
+  if (saved.startsWith(WORKFLOW_PREFIX) && !BUILTIN_WORKFLOWS[saved.slice(WORKFLOW_PREFIX.length)]
+    && !fs.existsSync(path.join(process.env['CACHE_DIR'] ?? '/tmp/touchsphere-cache', 'workflows', `${saved.slice(WORKFLOW_PREFIX.length)}.json`))) {
+    return MODEL
+  }
+  return saved || MODEL
 }
 
 /** Persist the user's checkpoint choice. Written atomically, like every other store. */
@@ -513,6 +521,8 @@ export interface ImageSettings {
    * them, and a picture that cannot say which one made it compares nothing.
    */
   improvedWith?:   string
+  /** The improver's notes: what it worked out (who does what, where) before writing the prompt. */
+  improverNotes?:  string
   /** Booster text appended to the prompt for this style, when there was any. */
   optimizations?:  string
   /**
@@ -928,6 +938,8 @@ export interface ImageJob {
   promptOption:   string
   /** The name of the option that actually rewrote it. '' when nothing did. */
   improvedWith:   string
+  /** What the improver worked out before writing the prompt. '' when nothing did. */
+  improverNotes:  string
   /** The rewritten instruction an unchanged edit was retried with, and why not if it wasn't. */
   retriedWith?:   string
   retryFailed?:   string
@@ -1541,6 +1553,7 @@ export function startImage(req: ImageRequest): ImageJob {
     improvedBy:     '',
     promptOption:   resolvePromptOption(req.promptOption).id,
     improvedWith:   '',
+    improverNotes:  '',
     improveMs:      0,
     improveState:   '',
     improveWhy:     '',
@@ -1730,6 +1743,7 @@ async function run(job: ImageJob): Promise<void> {
       job.promptOriginal = better.original
       job.improvedBy = better.model
       job.improvedWith = better.option ?? ''
+      job.improverNotes = better.notes ?? ''
       job.prompt = better.prompt
       job.improveState = 'rewritten'
       improveNote = ` The prompt was rewritten for this style first${better.option && better.option !== ORIGINAL_NAME ? `, using "${better.option}"` : ''}.`
@@ -2236,9 +2250,9 @@ const NETAYUME_PREFIXES = {
  * other half of that story.
  */
 function sdxlAnimeGraph(
-  ckpt: string, steps: number, cfg: number, sampler: string, scheduler: string,
+  ckpt: string, steps: number, cfg: number, sampler: string, scheduler: string, vpred = false,
 ): ComfyGraph {
-  return {
+  const graph: ComfyGraph = {
     '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: ckpt } },
     '2': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['1', 1] } },
     '3': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['1', 1] } },
@@ -2255,142 +2269,28 @@ function sdxlAnimeGraph(
     '6': { class_type: 'VAEDecode', inputs: { samples: ['5', 0], vae: ['1', 2] } },
     '7': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['6', 0] } },
   }
-}
-
-/**
- * FLUX.1 dev - a guidance-distilled 12B flow transformer, and the third shape
- * of "style" this app has to carry.
- *
- * Transcribed from ComfyUI's own bundled `flux_dev_full_text_to_image` template
- * (subgraph flattened away, as Anima's and Lumina's were). Three things in it
- * are not decoration and are the reason FLUX cannot ride the default graph:
- *
- *   - **cfg is 1, and must stay 1.** FLUX.1 dev is guidance-DISTILLED: the
- *     guidance scale is a conditioning input the model was trained on, not
- *     classifier-free guidance over a negative prompt. Sampling it at cfg 5 the
- *     way SDXL wants turns on true CFG against a negative it was never trained
- *     to use - twice the time for a worse picture. The number a FLUX user
- *     means by "guidance" is the FluxGuidance node below, which is where
- *     buildGraph sends the Advanced panel's Guidance knob.
- *   - **there is no negative prompt.** The template feeds the sampler's
- *     negative a `ConditioningZeroOut` of the POSITIVE rather than a second
- *     text encode, which is why this graph has one CLIPTextEncode and not two.
- *     Encoding a negative through T5-XXL would cost real time to produce
- *     conditioning the sampler discards at cfg 1.
- *   - **two text encoders**, loaded by `DualCLIPLoader` with type 'flux':
- *     CLIP-L for the short tag-ish signal and T5-XXL for the sentence. T5 is
- *     why prompts here are written as prose - see promptStyle below.
- *
- * `weight_dtype` is the one deliberate departure from the template, which ships
- * 'default'. The published weights are bf16 and 23.8 GB; at full precision they
- * do not fit a 24 GB card alongside the text encoder, and ComfyUI's answer to
- * that is to stream the model from system RAM every render - which is not a
- * slower picture but a stalled one, the same reason there is no CPU twin for
- * ComfyUI in docker-compose.voice.yml. `fp8_e4m3fn` casts on load to ~12 GB and
- * is what ComfyUI's own docs recommend at this VRAM. The matching fp8 T5 is
- * paired with it for the same reason.
- */
-function fluxGraph(unet: string, weightDtype: string, t5: string): ComfyGraph {
-  return {
-    '1': { class_type: 'UNETLoader', inputs: { unet_name: unet, weight_dtype: weightDtype } },
-    '2': {
-      class_type: 'DualCLIPLoader',
-      inputs: { clip_name1: 'clip_l.safetensors', clip_name2: t5, type: 'flux', device: 'default' },
-    },
-    '3': { class_type: 'VAELoader', inputs: { vae_name: 'ae.safetensors' } },
-    '4': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
-    // The real guidance dial. 3.5 is the published default and ComfyUI's own.
-    '5': { class_type: 'FluxGuidance', inputs: { guidance: 3.5, conditioning: ['4', 0] } },
-    // The "negative": the positive, zeroed. Not a prompt - see above.
-    '6': { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['4', 0] } },
-    '7': { class_type: 'EmptySD3LatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
-    '8': {
-      class_type: 'KSampler',
-      inputs: {
-        seed: 0, steps: 20, cfg: 1, sampler_name: 'euler', scheduler: 'simple', denoise: 1,
-        model: ['1', 0], positive: ['5', 0], negative: ['6', 0], latent_image: ['7', 0],
-      },
-    },
-    '9': { class_type: 'VAEDecode', inputs: { samples: ['8', 0], vae: ['3', 0] } },
-    '10': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['9', 0] } },
+  // A v-prediction checkpoint (NoobAI v-pred) carries nothing in the file that
+  // tells ComfyUI so; sampled as the usual epsilon model it comes out grey and
+  // washed out, which reads as a broken model. ModelSamplingDiscrete says it,
+  // with zero-terminal-SNR as the card asks, and sits between the loader and
+  // the sampler so the turbo-LoRA and ControlNet splices wrap it like any model.
+  if (vpred) {
+    graph['8'] = { class_type: 'ModelSamplingDiscrete', inputs: { model: ['1', 0], sampling: 'v_prediction', zsnr: true } }
+    graph['5']!.inputs['model'] = ['8', 0]
   }
+  return graph
 }
 
-/**
- * FLUX.1 Kontext dev — an EDITOR, not a painter.
- *
- * Transcribed from ComfyUI's own `flux_kontext_dev_basic` template with its
- * frontend subgraph flattened and its second, bypassed LoadImage + ImageStitch
- * (the two-picture input) dropped. It is the answer to the thing plain img2img
- * cannot do: "this exact picture, but at night". img2img is SDEdit — the
- * source is noised part-way and repainted from the PROMPT, so the prompt has to
- * describe the whole picture and the composition is all that survives. Kontext
- * is handed the source as a reference latent alongside the conditioning
- * (`ReferenceLatent`), reads the prompt as an INSTRUCTION, and keeps whatever
- * the instruction does not touch — the face, the pose, the lighting, the text
- * on the sign. Which is why its sampler runs `denoise: 1` on the encoded source
- * and there is no strength to choose: the model decides what to keep from what
- * you said, not from how much noise was added.
- *
- * Three things follow that buildGraph has to honour, and does through
- * `styleEdits()`: the source goes into THIS graph's own LoadImage rather than
- * being spliced in as a latent, `denoise` is left alone, and there is no size
- * to set — `FluxKontextImageScale` resizes the source to the nearest of the
- * model's published resolutions (~1 MP), which is what `kontextSize()` mirrors
- * at queue time so the frame's size text is right before the render starts.
- *
- * Same FLUX-family facts as fluxGraph(): guidance-distilled, so cfg 1 on the
- * sampler and the real dial on FluxGuidance (2.5 is the template's number,
- * lower than dev's 3.5 because an editor that is pushed hard drifts away from
- * its reference); the "negative" is a ConditioningZeroOut of the positive; two
- * text encoders, CLIP-L and T5. The published fp8 checkpoint is already scaled,
- * so `weight_dtype` stays `default` — casting it again would be wrong.
- * It reuses FLUX dev's own encoder and VAE files, so a box with dev installed
- * needs exactly one more download.
- */
 /**
  * The size an editor will hand back, for the frame's size text before the
- * render starts (the PNG header has the final say once it lands). Kontext
- * snaps to its published list; every other editor here fits the source to one
- * megapixel at its own shape, in multiples of eight (32 for Qwen-Image 2.1).
+ * render starts (the PNG header has the final say once it lands). Every
+ * editor here fits the source to one megapixel at its own shape, in multiples
+ * of eight (32 for Qwen-Image 2.1).
  */
 function editSize(style: string, w: number, h: number): { width: number; height: number } {
-  if (style === `${WORKFLOW_PREFIX}flux-kontext-dev`) return kontextSize(w, h)
   // Qwen-Image 2.1's encoder snaps to multiples of 32 rather than 8.
   if (style === `${WORKFLOW_PREFIX}qwen-image-2.1-edit`) return sizeForMegapixels(w, h, 1, 32)
   return sizeForMegapixels(w, h, 1, 8)
-}
-
-function kontextGraph(): ComfyGraph {
-  return {
-    '1': { class_type: 'UNETLoader', inputs: { unet_name: 'flux1-dev-kontext_fp8_scaled.safetensors', weight_dtype: 'default' } },
-    '2': {
-      class_type: 'DualCLIPLoader',
-      inputs: { clip_name1: 'clip_l.safetensors', clip_name2: 't5xxl_fp8_e4m3fn.safetensors', type: 'flux', device: 'default' },
-    },
-    '3': { class_type: 'VAELoader', inputs: { vae_name: 'ae.safetensors' } },
-    '4': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
-    // Filled in by buildGraph with the uploaded source's name. Empty here so a
-    // graph that somehow reaches the GPU without one fails loudly in ComfyUI
-    // rather than editing a stale file from a previous render.
-    '5': { class_type: 'LoadImage', inputs: { image: '' } },
-    '6': { class_type: 'FluxKontextImageScale', inputs: { image: ['5', 0] } },
-    '7': { class_type: 'VAEEncode', inputs: { pixels: ['6', 0], vae: ['3', 0] } },
-    // The source, as conditioning: this is what makes it an edit of THAT
-    // picture rather than a repaint over its silhouette.
-    '8': { class_type: 'ReferenceLatent', inputs: { conditioning: ['4', 0], latent: ['7', 0] } },
-    '9': { class_type: 'FluxGuidance', inputs: { guidance: 2.5, conditioning: ['8', 0] } },
-    '10': { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['4', 0] } },
-    '11': {
-      class_type: 'KSampler',
-      inputs: {
-        seed: 0, steps: 20, cfg: 1, sampler_name: 'euler', scheduler: 'simple', denoise: 1,
-        model: ['1', 0], positive: ['9', 0], negative: ['10', 0], latent_image: ['7', 0],
-      },
-    },
-    '12': { class_type: 'VAEDecode', inputs: { samples: ['11', 0], vae: ['3', 0] } },
-    '13': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['12', 0] } },
-  }
 }
 
 /**
@@ -2454,6 +2354,85 @@ function qwenEditGraph(): ComfyGraph {
     },
     '11': { class_type: 'VAEDecode', inputs: { samples: ['10', 0], vae: ['3', 0] } },
     '12': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['11', 0] } },
+  }
+}
+
+/**
+ * FLUX 3 Image Klein (Oct 2026, 5.6B, FLUX Kommunity License — free for
+ * personal use) — the strongest open model on the arena when it landed, and
+ * one model that both draws and edits.
+ *
+ * Transcribed from ComfyUI's `image_flux3_klein_distilled_t2i` and
+ * `image_flux3_klein_distilled_image_edit` templates, subgraphs flattened and
+ * the optional Qwen3.5 9B prompt-upsampler branch dropped (the template ships
+ * it switched off, and this app's own improver does that job — it would also
+ * cost a 9B model's worth of VRAM per render). The distilled, int8 files are
+ * the templates' own pick for a 24 GB card; bf16 is for more than that.
+ *
+ * Both halves share the loaders: the diffusion model, Qwen3-VL 4B as the text
+ * encoder (type `flux3`) and the FLUX.2 VAE. Distilled: 16 steps of euler at
+ * cfg 1 are the model, so the quality row has no say, and the negative is a
+ * zeroed positive as on every FLUX graph — the template's t2i half encodes an
+ * empty second prompt instead, which at cfg 1 is the same picture for one more
+ * encoder pass.
+ */
+function flux3KleinLoaders(): ComfyGraph {
+  return {
+    '1': { class_type: 'UNETLoader', inputs: { unet_name: 'flux3-image-klein-int8-convrot.safetensors', weight_dtype: 'default' } },
+    '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen3vl_4b_int8_convrot.safetensors', type: 'flux3', device: 'default' } },
+    '3': { class_type: 'VAELoader', inputs: { vae_name: 'flux2-vae.safetensors' } },
+    '4': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
+    '5': { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['4', 0] } },
+  }
+}
+
+/** FLUX 3 Image Klein drawing from nothing. */
+function flux3KleinGraph(): ComfyGraph {
+  return {
+    ...flux3KleinLoaders(),
+    '6': { class_type: 'EmptyFlux2LatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
+    '7': {
+      class_type: 'KSampler',
+      inputs: {
+        seed: 0, steps: 16, cfg: 1, sampler_name: 'euler', scheduler: 'simple', denoise: 1,
+        model: ['1', 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0],
+      },
+    },
+    '8': { class_type: 'VAEDecode', inputs: { samples: ['7', 0], vae: ['3', 0] } },
+    '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['8', 0] } },
+  }
+}
+
+/**
+ * FLUX 3 Image Klein as an EDITOR. `ReferenceMultiLatent` takes the source
+ * (fitted to ~1 MP, `resize`), adds it to BOTH conditionings as the template
+ * says to, and hands back an empty latent the source's size for the sampler.
+ * Its conditioning ports are `positive`/`negative` rather than `conditioning`,
+ * which is why conditioningText() follows a pair by the output slot it came
+ * from. The template's prompting note: write the result with the edit folded
+ * in, not a bare command.
+ */
+function flux3KleinEditGraph(): ComfyGraph {
+  return {
+    ...flux3KleinLoaders(),
+    '6': { class_type: 'LoadImage', inputs: { image: '' } },
+    '7': {
+      class_type: 'ReferenceMultiLatent',
+      inputs: {
+        positive: ['4', 0], negative: ['5', 0], vae: ['3', 0], 'images.image0': ['6', 0],
+        // A DynamicCombo: the option, and its own input under a dotted key.
+        resolution: 'resize', 'resolution.megapixels': 1,
+      },
+    },
+    '8': {
+      class_type: 'KSampler',
+      inputs: {
+        seed: 0, steps: 16, cfg: 1, sampler_name: 'euler', scheduler: 'simple', denoise: 1,
+        model: ['1', 0], positive: ['7', 0], negative: ['7', 1], latent_image: ['7', 2],
+      },
+    },
+    '9': { class_type: 'VAEDecode', inputs: { samples: ['8', 0], vae: ['3', 0] } },
+    '10': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['9', 0] } },
   }
 }
 
@@ -2558,78 +2537,6 @@ function qwenImage21EditGraph(): ComfyGraph {
     '8': { class_type: 'VAEDecode', inputs: { samples: ['7', 0], vae: ['3', 0] } },
     '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['8', 0] } },
   }
-}
-
-/**
- * FLUX.2 [klein] 9B distilled (Jan 2026, FLUX Non-Commercial License) — the
- * fast EDITOR: 4 steps, about five seconds an edit where Qwen-Image-Edit 2511
- * takes thirty, and in published side-by-sides the one that cleanly removes
- * text and logos.
- *
- * Transcribed from ComfyUI's `image_flux2_klein_image_edit_9b_distilled`
- * template, subgraph flattened. Same edit shape as Kontext — the source,
- * fitted to one megapixel, is VAE-encoded and handed to BOTH conditionings
- * through `ReferenceLatent`, the "negative" is a zeroed positive, and the
- * sampler draws a fresh latent the source's size — with two FLUX.2 facts:
- * the encoder is Qwen-3 8B loaded as `flux2`, and the sigmas come from
- * `Flux2Scheduler`, whose shift depends on the resolution. That scheduler is
- * why this graph samples through `SamplerCustom` (the template's
- * SamplerCustomAdvanced + CFGGuider + RandomNoise, folded into the one node
- * buildGraph knows how to seed) and why its step count lives on the scheduler
- * — `stepsNodeOf()` follows the sampler's `sigmas` link to find it.
- *
- * The VAE is the full FLUX.2 one from Comfy-Org's ungated repo rather than the
- * template's small-decoder variant, which only BFL's gated repo serves.
- */
-function klein9bEditGraph(): ComfyGraph {
-  return {
-    '1': { class_type: 'UNETLoader', inputs: { unet_name: 'flux-2-klein-9b-fp8.safetensors', weight_dtype: 'default' } },
-    '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen_3_8b_fp8mixed.safetensors', type: 'flux2', device: 'default' } },
-    '3': { class_type: 'VAELoader', inputs: { vae_name: 'flux2-vae.safetensors' } },
-    '4': { class_type: 'LoadImage', inputs: { image: '' } },
-    '5': { class_type: 'ImageScaleToTotalPixels', inputs: { image: ['4', 0], upscale_method: 'lanczos', megapixels: 1.0, resolution_steps: 1 } },
-    '6': { class_type: 'GetImageSize', inputs: { image: ['5', 0] } },
-    '7': { class_type: 'VAEEncode', inputs: { pixels: ['5', 0], vae: ['3', 0] } },
-    '8': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
-    '9': { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['8', 0] } },
-    '10': { class_type: 'ReferenceLatent', inputs: { conditioning: ['8', 0], latent: ['7', 0] } },
-    '11': { class_type: 'ReferenceLatent', inputs: { conditioning: ['9', 0], latent: ['7', 0] } },
-    '12': { class_type: 'EmptyFlux2LatentImage', inputs: { width: ['6', 0], height: ['6', 1], batch_size: 1 } },
-    '13': { class_type: 'Flux2Scheduler', inputs: { steps: 4, width: ['6', 0], height: ['6', 1] } },
-    '14': { class_type: 'KSamplerSelect', inputs: { sampler_name: 'euler' } },
-    '15': {
-      class_type: 'SamplerCustom',
-      inputs: {
-        add_noise: true, noise_seed: 0, cfg: 1,
-        model: ['1', 0], positive: ['10', 0], negative: ['11', 0],
-        sampler: ['14', 0], sigmas: ['13', 0], latent_image: ['12', 0],
-      },
-    },
-    '16': { class_type: 'VAEDecode', inputs: { samples: ['15', 0], vae: ['3', 0] } },
-    '17': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['16', 0] } },
-  }
-}
-
-/**
- * The resolutions Kontext was trained at, as ComfyUI's FluxKontextImageScale
- * node lists them. The node picks the one whose aspect is closest to the
- * source's; this does the same sum at queue time so the job carries the size
- * the picture will actually come back at rather than the source's.
- */
-const KONTEXT_SIZES: [number, number][] = [
-  [672, 1568], [688, 1504], [720, 1456], [752, 1392], [800, 1328], [832, 1248],
-  [880, 1184], [944, 1104], [1024, 1024], [1104, 944], [1184, 880], [1248, 832],
-  [1328, 800], [1392, 752], [1456, 720], [1504, 688], [1568, 672],
-]
-function kontextSize(width: number, height: number): { width: number; height: number } {
-  const aspect = width / Math.max(1, height)
-  let best = KONTEXT_SIZES[8]!
-  let miss = Infinity
-  for (const [w, h] of KONTEXT_SIZES) {
-    const d = Math.abs(aspect - w / h)
-    if (d < miss) { miss = d; best = [w, h] }
-  }
-  return { width: best[0], height: best[1] }
 }
 
 /**
@@ -3041,32 +2948,28 @@ const BUILTIN_WORKFLOWS: Record<string, {
    */
   inpaintPatch?: string
 }> = {
-  'flux1-dev': {
-    label: 'FLUX.1 dev',
-    graph: fluxGraph('flux1-dev.safetensors', 'fp8_e4m3fn', 't5xxl_fp8_e4m3fn.safetensors'),
-    // T5-XXL reads sentences. Feeding a booru tag list to the model with the
-    // best prose comprehension of anything installed here is the inverse of
-    // the mistake promptStyle exists to stop.
+  'flux3-image-klein': {
+    label: 'FLUX 3 Klein',
+    graph: flux3KleinGraph(),
+    // Distilled: 16 steps at cfg 1 are the model.
+    ignoresQuality: true,
+    // Read by Qwen3-VL 4B, a language model.
     promptStyle: 'prose',
+    // Condensed from the template's own prompt-upsampler instructions, which are
+    // BFL's description of the caption this model was trained to receive.
     promptGuide:
-      'Write one flowing paragraph of plain English, never tags. This model reads ' +
-      'sentences through a T5-XXL text encoder and rewards detail, so name the subject ' +
-      'and what it is doing, then the setting, the lighting, the lens or camera angle if ' +
-      'it matters, the mood, and the art style. Long, specific prompts beat short ones. ' +
-      'It renders legible text, so put any words that should appear in the picture in ' +
-      'quotes. There is NO negative prompt, so never write what you do not want — only ' +
-      'ever describe what you do want.',
-    // No `negative`: this style has nowhere to put one (ConditioningZeroOut),
-    // and buildGraph/renderedWith both know not to invent one for it.
-    // No `turboHints`: the distilled sibling is FLUX.1 schnell, a different
-    // model rather than a LoRA over this one, so the toggle stays hidden.
-    // No `supersedes`: FLUX ships as split files, so there is no all-in-one
-    // checkpoint appearing twice in the picker to hide.
+      'Write one continuous paragraph of plain English, never a tag list, 100 to 300 words. Lead ' +
+      'with the medium and style (photograph, anime illustration, oil painting…), then the scene, ' +
+      'lighting and camera, then each subject with concrete colours, materials and state. Make the ' +
+      'layout reconstructable from words: say where each thing is in the frame (on the left, in ' +
+      'the foreground, upper right) and how things relate (holds, faces, behind). Be definite — ' +
+      'no hedging, no quality words, no closing sentence about mood; turn moods into what can be ' +
+      'seen. Any text in the picture goes verbatim in double quotes with its colour and placement. ' +
+      'There is NO negative prompt, so only ever describe what you want.',
     needs: [
-      'diffusion_models/flux1-dev.safetensors',
-      'text_encoders/clip_l.safetensors',
-      'text_encoders/t5xxl_fp8_e4m3fn.safetensors',
-      'vae/ae.safetensors',
+      'diffusion_models/flux3-image-klein-int8-convrot.safetensors',
+      'text_encoders/qwen3vl_4b_int8_convrot.safetensors',
+      'vae/flux2-vae.safetensors',
     ],
   },
   'qwen-image-2.1': {
@@ -3133,24 +3036,28 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'vae/qwen_image_2.1_vae_bf16.safetensors',
     ],
   },
-  'flux2-klein-9b-edit': {
-    label: 'FLUX.2 klein 9B (edit)',
-    graph: klein9bEditGraph(),
+  'flux3-image-klein-edit': {
+    label: 'FLUX 3 Klein (edit)',
+    graph: flux3KleinEditGraph(),
     edits: true,
-    // Distilled: 4 steps at cfg 1 are the model.
     ignoresQuality: true,
     promptStyle: 'prose',
+    // The template's editing upsampler, condensed: an imperative instruction on
+    // the picture, the referent named by how it looks, the end state concrete,
+    // one closing clause on what stays.
     promptGuide:
       'This model EDITS the picture it is shown, so the prompt is an instruction, not a ' +
-      'description of a scene. Say the change in plain English, precisely, and name the ' +
-      'subject as it appears: "replace the background with a quiet coastal cliff at sunset", ' +
-      '"change the woman\'s coat to yellow", "remove all the text and logos". One short clause ' +
-      'about what must not move is fine ("keep her pose and framing unchanged"); never list ' +
-      'everything to keep and never write a full scene description. Text to add goes in quotes.',
-    // No negative: a zeroed positive, as on every FLUX graph here.
+      'description of a scene. Name each subject by how it actually looks ("the woman with ' +
+      'orange hair on the left"), never "her" or "it", and state the end state concretely — ' +
+      'which colour, which pose, which material: "Change her striped top to an open pink zip-up ' +
+      'jacket worn over a white tank top." Mention the knock-on effects (shadows, reflections, ' +
+      'what fills a removed area). For a whole-picture change open with the scope ("Convert the ' +
+      'entire image into…"). Close with ONE short clause on what stays unchanged; never list ' +
+      'everything. Text to add goes verbatim in double quotes. 50 to 150 words.',
+    // Shares all three files with the FLUX 3 Klein painter.
     needs: [
-      'diffusion_models/flux-2-klein-9b-fp8.safetensors',
-      'text_encoders/qwen_3_8b_fp8mixed.safetensors',
+      'diffusion_models/flux3-image-klein-int8-convrot.safetensors',
+      'text_encoders/qwen3vl_4b_int8_convrot.safetensors',
       'vae/flux2-vae.safetensors',
     ],
   },
@@ -3179,34 +3086,6 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'vae/qwen_image_vae.safetensors',
     ],
   },
-  'flux-kontext-dev': {
-    label: 'FLUX Kontext (edit)',
-    graph: kontextGraph(),
-    edits: true,
-    promptStyle: 'prose',
-    // Black Forest Labs' own Kontext prompting guide, condensed. The whole of
-    // it is about being specific about the change and explicit about what is
-    // NOT to change, because that is the axis this model actually has.
-    promptGuide:
-      'This model EDITS the picture it is shown, so the prompt is an instruction, not a ' +
-      'description of a scene. Say what to change in plain English, precisely: "change the ' +
-      'car to red", "make it night time", "put a straw hat on the cat". Name the subject ' +
-      'explicitly ("the woman in the red coat", never "her"). Say what should stay: "while ' +
-      'keeping everything else the same", "keep the same facial features, pose and ' +
-      'expression", "maintain the original composition". For a style change name the ' +
-      'style and its traits: "convert to a watercolour painting with soft washes and visible ' +
-      'paper texture". Put any text to add or replace in quotes. Do not describe the parts of ' +
-      'the picture that are not changing, and never write a full scene description — that ' +
-      'reads as a request to repaint everything.',
-    // No `negative`, no prefix, no booster: an instruction with "masterpiece,
-    // best quality" glued on is an instruction to change the quality tags.
-    needs: [
-      'diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors',
-      'text_encoders/clip_l.safetensors',
-      'text_encoders/t5xxl_fp8_e4m3fn.safetensors',
-      'vae/ae.safetensors',
-    ],
-  },
   'ultrasharp-v2': {
     label: 'UltraSharp V2 (sharpen ×4)',
     graph: upscaleGraph('4x-UltraSharpV2.safetensors'),
@@ -3223,33 +3102,27 @@ const BUILTIN_WORKFLOWS: Record<string, {
     // the way. Goes in ComfyUI's models/upscale_models/.
     needs: ['upscale_models/4x-UltraSharpV2.safetensors'],
   },
-  'animagine-xl-4': {
-    label: 'Animagine XL 4.0',
-    // Card: "CFG Scale: 4-7 (5 Recommended)", "Sampling Steps: 25-28 (28
-    // Recommended)", "Preferred Sampler: Euler Ancestral". As a bare checkpoint
-    // this rendered through the default SDXL graph at cfg 8 / euler / normal —
-    // three settings wrong at once, which is exactly the "this model is bad"
-    // reading that NoobAI's entry was created to stop.
-    graph: sdxlAnimeGraph('animagine-xl-4.0.safetensors', 28, 5, 'euler_ancestral', 'normal'),
-    // THE distinguishing case for the `optimizations` field. Every other style
-    // here documents its boosters as a prefix; Animagine's card says, in its
-    // own words, "Add these tags at the end of your prompt" — and its prompt
-    // structure literally ends "...and end with quality enhancement". This is
-    // the model that makes an appended slot necessary rather than tidy.
-    optimizations: 'masterpiece, high score, great score, absurdres',
-    negative: 'lowres, bad anatomy, bad hands, text, error, missing finger, ' +
-      'extra digits, fewer digits, cropped, worst quality, low quality, low score, ' +
-      'bad score, average score, signature, watermark, username, blurry',
+  'wai-illustrious-v16': {
+    label: 'WAI-Illustrious v16',
+    // The most-used anime checkpoint on Civitai: an Illustrious XL fine-tune,
+    // and the one comparisons pick for keeping a named character and costume
+    // consistent, which is where Anima is weakest. Card: Euler a, 15-30 steps,
+    // CFG 5-7, VAE baked in.
+    graph: sdxlAnimeGraph('waiIllustriousSDXL_v160.safetensors', 28, 6, 'euler_ancestral', 'normal'),
+    // The card's own quality line, plus `safe` for the same reason as NoobAI's.
+    prefixes: { positive: 'masterpiece, best quality, amazing quality, safe, ', negative: '' },
+    negative: 'nsfw, bad quality, worst quality, worst detail, sketch, censor, ' +
+      'signature, watermark, username, bad hands, extra digits',
     promptStyle: 'tags',
     promptGuide:
-      'Write lowercase Danbooru tags separated by commas, with SPACES rather than ' +
-      'underscores, in this order: subject count (1girl, 1boy, 1other), then the ' +
-      'character name, then the series it is from, then the rating, then everything ' +
-      'else in any order. Parentheses in a character or series name are escaped, as in ' +
-      'firefly \\(honkai: star rail\\). Score tags steer this model harder than plain ' +
-      'quality tags do. Do not add the quality tags yourself — they are appended for you.',
-    supersedes: 'animagine-xl-4.0.safetensors',
-    needs: ['checkpoints/animagine-xl-4.0.safetensors'],
+      'Write lowercase Danbooru tags separated by commas, never sentences. Lead with the ' +
+      'subject count and framing (1girl, solo, upper body), then — for a named character — ' +
+      'its booru tag AND its series (haruno sakura, naruto), then appearance, clothing, pose, ' +
+      'expression, background and lighting tags. Illustrious knows characters by tag, so ' +
+      'name them rather than describing them. The quality tags are already prepended for ' +
+      'you, so do not repeat masterpiece or best quality.',
+    supersedes: 'waiIllustriousSDXL_v160.safetensors',
+    needs: ['checkpoints/waiIllustriousSDXL_v160.safetensors'],
   },
   'noobai-xl-v11': {
     label: 'NoobAI XL v1.1',
@@ -3278,6 +3151,30 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'already prepended for you, so do not repeat masterpiece or best quality.',
     supersedes: 'NoobAI-XL-v1.1.safetensors',
     needs: ['checkpoints/NoobAI-XL-v1.1.safetensors'],
+  },
+  'noobai-xl-vpred-v1': {
+    label: 'NoobAI XL v-pred 1.0',
+    // The v-prediction release, which comparisons rank above the epsilon one
+    // for colour, contrast and lighting. Card: Euler (other samplers "will not
+    // work properly"), CFG 4-5, 28-35 steps.
+    graph: sdxlAnimeGraph('NoobAI-XL-Vpred-v1.0.safetensors', 30, 4.5, 'euler', 'normal', true),
+    prefixes: {
+      positive: 'masterpiece, best quality, newest, absurdres, highres, safe, ',
+      negative: '',
+    },
+    negative: 'nsfw, worst quality, old, early, low quality, lowres, signature, ' +
+      'username, logo, bad hands, mutated hands, mammal, anthro, furry, ' +
+      'ambiguous form, feral, semi-anthro',
+    promptStyle: 'tags',
+    promptGuide:
+      'Write lowercase Danbooru tags separated by commas, never sentences. Lead with the ' +
+      'subject count and framing (1girl, solo, upper body), then — for a named character — ' +
+      'its booru tag AND its series, both underscored (haruno_sakura, naruto_(series)), ' +
+      'then appearance, clothing, pose, expression, background and lighting tags. An ' +
+      'artist tag written as "by <artist>" steers the style hard. The quality ladder is ' +
+      'already prepended for you, so do not repeat masterpiece or best quality.',
+    supersedes: 'NoobAI-XL-Vpred-v1.0.safetensors',
+    needs: ['checkpoints/NoobAI-XL-Vpred-v1.0.safetensors'],
   },
   'netayume-lumina-v35': {
     label: 'NetaYume Lumina v3.5',
@@ -3617,8 +3514,8 @@ export function styleUsesNegative(style: string): boolean {
     const v = inputs[key]
     return Array.isArray(v) && typeof v[0] === 'string' ? v[0] : null
   }
-  const posId = conditioningText(graph, linked('positive'))
-  const negId = conditioningText(graph, linked('negative'))
+  const posId = conditioningText(graph, inputs['positive'])
+  const negId = conditioningText(graph, inputs['negative'])
   // The same identity test buildGraph uses before it writes: landing on the
   // positive's own text node means there is no separate negative.
   return !!negId && negId !== posId
@@ -3749,7 +3646,7 @@ export function styleUpscales(style: string): boolean {
  *
  * `promptStyle: 'mixed'` is what marks one — the field exists for Anima and
  * nothing else carries it. Not a test on the id: `anima` is also the start of
- * `animagine-xl-4`, an SDXL checkpoint with a CLIP encoder.
+ * other names (Animagine was an SDXL checkpoint with a CLIP encoder).
  */
 export function styleIsAnima(style: string): boolean {
   return stylePromptStyle(style) === 'mixed'
@@ -3897,16 +3794,22 @@ function stepsNodeOf(graph: ComfyGraph, samplerId: string | null): string | null
   return id && graph[id] && 'steps' in graph[id]!.inputs ? id : null
 }
 
-function conditioningText(graph: ComfyGraph, startId: string | null): string | null {
-  let id = startId
-  for (let hop = 0; id && hop < 8; hop++) {
-    const node = graph[id]
+function conditioningText(graph: ComfyGraph, start: unknown): string | null {
+  // A link is [node id, output slot]. The slot matters only at a node that
+  // passes a positive AND a negative through (FLUX 3's ReferenceMultiLatent):
+  // its output 0 is the positive it was given and output 1 the negative.
+  let link: unknown[] | null = Array.isArray(start) ? start : typeof start === 'string' ? [start, 0] : null
+  for (let hop = 0; link && hop < 8; hop++) {
+    const [id, slot] = link
+    const node = typeof id === 'string' ? graph[id] : undefined
     if (!node) return null
     // CLIPTextEncode says `text`; Qwen's image-edit encoder says `prompt`.
-    if ('text' in node.inputs || 'prompt' in node.inputs) return id
-    // Every conditioning passthrough names its upstream input `conditioning`.
+    if ('text' in node.inputs || 'prompt' in node.inputs) return id as string
+    // Every single conditioning passthrough names its upstream input
+    // `conditioning`; a pair passthrough names them `positive`/`negative`.
     const up = node.inputs['conditioning']
-    id = Array.isArray(up) && typeof up[0] === 'string' ? up[0] : null
+      ?? (slot === 1 && 'negative' in node.inputs ? node.inputs['negative'] : node.inputs['positive'])
+    link = Array.isArray(up) && typeof up[0] === 'string' ? up : null
   }
   return null
 }
@@ -4002,8 +3905,8 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
     const v = sampler.inputs[key]
     return Array.isArray(v) && typeof v[0] === 'string' ? v[0] : null
   }
-  const posId = conditioningText(graph, link('positive'))
-  const negId = conditioningText(graph, link('negative'))
+  const posId = conditioningText(graph, sampler.inputs['positive'])
+  const negId = conditioningText(graph, sampler.inputs['negative'])
   // An instruction-tuned style (Lumina) has to be addressed in the format it
   // was trained on, so its system line goes in front of what the user asked
   // for. Empty for every other style, which is why this is a plain concat
@@ -4035,7 +3938,7 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
     graph[negId]!.inputs[negKey] = joinPrefix(job.negativePrefix, job.negative)
   }
 
-  const latentId = findNode(graph, ['EmptyLatentImage', 'EmptySD3LatentImage', 'EmptyLatentImageAdvanced'])
+  const latentId = findNode(graph, ['EmptyLatentImage', 'EmptySD3LatentImage', 'EmptyFlux2LatentImage', 'EmptyLatentImageAdvanced'])
   if (latentId) {
     graph[latentId]!.inputs['width'] = job.width
     graph[latentId]!.inputs['height'] = job.height
@@ -4371,8 +4274,8 @@ function renderedWith(job: ImageJob, graph: ComfyGraph, changed?: number | null)
     const v = inputs[key]
     return Array.isArray(v) && typeof v[0] === 'string' ? v[0] : null
   }
-  const posId = conditioningText(graph, linked('positive'))
-  const negId = conditioningText(graph, linked('negative'))
+  const posId = conditioningText(graph, inputs['positive'])
+  const negId = conditioningText(graph, inputs['negative'])
   const guidanceId = findNode(graph, ['FluxGuidance'])
   const guidance = guidanceId ? n(graph[guidanceId]!.inputs['guidance']) : 0
 
@@ -4388,7 +4291,7 @@ function renderedWith(job: ImageJob, graph: ComfyGraph, changed?: number | null)
     // stored `prompt` is the rewritten one, because that is what the sampler
     // read and what "use as prompt" should hand back.
     ...(job.promptOriginal
-      ? { promptOriginal: job.promptOriginal, improvedBy: job.improvedBy, ...(job.improvedWith ? { improvedWith: job.improvedWith } : {}) }
+      ? { promptOriginal: job.promptOriginal, improvedBy: job.improvedBy, ...(job.improvedWith ? { improvedWith: job.improvedWith } : {}), ...(job.improverNotes ? { improverNotes: job.improverNotes } : {}) }
       : {}),
     // What the improver did, whenever it was asked to run — absent when it was
     // off, so a picture drawn with it off says nothing about it.
@@ -4455,7 +4358,7 @@ export function styleDefaults(style: string): StyleDefaults {
   const samplerId = findNode(graph, ['KSampler', 'KSamplerAdvanced', 'SamplerCustom'])
   const inputs = samplerId ? graph[samplerId]!.inputs : {}
   const stepsAt = stepsNodeOf(graph, samplerId)
-  const latentId = findNode(graph, ['EmptyLatentImage', 'EmptySD3LatentImage', 'EmptyLatentImageAdvanced'])
+  const latentId = findNode(graph, ['EmptyLatentImage', 'EmptySD3LatentImage', 'EmptyFlux2LatentImage', 'EmptyLatentImageAdvanced'])
   const latent = latentId ? graph[latentId]!.inputs : {}
   const n = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d)
   const s = (v: unknown, d: string) => (typeof v === 'string' ? v : d)
