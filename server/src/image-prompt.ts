@@ -602,6 +602,37 @@ export interface Improvement {
   option?:  string
   /** What the improver worked out before writing the prompt. '' when it wrote none. */
   notes?:   string
+  /** Every message sent and answered, verbatim — what "How it was made" shows. */
+  conversation?: AiExchange
+}
+
+/** One message of a conversation with a language model, exactly as sent or answered. */
+export interface AiTurn {
+  role: 'system' | 'user' | 'assistant'
+  text: string
+  /** The source picture rode along with this message (a vision call). */
+  picture?: boolean
+  /** A line of context the screen shows above the message ("second try"). */
+  note?: string
+}
+
+/**
+ * A whole conversation behind one picture's prompt: which model, why it was
+ * asked, and every turn. Kept on the picture because the final prompt alone
+ * hides the half that decides it — the instructions the model was given and
+ * what it worked out before answering.
+ */
+export interface AiExchange {
+  purpose: string
+  model:   string
+  turns:   AiTurn[]
+}
+
+/** A turn is stored on every picture in the gallery index, so a runaway answer is cut. */
+const MAX_TURN_CHARS = 24_000
+export function turn(role: AiTurn['role'], text: string, extra: Omit<AiTurn, 'role' | 'text'> = {}): AiTurn {
+  const t = text.length > MAX_TURN_CHARS ? `${text.slice(0, MAX_TURN_CHARS)}\n… (${text.length - MAX_TURN_CHARS} more characters not kept)` : text
+  return { role, text: t, ...extra }
 }
 
 /**
@@ -621,8 +652,10 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
   // original instead of failing the render.
   const option = resolvePromptOption(optionId)
   let notes = ''
+  const turns: AiTurn[] = []
   const give = (changed: boolean, text: string, why: string): Improvement => ({
     prompt: text, original: prompt, changed, model, ms: Date.now() - started, why, option: option.name, notes,
+    ...(turns.length ? { conversation: { purpose: `Rewriting your prompt for ${style.label || 'this style'} (${option.name})`, model, turns } } : {}),
   })
   const maxChars = style.maxChars ?? MAX_PROMPT_CHARS
 
@@ -636,6 +669,12 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
 
     const ask = async (extra: string, temperature: number): Promise<{ prompt: string; notes: string }> => {
       url = (await ollamaUrlSettled('image')).replace(/\/$/, '')
+      const system = improverSystemPrompt(option.template, style, settings.thinkLong) + extra
+      // A retry is a fresh call with the same instructions plus a correction;
+      // repeating several thousand characters of instructions would bury it.
+      if (extra) turns.push(turn('system', extra.trim(), { note: 'Second try: the same instructions as above, with this added' }))
+      else turns.push(turn('system', system))
+      turns.push(turn('user', prompt))
       const res = await fetch(`${url}/api/chat`, {
         method: 'POST',
         headers,
@@ -650,7 +689,7 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
           // TWO MESSAGES, BUILT HERE, EVERY TIME. No history is threaded in and
           // none is kept: see the header. This is the whole of the conversation.
           messages: [
-            { role: 'system', content: improverSystemPrompt(option.template, style, settings.thinkLong) + extra },
+            { role: 'system', content: system },
             { role: 'user',   content: prompt },
           ],
           // Warmer than the guide generator's 0.3: this is a creative rewrite
@@ -676,10 +715,13 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
       if (!res.ok) {
         const body = await res.text().catch(() => '')
         console.warn(`[image-prompt] ollama ${res.status}: ${body.slice(0, 200)}`)
+        turns.push(turn('assistant', `(no answer: HTTP ${res.status}${body ? ` — ${body.slice(0, 300)}` : ''})`))
         throw new Error(`${model} answered HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ''}`)
       }
       const json = (await res.json()) as { message?: { content?: string }; response?: string }
-      return splitAnswer(json.message?.content ?? json.response ?? '')
+      const raw = json.message?.content ?? json.response ?? ''
+      turns.push(turn('assistant', raw))
+      return splitAnswer(raw)
     }
     let text: string
     try {
@@ -880,14 +922,15 @@ export async function composeRedrawPrompt(
 ): Promise<Improvement> {
   const started = Date.now()
   const model = visionModel()
-  const give = (changed: boolean, text: string, why: string): Improvement => ({
-    prompt: text, original: change, changed, model, ms: Date.now() - started, why,
-  })
-  const maxChars = style.maxChars ?? MAX_PROMPT_CHARS
-
   // The user's own template (Settings → Drawing), read per call for the same
   // reason the improver's is: an edit has to reach the NEXT redraw.
   const system = buildSystemPrompt(readPrompter().visionTemplate, style)
+  const turns: AiTurn[] = [turn('system', system), turn('user', visionUserMessage(change), { picture: true })]
+  const give = (changed: boolean, text: string, why: string): Improvement => ({
+    prompt: text, original: change, changed, model, ms: Date.now() - started, why,
+    conversation: { purpose: 'Looking at the picture and writing the whole prompt with your change', model, turns },
+  })
+  const maxChars = style.maxChars ?? MAX_PROMPT_CHARS
 
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
@@ -925,10 +968,13 @@ export async function composeRedrawPrompt(
     if (!res.ok) {
       const body = await res.text().catch(() => '')
       console.warn(`[image-prompt] vision ${res.status}: ${body.slice(0, 200)}`)
+      turns.push(turn('assistant', `(no answer: HTTP ${res.status}${body ? ` — ${body.slice(0, 300)}` : ''})`))
       return give(false, change, `${model} answered HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ''}`)
     }
     const json = (await res.json()) as { message?: { content?: string }; response?: string }
-    const text = unwrap(json.message?.content ?? json.response ?? '')
+    const raw = json.message?.content ?? json.response ?? ''
+    turns.push(turn('assistant', raw))
+    const text = unwrap(raw)
     if (!text) return give(false, change, `${model} returned an empty answer`)
     if (looksLikeRefusal(text)) return give(false, change, `${model} refused to describe this picture`)
     if (text.length > maxChars) {
@@ -967,10 +1013,12 @@ export async function composeKontextInstruction(
 ): Promise<Improvement> {
   const started = Date.now()
   const model = editModel()
+  const system = buildSystemPrompt(readPrompter().editTemplate, style)
+  const turns: AiTurn[] = [turn('system', system), turn('user', editUserMessage(request), { picture: true })]
   const give = (changed: boolean, text: string, why: string): Improvement => ({
     prompt: text, original: request, changed, model, ms: Date.now() - started, why,
+    conversation: { purpose: 'Rewriting an edit that changed nothing', model, turns },
   })
-  const system = buildSystemPrompt(readPrompter().editTemplate, style)
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
   try {
@@ -999,10 +1047,13 @@ export async function composeKontextInstruction(
     })
     if (!res.ok) {
       const body = await res.text().catch(() => '')
+      turns.push(turn('assistant', `(no answer: HTTP ${res.status}${body ? ` — ${body.slice(0, 300)}` : ''})`))
       return give(false, request, `the ${model} model answered ${res.status}: ${body.slice(0, 80)}`)
     }
     const json = (await res.json()) as { message?: { content?: string }; response?: string }
-    const text = unwrap(json.message?.content ?? json.response ?? '').replace(/\s+/g, ' ').trim()
+    const raw = json.message?.content ?? json.response ?? ''
+    turns.push(turn('assistant', raw))
+    const text = unwrap(raw).replace(/\s+/g, ' ').trim()
     if (!text) return give(false, request, `${model} returned nothing`)
     if (text.toLowerCase() === request.toLowerCase()) return give(false, request, `${model} gave the same words back`)
     return give(true, text, '')

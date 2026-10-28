@@ -904,6 +904,10 @@ router.get('/', (_req: Request, res: Response) => {
     // client never has to carry the `wf:` id table to caption a picture.
     images: listImages().map(e => ({
       ...e,
+      // The model conversations are tens of kilobytes a picture, and only the
+      // "How it was made" view reads them (from /lineage), so the list that
+      // every screen polls and the phone caches leaves them out.
+      ...(e.settings?.conversation ? { settings: { ...e.settings, conversation: undefined } } : {}),
       url: `/api/image/file/${e.file}`,
       modelLabel: styleLabel(e.settings?.style ?? e.model ?? ''),
     })),

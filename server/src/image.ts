@@ -31,6 +31,7 @@ import { broadcast } from './routes/system'
 import { advanceSeed, paramsFor, type ImageParams } from './image-params'
 import { estimateRender, humanMs, recordRender } from './image-timing'
 import { serviceUrl, serviceUrlSettled, onAiServiceChange } from './ai-devices'
+import type { AiExchange } from './image-prompt'
 import { composeKontextInstruction, composeRedrawPrompt, visionModel, improvePrompt, prompterModel, readPrompter, locateBox, resolvePromptOption, ORIGINAL_OPTION, ORIGINAL_NAME } from './image-prompt'
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -523,6 +524,13 @@ export interface ImageSettings {
   improvedWith?:   string
   /** The improver's notes: what it worked out (who does what, where) before writing the prompt. */
   improverNotes?:  string
+  /**
+   * Every language-model conversation behind this picture's prompt, verbatim:
+   * the instructions, the request, and the whole answer. Recorded whenever a
+   * call was made, rewrite or not, since a fallback is exactly when the answer
+   * is worth reading.
+   */
+  conversation?:   AiExchange[]
   /** Booster text appended to the prompt for this style, when there was any. */
   optimizations?:  string
   /**
@@ -940,6 +948,8 @@ export interface ImageJob {
   improvedWith:   string
   /** What the improver worked out before writing the prompt. '' when nothing did. */
   improverNotes:  string
+  /** Every model conversation behind the prompt, in order. See ImageSettings. */
+  conversation:   AiExchange[]
   /** The rewritten instruction an unchanged edit was retried with, and why not if it wasn't. */
   retriedWith?:   string
   retryFailed?:   string
@@ -1554,6 +1564,7 @@ export function startImage(req: ImageRequest): ImageJob {
     promptOption:   resolvePromptOption(req.promptOption).id,
     improvedWith:   '',
     improverNotes:  '',
+    conversation:   [],
     improveMs:      0,
     improveState:   '',
     improveWhy:     '',
@@ -1703,6 +1714,7 @@ async function run(job: ImageJob): Promise<void> {
         })
       : null
     job.improveMs += seen?.ms ?? 0
+    if (seen?.conversation) job.conversation.push(seen.conversation)
     if (seen?.changed) {
       job.promptOriginal = seen.original
       job.improvedBy = seen.model
@@ -1740,6 +1752,7 @@ async function run(job: ImageJob): Promise<void> {
       maxChars: promptLimit(job.model),
     }, job.promptOption)
     job.improveMs += better.ms
+    if (better.conversation) job.conversation.push(better.conversation)
     if (better.changed) {
       job.promptOriginal = better.original
       job.improvedBy = better.model
@@ -2028,6 +2041,7 @@ async function run(job: ImageJob): Promise<void> {
           } catch (err) {
             better = { prompt: job.prompt, original: job.prompt, changed: false, model: '', ms: 0, why: err instanceof Error ? err.message : String(err) }
           }
+          if (better.conversation) job.conversation.push(better.conversation)
           if (better.changed) {
             console.log(`[image] ${job.id} retrying with the rewritten instruction: "${better.prompt.slice(0, 160)}" (${better.model}, ${better.ms}ms)`)
             job.promptOriginal = job.promptOriginal || job.prompt
@@ -4484,6 +4498,8 @@ function renderedWith(job: ImageJob, graph: ComfyGraph, changed?: number | null)
     // What the improver did, whenever it was asked to run — absent when it was
     // off, so a picture drawn with it off says nothing about it.
     ...(job.improveState ? { improver: { state: job.improveState, ...(job.improveWhy ? { why: job.improveWhy } : {}) } } : {}),
+    // The whole conversation, not just its result: see ImageSettings.
+    ...(job.conversation.length ? { conversation: job.conversation } : {}),
     // Recorded only when there was one, so its presence is the record — the
     // same rule as promptOriginal. Without it the stored prompt and the picture
     // disagree for no visible reason.

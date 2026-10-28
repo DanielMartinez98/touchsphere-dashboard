@@ -14,9 +14,9 @@
 
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { X, ArrowDown, Lasso, Wand2, Brush, Upload, Globe, Sparkles, AlertTriangle, Loader2 } from 'lucide-react'
+import { X, ArrowDown, Lasso, Wand2, Brush, Upload, Globe, Sparkles, AlertTriangle, Loader2, MessageSquare, ChevronRight } from 'lucide-react'
 import { openImage } from '../hooks/useImageOverlay'
-import type { ImageSettings } from '../hooks/useImages'
+import type { ImageSettings, AiExchange, AiTurn } from '../hooks/useImages'
 
 interface Link {
   id:       string
@@ -31,6 +31,54 @@ interface Link {
   sourceMissing: boolean
 }
 
+/** Who said it, in words rather than API roles. */
+function speaker(t: AiTurn): string {
+  if (t.role === 'system') return 'Instructions'
+  if (t.role === 'user') return t.picture ? 'Asked (with the picture)' : 'Asked'
+  return 'Answered'
+}
+
+/**
+ * The whole conversation behind a prompt: the instructions the model was
+ * given, what it was asked, and everything it answered, notes included. The
+ * final prompt alone hides the half that decides it. Closed by default, since
+ * the instructions run to pages; open, the instructions scroll in their own
+ * box so the answer is never pages below them.
+ */
+function Conversation({ ex }: { ex: AiExchange }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mt-2 rounded-xl border border-hairline bg-white/[0.03]">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full min-h-11 flex items-center gap-2 px-3 py-2 text-left active:bg-white/5 rounded-xl"
+      >
+        <MessageSquare size={13} className="shrink-0 text-white/40" />
+        <span className="flex-1 min-w-0">
+          <span className="block text-[12px] text-white/75">{ex.purpose}</span>
+          <span className="block text-[11px] text-white/35">{ex.model} · {ex.turns.length} messages</span>
+        </span>
+        <ChevronRight size={14} className={`shrink-0 text-white/40 transition-transform ${open ? 'rotate-90' : ''}`} />
+      </button>
+      {open && (
+        <div className="px-3 pb-3 space-y-2.5">
+          {ex.turns.map((t, i) => (
+            <div key={i}>
+              {t.note && <p className="text-[11px] text-amber-200/60 mb-0.5">{t.note}</p>}
+              <p className="text-[11px] font-semibold text-white/40">{speaker(t)}</p>
+              <pre className={`selectable-text whitespace-pre-wrap break-words font-sans text-[12px] leading-snug mt-0.5 ${
+                t.role === 'system' ? 'max-h-72 overflow-y-auto rounded-lg bg-black/30 p-2 text-white/55'
+                  : t.role === 'assistant' ? 'text-white/80' : 'text-white/65'}`}>
+                {t.text || '(nothing)'}
+              </pre>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 /** What kind of step this was, in the words the Draw panel uses. */
 function toolOf(st: ImageSettings | null, origin: string): { label: string; icon: React.ReactNode } {
@@ -282,6 +330,7 @@ export default function ImageLineage({ id, onClose }: { id: string; onClose: () 
                     </p>
                   )}
                   <Facts st={st} origin={link.origin} />
+                  {st?.conversation?.map((ex, j) => <Conversation key={j} ex={ex} />)}
                   {typeof st?.changed === 'number' && <ChangeBar changed={st.changed} />}
                   {v && (
                     <div className={`mt-2 rounded-xl px-3 py-2 border text-[11px] leading-relaxed ${
