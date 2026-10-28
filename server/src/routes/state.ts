@@ -262,6 +262,47 @@ router.post('/voice-pitch', (req: Request, res: Response) => {
   }
 })
 
+// ── Work/rest timer ───────────────────────────────────────────────────────────
+// The lengths behind the timer under the sphere in work mode. Server-side so
+// what is set on the phone is what the kiosk counts, like the voice pitch.
+// Defaults are the Pomodoro technique's own (25 min of work, 5 of rest, a
+// longer 15 after every fourth round), the most widely recommended split.
+const FOCUS_FILE = 'focus-timer.json'
+interface FocusTimerSettings { workMin: number; restMin: number; longRestMin: number; roundsBeforeLong: number }
+const FOCUS_DEFAULTS: FocusTimerSettings = { workMin: 25, restMin: 5, longRestMin: 15, roundsBeforeLong: 4 }
+
+function focusSettings(): FocusTimerSettings {
+  return { ...FOCUS_DEFAULTS, ...readJSON<Partial<FocusTimerSettings>>(FOCUS_FILE, {}) }
+}
+
+// GET /api/state/focus-timer → { settings, defaults }
+router.get('/focus-timer', (_req: Request, res: Response) => {
+  res.json({ settings: focusSettings(), defaults: FOCUS_DEFAULTS })
+})
+
+// POST /api/state/focus-timer  { workMin?, restMin?, longRestMin?, roundsBeforeLong? }
+// A patch: one field per tap. roundsBeforeLong 0 turns the long rest off.
+router.post('/focus-timer', (req: Request, res: Response) => {
+  const body = req.body as Partial<Record<keyof FocusTimerSettings, unknown>>
+  const next = focusSettings()
+  const limits: Record<keyof FocusTimerSettings, [number, number]> = {
+    workMin: [1, 240], restMin: [1, 120], longRestMin: [1, 180], roundsBeforeLong: [0, 12],
+  }
+  for (const key of Object.keys(limits) as (keyof FocusTimerSettings)[]) {
+    if (body[key] === undefined) continue
+    const v = Number(body[key])
+    if (!Number.isFinite(v)) { res.status(400).json({ error: `${key} must be a number` }); return }
+    next[key] = Math.round(clamp(v, limits[key][0], limits[key][1]))
+  }
+  try {
+    writeJSON(FOCUS_FILE, next)
+    broadcast('focus-timer', next)
+    res.json({ settings: next, defaults: FOCUS_DEFAULTS })
+  } catch {
+    res.status(500).json({ error: 'Failed to persist the timer settings' })
+  }
+})
+
 // ── Lock Credential ───────────────────────────────────────────────────────────
 // GET /api/state/cred  — check if a credential exists
 router.get('/cred', (_req: Request, res: Response) => {
