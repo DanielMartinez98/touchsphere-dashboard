@@ -46,7 +46,9 @@ while IFS='|' read -r folder name src; do
   mkdir -p "$MODELS/$folder" "$STAGE/$folder"
   ok=0
   for attempt in 1 2 3 4 5; do
+    # HF_TOKEN reaches the gated FLUX 3 Klein repo (accept its licence once on huggingface.co).
     if aria2c -q -c -x 8 -s 8 -k 64M --auto-file-renaming=false --allow-overwrite=true \
+         ${HF_TOKEN:+"--header=Authorization: Bearer $HF_TOKEN"} \
          --retry-wait=10 --max-tries=5 -d "$STAGE/$folder" -o "$name" "$HF/$repo/resolve/main/$path"; then
       ok=1; break
     fi

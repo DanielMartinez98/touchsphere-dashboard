@@ -320,7 +320,8 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
     "text_encoders/qwen_3_06b_base.safetensors|https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/text_encoders/qwen_3_06b_base.safetensors|1.2"
     "vae/qwen_image_vae.safetensors|https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/vae/qwen_image_vae.safetensors|0.3"
     "model_patches/anima-lllite-inpainting-v2.safetensors|https://huggingface.co/Comfy-Org/Anima-LLLite/resolve/main/model_patches/anima-lllite-inpainting-v2.safetensors|0.1"
-    "checkpoints/waiIllustriousSDXL_v160.safetensors|${WAI_ILLUSTRIOUS_URL}|6.9"
+    # WAI-Illustrious is on Civitai, not Hugging Face; this version downloads without a token.
+    "checkpoints/waiIllustriousSDXL_v160.safetensors|https://civitai.com/api/download/models/2514310?fileId=2402203|6.8"
     "checkpoints/NoobAI-XL-v1.1.safetensors|https://huggingface.co/Laxhar/noobai-XL-1.1/resolve/main/NoobAI-XL-v1.1.safetensors|6.9"
     "checkpoints/NoobAI-XL-Vpred-v1.0.safetensors|https://huggingface.co/Laxhar/noobai-XL-Vpred-1.0/resolve/main/NoobAI-XL-Vpred-v1.0.safetensors|6.9"
     "controlnet/controlnet-union-sdxl-1.0-promax.safetensors|https://huggingface.co/xinsir/controlnet-union-sdxl-1.0/resolve/main/diffusion_pytorch_model_promax.safetensors|2.5"
@@ -332,7 +333,8 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
     "vae/qwen_image_vae.safetensors|https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors|0.3"
   )
   # FLUX 3 Image Klein, painter and editor from one set. Black Forest Labs'
-  # own repo; if it asks for a login, accept the licence once and set HF_TOKEN.
+  # own repo, which is GATED: accept the licence on huggingface.co once with
+  # the account whose token is in HF_TOKEN.
   FLUX_FILES=(
     "diffusion_models/flux3-image-klein-int8-convrot.safetensors|https://huggingface.co/black-forest-labs/flux-3-image-klein-comfy/resolve/main/diffusion_models/flux3-image-klein-int8-convrot.safetensors|6.0"
     "text_encoders/qwen3vl_4b_int8_convrot.safetensors|https://huggingface.co/black-forest-labs/flux-3-image-klein-comfy/resolve/main/text_encoders/qwen3vl_4b_int8_convrot.safetensors|4.5"
