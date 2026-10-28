@@ -17,7 +17,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { Fragment } from 'react'
-import { Clapperboard, Brush, ListChecks, Settings, Pause, Play, Square, Tv, Smartphone, WifiOff, Radio, Sparkles, Lock, Briefcase, Moon, SendHorizontal, ClipboardCheck, ChartColumn } from 'lucide-react'
+import { Clapperboard, Brush, ListChecks, Settings, Pause, Play, Square, Tv, Smartphone, WifiOff, Radio, Sparkles, Lock, Briefcase, Moon, SendHorizontal, ClipboardCheck, ChartColumn, Mail } from 'lucide-react'
 import { TouchInput } from './TouchInput'
 import type { AppMode } from '../hooks/useAppMode'
 import { openPlexPlayer, plexApi, plexImg, type PlexItem, type PlexStatus } from '../hooks/usePlex'
@@ -79,11 +79,13 @@ function nextLine(i: PlexItem): string {
   return i.title
 }
 
-export function Companion({ open, setOpen, plexStatus, plexSummary, agent, setAgent, voice, mode, setMode }: {
+export function Companion({ open, setOpen, plexStatus, plexSummary, mailUnread, agent, setAgent, voice, mode, setMode }: {
   open: OpenWidget
   setOpen: (w: OpenWidget) => void
   plexStatus: PlexStatus | null
   plexSummary: PlexSummary | null
+  /** Primary-inbox unread across the Gmail accounts, for the Mail tab's badge. */
+  mailUnread?: number
   /** The Agent tab: App renders the avatar/sphere and the voice UI behind this layout while it is on. */
   agent: boolean
   setAgent: (on: boolean) => void
@@ -128,7 +130,12 @@ export function Companion({ open, setOpen, plexStatus, plexSummary, agent, setAg
   // one thing here that isn't "open a panel". Time went: the clock is on the
   // phone's own screen, and its corner is reachable from Settings if wanted.
   const TABS: { id: OpenWidget | 'settings'; label: string; icon: React.ReactElement; badge?: number }[] = [
-    { id: 'plex',   label: 'Plex',   icon: <Clapperboard size={20} />, ...(plexSummary?.downloading ? { badge: plexSummary.downloading } : {}) },
+    // The kiosk's top-left rule: Mail while working, Plex while resting. The
+    // Plex tab used to stay here in work mode, where App closes the Plex panel
+    // the moment it opens, so the tab did nothing.
+    mode === 'work'
+      ? { id: 'mail', label: 'Mail', icon: <Mail size={20} />, ...(mailUnread ? { badge: mailUnread } : {}) }
+      : { id: 'plex', label: 'Plex', icon: <Clapperboard size={20} />, ...(plexSummary?.downloading ? { badge: plexSummary.downloading } : {}) },
     // The kiosk's bottom-left rule: the App Store while working, Draw while resting.
     mode === 'work'
       ? { id: 'apps',   label: 'Apps',   icon: <ChartColumn size={20} /> }

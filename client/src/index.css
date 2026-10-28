@@ -165,6 +165,16 @@
 }
 
 /* Voice interface — "Stop" button fades up as the assistant starts talking. */
+/* The work/rest timer while its alarm rings: a slow glow, so the pill that
+   wants the tap is the one thing on the screen moving. */
+@keyframes focus-ring {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.0); }
+  50%      { box-shadow: 0 0 28px 6px rgba(52, 211, 153, 0.55); }
+}
+.focus-ring {
+  animation: focus-ring 1.2s ease-in-out infinite;
+}
+
 @keyframes voice-stop-in {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }

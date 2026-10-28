@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, lazy, Suspense, type ReactNode } from 'react'
+import { FocusTimerCard } from './settings/FocusTimerCard'
 import { Check, X as XIcon, RotateCw, ClipboardCopy, MessageSquare, Trash2, Volume2, Download, Pin, ChevronDown, ChevronRight, Star, Plus, Eye, EyeOff, Pencil,
   Smile, Brain, ScrollText, Keyboard, Clock, Mail, ListChecks, BarChart3, Palette, BookOpen, Cpu, Server, Network, HardDrive, Bug, type LucideIcon } from 'lucide-react'
 import { useAudioDevices } from '../hooks/useAudioDevices'
@@ -436,7 +437,7 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
     { id: 'prompts',   group: 'Assistant', label: 'Prompts',   icon: ScrollText,    about: 'Every instruction a model is given, and the text added to every picture prompt. All editable.' },
     { id: 'sounds',    group: 'This screen', label: 'Audio',    icon: Volume2,      about: 'Which microphone and speaker, how loud, and a test for the voice in and out.' },
     { id: 'hardware',  group: 'This screen', label: 'Keyboard & sensor', icon: Keyboard, about: 'Which keyboard comes up for typing, and the desk sensor that dims the screen when you are away.' },
-    { id: 'schedule',  group: 'This screen', label: 'Schedule', icon: Clock,        about: 'When the screen switches between work and rest by itself, and the bedtime alert.' },
+    { id: 'schedule',  group: 'This screen', label: 'Schedule', icon: Clock,        about: 'The work/rest timer under the sphere, when the screen switches between work and rest by itself, and the bedtime alert.' },
     { id: 'mail',      group: 'Corners', label: 'Mail',      icon: Mail,            about: 'The Gmail accounts the Mail corner reads.' },
     { id: 'notion',    group: 'Corners', label: 'Notion',    icon: ListChecks,      about: 'Who you are, which workspaces and boards feed the Tasks corner, and what each board is for.' },
     { id: 'apps',      group: 'Corners', label: 'App Store', icon: BarChart3,       about: 'The App Store Connect key behind the App Store corner, and how far its numbers are read.' },
@@ -1199,6 +1200,9 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
             {/* Schedule tab — Work & Rest hours + bedtime alert */}
             {tab === 'schedule' && (
               <div className="space-y-4 max-w-lg mx-auto">
+                <span className="set-label mb-2 px-1">Work Timer</span>
+                <FocusTimerCard />
+
                 <span className="set-label mb-2 px-1">Work &amp; Rest Hours</span>
 
                 {/* Enable toggle */}

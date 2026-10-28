@@ -34,6 +34,8 @@ import { useStopwatch } from './hooks/useStopwatch'
 import { StatusBar } from './components/StatusBar'
 import { LockScreen } from './components/LockScreen'
 import { SettingsPanel } from './components/SettingsPanel'
+import { FocusTimer } from './components/FocusTimer'
+import { useFocusTimer, isResting } from './hooks/useFocusTimer'
 import { MicMuteButton } from './components/MicMuteButton'
 import { VoiceInterface } from './components/VoiceInterface'
 import { BedtimeBanner } from './components/BedtimeBanner'
@@ -260,6 +262,10 @@ function App() {
   }, [mode])
 
   const isRest = mode === 'rest' || mode === 'locked'
+  // The work/rest timer under the sphere turns the backdrop green from the
+  // alarm that ends a work round until the rest after it is over.
+  const focus = useFocusTimer()
+  const focusResting = mode === 'work' && isResting(focus)
 
   /**
    * Central orb tap — primary voice trigger now that the mic button is gone.
@@ -290,13 +296,15 @@ function App() {
     // space, so the bottom row of widgets sits permanently below the fold and
     // the "fixed" canvas is taller than the window. dvh tracks the bar as it
     // hides and shows. Identical to 100vh on the kiosk, which has no chrome.
-    <div className={`relative w-screen h-dvh bg-black overflow-hidden ${isRest ? '[--accent:#8b5cf6]' : '[--accent:#06b6d4]'}`}>
+    <div className={`relative w-screen h-dvh bg-black overflow-hidden ${isRest ? '[--accent:#8b5cf6]' : focusResting ? '[--accent:#10b981]' : '[--accent:#06b6d4]'}`}>
       {/* Background gradient — blue tint for work, purple tint for rest/locked */}
       <div
         className={`absolute inset-0 ${
           isRest
             ? 'bg-[radial-gradient(ellipse_at_center,#16082e_0%,#000000_70%)]'
-            : 'bg-[radial-gradient(ellipse_at_center,#0a0f2e_0%,#000000_70%)]'
+            : focusResting
+              ? 'bg-[radial-gradient(ellipse_at_center,#0f6b44_0%,#04271a_55%,#010805_100%)]'
+              : 'bg-[radial-gradient(ellipse_at_center,#0a0f2e_0%,#000000_70%)]'
         }`}
       />
       {/* Ambient drift — a second hue breathing in over ~90s so the backdrop
@@ -306,7 +314,9 @@ function App() {
         className={`absolute inset-0 bg-drift ${
           isRest
             ? 'bg-[radial-gradient(ellipse_at_center,#2a0a3e_0%,transparent_70%)]'
-            : 'bg-[radial-gradient(ellipse_at_center,#062434_0%,transparent_70%)]'
+            : focusResting
+              ? 'bg-[radial-gradient(ellipse_at_center,#13804f_0%,transparent_70%)]'
+              : 'bg-[radial-gradient(ellipse_at_center,#062434_0%,transparent_70%)]'
         }`}
       />
 
@@ -536,7 +546,7 @@ function App() {
 
       {/* The phone's home screen — in place of the sphere, the corners and the
           mode bar, none of which fit or make sense on a remote. */}
-      {companion && <Companion open={open} setOpen={setOpen} plexStatus={plexStatus} plexSummary={plexSummary} agent={agentView} setAgent={setAgentView} voice={voice} mode={mode} setMode={setMode} />}
+      {companion && <Companion open={open} setOpen={setOpen} plexStatus={plexStatus} plexSummary={plexSummary} mailUnread={mail.counts.reduce((n, c) => n + c.unread, 0)} agent={agentView} setAgent={setAgentView} voice={voice} mode={mode} setMode={setMode} />}
 
       {/* Top-Center — Status / Mode selector */}
       {!companion && <StatusBar
@@ -545,6 +555,11 @@ function App() {
         setMode={setMode}
         createPassword={createPassword}
       />}
+
+      {/* Work/rest timer — under the sphere, above Settings and the mic. Work
+          mode only, and out of the way during a voice turn, whose transcript
+          and Stop button use the same slot (unless it is ringing). */}
+      {!companion && (mode === 'work' || focus.ringing) && (focus.ringing || !(voice.isListening || voice.isThinking || voice.isSpeaking)) && <FocusTimer />}
 
       {/* Bottom-Center — Settings, with the virtual mic mute beside it */}
       <SettingsPanel hideButton={companion} />
