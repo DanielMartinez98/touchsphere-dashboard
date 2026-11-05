@@ -885,6 +885,8 @@ export interface ImageJob {
    * painted knowing what surrounds it.
    */
   inpaintPatch: string
+  /** The upscaler that enlarges a render drawn at the style's native size ('' = plain resize). See `nativePixels`. */
+  nativeUpscaler: string
   /**
    * The user switched the patch OFF — for this style (Draw → Advanced) or for
    * everything (Settings → Drawing) — so run() does not even look for the
@@ -1325,7 +1327,7 @@ export interface ImageRequest {
   holdEnd?:      number
   /** How fine the detected lines are, for the `lines` hold. Default: the setting. */
   holdDetail?:   'fine' | 'normal' | 'coarse'
-  /** ANIMATE: how long the clip is, in seconds (1-5). Ignored by every other style. */
+  /** ANIMATE: how long the clip is, in seconds (1-20; past 5 it is drawn in chained segments). Ignored by every other style. */
   seconds?:      number
 }
 
@@ -1547,6 +1549,7 @@ export function startImage(req: ImageRequest): ImageJob {
     structure: !!source && !edits && (req.structure ?? hold.enabled),
     controlnet: '',
     inpaintPatch: '',
+    nativeUpscaler: '',
     // Per request first, then the saved setting. The Draw panel sends these
     // so one picture can be tried a different way without changing the
     // default everything else uses.
@@ -1861,6 +1864,10 @@ async function run(job: ImageJob): Promise<void> {
     // details record which way the part was painted (`inpaintPatch` on
     // ImageSettings; the lineage view says "Inpainting patch: no"), so "why
     // doesn't the part match its surroundings" has a durable answer.
+    if (drawsSmallAndEnlarges(job)) {
+      const have = await loaderOptions('UpscaleModelLoader', 'model_name').catch(() => [] as string[])
+      job.nativeUpscaler = have.find(f => f.split(/[\\/]/).pop() === NATIVE_UPSCALER) ?? ''
+    }
     if (job.source && (job.maskFile || job.region) && !edits) {
       const want = styleInpaintPatch(job.model)
       if (want && job.inpaintPatchOff) {
@@ -2373,10 +2380,102 @@ const VIDEO_FPS = 16
 const DEFAULT_SECONDS = 3
 const VIDEO_TIMEOUT_MS = Number(process.env['COMFYUI_VIDEO_TIMEOUT_MS'] ?? 40 * 60_000)
 
-/** 1-5 seconds: five is the card's own length and the most Wan 2.2 holds together. */
+/**
+ * Wan 2.2 holds a shot together for about 81 frames (5 s), so a longer clip is
+ * a chain of segments of at most this length, each starting from the last
+ * frame of the one before (`chainSegments`).
+ */
+const SEGMENT_SECONDS = 5
+const MAX_SECONDS = Number(process.env['ANIMATE_MAX_SECONDS'] ?? 20)
+
+/**
+ * 1 to MAX_SECONDS (20 by default); anything past 5 s is drawn in segments.
+ * 20 because a 15 s chain peaked at 14.0 of the GPU box's 15.5 GB of WSL RAM
+ * (each extra segment's frames add ~0.25 GB), and because the character drifts
+ * a little more with every segment, since each one only sees the last frame.
+ */
 function clampSeconds(n: unknown): number {
   const v = typeof n === 'number' && Number.isFinite(n) ? Math.round(n) : DEFAULT_SECONDS
-  return Math.max(1, Math.min(5, v))
+  return Math.max(1, Math.min(MAX_SECONDS, v))
+}
+
+/** Seconds per segment for a clip of `total` seconds: as even as possible, none over 5. */
+function segmentPlan(total: number): number[] {
+  const n = Math.max(1, Math.ceil(total / SEGMENT_SECONDS))
+  const base = total / n
+  return Array.from({ length: n }, () => base)
+}
+
+/**
+ * Turn a one-segment animate graph into a chain. Everything between the
+ * WanImageToVideo node and the VAEDecode (the samplers, any model patch fed by
+ * them) is cloned per segment; segment k's start image is the last decoded
+ * frame of segment k-1, and the frames are joined with that duplicated first
+ * frame dropped, into the one CreateVideo the graph already has. The poster
+ * stays segment 0's first frame. Each segment gets its own seed so the noise
+ * does not repeat.
+ */
+function chainSegments(graph: ComfyGraph, i2v: string, seconds: number[], seed: number): void {
+  const decodeId = Object.keys(graph).find(id => graph[id]!.class_type === 'VAEDecode')
+  const videoId = Object.keys(graph).find(id => graph[id]!.class_type === 'CreateVideo')
+  if (!decodeId || !videoId) throw new Error("this animating style's workflow has no VAEDecode or CreateVideo node")
+  // Wan's latent packs four frames per step after the first, so a length is 4k + 1.
+  const frames = (sec: number) => Math.max(1, Math.round(sec * VIDEO_FPS / 4)) * 4 + 1
+  graph[i2v]!.inputs['length'] = frames(seconds[0]!)
+  if (seconds.length === 1) return
+
+  // The segment: i2v, the decode, and every node on a path between them.
+  const refs = (node: ComfyNode) => Object.values(node.inputs)
+    .filter((v): v is [string, number] => Array.isArray(v) && typeof v[0] === 'string').map(v => v[0])
+  const dependsOnI2v = new Map<string, boolean>()
+  const dep = (id: string, depth = 0): boolean => {
+    if (id === i2v) return true
+    if (dependsOnI2v.has(id)) return dependsOnI2v.get(id)!
+    dependsOnI2v.set(id, false)
+    const node = graph[id]
+    const r = !!node && depth < 64 && refs(node).some(x => dep(x, depth + 1))
+    dependsOnI2v.set(id, r)
+    return r
+  }
+  const segment = new Set<string>([i2v])
+  const walk = (id: string) => {
+    if (segment.has(id) || !dep(id)) return
+    segment.add(id)
+    for (const r of refs(graph[id]!)) walk(r)
+  }
+  walk(decodeId)
+
+  const ids = Object.keys(graph).map(Number).filter(Number.isFinite)
+  let next = Math.max(0, ...ids) + 1
+  const fresh = () => String(next++)
+  let prevDecode = decodeId
+  let joined: [string, number] = [decodeId, 0]
+  seconds.slice(1).forEach((sec, k) => {
+    const map = new Map<string, string>()
+    for (const id of segment) map.set(id, fresh())
+    const lastFrame = fresh()
+    graph[lastFrame] = { class_type: 'ImageFromBatch', inputs: { image: [prevDecode, 0], batch_index: 4095, length: 1 } }
+    for (const id of segment) {
+      const src = graph[id]!
+      const inputs: Record<string, unknown> = {}
+      for (const [key, v] of Object.entries(src.inputs)) {
+        inputs[key] = Array.isArray(v) && typeof v[0] === 'string' && map.has(v[0]) ? [map.get(v[0]), v[1]] : v
+      }
+      if (id === i2v) { inputs['start_image'] = [lastFrame, 0]; inputs['length'] = frames(sec) }
+      if ('noise_seed' in inputs) inputs['noise_seed'] = seed + k + 1
+      if ('seed' in inputs) inputs['seed'] = seed + k + 1
+      graph[map.get(id)!] = { class_type: src.class_type, inputs }
+    }
+    const newDecode = map.get(decodeId)!
+    // ImageFromBatch clamps batch_index to the batch, so 4095 is "the last frame".
+    const rest = fresh()
+    graph[rest] = { class_type: 'ImageFromBatch', inputs: { image: [newDecode, 0], batch_index: 1, length: frames(sec) - 1 } }
+    const batch = fresh()
+    graph[batch] = { class_type: 'ImageBatch', inputs: { image1: joined, image2: [rest, 0] } }
+    joined = [batch, 0]
+    prevDecode = newDecode
+  })
+  graph[videoId]!.inputs['images'] = joined
 }
 
 /**
@@ -2398,11 +2497,18 @@ export function animateSize(w: number, h: number): { width: number; height: numb
  *
  * Transcribed from ComfyUI's own `video_wan2_2_14B_i2v` template with its
  * switch nodes flattened onto the 4-step path, because that is what the model
- * card runs: the lightx2v Lightning LoRA on both experts, 4 steps at cfg 1,
+ * card runs: a lightx2v 4-step LoRA on both experts, 4 steps at cfg 1,
  * flow shift 3 (the card's scheduler; the template says 5 for the base model).
  * The weights are AIdeaLab's bf16 files cast to fp8 on the GPU box (28.6 GB →
  * ~14 GB each), so each expert fits the 4090 on its own; ComfyUI swaps them.
  * The text encoder and VAE are Wan's own, from Comfy-Org's repackage.
+ *
+ * The LoRAs are rzgar's "Slow-Mo Fix" pair rather than the stock lightx2v
+ * pair: measured on the GPU box (same picture, seed and "she crouches and
+ * jumps" prompt), the stock pair froze for ~2 s and never jumped, a no-LoRA
+ * first pass at cfg 3.5 washed the picture out, a weaker LoRA at cfg 3 and 8
+ * steps changed her outfit, and the motion-fix pair jumped and landed cleanly
+ * in the fewest seconds (100 s for 5 s of clip).
  *
  * Two outputs: SaveVideo for the clip, and the first frame through SaveImage
  * as the gallery's poster.
@@ -2412,8 +2518,8 @@ function animeGenGraph(): ComfyGraph {
     '1':  { class_type: 'LoadImage', inputs: { image: '' } },
     '2':  { class_type: 'UNETLoader', inputs: { unet_name: 'animegen_i2v_high_noise_fp8_e4m3fn.safetensors', weight_dtype: 'default' } },
     '3':  { class_type: 'UNETLoader', inputs: { unet_name: 'animegen_i2v_low_noise_fp8_e4m3fn.safetensors', weight_dtype: 'default' } },
-    '4':  { class_type: 'LoraLoaderModelOnly', inputs: { model: ['2', 0], lora_name: 'wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors', strength_model: 1 } },
-    '5':  { class_type: 'LoraLoaderModelOnly', inputs: { model: ['3', 0], lora_name: 'wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors', strength_model: 1 } },
+    '4':  { class_type: 'LoraLoaderModelOnly', inputs: { model: ['2', 0], lora_name: 'wan2.2_i2v_lightx2v_motion_fix_high.safetensors', strength_model: 1 } },
+    '5':  { class_type: 'LoraLoaderModelOnly', inputs: { model: ['3', 0], lora_name: 'wan2.2_i2v_lightx2v_motion_fix_low.safetensors', strength_model: 1 } },
     '6':  { class_type: 'ModelSamplingSD3', inputs: { model: ['4', 0], shift: 3 } },
     '7':  { class_type: 'ModelSamplingSD3', inputs: { model: ['5', 0], shift: 3 } },
     '8':  { class_type: 'CLIPLoader', inputs: { clip_name: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors', type: 'wan', device: 'default' } },
@@ -3316,6 +3422,13 @@ const BUILTIN_WORKFLOWS: Record<string, {
    * never required, so it is not in `needs`.
    */
   inpaintPatch?: string
+  /**
+   * The canvas this model draws cleanly at, in pixels. A fresh render asked
+   * for more is drawn at this size in the requested shape and then enlarged
+   * (UltraSharp when it is installed, else a plain resize): measured on FUSAL,
+   * 1 MP was clean while 1.5 MP grained, 2 MP blotched and 3 MP was worst.
+   */
+  nativePixels?: number
 }> = {
   'flux3-image-klein': {
     label: 'FLUX 3 Klein',
@@ -3368,6 +3481,8 @@ const BUILTIN_WORKFLOWS: Record<string, {
   'qwen-image-2.1-fusal': {
     label: 'Qwen-Image 2.1 Anime (FUSAL)',
     graph: qwenImage21FusalGraph(),
+    // Measured: clean at 1 MP, grainy from 1.5 MP up, so bigger asks are drawn at 1 MP and enlarged.
+    nativePixels: 1024 * 1024,
     // Read by Qwen3-VL 8B: sentences in the card's labelled sections.
     promptStyle: 'prose',
     improverGuide: FUSAL_IMPROVER_GUIDE,
@@ -3500,8 +3615,8 @@ const BUILTIN_WORKFLOWS: Record<string, {
     needs: [
       'diffusion_models/animegen_i2v_high_noise_fp8_e4m3fn.safetensors',
       'diffusion_models/animegen_i2v_low_noise_fp8_e4m3fn.safetensors',
-      'loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors',
-      'loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors',
+      'loras/wan2.2_i2v_lightx2v_motion_fix_high.safetensors',
+      'loras/wan2.2_i2v_lightx2v_motion_fix_low.safetensors',
       'text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors',
       'vae/wan_2.1_vae.safetensors',
     ],
@@ -3965,6 +4080,21 @@ export function styleInpaintPatch(style: string): string {
   return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.inpaintPatch ?? ''
 }
 
+/** The canvas a style draws cleanly at, in pixels; 0 = no limit. See `nativePixels`. */
+function styleNativePixels(style: string): number {
+  if (!style.startsWith(WORKFLOW_PREFIX)) return 0
+  return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.nativePixels ?? 0
+}
+
+const NATIVE_UPSCALER = '4x-UltraSharpV2.safetensors'
+/** A render bigger than this much over the native size is drawn small and enlarged. */
+const NATIVE_SLACK = 1.15
+
+function drawsSmallAndEnlarges(job: ImageJob): boolean {
+  const native = styleNativePixels(job.model)
+  return !!native && !job.source && job.width * job.height > native * NATIVE_SLACK
+}
+
 /** True for a style that turns a picture into a short clip: see `animates`. */
 export function styleAnimates(style: string): boolean {
   if (!style.startsWith(WORKFLOW_PREFIX)) return false
@@ -4210,17 +4340,16 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
     const wan = graph[i2v]!.inputs
     wan['width'] = job.width
     wan['height'] = job.height
-    wan['length'] = Math.round((job.seconds ?? DEFAULT_SECONDS) * VIDEO_FPS) + 1
     const posId = conditioningText(graph, [i2v, 0])
     const negId = conditioningText(graph, [i2v, 1])
     if (posId) graph[posId]!.inputs['text'] = joinPrefix(job.prefix, joinPrompt(job.prompt || 'gentle natural motion', job.optimizations))
     if (negId && negId !== posId) graph[negId]!.inputs['text'] = joinPrefix(job.negativePrefix, job.negative)
-    const samplerId = findNode(graph, ['KSamplerAdvanced', 'KSampler'])
-    if (samplerId) {
-      const inp = graph[samplerId]!.inputs
-      if ('noise_seed' in inp) inp['noise_seed'] = job.seed
-      if ('seed' in inp) inp['seed'] = job.seed
+    for (const node of Object.values(graph)) {
+      if (!/KSampler|SamplerCustom/.test(node.class_type)) continue
+      if ('noise_seed' in node.inputs) node.inputs['noise_seed'] = job.seed
+      if ('seed' in node.inputs) node.inputs['seed'] = job.seed
     }
+    chainSegments(graph, i2v, segmentPlan(job.seconds ?? DEFAULT_SECONDS), job.seed)
     return graph
   }
 
@@ -4602,6 +4731,7 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
   }
 
   hiresFix(graph, samplerId, latentId, job, sourceName)
+  nativeSizeThenEnlarge(graph, latentId, job)
 
   // Without a SaveImage the render happens and produces nothing we can fetch —
   // a PreviewImage lands in `temp` and is not listed in history outputs.
@@ -4609,6 +4739,47 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
     throw new Error('workflow has no SaveImage node — a preview-only graph produces nothing to download')
   }
   return graph
+}
+
+const NATIVE_RESIZE = 'touchsphere_native_resize'
+
+/**
+ * For a style with `nativePixels`: draw the latent at that budget in the
+ * requested shape, then enlarge the decoded picture to the requested size
+ * (UltraSharp ×4, then a lanczos resize down to the exact size; a plain
+ * lanczos resize when UltraSharp is not on the box). Unlike hiresFix there is
+ * no second sampling pass, because the second pass at the big size is exactly
+ * what grains these models.
+ */
+function nativeSizeThenEnlarge(graph: ComfyGraph, latentId: string | null, job: ImageJob): void {
+  if (!latentId || !drawsSmallAndEnlarges(job)) return
+  const latent = graph[latentId]!
+  if (!('width' in latent.inputs) || !('height' in latent.inputs)) return
+  const w = job.width, h = job.height
+  const scale = Math.sqrt(styleNativePixels(job.model) / (w * h))
+  const snap = (v: number) => Math.max(256, Math.round((v * scale) / 16) * 16)
+  latent.inputs['width'] = snap(w)
+  latent.inputs['height'] = snap(h)
+  const decodeId = findNode(graph, ['VAEDecode'])
+  if (!decodeId) return
+  let image: [string, number] = [decodeId, 0]
+  if (job.nativeUpscaler) {
+    graph['touchsphere_native_upscaler'] = { class_type: 'UpscaleModelLoader', inputs: { model_name: job.nativeUpscaler } }
+    graph['touchsphere_native_upscale'] = {
+      class_type: 'ImageUpscaleWithModel',
+      inputs: { upscale_model: ['touchsphere_native_upscaler', 0], image },
+    }
+    image = ['touchsphere_native_upscale', 0]
+  }
+  graph[NATIVE_RESIZE] = {
+    class_type: 'ImageScale',
+    inputs: { image, upscale_method: 'lanczos', width: w, height: h, crop: 'disabled' },
+  }
+  for (const [id, node] of Object.entries(graph)) {
+    if (id.startsWith('touchsphere_native_')) continue
+    if (node.class_type !== 'SaveImage') continue
+    if (JSON.stringify(node.inputs['images']) === JSON.stringify([decodeId, 0])) node.inputs['images'] = [NATIVE_RESIZE, 0]
+  }
 }
 
 function latentOf(graph: ComfyGraph) {
@@ -4731,7 +4902,7 @@ function renderedWith(job: ImageJob, graph: ComfyGraph, changed?: number | null)
     // The whole conversation, not just its result: see ImageSettings.
     ...(job.conversation.length ? { conversation: job.conversation } : {}),
     // Drawn in two passes: the size the composition was laid out at.
-    ...(graph[HIRES_SAMPLER] && latentOf(graph)
+    ...((graph[HIRES_SAMPLER] || graph[NATIVE_RESIZE]) && latentOf(graph)
       ? { hiresFrom: `${latentOf(graph)!.inputs['width']}×${latentOf(graph)!.inputs['height']}` } : {}),
     // Recorded only when there was one, so its presence is the record — the
     // same rule as promptOriginal. Without it the stored prompt and the picture

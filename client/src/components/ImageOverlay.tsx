@@ -481,7 +481,7 @@ function PromptActions({
             className="w-full h-11 px-3 rounded-xl bg-black/30 border border-hairline text-white text-[15px]"
           />
           <div className="flex flex-wrap items-center gap-2">
-            {[2, 3, 5].map(n => (
+            {[3, 5, 10, 15, 20].map(n => (
               <button
                 key={n}
                 type="button"
@@ -510,7 +510,7 @@ function PromptActions({
             </button>
           </div>
           <div className="text-[12px] text-white/45">
-            A few minutes on the GPU box. Silent, 480p, 16 frames a second.
+            About 2 minutes per 5 seconds on the GPU box. Silent, 480p, 16 frames a second; longer clips are 5-second shots chained. Big movements (jumping, running) need the whole body in the picture: a close-up has no legs to move.
           </div>
           {animError && <div className="text-[13px] text-amber-300">{animError}</div>}
         </div>
