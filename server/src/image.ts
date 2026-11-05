@@ -2492,76 +2492,14 @@ export function animateSize(w: number, h: number): { width: number; height: numb
 }
 
 /**
- * AnimeGen-I2V (AIdeaLab): an anime fine-tune of Wan 2.2 I2V A14B — two 14B
- * experts, the high-noise one laying out the motion and the low-noise one
- * finishing the frames, handed over half-way.
- *
- * Transcribed from ComfyUI's own `video_wan2_2_14B_i2v` template with its
- * switch nodes flattened onto the 4-step path, because that is what the model
- * card runs: a lightx2v 4-step LoRA on both experts, 4 steps at cfg 1,
- * flow shift 3 (the card's scheduler; the template says 5 for the base model).
- * The weights are AIdeaLab's bf16 files cast to fp8 on the GPU box (28.6 GB →
- * ~14 GB each), so each expert fits the 4090 on its own; ComfyUI swaps them.
- * The text encoder and VAE are Wan's own, from Comfy-Org's repackage.
- *
- * The LoRAs are rzgar's "Slow-Mo Fix" pair rather than the stock lightx2v
- * pair: measured on the GPU box (same picture, seed and "she crouches and
- * jumps" prompt), the stock pair froze for ~2 s and never jumped, a no-LoRA
- * first pass at cfg 3.5 washed the picture out, a weaker LoRA at cfg 3 and 8
- * steps changed her outfit, and the motion-fix pair jumped and landed cleanly
- * in the fewest seconds (100 s for 5 s of clip).
- *
- * Two outputs: SaveVideo for the clip, and the first frame through SaveImage
- * as the gallery's poster.
- */
-function animeGenGraph(): ComfyGraph {
-  return {
-    '1':  { class_type: 'LoadImage', inputs: { image: '' } },
-    '2':  { class_type: 'UNETLoader', inputs: { unet_name: 'animegen_i2v_high_noise_fp8_e4m3fn.safetensors', weight_dtype: 'default' } },
-    '3':  { class_type: 'UNETLoader', inputs: { unet_name: 'animegen_i2v_low_noise_fp8_e4m3fn.safetensors', weight_dtype: 'default' } },
-    '4':  { class_type: 'LoraLoaderModelOnly', inputs: { model: ['2', 0], lora_name: 'wan2.2_i2v_lightx2v_motion_fix_high.safetensors', strength_model: 1 } },
-    '5':  { class_type: 'LoraLoaderModelOnly', inputs: { model: ['3', 0], lora_name: 'wan2.2_i2v_lightx2v_motion_fix_low.safetensors', strength_model: 1 } },
-    '6':  { class_type: 'ModelSamplingSD3', inputs: { model: ['4', 0], shift: 3 } },
-    '7':  { class_type: 'ModelSamplingSD3', inputs: { model: ['5', 0], shift: 3 } },
-    '8':  { class_type: 'CLIPLoader', inputs: { clip_name: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors', type: 'wan', device: 'default' } },
-    '9':  { class_type: 'VAELoader', inputs: { vae_name: 'wan_2.1_vae.safetensors' } },
-    '10': { class_type: 'CLIPTextEncode', inputs: { clip: ['8', 0], text: '' } },
-    '11': { class_type: 'CLIPTextEncode', inputs: { clip: ['8', 0], text: '' } },
-    '12': { class_type: 'WanImageToVideo', inputs: {
-      positive: ['10', 0], negative: ['11', 0], vae: ['9', 0], start_image: ['1', 0],
-      width: 832, height: 480, length: DEFAULT_SECONDS * VIDEO_FPS + 1, batch_size: 1,
-    } },
-    // The high-noise expert: steps 0-2, handing its leftover noise on.
-    '13': { class_type: 'KSamplerAdvanced', inputs: {
-      model: ['6', 0], add_noise: 'enable', noise_seed: 0, steps: 4, cfg: 1,
-      sampler_name: 'euler', scheduler: 'simple',
-      positive: ['12', 0], negative: ['12', 1], latent_image: ['12', 2],
-      start_at_step: 0, end_at_step: 2, return_with_leftover_noise: 'enable',
-    } },
-    // The low-noise expert: steps 2-4 over the same schedule, adding no noise.
-    '14': { class_type: 'KSamplerAdvanced', inputs: {
-      model: ['7', 0], add_noise: 'disable', noise_seed: 0, steps: 4, cfg: 1,
-      sampler_name: 'euler', scheduler: 'simple',
-      positive: ['12', 0], negative: ['12', 1], latent_image: ['13', 0],
-      start_at_step: 2, end_at_step: 10000, return_with_leftover_noise: 'disable',
-    } },
-    '15': { class_type: 'VAEDecode', inputs: { samples: ['14', 0], vae: ['9', 0] } },
-    '16': { class_type: 'CreateVideo', inputs: { images: ['15', 0], fps: VIDEO_FPS } },
-    '17': { class_type: 'SaveVideo', inputs: { video: ['16', 0], filename_prefix: 'touchsphere/clip', format: 'mp4', codec: 'h264' } },
-    '18': { class_type: 'ImageFromBatch', inputs: { image: ['15', 0], batch_index: 0, length: 1 } },
-    '19': { class_type: 'SaveImage', inputs: { images: ['18', 0], filename_prefix: 'touchsphere/clip-poster' } },
-  }
-}
-
-/**
  * Plain Wan 2.2 I2V A14B, the base model AnimeGen was tuned from, at full
  * quality: ComfyUI's own `video_wan2_2_14B_i2v` template with no speed-up LoRA,
  * 20 steps at cfg 3.5 split 10/10 between the experts, shift 5, euler/simple,
  * and the template's own negative. Measured on the GPU box against AnimeGen
  * and LTX-2.5 on the same picture and jump prompt: the only one that moved
  * from the first frame and jumped, crouched and landed with the character
- * staying on-model. About ten times slower than AnimeGen, which is why both
- * are offered (Quick / Best).
+ * staying on-model. About 8.5 minutes per 5 s at 480p (512x768); AnimeGen was
+ * removed on request after these tests.
  */
 const WAN22_NEGATIVE =
   '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，' +
@@ -3646,7 +3584,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
     ],
   },
   'wan22-i2v': {
-    label: 'Wan 2.2 (best motion)',
+    label: 'Wan 2.2',
     graph: wan22I2vGraph(),
     animates: true,
     ignoresQuality: true,
@@ -3662,33 +3600,6 @@ const BUILTIN_WORKFLOWS: Record<string, {
     needs: [
       'diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors',
       'diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors',
-      'text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors',
-      'vae/wan_2.1_vae.safetensors',
-    ],
-  },
-  'animegen-i2v': {
-    label: 'AnimeGen (quick)',
-    graph: animeGenGraph(),
-    animates: true,
-    // 4 distilled steps at cfg 1: nothing for the quality row to move.
-    ignoresQuality: true,
-    promptStyle: 'prose',
-    promptGuide:
-      'This animates a picture: the prompt describes the MOTION, in English, in one or two short ' +
-      'sentences ("she blinks and smiles", "her hair moves in the wind as the camera slowly pushes in"). ' +
-      'The picture already says what everything looks like, so do not describe it again.',
-    // The model card's code puts this in front of every prompt, and its
-    // negative is these five words — "stop" and "wait" keep the clip moving.
-    prefixes: { positive: 'Japanese anime style,', negative: '' },
-    negative: '3d, cg, photo, stop, wait',
-    // aidealab/AnimeGen-I2V, Apache 2.0, cast to fp8 on the GPU box; the rest
-    // from Comfy-Org/Wan_2.1_ComfyUI_repackaged (encoder) and
-    // Comfy-Org/Wan_2.2_ComfyUI_Repackaged (VAE, Lightning LoRAs).
-    needs: [
-      'diffusion_models/animegen_i2v_high_noise_fp8_e4m3fn.safetensors',
-      'diffusion_models/animegen_i2v_low_noise_fp8_e4m3fn.safetensors',
-      'loras/wan2.2_i2v_lightx2v_motion_fix_high.safetensors',
-      'loras/wan2.2_i2v_lightx2v_motion_fix_low.safetensors',
       'text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors',
       'vae/wan_2.1_vae.safetensors',
     ],

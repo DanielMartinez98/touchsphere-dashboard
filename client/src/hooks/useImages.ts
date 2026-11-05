@@ -240,7 +240,7 @@ export interface ImageStyle {
   edits?: boolean
   /** True for an upscaler (UltraSharp): a picture in, a sharper ×4 picture out. Never a drawing style. */
   upscales?: boolean
-  /** True for an animator (AnimeGen): a picture in, a short clip out. Never a drawing style. */
+  /** True for an animator (Wan 2.2): a picture in, a short clip out. Never a drawing style. */
   animates?: boolean
 }
 
@@ -287,7 +287,6 @@ export function animatorStyles(): Promise<string[]> {
     animatorPromise = fetch('/api/image/models')
       .then(r => (r.ok ? r.json() as Promise<StylesResponse> : null))
       .then(j => (j?.styles ?? []).filter(st => st.animates && !(st.missing?.length)).map(st => st.id))
-      .then(ids => ids.sort((a, b) => Number(a === 'wf:wan22-i2v') - Number(b === 'wf:wan22-i2v')))
       .catch(() => [] as string[])
       .then(ids => { if (!ids.length) animatorPromise = null; return ids })
   }

@@ -446,13 +446,11 @@ function PromptActions({
 
   // "Animate": offered only when the animator's files are on the GPU box. The
   // motion is a few words, so it opens a small sheet rather than the Draw panel.
-  // Quick (AnimeGen, small motions) and Best (plain Wan 2.2, real action)
-  // when both are installed; the quick one is first and the default.
+  // A chip row appears only if more than one animator is ever installed.
   const [animators, setAnimators] = useState<string[]>([])
   const [picked, setPicked] = useState<string | null>(null)
   useEffect(() => { let on = true; void animatorStyles().then(s => { if (on) setAnimators(s) }); return () => { on = false } }, [])
   const animator = picked && animators.includes(picked) ? picked : (animators[0] ?? null)
-  const best = animator === 'wf:wan22-i2v'
   const [animSheet, setAnimSheet] = useState(false)
   const [motion, setMotion] = useState('')
   const [seconds, setSeconds] = useState(3)
@@ -530,7 +528,7 @@ function PromptActions({
             </button>
           </div>
           <div className="text-[12px] text-white/45">
-            {best ? 'About 8 to 9 minutes per 5 seconds; the one for jumping, running and fighting.' : 'About 2 minutes per 5 seconds; best for small motions (blinking, smiling, hair in the wind).'} Silent, 480p, 16 frames a second; longer clips are 5-second shots chained. Big movements (jumping, running) need the whole body in the picture: a close-up has no legs to move.
+            About 8 to 9 minutes per 5 seconds. Silent, 480p, 16 frames a second; longer clips are 5-second shots chained. Big movements (jumping, running) need the whole body in the picture: a close-up has no legs to move.
           </div>
           {animError && <div className="text-[13px] text-amber-300">{animError}</div>}
         </div>
