@@ -885,6 +885,8 @@ export interface ImageJob {
    * painted knowing what surrounds it.
    */
   inpaintPatch: string
+  /** The upscaler that enlarges a render drawn at the style's native size ('' = plain resize). See `nativePixels`. */
+  nativeUpscaler: string
   /**
    * The user switched the patch OFF — for this style (Draw → Advanced) or for
    * everything (Settings → Drawing) — so run() does not even look for the
@@ -1547,6 +1549,7 @@ export function startImage(req: ImageRequest): ImageJob {
     structure: !!source && !edits && (req.structure ?? hold.enabled),
     controlnet: '',
     inpaintPatch: '',
+    nativeUpscaler: '',
     // Per request first, then the saved setting. The Draw panel sends these
     // so one picture can be tried a different way without changing the
     // default everything else uses.
@@ -1861,6 +1864,10 @@ async function run(job: ImageJob): Promise<void> {
     // details record which way the part was painted (`inpaintPatch` on
     // ImageSettings; the lineage view says "Inpainting patch: no"), so "why
     // doesn't the part match its surroundings" has a durable answer.
+    if (drawsSmallAndEnlarges(job)) {
+      const have = await loaderOptions('UpscaleModelLoader', 'model_name').catch(() => [] as string[])
+      job.nativeUpscaler = have.find(f => f.split(/[\\/]/).pop() === NATIVE_UPSCALER) ?? ''
+    }
     if (job.source && (job.maskFile || job.region) && !edits) {
       const want = styleInpaintPatch(job.model)
       if (want && job.inpaintPatchOff) {
@@ -3403,6 +3410,13 @@ const BUILTIN_WORKFLOWS: Record<string, {
    * never required, so it is not in `needs`.
    */
   inpaintPatch?: string
+  /**
+   * The canvas this model draws cleanly at, in pixels. A fresh render asked
+   * for more is drawn at this size in the requested shape and then enlarged
+   * (UltraSharp when it is installed, else a plain resize): measured on FUSAL,
+   * 1 MP was clean while 1.5 MP grained, 2 MP blotched and 3 MP was worst.
+   */
+  nativePixels?: number
 }> = {
   'flux3-image-klein': {
     label: 'FLUX 3 Klein',
@@ -3455,6 +3469,8 @@ const BUILTIN_WORKFLOWS: Record<string, {
   'qwen-image-2.1-fusal': {
     label: 'Qwen-Image 2.1 Anime (FUSAL)',
     graph: qwenImage21FusalGraph(),
+    // Measured: clean at 1 MP, grainy from 1.5 MP up, so bigger asks are drawn at 1 MP and enlarged.
+    nativePixels: 1024 * 1024,
     // Read by Qwen3-VL 8B: sentences in the card's labelled sections.
     promptStyle: 'prose',
     improverGuide: FUSAL_IMPROVER_GUIDE,
@@ -4050,6 +4066,21 @@ function turboHints(style: string): string[] {
 export function styleInpaintPatch(style: string): string {
   if (!style.startsWith(WORKFLOW_PREFIX)) return ''
   return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.inpaintPatch ?? ''
+}
+
+/** The canvas a style draws cleanly at, in pixels; 0 = no limit. See `nativePixels`. */
+function styleNativePixels(style: string): number {
+  if (!style.startsWith(WORKFLOW_PREFIX)) return 0
+  return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.nativePixels ?? 0
+}
+
+const NATIVE_UPSCALER = '4x-UltraSharpV2.safetensors'
+/** A render bigger than this much over the native size is drawn small and enlarged. */
+const NATIVE_SLACK = 1.15
+
+function drawsSmallAndEnlarges(job: ImageJob): boolean {
+  const native = styleNativePixels(job.model)
+  return !!native && !job.source && job.width * job.height > native * NATIVE_SLACK
 }
 
 /** True for a style that turns a picture into a short clip: see `animates`. */
@@ -4688,6 +4719,7 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
   }
 
   hiresFix(graph, samplerId, latentId, job, sourceName)
+  nativeSizeThenEnlarge(graph, latentId, job)
 
   // Without a SaveImage the render happens and produces nothing we can fetch —
   // a PreviewImage lands in `temp` and is not listed in history outputs.
@@ -4695,6 +4727,47 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
     throw new Error('workflow has no SaveImage node — a preview-only graph produces nothing to download')
   }
   return graph
+}
+
+const NATIVE_RESIZE = 'touchsphere_native_resize'
+
+/**
+ * For a style with `nativePixels`: draw the latent at that budget in the
+ * requested shape, then enlarge the decoded picture to the requested size
+ * (UltraSharp ×4, then a lanczos resize down to the exact size; a plain
+ * lanczos resize when UltraSharp is not on the box). Unlike hiresFix there is
+ * no second sampling pass, because the second pass at the big size is exactly
+ * what grains these models.
+ */
+function nativeSizeThenEnlarge(graph: ComfyGraph, latentId: string | null, job: ImageJob): void {
+  if (!latentId || !drawsSmallAndEnlarges(job)) return
+  const latent = graph[latentId]!
+  if (!('width' in latent.inputs) || !('height' in latent.inputs)) return
+  const w = job.width, h = job.height
+  const scale = Math.sqrt(styleNativePixels(job.model) / (w * h))
+  const snap = (v: number) => Math.max(256, Math.round((v * scale) / 16) * 16)
+  latent.inputs['width'] = snap(w)
+  latent.inputs['height'] = snap(h)
+  const decodeId = findNode(graph, ['VAEDecode'])
+  if (!decodeId) return
+  let image: [string, number] = [decodeId, 0]
+  if (job.nativeUpscaler) {
+    graph['touchsphere_native_upscaler'] = { class_type: 'UpscaleModelLoader', inputs: { model_name: job.nativeUpscaler } }
+    graph['touchsphere_native_upscale'] = {
+      class_type: 'ImageUpscaleWithModel',
+      inputs: { upscale_model: ['touchsphere_native_upscaler', 0], image },
+    }
+    image = ['touchsphere_native_upscale', 0]
+  }
+  graph[NATIVE_RESIZE] = {
+    class_type: 'ImageScale',
+    inputs: { image, upscale_method: 'lanczos', width: w, height: h, crop: 'disabled' },
+  }
+  for (const [id, node] of Object.entries(graph)) {
+    if (id.startsWith('touchsphere_native_')) continue
+    if (node.class_type !== 'SaveImage') continue
+    if (JSON.stringify(node.inputs['images']) === JSON.stringify([decodeId, 0])) node.inputs['images'] = [NATIVE_RESIZE, 0]
+  }
 }
 
 function latentOf(graph: ComfyGraph) {
@@ -4817,7 +4890,7 @@ function renderedWith(job: ImageJob, graph: ComfyGraph, changed?: number | null)
     // The whole conversation, not just its result: see ImageSettings.
     ...(job.conversation.length ? { conversation: job.conversation } : {}),
     // Drawn in two passes: the size the composition was laid out at.
-    ...(graph[HIRES_SAMPLER] && latentOf(graph)
+    ...((graph[HIRES_SAMPLER] || graph[NATIVE_RESIZE]) && latentOf(graph)
       ? { hiresFrom: `${latentOf(graph)!.inputs['width']}×${latentOf(graph)!.inputs['height']}` } : {}),
     // Recorded only when there was one, so its presence is the record — the
     // same rule as promptOriginal. Without it the stored prompt and the picture
