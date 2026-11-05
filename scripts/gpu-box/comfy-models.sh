@@ -26,6 +26,7 @@ text_encoders|qwen3vl_4b_int8_convrot.safetensors|black-forest-labs/flux-3-image
 vae|flux2-vae.safetensors|black-forest-labs/flux-3-image-klein-comfy/vae/flux2-vae.safetensors
 diffusion_models|qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_comfyui_4steps_v1.0.safetensors|lightx2v/Qwen-Image-Edit-2511-Lightning/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_comfyui_4steps_v1.0.safetensors
 text_encoders|qwen_2.5_vl_7b_fp8_scaled.safetensors|Comfy-Org/Qwen-Image_ComfyUI/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors
+diffusion_models|qwen_image_2.1_bf16.safetensors|Comfy-Org/Qwen-Image-2.1/diffusion_models/qwen_image_2.1_bf16.safetensors
 loras|fusal-qwen-image-2.1-v2-exact-r80.safetensors|MicksHF/Qwen-Image-2.1-Anime-Fusal/loras/fusal-qwen-image-2.1-v2-exact-r80.safetensors
 diffusion_models|moss_image_sft_int8_convrot.safetensors|Comfy-Org/MOSS-Image/diffusion_models/moss_image_sft_int8_convrot.safetensors
 text_encoders|qwen3.5_9b_w4a8_gptq.safetensors|Comfy-Org/MOSS-Image/text_encoders/qwen3.5_9b_w4a8_gptq.safetensors

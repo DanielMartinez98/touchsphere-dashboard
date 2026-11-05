@@ -2692,6 +2692,10 @@ function qwenImage21Graph(): ComfyGraph {
  */
 function qwenImage21FusalGraph(): ComfyGraph {
   const g = qwenImage21Graph()
+  // The bf16 Base, not the int8 one the plain style uses. The LoRA is a bf16
+  // delta trained against bf16 weights; patched onto ConvRot int8 weights
+  // (stored rotated and requantised after the patch) it came out pixelated.
+  g['1']!.inputs['unet_name'] = 'qwen_image_2.1_bf16.safetensors'
   g['10'] = {
     class_type: 'LoraLoaderModelOnly',
     inputs: { model: ['1', 0], lora_name: 'fusal-qwen-image-2.1-v2-exact-r80.safetensors', strength_model: 1 },
@@ -3379,7 +3383,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
     // cfg 1, the card's setting: the negative is computed and unused.
     negative: '',
     needs: [
-      'diffusion_models/qwen_image_2.1_int8_convrot.safetensors',
+      'diffusion_models/qwen_image_2.1_bf16.safetensors',
       'text_encoders/qwen3vl_8b_int8_convrot.safetensors',
       'vae/qwen_image_2.1_vae_bf16.safetensors',
       'loras/fusal-qwen-image-2.1-v2-exact-r80.safetensors',
