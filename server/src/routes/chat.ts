@@ -260,7 +260,8 @@ export function assistantParts(): Record<string, string> {
       "never describe the picture as if you had seen it. redraw_image makes a new picture STARTING " +
       "FROM one already drawn — that is the tool for \"make it night time\", \"same cat but blue\", " +
       "\"add a hat\"; pass the whole picture you want, not just the change, because it redraws from " +
-      "the description. show_last_image puts an earlier one back up."
+      "the description. show_last_image puts an earlier one back up. animate_image turns a picture " +
+      "into a short anime clip (\"animate that\", \"make her wave\") — its prompt is the motion only, and it takes minutes."
     : "")).trim(),
     // Same rule: only described when the media stack is configured.
     plex: ((PLEX_TOOLS.length > 0

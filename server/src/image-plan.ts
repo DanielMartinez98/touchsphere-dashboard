@@ -29,7 +29,7 @@
 import { broadcast } from './routes/system'
 import {
   cancelJob, getJob, imageDifference, listImages, listModels, listWorkflowStyles, missingFiles, selectedModel, startImage,
-  styleEdits, styleIsAnima, styleLabel, styleNeeds, stylePromptStyle, supersededCheckpoints,
+  styleAnimates, styleEdits, styleIsAnima, styleUpscales, styleLabel, styleNeeds, stylePromptStyle, supersededCheckpoints,
   segmentationAvailable, inpaintAvailable,
   type ImageJob,
 } from './image'
@@ -153,7 +153,7 @@ export interface DrawStyle { id: string; label: string; register: 'tags' | 'pros
  * the picker shows, minus the editor.
  */
 export async function usableDrawStyles(): Promise<DrawStyle[]> {
-  const workflows = listWorkflowStyles().filter(w => !styleEdits(w.id))
+  const workflows = listWorkflowStyles().filter(w => !styleEdits(w.id) && !styleUpscales(w.id) && !styleAnimates(w.id))
   const allNeeds = [...new Set(workflows.flatMap(w => styleNeeds(w.id)))]
   const absent = new Set(await missingFiles(allNeeds).catch(() => allNeeds))
   const wrapped = supersededCheckpoints()

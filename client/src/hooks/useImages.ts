@@ -164,6 +164,9 @@ export interface StoredImage {
   sourceUrl?: string
   credit?:    string
   url:    string
+  /** A clip made with "Animate": the mp4 file and its url. `url` is then its first frame. */
+  video?:    string
+  videoUrl?: string
   width:  number
   height: number
   seed:   number
@@ -237,6 +240,8 @@ export interface ImageStyle {
   edits?: boolean
   /** True for an upscaler (UltraSharp): a picture in, a sharper ×4 picture out. Never a drawing style. */
   upscales?: boolean
+  /** True for an animator (AnimeGen): a picture in, a short clip out. Never a drawing style. */
+  animates?: boolean
 }
 
 /**
@@ -263,6 +268,36 @@ export async function enhanceImage(sourceId: string, prompt: string, style: stri
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ prompt: prompt || 'sharpened and enlarged', source: sourceId, model: style }),
+  })
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({})) as { error?: string }
+    throw new Error(j.error ?? `HTTP ${res.status}`)
+  }
+  const j = await res.json() as { id: string }
+  return j.id
+}
+
+/**
+ * Is there an installed animator to offer? Asked once, like the upscaler.
+ */
+let animatorPromise: Promise<string | null> | null = null
+export function animatorStyle(): Promise<string | null> {
+  if (!animatorPromise) {
+    animatorPromise = fetch('/api/image/models')
+      .then(r => (r.ok ? r.json() as Promise<StylesResponse> : null))
+      .then(j => (j?.styles ?? []).find(st => st.animates && !(st.missing?.length))?.id ?? null)
+      .catch(() => null)
+      .then(id => { if (!id) animatorPromise = null; return id })
+  }
+  return animatorPromise
+}
+
+/** Queue a clip made from a gallery picture. Returns the job id. */
+export async function animateImage(sourceId: string, motion: string, style: string, seconds: number): Promise<string> {
+  const res = await fetch('/api/image/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt: motion.trim() || 'gentle natural motion', source: sourceId, model: style, seconds, improve: false }),
   })
   if (!res.ok) {
     const j = await res.json().catch(() => ({})) as { error?: string }
