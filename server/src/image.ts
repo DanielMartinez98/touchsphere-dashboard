@@ -887,6 +887,8 @@ export interface ImageJob {
   inpaintPatch: string
   /** The upscaler that enlarges a render drawn at the style's native size ('' = plain resize). See `nativePixels`. */
   nativeUpscaler: string
+  /** The upscaler a clip's frames are enlarged 2× with before encoding ('' = not installed, the clip stays at its render size). */
+  clipUpscaler: string
   /**
    * The user switched the patch OFF — for this style (Draw → Advanced) or for
    * everything (Settings → Drawing) — so run() does not even look for the
@@ -1550,6 +1552,7 @@ export function startImage(req: ImageRequest): ImageJob {
     controlnet: '',
     inpaintPatch: '',
     nativeUpscaler: '',
+    clipUpscaler: '',
     // Per request first, then the saved setting. The Draw panel sends these
     // so one picture can be tried a different way without changing the
     // default everything else uses.
@@ -1867,6 +1870,11 @@ async function run(job: ImageJob): Promise<void> {
     if (drawsSmallAndEnlarges(job)) {
       const have = await loaderOptions('UpscaleModelLoader', 'model_name').catch(() => [] as string[])
       job.nativeUpscaler = have.find(f => f.split(/[\\/]/).pop() === NATIVE_UPSCALER) ?? ''
+    }
+    if (styleAnimates(job.model)) {
+      const have = await loaderOptions('UpscaleModelLoader', 'model_name').catch(() => [] as string[])
+      job.clipUpscaler = have.find(f => f.split(/[\\/]/).pop() === CLIP_UPSCALER) ?? ''
+      if (!job.clipUpscaler) console.log(`[image] ${job.id} ${CLIP_UPSCALER} is not in upscale_models — the clip stays at its render size (${job.width}×${job.height})`)
     }
     if (job.source && (job.maskFile || job.region) && !edits) {
       const want = styleInpaintPatch(job.model)
@@ -2416,14 +2424,15 @@ function segmentPlan(total: number): number[] {
  * stays segment 0's first frame. Each segment gets its own seed so the noise
  * does not repeat.
  */
-function chainSegments(graph: ComfyGraph, i2v: string, seconds: number[], seed: number): void {
+function chainSegments(graph: ComfyGraph, i2v: string, seconds: number[], seed: number): number {
   const decodeId = Object.keys(graph).find(id => graph[id]!.class_type === 'VAEDecode')
   const videoId = Object.keys(graph).find(id => graph[id]!.class_type === 'CreateVideo')
   if (!decodeId || !videoId) throw new Error("this animating style's workflow has no VAEDecode or CreateVideo node")
   // Wan's latent packs four frames per step after the first, so a length is 4k + 1.
   const frames = (sec: number) => Math.max(1, Math.round(sec * VIDEO_FPS / 4)) * 4 + 1
   graph[i2v]!.inputs['length'] = frames(seconds[0]!)
-  if (seconds.length === 1) return
+  const total = seconds.reduce((n, sec, k) => n + frames(sec) - (k ? 1 : 0), 0)
+  if (seconds.length === 1) return total
 
   // The segment: i2v, the decode, and every node on a path between them.
   const refs = (node: ComfyNode) => Object.values(node.inputs)
@@ -2477,6 +2486,57 @@ function chainSegments(graph: ComfyGraph, i2v: string, seconds: number[], seed: 
     prevDecode = newDecode
   })
   graph[videoId]!.inputs['images'] = joined
+  return total
+}
+
+/**
+ * The upscaler a clip is sharpened with. realesr-animevideov3 rather than
+ * UltraSharp: it is a small VGG-style net made for video frames, so a 5 s clip
+ * costs about 20 s more where the DAT model would cost minutes. Measured on
+ * the 4090: calm frames come out visibly crisper at 2×; fast motion stays
+ * soft, because that softness is the model's motion blur, not the size.
+ */
+const CLIP_UPSCALER = 'realesr-animevideov3.pth'
+/** Frames upscaled per pass — keeps the upscaler's VRAM bounded on a 20 s clip. */
+const CLIP_UPSCALE_CHUNK = 9
+
+/**
+ * Enlarges every frame of the clip to twice the render size before it is
+ * encoded: CreateVideo's images go through the upscaler in chunks of
+ * CLIP_UPSCALE_CHUNK (ImageFromBatch → ImageUpscaleWithModel → lanczos
+ * ImageScale to exactly 2×, since the model's own factor is 4×) and are joined
+ * back with ImageBatch. The poster is taken from the enlarged frames, so the
+ * PNG read back after the render reports the clip's real size.
+ */
+function upscaleClip(graph: ComfyGraph, model: string, totalFrames: number, width: number, height: number): void {
+  const videoId = Object.keys(graph).find(id => graph[id]!.class_type === 'CreateVideo')
+  if (!videoId) return
+  const frames = graph[videoId]!.inputs['images'] as [string, number]
+  const ids = Object.keys(graph).map(Number).filter(Number.isFinite)
+  let next = Math.max(0, ...ids) + 1
+  const fresh = () => String(next++)
+  const loader = fresh()
+  graph[loader] = { class_type: 'UpscaleModelLoader', inputs: { model_name: model } }
+  let joined: [string, number] | null = null
+  for (let start = 0; start < totalFrames; start += CLIP_UPSCALE_CHUNK) {
+    const pick = fresh(), up = fresh(), scale = fresh()
+    graph[pick] = { class_type: 'ImageFromBatch', inputs: { image: frames, batch_index: start, length: Math.min(CLIP_UPSCALE_CHUNK, totalFrames - start) } }
+    graph[up] = { class_type: 'ImageUpscaleWithModel', inputs: { upscale_model: [loader, 0], image: [pick, 0] } }
+    graph[scale] = { class_type: 'ImageScale', inputs: { image: [up, 0], upscale_method: 'lanczos', width: width * 2, height: height * 2, crop: 'disabled' } }
+    if (!joined) { joined = [scale, 0]; continue }
+    const batch = fresh()
+    graph[batch] = { class_type: 'ImageBatch', inputs: { image1: joined, image2: [scale, 0] } }
+    joined = [batch, 0]
+  }
+  if (!joined) return
+  graph[videoId]!.inputs['images'] = joined
+  // The poster: SaveImage ← ImageFromBatch(index 0) — point it at the enlarged frames.
+  for (const node of Object.values(graph)) {
+    if (node.class_type !== 'SaveImage') continue
+    const src = node.inputs['images'] as [string, number] | undefined
+    const pick = src && graph[src[0]]
+    if (pick?.class_type === 'ImageFromBatch' && pick.inputs['batch_index'] === 0) pick.inputs['image'] = joined
+  }
 }
 
 /**
@@ -4332,7 +4392,8 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
       if ('noise_seed' in node.inputs) node.inputs['noise_seed'] = job.seed
       if ('seed' in node.inputs) node.inputs['seed'] = job.seed
     }
-    chainSegments(graph, i2v, segmentPlan(job.seconds ?? DEFAULT_SECONDS), job.seed)
+    const total = chainSegments(graph, i2v, segmentPlan(job.seconds ?? DEFAULT_SECONDS), job.seed)
+    if (job.clipUpscaler) upscaleClip(graph, job.clipUpscaler, total, job.width, job.height)
     return graph
   }
 

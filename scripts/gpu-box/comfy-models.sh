@@ -12,7 +12,7 @@ HF=https://huggingface.co
 command -v aria2c >/dev/null || apt-get install -y -q aria2 >/dev/null
 mkdir -p "$STAGE"
 
-# folder | file name ComfyUI sees | source (repo/path)
+# folder | file name ComfyUI sees | source (repo/path on Hugging Face, or a full https URL)
 LIST=$(cat <<'EOF'
 text_encoders|qwen_3_06b_base.safetensors|circlestone-labs/Anima/split_files/text_encoders/qwen_3_06b_base.safetensors
 vae|qwen_image_vae.safetensors|circlestone-labs/Anima/split_files/vae/qwen_image_vae.safetensors
@@ -20,6 +20,7 @@ diffusion_models|anima-aesthetic-v1.1.safetensors|circlestone-labs/Anima/split_f
 diffusion_models|anima-turbo-v1.1.safetensors|circlestone-labs/Anima/split_files/diffusion_models/anima-turbo-v1.1.safetensors
 model_patches|anima-lllite-inpainting-v2.safetensors|Comfy-Org/Anima-LLLite/model_patches/anima-lllite-inpainting-v2.safetensors
 upscale_models|4x-UltraSharpV2.safetensors|Kim2091/UltraSharpV2/4x-UltraSharpV2.safetensors
+upscale_models|realesr-animevideov3.pth|https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth
 controlnet|controlnet-union-sdxl-1.0-promax.safetensors|xinsir/controlnet-union-sdxl-1.0/diffusion_pytorch_model_promax.safetensors
 diffusion_models|flux3-image-klein-int8-convrot.safetensors|black-forest-labs/flux-3-image-klein-comfy/diffusion_models/flux3-image-klein-int8-convrot.safetensors
 text_encoders|qwen3vl_4b_int8_convrot.safetensors|black-forest-labs/flux-3-image-klein-comfy/text_encoders/qwen3vl_4b_int8_convrot.safetensors
@@ -43,15 +44,18 @@ while IFS='|' read -r folder name src; do
   [ -z "$folder" ] && continue
   dest="$MODELS/$folder/$name"
   if [ -s "$dest" ]; then echo "have  $folder/$name"; continue; fi
-  repo=$(echo "$src" | cut -d/ -f1-2); path=$(echo "$src" | cut -d/ -f3-)
+  case "$src" in
+    https://*) url=$src; token= ;;
+    *) repo=$(echo "$src" | cut -d/ -f1-2); path=$(echo "$src" | cut -d/ -f3-); url="$HF/$repo/resolve/main/$path"; token=${HF_TOKEN:-} ;;
+  esac
   echo "get   $folder/$name"
   mkdir -p "$MODELS/$folder" "$STAGE/$folder"
   ok=0
   for attempt in 1 2 3 4 5; do
     # HF_TOKEN reaches the gated FLUX 3 Klein repo (accept its licence once on huggingface.co).
     if aria2c -q -c -x 8 -s 8 -k 64M --auto-file-renaming=false --allow-overwrite=true \
-         ${HF_TOKEN:+"--header=Authorization: Bearer $HF_TOKEN"} \
-         --retry-wait=10 --max-tries=5 -d "$STAGE/$folder" -o "$name" "$HF/$repo/resolve/main/$path"; then
+         ${token:+"--header=Authorization: Bearer $token"} \
+         --retry-wait=10 --max-tries=5 -d "$STAGE/$folder" -o "$name" "$url"; then
       ok=1; break
     fi
     echo "      attempt $attempt failed, retrying"; sleep 15
