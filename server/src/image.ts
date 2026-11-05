@@ -2683,7 +2683,7 @@ function qwenImage21Graph(): ComfyGraph {
 /**
  * Qwen-Image 2.1 with the FUSAL anime LoRA (MicksHF/Qwen-Image-2.1-Anime-Fusal,
  * the original-Base "v2 Exact R80" file, which replaced R56 upstream). Card: load it on the Base
- * model through "Load LoRA (Model Only)" at 1.0, 30–40 steps, cfg 1, and prepend
+ * model through "Load LoRA (Model Only)" at 1.0 (0.6 here, see below), 30–40 steps, cfg 1, and prepend
  * "fusal style." to the prompt. The LoRA sits between the loader and the cache
  * node, so the cache holds the patched model. The card recommends its own
  * bf16 "Heretic" Qwen3-VL encoder (16.3 GB) over the stock one, but says the
@@ -2692,13 +2692,13 @@ function qwenImage21Graph(): ComfyGraph {
  */
 function qwenImage21FusalGraph(): ComfyGraph {
   const g = qwenImage21Graph()
-  // The bf16 Base, not the int8 one the plain style uses. The LoRA is a bf16
-  // delta trained against bf16 weights; patched onto ConvRot int8 weights
-  // (stored rotated and requantised after the patch) it came out pixelated.
-  g['1']!.inputs['unet_name'] = 'qwen_image_2.1_bf16.safetensors'
   g['10'] = {
     class_type: 'LoraLoaderModelOnly',
-    inputs: { model: ['1', 0], lora_name: 'fusal-qwen-image-2.1-v2-exact-r80.safetensors', strength_model: 1 },
+    // 0.6, not the card's 1.0. Measured on the GPU box (same prompt and seed):
+    // at 1.0 the picture came back crunchy and over-sharpened with garbled fake
+    // text in the corners, on the int8 AND the bf16 base alike; at 0.6 the text
+    // is gone and the edges are clean, with the FUSAL look kept.
+    inputs: { model: ['1', 0], lora_name: 'fusal-qwen-image-2.1-v2-exact-r80.safetensors', strength_model: 0.6 },
   }
   g['4']!.inputs['model'] = ['10', 0]
   g['7']!.inputs['steps'] = 36
@@ -3383,7 +3383,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
     // cfg 1, the card's setting: the negative is computed and unused.
     negative: '',
     needs: [
-      'diffusion_models/qwen_image_2.1_bf16.safetensors',
+      'diffusion_models/qwen_image_2.1_int8_convrot.safetensors',
       'text_encoders/qwen3vl_8b_int8_convrot.safetensors',
       'vae/qwen_image_2.1_vae_bf16.safetensors',
       'loras/fusal-qwen-image-2.1-v2-exact-r80.safetensors',

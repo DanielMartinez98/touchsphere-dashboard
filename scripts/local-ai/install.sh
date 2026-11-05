@@ -346,7 +346,6 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
   )
   # FUSAL: an anime style LoRA for Qwen-Image 2.1 Base, so the qwen21 files come with it.
   FUSAL_FILES=(
-    "diffusion_models/qwen_image_2.1_bf16.safetensors|https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/diffusion_models/qwen_image_2.1_bf16.safetensors|14.2"
     "loras/fusal-qwen-image-2.1-v2-exact-r80.safetensors|https://huggingface.co/MicksHF/Qwen-Image-2.1-Anime-Fusal/resolve/main/loras/fusal-qwen-image-2.1-v2-exact-r80.safetensors|0.42"
   )
 
