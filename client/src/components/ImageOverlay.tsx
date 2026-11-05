@@ -530,7 +530,7 @@ function PromptActions({
             </button>
           </div>
           <div className="text-[12px] text-white/45">
-            {best ? 'About 10 minutes per 5 seconds; the one for jumping, running and fighting.' : 'About 2 minutes per 5 seconds; best for small motions (blinking, smiling, hair in the wind).'} Silent, 480p, 16 frames a second; longer clips are 5-second shots chained. Big movements (jumping, running) need the whole body in the picture: a close-up has no legs to move.
+            {best ? 'About 8 to 9 minutes per 5 seconds; the one for jumping, running and fighting.' : 'About 2 minutes per 5 seconds; best for small motions (blinking, smiling, hair in the wind).'} Silent, 480p, 16 frames a second; longer clips are 5-second shots chained. Big movements (jumping, running) need the whole body in the picture: a close-up has no legs to move.
           </div>
           {animError && <div className="text-[13px] text-amber-300">{animError}</div>}
         </div>
