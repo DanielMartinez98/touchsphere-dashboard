@@ -362,8 +362,8 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
   WAN_FILES=(
     "text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors|https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors|6.7"
     "vae/wan_2.1_vae.safetensors|https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors|0.25"
-    "loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors|https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors|1.2"
-    "loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors|https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors|1.2"
+    "loras/wan2.2_i2v_lightx2v_motion_fix_high.safetensors|https://huggingface.co/rzgar/Wan2.2_I2V_LightX2V_Slow-Mo_Fix/resolve/main/wan2.2_i2v_lightx2v_motion_fix_high.safetensors|1.2"
+    "loras/wan2.2_i2v_lightx2v_motion_fix_low.safetensors|https://huggingface.co/rzgar/Wan2.2_I2V_LightX2V_Slow-Mo_Fix/resolve/main/wan2.2_i2v_lightx2v_motion_fix_low.safetensors|1.2"
   )
 
   WANT=()

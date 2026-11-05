@@ -2492,11 +2492,18 @@ export function animateSize(w: number, h: number): { width: number; height: numb
  *
  * Transcribed from ComfyUI's own `video_wan2_2_14B_i2v` template with its
  * switch nodes flattened onto the 4-step path, because that is what the model
- * card runs: the lightx2v Lightning LoRA on both experts, 4 steps at cfg 1,
+ * card runs: a lightx2v 4-step LoRA on both experts, 4 steps at cfg 1,
  * flow shift 3 (the card's scheduler; the template says 5 for the base model).
  * The weights are AIdeaLab's bf16 files cast to fp8 on the GPU box (28.6 GB →
  * ~14 GB each), so each expert fits the 4090 on its own; ComfyUI swaps them.
  * The text encoder and VAE are Wan's own, from Comfy-Org's repackage.
+ *
+ * The LoRAs are rzgar's "Slow-Mo Fix" pair rather than the stock lightx2v
+ * pair: measured on the GPU box (same picture, seed and "she crouches and
+ * jumps" prompt), the stock pair froze for ~2 s and never jumped, a no-LoRA
+ * first pass at cfg 3.5 washed the picture out, a weaker LoRA at cfg 3 and 8
+ * steps changed her outfit, and the motion-fix pair jumped and landed cleanly
+ * in the fewest seconds (100 s for 5 s of clip).
  *
  * Two outputs: SaveVideo for the clip, and the first frame through SaveImage
  * as the gallery's poster.
@@ -2506,8 +2513,8 @@ function animeGenGraph(): ComfyGraph {
     '1':  { class_type: 'LoadImage', inputs: { image: '' } },
     '2':  { class_type: 'UNETLoader', inputs: { unet_name: 'animegen_i2v_high_noise_fp8_e4m3fn.safetensors', weight_dtype: 'default' } },
     '3':  { class_type: 'UNETLoader', inputs: { unet_name: 'animegen_i2v_low_noise_fp8_e4m3fn.safetensors', weight_dtype: 'default' } },
-    '4':  { class_type: 'LoraLoaderModelOnly', inputs: { model: ['2', 0], lora_name: 'wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors', strength_model: 1 } },
-    '5':  { class_type: 'LoraLoaderModelOnly', inputs: { model: ['3', 0], lora_name: 'wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors', strength_model: 1 } },
+    '4':  { class_type: 'LoraLoaderModelOnly', inputs: { model: ['2', 0], lora_name: 'wan2.2_i2v_lightx2v_motion_fix_high.safetensors', strength_model: 1 } },
+    '5':  { class_type: 'LoraLoaderModelOnly', inputs: { model: ['3', 0], lora_name: 'wan2.2_i2v_lightx2v_motion_fix_low.safetensors', strength_model: 1 } },
     '6':  { class_type: 'ModelSamplingSD3', inputs: { model: ['4', 0], shift: 3 } },
     '7':  { class_type: 'ModelSamplingSD3', inputs: { model: ['5', 0], shift: 3 } },
     '8':  { class_type: 'CLIPLoader', inputs: { clip_name: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors', type: 'wan', device: 'default' } },
@@ -3603,8 +3610,8 @@ const BUILTIN_WORKFLOWS: Record<string, {
     needs: [
       'diffusion_models/animegen_i2v_high_noise_fp8_e4m3fn.safetensors',
       'diffusion_models/animegen_i2v_low_noise_fp8_e4m3fn.safetensors',
-      'loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors',
-      'loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors',
+      'loras/wan2.2_i2v_lightx2v_motion_fix_high.safetensors',
+      'loras/wan2.2_i2v_lightx2v_motion_fix_low.safetensors',
       'text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors',
       'vae/wan_2.1_vae.safetensors',
     ],
