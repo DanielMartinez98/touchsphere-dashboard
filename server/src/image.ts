@@ -1327,7 +1327,7 @@ export interface ImageRequest {
   holdEnd?:      number
   /** How fine the detected lines are, for the `lines` hold. Default: the setting. */
   holdDetail?:   'fine' | 'normal' | 'coarse'
-  /** ANIMATE: how long the clip is, in seconds (1-30; past 5 it is drawn in chained segments). Ignored by every other style. */
+  /** ANIMATE: how long the clip is, in seconds (1-20; past 5 it is drawn in chained segments). Ignored by every other style. */
   seconds?:      number
 }
 
@@ -2386,9 +2386,14 @@ const VIDEO_TIMEOUT_MS = Number(process.env['COMFYUI_VIDEO_TIMEOUT_MS'] ?? 40 * 
  * frame of the one before (`chainSegments`).
  */
 const SEGMENT_SECONDS = 5
-const MAX_SECONDS = Number(process.env['ANIMATE_MAX_SECONDS'] ?? 30)
+const MAX_SECONDS = Number(process.env['ANIMATE_MAX_SECONDS'] ?? 20)
 
-/** 1 to MAX_SECONDS (30 by default); anything past 5 s is drawn in segments. */
+/**
+ * 1 to MAX_SECONDS (20 by default); anything past 5 s is drawn in segments.
+ * 20 because a 15 s chain peaked at 14.0 of the GPU box's 15.5 GB of WSL RAM
+ * (each extra segment's frames add ~0.25 GB), and because the character drifts
+ * a little more with every segment, since each one only sees the last frame.
+ */
 function clampSeconds(n: unknown): number {
   const v = typeof n === 'number' && Number.isFinite(n) ? Math.round(n) : DEFAULT_SECONDS
   return Math.max(1, Math.min(MAX_SECONDS, v))

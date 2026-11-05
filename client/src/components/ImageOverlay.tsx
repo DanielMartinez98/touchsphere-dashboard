@@ -481,7 +481,7 @@ function PromptActions({
             className="w-full h-11 px-3 rounded-xl bg-black/30 border border-hairline text-white text-[15px]"
           />
           <div className="flex flex-wrap items-center gap-2">
-            {[3, 5, 10, 20, 30].map(n => (
+            {[3, 5, 10, 15, 20].map(n => (
               <button
                 key={n}
                 type="button"

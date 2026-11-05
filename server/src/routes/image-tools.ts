@@ -223,7 +223,7 @@ export const IMAGE_TOOLS = [
           },
           seconds: {
             type: 'number',
-            description: 'How long the clip is, 1 to 30 seconds. Default 3. Past 5 seconds it is drawn as chained 5-second shots, about 2 to 3 minutes of GPU per shot.',
+            description: 'How long the clip is, 1 to 20 seconds. Default 3. Past 5 seconds it is drawn as chained 5-second shots, about 1.5 to 2 minutes of GPU per shot. For a long clip, repeat the character\'s key looks (hair, eyes) in the prompt, since each shot only sees the last frame of the one before.',
           },
         },
         required: ['prompt'],
