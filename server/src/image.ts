@@ -1325,7 +1325,7 @@ export interface ImageRequest {
   holdEnd?:      number
   /** How fine the detected lines are, for the `lines` hold. Default: the setting. */
   holdDetail?:   'fine' | 'normal' | 'coarse'
-  /** ANIMATE: how long the clip is, in seconds (1-5). Ignored by every other style. */
+  /** ANIMATE: how long the clip is, in seconds (1-30; past 5 it is drawn in chained segments). Ignored by every other style. */
   seconds?:      number
 }
 
@@ -2373,10 +2373,97 @@ const VIDEO_FPS = 16
 const DEFAULT_SECONDS = 3
 const VIDEO_TIMEOUT_MS = Number(process.env['COMFYUI_VIDEO_TIMEOUT_MS'] ?? 40 * 60_000)
 
-/** 1-5 seconds: five is the card's own length and the most Wan 2.2 holds together. */
+/**
+ * Wan 2.2 holds a shot together for about 81 frames (5 s), so a longer clip is
+ * a chain of segments of at most this length, each starting from the last
+ * frame of the one before (`chainSegments`).
+ */
+const SEGMENT_SECONDS = 5
+const MAX_SECONDS = Number(process.env['ANIMATE_MAX_SECONDS'] ?? 30)
+
+/** 1 to MAX_SECONDS (30 by default); anything past 5 s is drawn in segments. */
 function clampSeconds(n: unknown): number {
   const v = typeof n === 'number' && Number.isFinite(n) ? Math.round(n) : DEFAULT_SECONDS
-  return Math.max(1, Math.min(5, v))
+  return Math.max(1, Math.min(MAX_SECONDS, v))
+}
+
+/** Seconds per segment for a clip of `total` seconds: as even as possible, none over 5. */
+function segmentPlan(total: number): number[] {
+  const n = Math.max(1, Math.ceil(total / SEGMENT_SECONDS))
+  const base = total / n
+  return Array.from({ length: n }, () => base)
+}
+
+/**
+ * Turn a one-segment animate graph into a chain. Everything between the
+ * WanImageToVideo node and the VAEDecode (the samplers, any model patch fed by
+ * them) is cloned per segment; segment k's start image is the last decoded
+ * frame of segment k-1, and the frames are joined with that duplicated first
+ * frame dropped, into the one CreateVideo the graph already has. The poster
+ * stays segment 0's first frame. Each segment gets its own seed so the noise
+ * does not repeat.
+ */
+function chainSegments(graph: ComfyGraph, i2v: string, seconds: number[], seed: number): void {
+  const decodeId = Object.keys(graph).find(id => graph[id]!.class_type === 'VAEDecode')
+  const videoId = Object.keys(graph).find(id => graph[id]!.class_type === 'CreateVideo')
+  if (!decodeId || !videoId) throw new Error("this animating style's workflow has no VAEDecode or CreateVideo node")
+  // Wan's latent packs four frames per step after the first, so a length is 4k + 1.
+  const frames = (sec: number) => Math.max(1, Math.round(sec * VIDEO_FPS / 4)) * 4 + 1
+  graph[i2v]!.inputs['length'] = frames(seconds[0]!)
+  if (seconds.length === 1) return
+
+  // The segment: i2v, the decode, and every node on a path between them.
+  const refs = (node: ComfyNode) => Object.values(node.inputs)
+    .filter((v): v is [string, number] => Array.isArray(v) && typeof v[0] === 'string').map(v => v[0])
+  const dependsOnI2v = new Map<string, boolean>()
+  const dep = (id: string, depth = 0): boolean => {
+    if (id === i2v) return true
+    if (dependsOnI2v.has(id)) return dependsOnI2v.get(id)!
+    dependsOnI2v.set(id, false)
+    const node = graph[id]
+    const r = !!node && depth < 64 && refs(node).some(x => dep(x, depth + 1))
+    dependsOnI2v.set(id, r)
+    return r
+  }
+  const segment = new Set<string>([i2v])
+  const walk = (id: string) => {
+    if (segment.has(id) || !dep(id)) return
+    segment.add(id)
+    for (const r of refs(graph[id]!)) walk(r)
+  }
+  walk(decodeId)
+
+  const ids = Object.keys(graph).map(Number).filter(Number.isFinite)
+  let next = Math.max(0, ...ids) + 1
+  const fresh = () => String(next++)
+  let prevDecode = decodeId
+  let joined: [string, number] = [decodeId, 0]
+  seconds.slice(1).forEach((sec, k) => {
+    const map = new Map<string, string>()
+    for (const id of segment) map.set(id, fresh())
+    const lastFrame = fresh()
+    graph[lastFrame] = { class_type: 'ImageFromBatch', inputs: { image: [prevDecode, 0], batch_index: 4095, length: 1 } }
+    for (const id of segment) {
+      const src = graph[id]!
+      const inputs: Record<string, unknown> = {}
+      for (const [key, v] of Object.entries(src.inputs)) {
+        inputs[key] = Array.isArray(v) && typeof v[0] === 'string' && map.has(v[0]) ? [map.get(v[0]), v[1]] : v
+      }
+      if (id === i2v) { inputs['start_image'] = [lastFrame, 0]; inputs['length'] = frames(sec) }
+      if ('noise_seed' in inputs) inputs['noise_seed'] = seed + k + 1
+      if ('seed' in inputs) inputs['seed'] = seed + k + 1
+      graph[map.get(id)!] = { class_type: src.class_type, inputs }
+    }
+    const newDecode = map.get(decodeId)!
+    // ImageFromBatch clamps batch_index to the batch, so 4095 is "the last frame".
+    const rest = fresh()
+    graph[rest] = { class_type: 'ImageFromBatch', inputs: { image: [newDecode, 0], batch_index: 1, length: frames(sec) - 1 } }
+    const batch = fresh()
+    graph[batch] = { class_type: 'ImageBatch', inputs: { image1: joined, image2: [rest, 0] } }
+    joined = [batch, 0]
+    prevDecode = newDecode
+  })
+  graph[videoId]!.inputs['images'] = joined
 }
 
 /**
@@ -4210,17 +4297,16 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
     const wan = graph[i2v]!.inputs
     wan['width'] = job.width
     wan['height'] = job.height
-    wan['length'] = Math.round((job.seconds ?? DEFAULT_SECONDS) * VIDEO_FPS) + 1
     const posId = conditioningText(graph, [i2v, 0])
     const negId = conditioningText(graph, [i2v, 1])
     if (posId) graph[posId]!.inputs['text'] = joinPrefix(job.prefix, joinPrompt(job.prompt || 'gentle natural motion', job.optimizations))
     if (negId && negId !== posId) graph[negId]!.inputs['text'] = joinPrefix(job.negativePrefix, job.negative)
-    const samplerId = findNode(graph, ['KSamplerAdvanced', 'KSampler'])
-    if (samplerId) {
-      const inp = graph[samplerId]!.inputs
-      if ('noise_seed' in inp) inp['noise_seed'] = job.seed
-      if ('seed' in inp) inp['seed'] = job.seed
+    for (const node of Object.values(graph)) {
+      if (!/KSampler|SamplerCustom/.test(node.class_type)) continue
+      if ('noise_seed' in node.inputs) node.inputs['noise_seed'] = job.seed
+      if ('seed' in node.inputs) node.inputs['seed'] = job.seed
     }
+    chainSegments(graph, i2v, segmentPlan(job.seconds ?? DEFAULT_SECONDS), job.seed)
     return graph
   }
 

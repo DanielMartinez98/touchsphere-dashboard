@@ -223,7 +223,7 @@ export const IMAGE_TOOLS = [
           },
           seconds: {
             type: 'number',
-            description: 'How long the clip is, 1 to 5 seconds. Default 3. Longer takes longer to make.',
+            description: 'How long the clip is, 1 to 30 seconds. Default 3. Past 5 seconds it is drawn as chained 5-second shots, about 2 to 3 minutes of GPU per shot.',
           },
         },
         required: ['prompt'],
