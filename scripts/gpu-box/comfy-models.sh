@@ -16,22 +16,17 @@ mkdir -p "$STAGE"
 LIST=$(cat <<'EOF'
 text_encoders|qwen_3_06b_base.safetensors|circlestone-labs/Anima/split_files/text_encoders/qwen_3_06b_base.safetensors
 vae|qwen_image_vae.safetensors|circlestone-labs/Anima/split_files/vae/qwen_image_vae.safetensors
-diffusion_models|anima-base-v1.0.safetensors|circlestone-labs/Anima/split_files/diffusion_models/anima-base-v1.0.safetensors
 diffusion_models|anima-aesthetic-v1.1.safetensors|circlestone-labs/Anima/split_files/diffusion_models/anima-aesthetic-v1.1.safetensors
 diffusion_models|anima-turbo-v1.1.safetensors|circlestone-labs/Anima/split_files/diffusion_models/anima-turbo-v1.1.safetensors
 model_patches|anima-lllite-inpainting-v2.safetensors|Comfy-Org/Anima-LLLite/model_patches/anima-lllite-inpainting-v2.safetensors
 upscale_models|4x-UltraSharpV2.safetensors|Kim2091/UltraSharpV2/4x-UltraSharpV2.safetensors
 controlnet|controlnet-union-sdxl-1.0-promax.safetensors|xinsir/controlnet-union-sdxl-1.0/diffusion_pytorch_model_promax.safetensors
-checkpoints|NoobAI-XL-v1.1.safetensors|Laxhar/noobai-XL-1.1/NoobAI-XL-v1.1.safetensors
-checkpoints|NoobAI-XL-Vpred-v1.0.safetensors|Laxhar/noobai-XL-Vpred-1.0/NoobAI-XL-Vpred-v1.0.safetensors
 diffusion_models|flux3-image-klein-int8-convrot.safetensors|black-forest-labs/flux-3-image-klein-comfy/diffusion_models/flux3-image-klein-int8-convrot.safetensors
 text_encoders|qwen3vl_4b_int8_convrot.safetensors|black-forest-labs/flux-3-image-klein-comfy/text_encoders/qwen3vl_4b_int8_convrot.safetensors
 vae|flux2-vae.safetensors|black-forest-labs/flux-3-image-klein-comfy/vae/flux2-vae.safetensors
-diffusion_models|Anima-2.9B-preview-v1.safetensors|Gazingstars123/Anima-2.9B/Anima-2.9B-preview-v1.safetensors
 diffusion_models|qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_comfyui_4steps_v1.0.safetensors|lightx2v/Qwen-Image-Edit-2511-Lightning/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_comfyui_4steps_v1.0.safetensors
 text_encoders|qwen_2.5_vl_7b_fp8_scaled.safetensors|Comfy-Org/Qwen-Image_ComfyUI/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors
-vae|ae.safetensors|Comfy-Org/Lumina_Image_2.0_Repackaged/split_files/vae/ae.safetensors
-checkpoints|NetaYumev35_pretrained_all_in_one.safetensors|duongve/NetaYume-Lumina-Image-2.0/NetaYumev35_pretrained_all_in_one.safetensors
+loras|fusal-qwen-image-2.1-style-hires-exact-r56.safetensors|MicksHF/Qwen-Image-2.1-Anime-Fusal/loras/fusal-qwen-image-2.1-style-hires-exact-r56.safetensors
 checkpoints|sd_xl_base_1.0.safetensors|stabilityai/stable-diffusion-xl-base-1.0/sd_xl_base_1.0.safetensors
 EOF
 )

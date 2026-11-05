@@ -178,6 +178,7 @@ function Facts({ st, origin }: { st: ImageSettings | null; origin: string }) {
   else if (st?.inpaintPatchSkipped === 'off') rows.push(['Inpainting patch', 'switched off'])
   else if (st?.inpaintPatchSkipped === 'missing') rows.push(['Inpainting patch', 'not installed'])
   else if (st?.mask) rows.push(['Inpainting patch', 'no'])
+  if (st?.hiresFrom) rows.push(['Drawn first at', `${st.hiresFrom}, then enlarged`])
   if (st?.steps) rows.push(['Steps', String(st.steps)])
   if (st?.cfg) rows.push(['Guidance', String(st.cfg)])
   if (st?.improvedBy) rows.push(['Prompt rewritten by', st.improvedWith ? `${st.improvedBy} · ${st.improvedWith}` : st.improvedBy])

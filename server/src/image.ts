@@ -531,6 +531,8 @@ export interface ImageSettings {
    * is worth reading.
    */
   conversation?:   AiExchange[]
+  /** Drawn in two passes: the composition at this size, then enlarged and re-detailed (SDXL above ~1.3 MP). */
+  hiresFrom?:      string
   /** Booster text appended to the prompt for this style, when there was any. */
   optimizations?:  string
   /**
@@ -2532,6 +2534,27 @@ function qwenImage21Graph(): ComfyGraph {
 }
 
 /**
+ * Qwen-Image 2.1 with the FUSAL anime LoRA (MicksHF/Qwen-Image-2.1-Anime-Fusal,
+ * the original-Base "Style + Hires Exact R56" file). Card: load it on the Base
+ * model through "Load LoRA (Model Only)" at 1.0, 30–40 steps, cfg 1, and prepend
+ * "fusal style." to the prompt. The LoRA sits between the loader and the cache
+ * node, so the cache holds the patched model. The card recommends its own
+ * bf16 "Heretic" Qwen3-VL encoder (16.3 GB) over the stock one, but says the
+ * stock one "can still generate images"; 16 GB of WSL RAM cannot hold a 16 GB
+ * encoder beside everything else, so the stock int8 encoder is used.
+ */
+function qwenImage21FusalGraph(): ComfyGraph {
+  const g = qwenImage21Graph()
+  g['10'] = {
+    class_type: 'LoraLoaderModelOnly',
+    inputs: { model: ['1', 0], lora_name: 'fusal-qwen-image-2.1-style-hires-exact-r56.safetensors', strength_model: 1 },
+  }
+  g['4']!.inputs['model'] = ['10', 0]
+  g['7']!.inputs['steps'] = 36
+  return g
+}
+
+/**
  * Qwen-Image 2.1 as an EDITOR. The source is `image_1` on the encoder, which
  * fits it to `resolution`² pixels at its own shape (1024 is the card's
  * default) and hands back its latent on output 2; the sampler starts from that
@@ -2978,6 +3001,21 @@ const QWEN_IMAGE_IMPROVER_GUIDE =
   'Describe the picture as if you were looking at it. Any words that should appear in the picture go in ' +
   'double quotes.\n' + PROSE_CHARACTER_RULES
 
+const FUSAL_IMPROVER_GUIDE =
+  'THIS MODEL: Qwen-Image 2.1 with the FUSAL anime style LoRA. It was trained on prompts written in labelled ' +
+  'sections, and it follows them best. Write the prompt in exactly this shape: the first line ' +
+  '"[TASK: TEXT_TO_IMAGE]", then a blank line, then one section per line with a blank line between them, each ' +
+  'starting with its label in square brackets: [Subject], [Appearance], [Pose], [Expression], [Composition], ' +
+  '[Environment], [Lighting], [Style]. Omit a section that has nothing to say. Each section is plain English ' +
+  'sentences, never tags. Do not write "fusal style." yourself, it is added for you.\n' +
+  'CHARACTERS: in [Subject] name each character by full name and series ("Sakura Haruno from Naruto, sitting on ' +
+  'a bench"). In [Appearance] give only the features you are certain of: hair colour and style, eye colour, ' +
+  'the outfit the scene calls for. A wrong colour draws a stranger, so leave out anything you are unsure of. In ' +
+  '[Style] name the series\' own look ("anime illustration in the official style of Naruto, cel shading"). For ' +
+  'two or more characters, say in [Subject] how many there are and give each their own sentence in ' +
+  '[Appearance] and [Pose], so their features do not mix. Any words that should appear in the picture go in ' +
+  'double quotes.'
+
 const Z_IMAGE_IMPROVER_GUIDE =
   'THIS MODEL: Z-Image Turbo reads a short, concrete English paragraph through Qwen-3 4B and leans hard ' +
   'towards photographs. For any character from an anime or game, open with "2D anime illustration in the ' +
@@ -3162,26 +3200,28 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'vae/qwen_image_2.1_vae_bf16.safetensors',
     ],
   },
-  'z-image-turbo': {
-    label: 'Z-Image Turbo',
-    graph: zImageTurboGraph(),
-    // Distilled to 8 steps at cfg 1.
-    ignoresQuality: true,
+  'qwen-image-2.1-fusal': {
+    label: 'Qwen-Image 2.1 Anime (FUSAL)',
+    graph: qwenImage21FusalGraph(),
+    // Read by Qwen3-VL 8B: sentences in the card's labelled sections.
     promptStyle: 'prose',
-    improverGuide: Z_IMAGE_IMPROVER_GUIDE,
+    improverGuide: FUSAL_IMPROVER_GUIDE,
+    // The card's one required lead-in. It ends in a full stop, so joinPrefix
+    // puts a space after it rather than a comma.
+    prefixes: { positive: 'fusal style.', negative: '' },
     promptGuide:
-      'Write a short, concrete paragraph of plain English (or Chinese), never a tag list. This ' +
-      'model reads its prompt with a Qwen-3 language model and is strongest at photorealism: ' +
-      'name the subject, what it is doing, the setting, the light (golden hour, overcast, ' +
-      'studio flash), the framing (close-up, wide shot) and the mood. It renders text, so put ' +
-      'any words that should appear in quotes. It has NO negative prompt, so never write what ' +
-      'you do not want. It is weaker at anime than the anime styles; say "anime illustration" ' +
-      'explicitly when that is wanted.',
-    // No negative: the sampler's is a ConditioningZeroOut of the positive.
+      'Write plain English sentences, never a tag list, ideally in labelled sections: ' +
+      '"[TASK: TEXT_TO_IMAGE]" then [Subject], [Appearance], [Pose], [Expression], [Composition], ' +
+      '[Environment], [Lighting] and [Style], each on its own line. Name a character and their ' +
+      'series in [Subject]. Put words that should appear in the picture in double quotes. There is ' +
+      'no negative prompt at its recommended settings, so only describe what you want.',
+    // cfg 1, the card's setting: the negative is computed and unused.
+    negative: '',
     needs: [
-      'diffusion_models/z_image_turbo_bf16.safetensors',
-      'text_encoders/qwen_3_4b.safetensors',
-      'vae/ae.safetensors',
+      'diffusion_models/qwen_image_2.1_int8_convrot.safetensors',
+      'text_encoders/qwen3vl_8b_int8_convrot.safetensors',
+      'vae/qwen_image_2.1_vae_bf16.safetensors',
+      'loras/fusal-qwen-image-2.1-style-hires-exact-r56.safetensors',
     ],
   },
   'qwen-image-2.1-edit': {
@@ -3280,8 +3320,16 @@ const BUILTIN_WORKFLOWS: Record<string, {
     graph: sdxlAnimeGraph('waiIllustriousSDXL_v160.safetensors', 28, 6, 'euler_ancestral', 'normal'),
     // The card's own quality line, plus `safe` for the same reason as NoobAI's.
     prefixes: { positive: 'masterpiece, best quality, amazing quality, safe, ', negative: '' },
+    // The card's own negative, then the tags for the split-body failure: a
+    // second torso, a face on a face, a figure cut into panels. Those are
+    // Danbooru tags the model learned (multiple views, comic, split screen),
+    // so naming them in the negative steers away from the layouts that produce
+    // them. The bigger cause is canvas size, which hiresFix() deals with.
     negative: 'nsfw, bad quality, worst quality, worst detail, sketch, censor, ' +
-      'signature, watermark, username, bad hands, extra digits',
+      'signature, watermark, username, bad hands, extra digits, ' +
+      'bad anatomy, extra arms, extra legs, extra hands, extra faces, multiple heads, extra body, ' +
+      'conjoined, fused bodies, deformed, mutated, disfigured, ' +
+      'multiple views, comic, split screen, collage, 4koma, panels',
     promptStyle: 'tags',
     improverGuide: ILLUSTRIOUS_IMPROVER_GUIDE,
     promptGuide:
@@ -3293,90 +3341,6 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'you, so do not repeat masterpiece or best quality.',
     supersedes: 'waiIllustriousSDXL_v160.safetensors',
     needs: ['checkpoints/waiIllustriousSDXL_v160.safetensors'],
-  },
-  'noobai-xl-v11': {
-    label: 'NoobAI XL v1.1',
-    // Model card: CFG 5-6, Steps 25-30, Euler a.
-    graph: sdxlAnimeGraph('NoobAI-XL-v1.1.safetensors', 28, 5.5, 'euler_ancestral', 'normal'),
-    // Straight off the model card: quality ladder in front, booru terms behind.
-    // `safe` is doing real work on a kiosk the assistant draws on unprompted.
-    prefixes: {
-      positive: 'masterpiece, best quality, newest, absurdres, highres, safe, ',
-      negative: '',
-    },
-    // Verbatim from the model card's "Negative Prompt" block. The last six tags
-    // were missing for a while, which is exactly the half that stops an anime
-    // model drifting into furry/anthro output on an ambiguous prompt — a gap
-    // that shows up as "why did it draw that" rather than as an error.
-    negative: 'nsfw, worst quality, old, early, low quality, lowres, signature, ' +
-      'username, logo, bad hands, mutated hands, mammal, anthro, furry, ' +
-      'ambiguous form, feral, semi-anthro',
-    promptStyle: 'tags',
-    improverGuide: ILLUSTRIOUS_IMPROVER_GUIDE,
-    promptGuide:
-      'Write lowercase Danbooru tags separated by commas, never sentences. Lead with the ' +
-      'subject count and framing (1girl, solo, upper body), then — for a named character — ' +
-      'its booru tag AND its series, with spaces and any brackets escaped (haruno sakura, ' +
-      'naruto \\(series\\)), ' +
-      'then appearance, clothing, pose, expression, background and lighting tags. An ' +
-      'artist tag written as "by <artist>" steers the style hard. The quality ladder is ' +
-      'already prepended for you, so do not repeat masterpiece or best quality.',
-    supersedes: 'NoobAI-XL-v1.1.safetensors',
-    needs: ['checkpoints/NoobAI-XL-v1.1.safetensors'],
-  },
-  'noobai-xl-vpred-v1': {
-    label: 'NoobAI XL v-pred 1.0',
-    // The v-prediction release, which comparisons rank above the epsilon one
-    // for colour, contrast and lighting. Card: Euler (other samplers "will not
-    // work properly"), CFG 4-5, 28-35 steps.
-    graph: sdxlAnimeGraph('NoobAI-XL-Vpred-v1.0.safetensors', 30, 4.5, 'euler', 'normal', true),
-    prefixes: {
-      positive: 'masterpiece, best quality, newest, absurdres, highres, safe, ',
-      negative: '',
-    },
-    negative: 'nsfw, worst quality, old, early, low quality, lowres, signature, ' +
-      'username, logo, bad hands, mutated hands, mammal, anthro, furry, ' +
-      'ambiguous form, feral, semi-anthro',
-    promptStyle: 'tags',
-    improverGuide: ILLUSTRIOUS_IMPROVER_GUIDE,
-    promptGuide:
-      'Write lowercase Danbooru tags separated by commas, never sentences. Lead with the ' +
-      'subject count and framing (1girl, solo, upper body), then — for a named character — ' +
-      'its booru tag AND its series, with spaces and any brackets escaped (haruno sakura, ' +
-      'naruto \\(series\\)), ' +
-      'then appearance, clothing, pose, expression, background and lighting tags. An ' +
-      'artist tag written as "by <artist>" steers the style hard. The quality ladder is ' +
-      'already prepended for you, so do not repeat masterpiece or best quality.',
-    supersedes: 'NoobAI-XL-Vpred-v1.0.safetensors',
-    needs: ['checkpoints/NoobAI-XL-Vpred-v1.0.safetensors'],
-  },
-  'netayume-lumina-v35': {
-    label: 'NetaYume Lumina v3.5',
-    graph: netaYumeGraph('NetaYumev35_pretrained_all_in_one.safetensors'),
-    prefixes: NETAYUME_PREFIXES,
-    // The template's own negative list, which sits after the instruction line.
-    negative: 'blurry, worst quality, low quality, jpeg artifacts, signature, ' +
-      'watermark, username, bad anatomy, extra limbs, poorly drawn hands, ' +
-      'fused fingers, bad proportions, cropped',
-    // Fine-tuned on Danbooru, so it answers to the same character tags NoobAI
-    // does — it drew the Byakugō seal on Sakura from the tag alone.
-    promptStyle: 'tags',
-    improverGuide: NETAYUME_IMPROVER_GUIDE,
-    promptGuide:
-      'Write lowercase Danbooru tags separated by commas. This is an anime fine-tune and ' +
-      'answers to character tags directly (hatsune miku, vocaloid), so name the character ' +
-      'and its series rather than describing the look. Lead with subject count and ' +
-      'framing, then appearance, clothing, pose and background. Stay with tags: its prompt ' +
-      'book says mixing in sentences is unstable. Do not write an instruction line — the ' +
-      'model is instruction-tuned and its system line is added for you.',
-    // The Neta Lumina prompt book's own recommendation, and the one style here
-    // whose booster genuinely belongs at the END: its `prefixes` slot is already
-    // taken by the instruction line the model was trained to be addressed with,
-    // and nothing may come between that and `<Prompt Start>`.
-    optimizations: 'best quality',
-    supersedes: 'NetaYumev35_pretrained_all_in_one.safetensors',
-    // One file, unlike Anima's three — it is an all-in-one checkpoint.
-    needs: ['checkpoints/NetaYumev35_pretrained_all_in_one.safetensors'],
   },
   'anima-aesthetic-v1-1': {
     label: 'Anima Aesthetic v1.1',
@@ -3414,37 +3378,6 @@ const BUILTIN_WORKFLOWS: Record<string, {
     needs: ['diffusion_models/anima-turbo-v1.1.safetensors', ...ANIMA_SHARED],
     inpaintPatch: ANIMA_INPAINT_PATCH,
   },
-  'anima-base-v1': {
-    label: 'Anima Base v1',
-    promptStyle: 'mixed',
-    improverGuide: ANIMA_PROMPT_GUIDE,
-    promptGuide: ANIMA_PROMPT_GUIDE,
-    prefixes: ANIMA_PREFIX,
-    optimizations: ANIMA_OPTIMIZATIONS,
-    negative: ANIMA_NEGATIVE,
-    // er_sde: the card's first-choice sampler for the base model — "neutral
-    // style, flat colors, sharp lines". Swapped for euler at queue time if the
-    // box lacks it (ensureSamplers).
-    graph: animaGraph('anima-base-v1.0.safetensors', 30, 4, 'er_sde'),
-    // Anima ships turbo TWO ways, and both are real:
-    //
-    //   • anima-turbo-v1.x, a separate distilled CHECKPOINT — the style above,
-    //     and the better option when you want turbo for a whole session;
-    //   • anima-turbo-lora-v0.2, a LoRA that speeds up THIS model without
-    //     swapping it — what the Advanced toggle splices in.
-    //
-    // The LoRA is not in the circlestone-labs/Anima repo (which publishes no
-    // loras/ folder), which is why it briefly looked like it didn't exist. It
-    // does; these hints are how it gets found. Matched rather than hardcoded —
-    // the filename is a thing on the GPU box's disk and its version moves, so
-    // listLoras() stays the only honest source for it.
-    // Surfaced in the picker when they're missing, because the alternative is a
-    // render that fails with a bare "value not in list" naming a file the user
-    // has never heard of.
-    needs: ['diffusion_models/anima-base-v1.0.safetensors', ...ANIMA_SHARED],
-    // The model the patch was actually trained on.
-    inpaintPatch: ANIMA_INPAINT_PATCH,
-  },
   /**
    * Anima 2.9B preview v1 — a COMMUNITY expansion of Anima, not a circlestone
    * release (Gazingstars123 on Hugging Face, 2026-08-28). Anima Base's 28
@@ -3465,22 +3398,6 @@ const BUILTIN_WORKFLOWS: Record<string, {
    * megapixel budget covers. Prompting is Anima's, so the guide, the creator
    * tags and the meta tag all carry over.
    */
-  'anima-2-9b-preview-v1': {
-    label: 'Anima 2.9B preview v1',
-    promptStyle: 'mixed',
-    improverGuide: ANIMA_PROMPT_GUIDE,
-    promptGuide: ANIMA_PROMPT_GUIDE,
-    prefixes: ANIMA_AES_PREFIX,
-    optimizations: ANIMA_OPTIMIZATIONS,
-    negative: ANIMA_AES_NEGATIVE,
-    graph: animaGraph('Anima-2.9B-preview-v1.safetensors', 30, 4, 'euler', 'sgm_uniform'),
-    // No turboHints and no inpaintPatch, deliberately: the turbo LoRA and the
-    // LLLite inpainting patch address Anima's 28 layers by index, and this
-    // model interleaved twelve new ones between them, so neither lines up with
-    // the layers it was trained against. Masked edits still work the generic
-    // way; Turbo stays hidden in Advanced.
-    needs: ['diffusion_models/Anima-2.9B-preview-v1.safetensors', ...ANIMA_SHARED],
-  },
 }
 
 export const WORKFLOW_PREFIX = 'wf:'
@@ -4441,12 +4358,82 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
     }
   }
 
+  hiresFix(graph, samplerId, latentId, job, sourceName)
+
   // Without a SaveImage the render happens and produces nothing we can fetch —
   // a PreviewImage lands in `temp` and is not listed in history outputs.
   if (!findNode(graph, ['SaveImage'])) {
     throw new Error('workflow has no SaveImage node — a preview-only graph produces nothing to download')
   }
   return graph
+}
+
+function latentOf(graph: ComfyGraph) {
+  const id = findNode(graph, ['EmptyLatentImage'])
+  return id ? graph[id]! : null
+}
+
+/** An SDXL checkpoint's trained budget: about one megapixel (1024x1024 and its buckets). */
+const SDXL_NATIVE_PIXELS = 1024 * 1024
+/** Above this an SDXL model is drawing a canvas it never saw, and starts tiling the subject. */
+const HIRES_ABOVE_PIXELS = 1.3 * SDXL_NATIVE_PIXELS
+const HIRES_SAMPLER = 'touchsphere_hires_sampler'
+
+/**
+ * Draw big SDXL pictures in two passes ("hires fix").
+ *
+ * An SDXL checkpoint (WAI-Illustrious, NoobAI) was trained at about one
+ * megapixel. Asked for more from scratch it does not draw one bigger body, it
+ * fills the extra canvas with more of the subject: a second torso, a face
+ * stacked on a face, a character split across two panels. That is the
+ * "divided in parts" picture, and no negative prompt fixes it, because the
+ * cause is the canvas, not the words. So above ~1.3 MP the composition is
+ * drawn at one megapixel in the requested shape, the latent is enlarged to the
+ * requested size, and a second sampler re-details it at denoise 0.5, which is
+ * the usual hires-fix recipe: the layout comes from a size the model knows,
+ * the detail from the size that was asked for.
+ *
+ * Run last in buildGraph, so the second sampler copies the model, positive and
+ * negative links AFTER the LoRA and pose-hold splices have rewired them.
+ * Only for a fresh render on a CheckpointLoaderSimple graph: a redraw starts
+ * from a real picture's layout already, and the other families (Anima, Qwen,
+ * FLUX, Z-Image) were trained at larger sizes and have their own size rules.
+ */
+function hiresFix(graph: ComfyGraph, samplerId: string, latentId: string | null, job: ImageJob, sourceName: string): void {
+  if (sourceName || !latentId) return
+  if (!findNode(graph, ['CheckpointLoaderSimple'])) return
+  const sampler = graph[samplerId]
+  if (!sampler || sampler.class_type !== 'KSampler' || graph[latentId]!.class_type !== 'EmptyLatentImage') return
+  if (JSON.stringify(sampler.inputs['latent_image']) !== JSON.stringify([latentId, 0])) return
+  const w = job.width, h = job.height
+  if (w * h <= HIRES_ABOVE_PIXELS) return
+  const scale = Math.sqrt(SDXL_NATIVE_PIXELS / (w * h))
+  const snap = (v: number) => Math.max(512, Math.round((v * scale) / 64) * 64)
+  graph[latentId]!.inputs['width'] = snap(w)
+  graph[latentId]!.inputs['height'] = snap(h)
+  const up = 'touchsphere_hires_upscale'
+  graph[up] = {
+    class_type: 'LatentUpscale',
+    inputs: { samples: [samplerId, 0], upscale_method: 'nearest-exact', width: w, height: h, crop: 'disabled' },
+  }
+  const steps = typeof sampler.inputs['steps'] === 'number' ? sampler.inputs['steps'] as number : 28
+  graph[HIRES_SAMPLER] = {
+    class_type: 'KSampler',
+    inputs: {
+      ...sampler.inputs,
+      // A new seed for the second pass would fight the first one's details.
+      steps: Math.max(12, Math.round(steps / 2)),
+      denoise: 0.5,
+      latent_image: [up, 0],
+    },
+  }
+  // Everything that read the first sampler's latent (the decode) now reads the second's.
+  for (const [id, node] of Object.entries(graph)) {
+    if (id === up || id === HIRES_SAMPLER) continue
+    for (const [k, v] of Object.entries(node.inputs)) {
+      if (Array.isArray(v) && v[0] === samplerId && v[1] === 0) node.inputs[k] = [HIRES_SAMPLER, 0]
+    }
+  }
 }
 
 /**
@@ -4500,6 +4487,9 @@ function renderedWith(job: ImageJob, graph: ComfyGraph, changed?: number | null)
     ...(job.improveState ? { improver: { state: job.improveState, ...(job.improveWhy ? { why: job.improveWhy } : {}) } } : {}),
     // The whole conversation, not just its result: see ImageSettings.
     ...(job.conversation.length ? { conversation: job.conversation } : {}),
+    // Drawn in two passes: the size the composition was laid out at.
+    ...(graph[HIRES_SAMPLER] && latentOf(graph)
+      ? { hiresFrom: `${latentOf(graph)!.inputs['width']}×${latentOf(graph)!.inputs['height']}` } : {}),
     // Recorded only when there was one, so its presence is the record — the
     // same rule as promptOriginal. Without it the stored prompt and the picture
     // disagree for no visible reason.

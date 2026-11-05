@@ -70,7 +70,7 @@ usage() {
 Options:
   --data DIR             where the models and caches go (default: the largest non-system disk)
   --models SET[,SET…]    picture models to download: anime (default), edit,
-                         flux (FLUX 3 Klein; set HF_TOKEN if gated), qwen21, zimage, all, none
+                         flux (FLUX 3 Klein; set HF_TOKEN if gated), qwen21, fusal, all, none
   --llm MODEL            Ollama chat model (default: OLLAMA_MODEL from .env, else qwen3:8b)
   --vision MODEL         Ollama vision model for the picture tools (default: OLLAMA_VISION_MODEL, else gemma4)
   --whisper-model ID     Whisper model to warm (default: WHISPER_MODEL from .env, else Systran/faster-whisper-small)
@@ -314,7 +314,6 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
   # ones the dashboard documents for each style (.env.example, server/src/image.ts):
   # ungated Hugging Face repos, since a kiosk cannot log in to accept a licence.
   ANIME_FILES=(
-    "diffusion_models/anima-base-v1.0.safetensors|https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/diffusion_models/anima-base-v1.0.safetensors|3.9"
     "diffusion_models/anima-aesthetic-v1.1.safetensors|https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/diffusion_models/anima-aesthetic-v1.1.safetensors|3.9"
     "diffusion_models/anima-turbo-v1.1.safetensors|https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/diffusion_models/anima-turbo-v1.1.safetensors|3.9"
     "text_encoders/qwen_3_06b_base.safetensors|https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/text_encoders/qwen_3_06b_base.safetensors|1.2"
@@ -322,8 +321,6 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
     "model_patches/anima-lllite-inpainting-v2.safetensors|https://huggingface.co/Comfy-Org/Anima-LLLite/resolve/main/model_patches/anima-lllite-inpainting-v2.safetensors|0.1"
     # WAI-Illustrious is on Civitai, not Hugging Face; this version downloads without a token.
     "checkpoints/waiIllustriousSDXL_v160.safetensors|https://civitai.com/api/download/models/2514310?fileId=2402203|6.8"
-    "checkpoints/NoobAI-XL-v1.1.safetensors|https://huggingface.co/Laxhar/noobai-XL-1.1/resolve/main/NoobAI-XL-v1.1.safetensors|6.9"
-    "checkpoints/NoobAI-XL-Vpred-v1.0.safetensors|https://huggingface.co/Laxhar/noobai-XL-Vpred-1.0/resolve/main/NoobAI-XL-Vpred-v1.0.safetensors|6.9"
     "controlnet/controlnet-union-sdxl-1.0-promax.safetensors|https://huggingface.co/xinsir/controlnet-union-sdxl-1.0/resolve/main/diffusion_pytorch_model_promax.safetensors|2.5"
     "upscale_models/4x-UltraSharpV2.safetensors|https://huggingface.co/Kim2091/UltraSharpV2/resolve/main/4x-UltraSharpV2.safetensors|0.1"
   )
@@ -347,10 +344,9 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
     "text_encoders/qwen3vl_8b_int8_convrot.safetensors|https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/text_encoders/qwen3vl_8b_int8_convrot.safetensors|8.7"
     "vae/qwen_image_2.1_vae_bf16.safetensors|https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors|0.65"
   )
-  ZIMAGE_FILES=(
-    "diffusion_models/z_image_turbo_bf16.safetensors|https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/diffusion_models/z_image_turbo_bf16.safetensors|11.5"
-    "text_encoders/qwen_3_4b.safetensors|https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors|7.5"
-    "vae/ae.safetensors|https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors|0.35"
+  # FUSAL: an anime style LoRA for Qwen-Image 2.1 Base, so the qwen21 files come with it.
+  FUSAL_FILES=(
+    "loras/fusal-qwen-image-2.1-style-hires-exact-r56.safetensors|https://huggingface.co/MicksHF/Qwen-Image-2.1-Anime-Fusal/resolve/main/loras/fusal-qwen-image-2.1-style-hires-exact-r56.safetensors|0.3"
   )
 
   WANT=()
@@ -360,10 +356,10 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
       edit)  WANT+=("${EDIT_FILES[@]}") ;;
       flux)  WANT+=("${FLUX_FILES[@]}") ;;
       qwen21) WANT+=("${QWEN21_FILES[@]}") ;;
-      zimage) WANT+=("${ZIMAGE_FILES[@]}") ;;
-      all)   WANT+=("${ANIME_FILES[@]}" "${EDIT_FILES[@]}" "${FLUX_FILES[@]}" "${QWEN21_FILES[@]}" "${ZIMAGE_FILES[@]}") ;;
+      fusal)  WANT+=("${QWEN21_FILES[@]}" "${FUSAL_FILES[@]}") ;;
+      all)   WANT+=("${ANIME_FILES[@]}" "${EDIT_FILES[@]}" "${FLUX_FILES[@]}" "${QWEN21_FILES[@]}" "${FUSAL_FILES[@]}") ;;
       none)  ;;
-      *) die "unknown model set '$set' (anime, edit, flux, qwen21, zimage, all, none)" ;;
+      *) die "unknown model set '$set' (anime, edit, flux, qwen21, fusal, all, none)" ;;
     esac
   done
 

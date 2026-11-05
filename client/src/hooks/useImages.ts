@@ -59,6 +59,8 @@ export interface ImageSettings {
   improverNotes?:  string
   /** Every model conversation behind the prompt, verbatim. Only /lineage sends it; the gallery list leaves it out. */
   conversation?:   AiExchange[]
+  /** Drawn in two passes: the composition at this size first, then enlarged and re-detailed. */
+  hiresFrom?:      string
   /** Booster text that was appended to the prompt, when there was any. */
   optimizations?:  string
   /** What the prompt improver did, when it was on for this picture. Absent when it was off. */
