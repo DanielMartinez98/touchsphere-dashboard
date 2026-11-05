@@ -221,9 +221,16 @@ export const IMAGE_TOOLS = [
             type: 'string',
             description: 'Words from what the picture was of, to pick it out. Omit for the most recent picture.',
           },
+          quality: {
+            type: 'string',
+            enum: ['quick', 'best'],
+            description:
+              'quick (default): about 2 minutes per 5 seconds, good for small motions like blinking, smiling, hair in the wind. ' +
+              'best: about 10 minutes per 5 seconds, needed for big actions like jumping, running, fighting or dancing.',
+          },
           seconds: {
             type: 'number',
-            description: 'How long the clip is, 1 to 20 seconds. Default 3. Past 5 seconds it is drawn as chained 5-second shots, about 1.5 to 2 minutes of GPU per shot. For a long clip, repeat the character\'s key looks (hair, eyes) in the prompt, since each shot only sees the last frame of the one before.',
+            description: 'How long the clip is, 1 to 20 seconds. Default 3. Past 5 seconds it is drawn as chained 5-second shots, each shot costing the time the quality says. For a long clip, repeat the character\'s key looks (hair, eyes) in the prompt, since each shot only sees the last frame of the one before.',
           },
         },
         required: ['prompt'],
@@ -583,20 +590,27 @@ function showLast(about: string): BrowseToolResult {
 }
 
 /** The installed animating style, or '' when none is on the GPU box. */
-export async function animatorStyle(): Promise<string> {
+/**
+ * The installed animator to use. "best" prefers plain Wan 2.2 (real motion,
+ * ~10 min per 5 s), "quick" prefers AnimeGen (~2 min, small motions); either
+ * falls back to whichever is installed.
+ */
+export async function animatorStyle(quality: 'quick' | 'best' = 'quick'): Promise<string> {
+  const installed: string[] = []
   for (const w of listWorkflowStyles()) {
     if (!styleAnimates(w.id)) continue
     const missing = await missingFiles(styleNeeds(w.id)).catch(() => styleNeeds(w.id))
-    if (missing.length === 0) return w.id
+    if (missing.length === 0) installed.push(w.id)
   }
-  return ''
+  const want = quality === 'best' ? 'wf:wan22-i2v' : 'wf:animegen-i2v'
+  return installed.includes(want) ? want : (installed[0] ?? '')
 }
 
-async function animate(prompt: string, about: string, seconds: number | undefined): Promise<BrowseToolResult> {
+async function animate(prompt: string, about: string, seconds: number | undefined, quality: string): Promise<BrowseToolResult> {
   if (!imagesEnabled()) {
     return noDisplay('Image generation is not configured on this server, so nothing can be animated. Say so in one sentence.')
   }
-  const style = await animatorStyle()
+  const style = await animatorStyle(quality === 'best' ? 'best' : 'quick')
   if (!style) {
     return noDisplay('No animating model is installed on the GPU box yet. Tell the user in one sentence.')
   }
@@ -636,7 +650,7 @@ export async function runImageTool(
     case 'generate_image':  return generate(str('prompt'), str('orientation'))
     case 'redraw_image':    return redraw(str('prompt'), str('about'), str('strength'), str('region'))
     case 'plan_image_edit': return planEdit(str('request'), str('about'))
-    case 'animate_image':   return animate(str('prompt'), str('about'), typeof args['seconds'] === 'number' ? args['seconds'] as number : undefined)
+    case 'animate_image':   return animate(str('prompt'), str('about'), typeof args['seconds'] === 'number' ? args['seconds'] as number : undefined, str('quality'))
     case 'find_image':      return findImageOnWeb(str('query'))
     case 'show_last_image': return showLast(str('about'))
     default: return null

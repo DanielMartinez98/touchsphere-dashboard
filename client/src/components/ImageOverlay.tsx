@@ -37,7 +37,7 @@ import { closeImage, openImage, useImageJob, useImageTarget, type ImageJobState 
 import { usePlan, type EditPlan } from '../hooks/useEditPlan'
 import ImageLineage from './ImageLineage'
 import { redrawImage, reuseImagePrompt } from '../hooks/useImagePrompt'
-import { animateImage, animatorStyle, enhanceImage, upscalerStyle } from '../hooks/useImages'
+import { animateImage, animatorStyles, enhanceImage, upscalerStyle } from '../hooks/useImages'
 import { TouchInput } from './TouchInput'
 import { onServerEvent } from '../hooks/useServerEvents'
 import type { ImproverOutcome, StoredImage } from '../hooks/useImages'
@@ -446,8 +446,13 @@ function PromptActions({
 
   // "Animate": offered only when the animator's files are on the GPU box. The
   // motion is a few words, so it opens a small sheet rather than the Draw panel.
-  const [animator, setAnimator] = useState<string | null>(null)
-  useEffect(() => { let on = true; void animatorStyle().then(s => { if (on) setAnimator(s) }); return () => { on = false } }, [])
+  // Quick (AnimeGen, small motions) and Best (plain Wan 2.2, real action)
+  // when both are installed; the quick one is first and the default.
+  const [animators, setAnimators] = useState<string[]>([])
+  const [picked, setPicked] = useState<string | null>(null)
+  useEffect(() => { let on = true; void animatorStyles().then(s => { if (on) setAnimators(s) }); return () => { on = false } }, [])
+  const animator = picked && animators.includes(picked) ? picked : (animators[0] ?? null)
+  const best = animator === 'wf:wan22-i2v'
   const [animSheet, setAnimSheet] = useState(false)
   const [motion, setMotion] = useState('')
   const [seconds, setSeconds] = useState(3)
@@ -480,6 +485,21 @@ function PromptActions({
             ariaLabel="The motion"
             className="w-full h-11 px-3 rounded-xl bg-black/30 border border-hairline text-white text-[15px]"
           />
+          {animators.length > 1 && (
+            <div className="flex flex-wrap items-center gap-2">
+              {animators.map(id => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setPicked(id)}
+                  className={`h-10 px-3 rounded-full border text-[13px] font-semibold active:scale-95 transition ${
+                    animator === id ? 'bg-pink-500/30 border-pink-400/50 text-white' : 'bg-white/10 border-hairline text-white/70'}`}
+                >
+                  {id === 'wf:wan22-i2v' ? 'Best motion' : 'Quick'}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-2">
             {[3, 5, 10, 15, 20].map(n => (
               <button
@@ -510,7 +530,7 @@ function PromptActions({
             </button>
           </div>
           <div className="text-[12px] text-white/45">
-            About 2 minutes per 5 seconds on the GPU box. Silent, 480p, 16 frames a second; longer clips are 5-second shots chained. Big movements (jumping, running) need the whole body in the picture: a close-up has no legs to move.
+            {best ? 'About 10 minutes per 5 seconds; the one for jumping, running and fighting.' : 'About 2 minutes per 5 seconds; best for small motions (blinking, smiling, hair in the wind).'} Silent, 480p, 16 frames a second; longer clips are 5-second shots chained. Big movements (jumping, running) need the whole body in the picture: a close-up has no legs to move.
           </div>
           {animError && <div className="text-[13px] text-amber-300">{animError}</div>}
         </div>

@@ -2378,7 +2378,8 @@ function upscaleGraph(modelName: string): ComfyGraph {
 /** Wan 2.2 is trained at 16 frames a second; a clip is `seconds × 16 + 1` frames. */
 const VIDEO_FPS = 16
 const DEFAULT_SECONDS = 3
-const VIDEO_TIMEOUT_MS = Number(process.env['COMFYUI_VIDEO_TIMEOUT_MS'] ?? 40 * 60_000)
+// Two hours: a 20 s chain on plain Wan 2.2 (about 10 minutes per 5 s shot at 480p) must fit.
+const VIDEO_TIMEOUT_MS = Number(process.env['COMFYUI_VIDEO_TIMEOUT_MS'] ?? 120 * 60_000)
 
 /**
  * Wan 2.2 holds a shot together for about 81 frames (5 s), so a longer clip is
@@ -2543,6 +2544,56 @@ function animeGenGraph(): ComfyGraph {
       sampler_name: 'euler', scheduler: 'simple',
       positive: ['12', 0], negative: ['12', 1], latent_image: ['13', 0],
       start_at_step: 2, end_at_step: 10000, return_with_leftover_noise: 'disable',
+    } },
+    '15': { class_type: 'VAEDecode', inputs: { samples: ['14', 0], vae: ['9', 0] } },
+    '16': { class_type: 'CreateVideo', inputs: { images: ['15', 0], fps: VIDEO_FPS } },
+    '17': { class_type: 'SaveVideo', inputs: { video: ['16', 0], filename_prefix: 'touchsphere/clip', format: 'mp4', codec: 'h264' } },
+    '18': { class_type: 'ImageFromBatch', inputs: { image: ['15', 0], batch_index: 0, length: 1 } },
+    '19': { class_type: 'SaveImage', inputs: { images: ['18', 0], filename_prefix: 'touchsphere/clip-poster' } },
+  }
+}
+
+/**
+ * Plain Wan 2.2 I2V A14B, the base model AnimeGen was tuned from, at full
+ * quality: ComfyUI's own `video_wan2_2_14B_i2v` template with no speed-up LoRA,
+ * 20 steps at cfg 3.5 split 10/10 between the experts, shift 5, euler/simple,
+ * and the template's own negative. Measured on the GPU box against AnimeGen
+ * and LTX-2.5 on the same picture and jump prompt: the only one that moved
+ * from the first frame and jumped, crouched and landed with the character
+ * staying on-model. About ten times slower than AnimeGen, which is why both
+ * are offered (Quick / Best).
+ */
+const WAN22_NEGATIVE =
+  '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，' +
+  '丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，' +
+  '杂乱的背景，三条腿，背景人很多，倒着走'
+
+function wan22I2vGraph(): ComfyGraph {
+  return {
+    '1':  { class_type: 'LoadImage', inputs: { image: '' } },
+    '2':  { class_type: 'UNETLoader', inputs: { unet_name: 'wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors', weight_dtype: 'default' } },
+    '3':  { class_type: 'UNETLoader', inputs: { unet_name: 'wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors', weight_dtype: 'default' } },
+    '6':  { class_type: 'ModelSamplingSD3', inputs: { model: ['2', 0], shift: 5 } },
+    '7':  { class_type: 'ModelSamplingSD3', inputs: { model: ['3', 0], shift: 5 } },
+    '8':  { class_type: 'CLIPLoader', inputs: { clip_name: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors', type: 'wan', device: 'default' } },
+    '9':  { class_type: 'VAELoader', inputs: { vae_name: 'wan_2.1_vae.safetensors' } },
+    '10': { class_type: 'CLIPTextEncode', inputs: { clip: ['8', 0], text: '' } },
+    '11': { class_type: 'CLIPTextEncode', inputs: { clip: ['8', 0], text: '' } },
+    '12': { class_type: 'WanImageToVideo', inputs: {
+      positive: ['10', 0], negative: ['11', 0], vae: ['9', 0], start_image: ['1', 0],
+      width: 832, height: 480, length: DEFAULT_SECONDS * VIDEO_FPS + 1, batch_size: 1,
+    } },
+    '13': { class_type: 'KSamplerAdvanced', inputs: {
+      model: ['6', 0], add_noise: 'enable', noise_seed: 0, steps: 20, cfg: 3.5,
+      sampler_name: 'euler', scheduler: 'simple',
+      positive: ['12', 0], negative: ['12', 1], latent_image: ['12', 2],
+      start_at_step: 0, end_at_step: 10, return_with_leftover_noise: 'enable',
+    } },
+    '14': { class_type: 'KSamplerAdvanced', inputs: {
+      model: ['7', 0], add_noise: 'disable', noise_seed: 0, steps: 20, cfg: 3.5,
+      sampler_name: 'euler', scheduler: 'simple',
+      positive: ['12', 0], negative: ['12', 1], latent_image: ['13', 0],
+      start_at_step: 10, end_at_step: 10000, return_with_leftover_noise: 'disable',
     } },
     '15': { class_type: 'VAEDecode', inputs: { samples: ['14', 0], vae: ['9', 0] } },
     '16': { class_type: 'CreateVideo', inputs: { images: ['15', 0], fps: VIDEO_FPS } },
@@ -3594,8 +3645,29 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'vae/flux2-vae_small.safetensors',
     ],
   },
+  'wan22-i2v': {
+    label: 'Wan 2.2 (best motion)',
+    graph: wan22I2vGraph(),
+    animates: true,
+    ignoresQuality: true,
+    promptStyle: 'prose',
+    promptGuide:
+      'This animates a picture: the prompt describes the MOTION, in English, in one or two short ' +
+      'sentences ("she crouches and jumps high, then lands"). The picture already says what everything ' +
+      'looks like, so do not describe it again.',
+    prefixes: { positive: 'Japanese anime style,', negative: '' },
+    negative: WAN22_NEGATIVE,
+    // Comfy-Org/Wan_2.2_ComfyUI_Repackaged (experts, VAE) and
+    // Comfy-Org/Wan_2.1_ComfyUI_repackaged (encoder). Apache 2.0.
+    needs: [
+      'diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors',
+      'diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors',
+      'text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors',
+      'vae/wan_2.1_vae.safetensors',
+    ],
+  },
   'animegen-i2v': {
-    label: 'AnimeGen (animate)',
+    label: 'AnimeGen (quick)',
     graph: animeGenGraph(),
     animates: true,
     // 4 distilled steps at cfg 1: nothing for the quality row to move.

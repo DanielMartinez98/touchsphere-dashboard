@@ -364,6 +364,9 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
     "vae/wan_2.1_vae.safetensors|https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors|0.25"
     "loras/wan2.2_i2v_lightx2v_motion_fix_high.safetensors|https://huggingface.co/rzgar/Wan2.2_I2V_LightX2V_Slow-Mo_Fix/resolve/main/wan2.2_i2v_lightx2v_motion_fix_high.safetensors|1.2"
     "loras/wan2.2_i2v_lightx2v_motion_fix_low.safetensors|https://huggingface.co/rzgar/Wan2.2_I2V_LightX2V_Slow-Mo_Fix/resolve/main/wan2.2_i2v_lightx2v_motion_fix_low.safetensors|1.2"
+    # Wan 2.2 itself, the "Best motion" animator (no LoRA, 20 steps)
+    "diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors|https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors|14.3"
+    "diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors|https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors|14.3"
   )
 
   WANT=()

@@ -278,16 +278,18 @@ export async function enhanceImage(sourceId: string, prompt: string, style: stri
 }
 
 /**
- * Is there an installed animator to offer? Asked once, like the upscaler.
+ * The installed animators, quick one first. Asked once, like the upscaler,
+ * and asked again while the answer is empty.
  */
-let animatorPromise: Promise<string | null> | null = null
-export function animatorStyle(): Promise<string | null> {
+let animatorPromise: Promise<string[]> | null = null
+export function animatorStyles(): Promise<string[]> {
   if (!animatorPromise) {
     animatorPromise = fetch('/api/image/models')
       .then(r => (r.ok ? r.json() as Promise<StylesResponse> : null))
-      .then(j => (j?.styles ?? []).find(st => st.animates && !(st.missing?.length))?.id ?? null)
-      .catch(() => null)
-      .then(id => { if (!id) animatorPromise = null; return id })
+      .then(j => (j?.styles ?? []).filter(st => st.animates && !(st.missing?.length)).map(st => st.id))
+      .then(ids => ids.sort((a, b) => Number(a === 'wf:wan22-i2v') - Number(b === 'wf:wan22-i2v')))
+      .catch(() => [] as string[])
+      .then(ids => { if (!ids.length) animatorPromise = null; return ids })
   }
   return animatorPromise
 }
