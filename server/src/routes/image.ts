@@ -66,7 +66,7 @@ import {
   styleNegativePrefixFor,
   supersededCheckpoints,
   WORKFLOW_PREFIX,
-  clearImages, styleUpscales,
+  clearImages, styleUpscales, styleAnimates,
 } from '../image'
 import { cancelPlan, createPlan, getPlan, runPlan } from '../image-plan'
 import { findAndFetch } from '../image-web'
@@ -131,13 +131,20 @@ router.get('/file/:file', (req: Request, res: Response) => {
   const file = String(req.params['file'] ?? '')
   // Filenames are always the job id (16 random bytes) + .png. Reject anything
   // else rather than let a crafted name walk out of the images directory.
-  if (!/^[a-f0-9]{32}\.png$/.test(file)) {
+  // A clip made by "Animate" sits beside its poster as <id>.mp4 (or .webm).
+  if (!/^[a-f0-9]{32}\.(png|mp4|webm)$/.test(file)) {
     res.status(400).json({ error: 'invalid image name' })
     return
   }
   const full = imagePath(file)
   if (!full) {
     res.status(404).json({ error: 'image not found' })
+    return
+  }
+  if (!file.endsWith('.png')) {
+    // sendFile answers Range requests, which a <video> element makes and iOS
+    // insists on: a clip served as one plain stream will not play on a phone.
+    res.sendFile(full, { maxAge: 31536000_000, immutable: true, headers: { 'Content-Type': file.endsWith('.mp4') ? 'video/mp4' : 'video/webm' } })
     return
   }
   res.setHeader('Content-Type', 'image/png')
@@ -190,6 +197,9 @@ router.get('/models', async (_req: Request, res: Response) => {
         // An upscaler: the panel keeps it out of the Style row (it cannot draw)
         // and the viewer offers it as a button on a finished picture.
         ...(styleUpscales(w.id) ? { upscales: true } : {}),
+        // Animates a picture into a clip: also not a way to draw, offered as
+        // "Animate" on a finished picture in the viewer.
+        ...(styleAnimates(w.id) ? { animates: true } : {}),
       })),
     ]
     // What the GPU box can do to PART of a picture. Asked of ComfyUI itself, so
@@ -480,7 +490,7 @@ router.post('/generate', (req: Request, res: Response) => {
   // Same reasoning as the queue-full check above: startImage() refuses this
   // too, but the panel wants a status it can print under the button.
   const style = typeof body?.['model'] === 'string' && body['model'] ? body['model'] : selectedModel()
-  if ((styleEdits(style) || styleUpscales(style)) && !source) {
+  if ((styleEdits(style) || styleUpscales(style) || styleAnimates(style)) && !source) {
     res.status(400).json({
       error: 'This style changes an existing picture rather than drawing one — tap "Change this" ' +
              'on a picture first, or pick a different style.',
@@ -502,6 +512,8 @@ router.post('/generate', (req: Request, res: Response) => {
     // for. The shape check is here because an id is a filename stem.
     ...(source ? { source } : {}),
     ...(num('denoise') !== undefined ? { denoise: num('denoise')! } : {}),
+    // A clip's length, for an animating style. Clamped in startImage().
+    ...(num('seconds') !== undefined ? { seconds: num('seconds')! } : {}),
     // Change only part of it: a painted mask's id, or the part in words.
     ...(typeof body?.['mask'] === 'string' && /^[a-f0-9]{32}$/.test(body['mask']) ? { mask: body['mask'] } : {}),
     ...(typeof body?.['region'] === 'string' && body['region'].trim() ? { region: body['region'].trim() } : {}),
@@ -909,6 +921,7 @@ router.get('/', (_req: Request, res: Response) => {
       // every screen polls and the phone caches leaves them out.
       ...(e.settings?.conversation ? { settings: { ...e.settings, conversation: undefined } } : {}),
       url: `/api/image/file/${e.file}`,
+      ...(e.video ? { videoUrl: `/api/image/file/${e.video}` } : {}),
       modelLabel: styleLabel(e.settings?.style ?? e.model ?? ''),
     })),
   })

@@ -370,7 +370,7 @@ export default function ImageExpanded({
       return
     }
     if (editStyle) {
-      const back = lastDrawStyle.current || styles.find(st => !st.edits && !st.upscales && styleUsable(st))?.id
+      const back = lastDrawStyle.current || styles.find(st => !st.edits && !st.upscales && !st.animates && styleUsable(st))?.id
       if (back) onModel(back)
     }
     setPickedMode(m)
@@ -1118,7 +1118,7 @@ export default function ImageExpanded({
           <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
             {/* An upscaler is not a way to draw, so it is not a style here; it
                 lives on the finished picture as "Sharpen ×4". */}
-            {styles.filter(st => !st.upscales).map(st => {
+            {styles.filter(st => !st.upscales && !st.animates).map(st => {
               // A style whose files aren't on the GPU box can't draw. Shown but
               // not selectable, because hiding it would leave someone who read
               // about "Anima Turbo" wondering where it went — and the row is
@@ -1158,7 +1158,7 @@ export default function ImageExpanded({
               <span className="text-[11px] uppercase tracking-widest text-white/35 font-semibold">
                 Not installed on the image server
               </span>
-              {styles.filter(st => !styleUsable(st) && !st.upscales).map(st => (
+              {styles.filter(st => !styleUsable(st) && !st.upscales && !st.animates).map(st => (
                 <span key={st.id} className="text-[11px] text-white/40 leading-snug">
                   <span className="text-white/60">{st.label}</span>
                   {' needs '}
@@ -1405,6 +1405,11 @@ export default function ImageExpanded({
                              active:scale-95 transition-transform"
                 >
                   <img src={img.url} alt={img.prompt} className="w-full h-full object-cover" />
+                  {/* A clip: its poster here, with a play mark so it reads as one. */}
+                  {img.video && (
+                    <span className="absolute left-1.5 bottom-1.5 w-7 h-7 rounded-full bg-black/60 text-white
+                                     flex items-center justify-center text-[12px] pointer-events-none">▶</span>
+                  )}
                 </button>
 
                 {confirming === img.id ? (

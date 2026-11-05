@@ -14,7 +14,7 @@
 
 import {
   imagesEnabled, listImages, pendingJobs, selectedModel, startImage, styleEdits, stylePromptStyle,
-  segmentationCached,
+  segmentationCached, listWorkflowStyles, styleAnimates, styleNeeds, missingFiles,
   type ImageJob, type StoredImage,
 } from '../image'
 import type { BrowseToolResult, DisplayPayload } from './browse'
@@ -192,6 +192,38 @@ export const IMAGE_TOOLS = [
               'details (a colour, the lighting); "balanced" is the default and repaints the ' +
               'subject while keeping the layout; "strong" keeps only the rough idea. Prefer ' +
               'light for a small fix and strong when they ask for something quite different.',
+          },
+        },
+        required: ['prompt'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'animate_image',
+      description:
+        'Turn a picture that is already in the gallery into a short silent anime clip — the picture ' +
+        'is the first frame and the clip moves on from it. Use when the user asks to animate, bring to ' +
+        'life, or make a video of a picture: "animate that", "make her wave", "make it move". It takes ' +
+        'a few minutes and appears on screen by itself, so say one short sentence and do NOT claim it is done.',
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: {
+            type: 'string',
+            description:
+              'The MOTION only, in English, one or two short sentences: "she blinks and smiles", ' +
+              '"his cape blows in the wind as the camera slowly pushes in". Do not describe how ' +
+              'things look — the picture already says that.',
+          },
+          about: {
+            type: 'string',
+            description: 'Words from what the picture was of, to pick it out. Omit for the most recent picture.',
+          },
+          seconds: {
+            type: 'number',
+            description: 'How long the clip is, 1 to 5 seconds. Default 3. Longer takes longer to make.',
           },
         },
         required: ['prompt'],
@@ -550,6 +582,51 @@ function showLast(about: string): BrowseToolResult {
   }
 }
 
+/** The installed animating style, or '' when none is on the GPU box. */
+export async function animatorStyle(): Promise<string> {
+  for (const w of listWorkflowStyles()) {
+    if (!styleAnimates(w.id)) continue
+    const missing = await missingFiles(styleNeeds(w.id)).catch(() => styleNeeds(w.id))
+    if (missing.length === 0) return w.id
+  }
+  return ''
+}
+
+async function animate(prompt: string, about: string, seconds: number | undefined): Promise<BrowseToolResult> {
+  if (!imagesEnabled()) {
+    return noDisplay('Image generation is not configured on this server, so nothing can be animated. Say so in one sentence.')
+  }
+  const style = await animatorStyle()
+  if (!style) {
+    return noDisplay('No animating model is installed on the GPU box yet. Tell the user in one sentence.')
+  }
+  if (listImages().length === 0) {
+    return noDisplay('There are no pictures to animate yet. Offer to draw one first.')
+  }
+  const source = findImage(about)
+  if (!source) return noMatch(about)
+  const ahead = pendingJobs().length
+  const job = startImage({
+    prompt: prompt.trim() || 'gentle natural motion',
+    source: source.id,
+    model:  style,
+    ...(typeof seconds === 'number' ? { seconds } : {}),
+    improve: false,
+  })
+  if (job.status === 'failed') {
+    return noDisplay(`Could not start the clip: ${job.error ?? 'the queue is full'}. Tell the user in one sentence.`)
+  }
+  console.log(`[chat:tool] animate_image → ${job.id} from ${source.id} (${job.seconds}s)`)
+  return {
+    text:
+      `Started animating the picture of "${source.prompt.slice(0, 60)}" (${job.seconds} seconds: "${job.prompt}"). ` +
+      `A frame is on the user's screen and the clip will play in it by itself, in a few minutes. ` +
+      (ahead > 0 ? `It is queued behind ${ahead} other job${ahead === 1 ? '' : 's'}. ` : '') +
+      `Say ONE short sentence that it is coming; do not say it is ready.`,
+    display: { kind: 'image', jobId: job.id, prompt: job.prompt },
+  }
+}
+
 export async function runImageTool(
   name: string,
   args: Record<string, unknown>,
@@ -559,6 +636,7 @@ export async function runImageTool(
     case 'generate_image':  return generate(str('prompt'), str('orientation'))
     case 'redraw_image':    return redraw(str('prompt'), str('about'), str('strength'), str('region'))
     case 'plan_image_edit': return planEdit(str('request'), str('about'))
+    case 'animate_image':   return animate(str('prompt'), str('about'), typeof args['seconds'] === 'number' ? args['seconds'] as number : undefined)
     case 'find_image':      return findImageOnWeb(str('query'))
     case 'show_last_image': return showLast(str('about'))
     default: return null

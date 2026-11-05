@@ -349,6 +349,23 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
     "loras/fusal-qwen-image-2.1-v2-exact-r80.safetensors|https://huggingface.co/MicksHF/Qwen-Image-2.1-Anime-Fusal/resolve/main/loras/fusal-qwen-image-2.1-v2-exact-r80.safetensors|0.42"
   )
 
+  # MOSS-Image SFT (OpenMOSS, Apache 2.0) from Comfy-Org's repackage.
+  MOSS_FILES=(
+    "diffusion_models/moss_image_sft_int8_convrot.safetensors|https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/diffusion_models/moss_image_sft_int8_convrot.safetensors|5.4"
+    "text_encoders/qwen3.5_9b_w4a8_gptq.safetensors|https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/text_encoders/qwen3.5_9b_w4a8_gptq.safetensors|7.3"
+    "vae/flux2-vae_small.safetensors|https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/vae/flux2-vae_small.safetensors|0.25"
+  )
+  # AnimeGen (animate a picture): Wan 2.2's shared files. The two experts
+  # themselves are AIdeaLab's bf16 files cast to fp8 by
+  # scripts/comfy/convert-animegen-fp8.py, which this installer does not run
+  # (57 GB in, 29 GB out): see that script's header.
+  WAN_FILES=(
+    "text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors|https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors|6.7"
+    "vae/wan_2.1_vae.safetensors|https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors|0.25"
+    "loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors|https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors|1.2"
+    "loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors|https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors|1.2"
+  )
+
   WANT=()
   for set in ${MODELS//,/ }; do
     case "$set" in
@@ -357,9 +374,11 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
       flux)  WANT+=("${FLUX_FILES[@]}") ;;
       qwen21) WANT+=("${QWEN21_FILES[@]}") ;;
       fusal)  WANT+=("${QWEN21_FILES[@]}" "${FUSAL_FILES[@]}") ;;
-      all)   WANT+=("${ANIME_FILES[@]}" "${EDIT_FILES[@]}" "${FLUX_FILES[@]}" "${QWEN21_FILES[@]}" "${FUSAL_FILES[@]}") ;;
+      moss)   WANT+=("${MOSS_FILES[@]}") ;;
+      wan)    WANT+=("${WAN_FILES[@]}") ;;
+      all)   WANT+=("${ANIME_FILES[@]}" "${EDIT_FILES[@]}" "${FLUX_FILES[@]}" "${QWEN21_FILES[@]}" "${FUSAL_FILES[@]}" "${MOSS_FILES[@]}" "${WAN_FILES[@]}") ;;
       none)  ;;
-      *) die "unknown model set '$set' (anime, edit, flux, qwen21, fusal, all, none)" ;;
+      *) die "unknown model set '$set' (anime, edit, flux, qwen21, fusal, moss, wan, all, none)" ;;
     esac
   done
 

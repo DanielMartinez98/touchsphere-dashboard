@@ -32,12 +32,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  X, AlertTriangle, RefreshCw, ChevronLeft, ChevronRight, Copy, Check, Wand2, Brush, Info, Lasso, GitBranch, Sparkles} from 'lucide-react'
+  X, AlertTriangle, RefreshCw, ChevronLeft, ChevronRight, Copy, Check, Wand2, Brush, Info, Lasso, GitBranch, Sparkles, Clapperboard} from 'lucide-react'
 import { closeImage, openImage, useImageJob, useImageTarget, type ImageJobState } from '../hooks/useImageOverlay'
 import { usePlan, type EditPlan } from '../hooks/useEditPlan'
 import ImageLineage from './ImageLineage'
 import { redrawImage, reuseImagePrompt } from '../hooks/useImagePrompt'
-import { enhanceImage, upscalerStyle } from '../hooks/useImages'
+import { animateImage, animatorStyle, enhanceImage, upscalerStyle } from '../hooks/useImages'
+import { TouchInput } from './TouchInput'
 import { onServerEvent } from '../hooks/useServerEvents'
 import type { ImproverOutcome, StoredImage } from '../hooks/useImages'
 
@@ -143,6 +144,10 @@ export function ImageOverlay() {
   const prev = index > 0 ? gallery[index - 1] : undefined
   const next = index >= 0 && index < gallery.length - 1 ? gallery[index + 1] : undefined
   const entry = index >= 0 ? gallery[index] : undefined
+  // A clip made with "Animate" plays where the picture would be; its PNG is
+  // the poster. From the gallery entry for a re-shown one, from the job for
+  // one that has just finished under the frame.
+  const videoUrl = entry?.videoUrl ?? job?.videoUrl
 
   const show = useCallback((entry: GalleryEntry) => {
     // Paging inside full screen stays in full screen: the next open's seq is
@@ -196,7 +201,9 @@ export function ImageOverlay() {
           aria-label="Back to the framed view"
           className="w-full h-full flex items-center justify-center"
         >
-          <img src={url} alt={target.prompt} className="max-w-full max-h-full object-contain" />
+          {videoUrl
+            ? <video src={videoUrl} poster={url} autoPlay loop muted playsInline className="max-w-full max-h-full object-contain" />
+            : <img src={url} alt={target.prompt} className="max-w-full max-h-full object-contain" />}
         </button>
         {/* Only the way out. No arrows here: full screen is for looking at
             one picture, and the framed view a tap away still pages through
@@ -331,7 +338,11 @@ export function ImageOverlay() {
               aria-label="Show the picture full screen"
               className="w-full h-full min-h-0 flex items-center justify-center"
             >
-              <img src={url} alt={target.prompt} className="max-w-full max-h-full object-contain rounded-2xl" />
+              {videoUrl
+                // Muted and looping: Wan's clips have no sound, and a few
+                // seconds of motion is meant to be watched more than once.
+                ? <video src={videoUrl} poster={url} autoPlay loop muted playsInline className="max-w-full max-h-full object-contain rounded-2xl" />
+                : <img src={url} alt={target.prompt} className="max-w-full max-h-full object-contain rounded-2xl" />}
             </button>
           ) : failed ? (
             <Failed
@@ -433,7 +444,78 @@ function PromptActions({
     finally { setEnhancing(false) }
   }, [source, upscaler, enhancing])
 
+  // "Animate": offered only when the animator's files are on the GPU box. The
+  // motion is a few words, so it opens a small sheet rather than the Draw panel.
+  const [animator, setAnimator] = useState<string | null>(null)
+  useEffect(() => { let on = true; void animatorStyle().then(s => { if (on) setAnimator(s) }); return () => { on = false } }, [])
+  const [animSheet, setAnimSheet] = useState(false)
+  const [motion, setMotion] = useState('')
+  const [seconds, setSeconds] = useState(3)
+  const [animating, setAnimating] = useState(false)
+  const [animError, setAnimError] = useState('')
+  const animate = useCallback(async () => {
+    if (!source || !animator || animating) return
+    setAnimating(true)
+    setAnimError('')
+    try {
+      const id = await animateImage(source.id, motion, animator, seconds)
+      setAnimSheet(false)
+      setMotion('')
+      openImage(id, motion.trim() || 'gentle natural motion')
+    } catch (err) {
+      setAnimError(err instanceof Error ? err.message : String(err))
+    } finally { setAnimating(false) }
+  }, [source, animator, animating, motion, seconds])
+
   return (
+    <>
+    {animSheet && source && animator && (
+      <div className="px-4 pb-3 shrink-0" data-keyboard-keep>
+        <div className="rounded-2xl bg-white/5 border border-hairline p-3 flex flex-col gap-2">
+          <div className="text-[14px] text-white/80">What should move? The picture is the first frame.</div>
+          <TouchInput
+            value={motion}
+            onChange={setMotion}
+            placeholder="she blinks and smiles, hair moving in the wind"
+            ariaLabel="The motion"
+            className="w-full h-11 px-3 rounded-xl bg-black/30 border border-hairline text-white text-[15px]"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            {[2, 3, 5].map(n => (
+              <button
+                key={n}
+                type="button"
+                onClick={() => setSeconds(n)}
+                className={`h-10 px-3 rounded-full border text-[13px] font-semibold active:scale-95 transition ${
+                  seconds === n ? 'bg-pink-500/30 border-pink-400/50 text-white' : 'bg-white/10 border-hairline text-white/70'}`}
+              >
+                {n} s
+              </button>
+            ))}
+            <div className="flex-1" />
+            <button
+              type="button"
+              onClick={() => setAnimSheet(false)}
+              className="h-10 px-3 rounded-full bg-white/10 border border-hairline text-white/70 text-[13px] font-semibold active:scale-95 transition"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => { void animate() }}
+              disabled={animating}
+              className="h-10 px-4 rounded-full bg-pink-500/30 border border-pink-400/50 text-white text-[13px] font-semibold active:scale-95 transition disabled:opacity-50"
+            >
+              {animating ? 'Queuing…' : 'Animate'}
+            </button>
+          </div>
+          <div className="text-[12px] text-white/45">
+            A few minutes on the GPU box. Silent, 480p, 16 frames a second.
+          </div>
+          {animError && <div className="text-[13px] text-amber-300">{animError}</div>}
+        </div>
+      </div>
+    )}
     // Wraps rather than scrolls: on a 390px phone three pills and a counter do
     // not fit on one line, and a row that has to be scrolled sideways to reach
     // its last button is a button nobody finds.
@@ -477,6 +559,19 @@ function PromptActions({
         >
           <Sparkles size={16} />
           {enhancing ? 'Queuing…' : 'Sharpen ×4'}
+        </button>
+      )}
+      {source && animator && (
+        <button
+          type="button"
+          onClick={() => setAnimSheet(v => !v)}
+          aria-expanded={animSheet}
+          className="h-11 px-4 rounded-full bg-white/10 border border-hairline text-white/70
+                     text-[13px] font-semibold flex items-center gap-2
+                     active:scale-95 active:bg-white/20 transition"
+        >
+          <Clapperboard size={16} />
+          Animate
         </button>
       )}
 
@@ -530,6 +625,7 @@ function PromptActions({
         <span className="ml-auto text-[11px] text-white/30 tabular-nums shrink-0">{position}</span>
       )}
     </div>
+    </>
   )
 }
 

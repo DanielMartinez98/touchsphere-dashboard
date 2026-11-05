@@ -72,6 +72,8 @@ export interface ImageJobState {
    */
   detail:    string
   url?:      string
+  /** A clip ("Animate"): its mp4, beside `url`, which is then its first frame. */
+  videoUrl?: string
   error?:    string
   elapsedMs: number
   /**
@@ -126,6 +128,7 @@ export function useImageJob(jobId: string | null, alreadyDone: boolean): ImageJo
       // verbose line should show nothing extra, not the short label twice.
       detail:    typeof d['detail'] === 'string' ? d['detail'] : '',
       ...(typeof d['url']   === 'string' ? { url:   d['url']   as string } : {}),
+      ...(typeof d['videoUrl'] === 'string' ? { videoUrl: d['videoUrl'] as string } : {}),
       ...(typeof d['error'] === 'string' ? { error: d['error'] as string } : {}),
       elapsedMs: typeof d['elapsedMs'] === 'number' ? d['elapsedMs'] : 0,
       etaMs:     typeof d['etaMs']     === 'number' ? d['etaMs']     : 0,

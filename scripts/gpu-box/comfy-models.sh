@@ -27,6 +27,13 @@ vae|flux2-vae.safetensors|black-forest-labs/flux-3-image-klein-comfy/vae/flux2-v
 diffusion_models|qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_comfyui_4steps_v1.0.safetensors|lightx2v/Qwen-Image-Edit-2511-Lightning/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_comfyui_4steps_v1.0.safetensors
 text_encoders|qwen_2.5_vl_7b_fp8_scaled.safetensors|Comfy-Org/Qwen-Image_ComfyUI/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors
 loras|fusal-qwen-image-2.1-v2-exact-r80.safetensors|MicksHF/Qwen-Image-2.1-Anime-Fusal/loras/fusal-qwen-image-2.1-v2-exact-r80.safetensors
+diffusion_models|moss_image_sft_int8_convrot.safetensors|Comfy-Org/MOSS-Image/diffusion_models/moss_image_sft_int8_convrot.safetensors
+text_encoders|qwen3.5_9b_w4a8_gptq.safetensors|Comfy-Org/MOSS-Image/text_encoders/qwen3.5_9b_w4a8_gptq.safetensors
+vae|flux2-vae_small.safetensors|Comfy-Org/MOSS-Image/vae/flux2-vae_small.safetensors
+text_encoders|umt5_xxl_fp8_e4m3fn_scaled.safetensors|Comfy-Org/Wan_2.1_ComfyUI_repackaged/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors
+vae|wan_2.1_vae.safetensors|Comfy-Org/Wan_2.2_ComfyUI_Repackaged/split_files/vae/wan_2.1_vae.safetensors
+loras|wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors|Comfy-Org/Wan_2.2_ComfyUI_Repackaged/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors
+loras|wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors|Comfy-Org/Wan_2.2_ComfyUI_Repackaged/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors
 checkpoints|sd_xl_base_1.0.safetensors|stabilityai/stable-diffusion-xl-base-1.0/sd_xl_base_1.0.safetensors
 EOF
 )

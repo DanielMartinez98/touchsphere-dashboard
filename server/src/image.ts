@@ -533,6 +533,8 @@ export interface ImageSettings {
   conversation?:   AiExchange[]
   /** Drawn in two passes: the composition at this size, then enlarged and re-detailed (SDXL above ~1.3 MP). */
   hiresFrom?:      string
+  /** A clip: how many seconds of motion were asked for. */
+  seconds?:        number
   /** Booster text appended to the prompt for this style, when there was any. */
   optimizations?:  string
   /**
@@ -577,6 +579,13 @@ export interface StoredImage {
   /** For a web picture: where it was found, so the panel can credit it. */
   sourceUrl?: string
   credit?:    string
+  /**
+   * A clip made FROM a picture ("Animate this"): the mp4 beside the PNG, which
+   * is then the clip's first frame. Kept as one gallery entry rather than a
+   * second kind of thing so the grid, the viewer's arrows, pruning and delete
+   * need nothing new — the PNG is the poster, the video is what plays.
+   */
+  video?:  string
   /** ISO timestamp. */
   at:      string
 }
@@ -626,6 +635,7 @@ function remember(entry: StoredImage): void {
   const dropped = kept.splice(MAX_STORED)
   saveIndex(kept)
   for (const old of dropped) {
+    if (old.video) { try { fs.unlinkSync(path.join(imagesDir(), old.video)) } catch { /* already gone */ } }
     try {
       fs.unlinkSync(path.join(imagesDir(), old.file))
       console.log(`[image] pruned ${old.file} ("${old.prompt.slice(0, 40)}")`)
@@ -682,6 +692,7 @@ export function forgetImage(id: string): boolean {
   if (!hit) return false
   saveIndex(all.filter(e => e.id !== id))
   try { fs.unlinkSync(path.join(imagesDir(), hit.file)) } catch { /* already gone */ }
+  if (hit.video) { try { fs.unlinkSync(path.join(imagesDir(), hit.video)) } catch { /* already gone */ } }
   console.log(`[image] deleted ${hit.file}`)
   return true
 }
@@ -692,6 +703,7 @@ export function clearImages(): number {
   saveIndex([])
   for (const e of all) {
     try { fs.unlinkSync(path.join(imagesDir(), e.file)) } catch { /* already gone */ }
+    if (e.video) { try { fs.unlinkSync(path.join(imagesDir(), e.video)) } catch { /* already gone */ } }
   }
   console.log(`[image] cleared the gallery (${all.length} pictures)`)
   return all.length
@@ -977,6 +989,9 @@ export interface ImageJob {
   queuedAt: number
   /** Set once status is 'ready'. Serve via /api/image/file/<file>. */
   file?:    string
+  /** ANIMATE: the clip's length in seconds, and its mp4 once it exists. */
+  seconds?: number
+  video?:   string
   error?:   string
   startedAt: number
   endedAt?:  number
@@ -1193,6 +1208,8 @@ function wire(job: ImageJob) {
       denoise:   job.denoise,
     } : {}),
     ...(job.file  ? { file: job.file, url: `/api/image/file/${job.file}` } : {}),
+    ...(job.video ? { video: job.video, videoUrl: `/api/image/file/${job.video}` } : {}),
+    ...(job.seconds ? { seconds: job.seconds } : {}),
     ...(job.error ? { error: job.error } : {}),
     // Whether the improver was asked for, and what it did. Sent from the first
     // frame so the queue and the frame can say "will be improved" before it runs.
@@ -1308,6 +1325,8 @@ export interface ImageRequest {
   holdEnd?:      number
   /** How fine the detected lines are, for the `lines` hold. Default: the setting. */
   holdDetail?:   'fine' | 'normal' | 'coarse'
+  /** ANIMATE: how long the clip is, in seconds (1-5). Ignored by every other style. */
+  seconds?:      number
 }
 
 // The middle chip in the Draw panel, and what the assistant gets when it asks
@@ -1401,10 +1420,10 @@ export function startImage(req: ImageRequest): ImageJob {
   // A mask only means anything over a source, and an editor takes none — it
   // decides what to keep from the instruction. A described region is kept as
   // words here and turned into a mask in run(), where the GPU is.
-  const maskId = source && !styleEdits(style) && !styleUpscales(style) ? (req.mask ?? '').trim() : ''
+  const maskId = source && !styleEdits(style) && !styleUpscales(style) && !styleAnimates(style) ? (req.mask ?? '').trim() : ''
   const maskFile = maskId && /^[a-f0-9]{32}$/.test(maskId) && fs.existsSync(path.join(masksDir(), `${maskId}.png`))
     ? `${maskId}.png` : ''
-  const region = source && !styleEdits(style) && !styleUpscales(style) && !maskFile ? (req.region ?? '').trim().slice(0, 120) : ''
+  const region = source && !styleEdits(style) && !styleUpscales(style) && !styleAnimates(style) && !maskFile ? (req.region ?? '').trim().slice(0, 120) : ''
   // The pose-hold settings, read now so a change reaches the next picture and
   // a picture already waiting keeps the settings it was queued with.
   const hold = readStructure()
@@ -1436,10 +1455,13 @@ export function startImage(req: ImageRequest): ImageJob {
   // source, takes no strength, no mask, no pose hold and no prompt rewrite.
   // Its size is its own — the source's, four times over.
   const upscales = styleUpscales(style)
-  const edits = styleEdits(style) || upscales
+  const animates = styleAnimates(style)
+  const edits = styleEdits(style) || upscales || animates
   const size = source
     ? upscales
       ? { width: source.width * 4, height: source.height * 4 }
+      : animates
+      ? animateSize(source.width, source.height)
       : edits
       ? editSize(style, source.width, source.height)
       : sizeForMegapixels(source.width, source.height, p.megapixels > 0 ? p.megapixels : 1, p.multipleOf)
@@ -1572,6 +1594,7 @@ export function startImage(req: ImageRequest): ImageJob {
     improveWhy:     '',
     queuedAt:  Date.now(),
     startedAt: Date.now(),
+    ...(animates ? { seconds: clampSeconds(req.seconds), improve: false } : {}),
   }
   job.plannedSteps = job.steps > 0 ? job.steps : styleDefaults(style).steps
   refreshEstimate(job)
@@ -1601,7 +1624,7 @@ export function startImage(req: ImageRequest): ImageJob {
   // still under the finger.
   if (edits && !source) {
     job.status = 'failed'
-    job.error = `${styleLabel(style)} ${upscales ? 'sharpens' : 'edits'} a picture rather than drawing one — pick one first`
+    job.error = `${styleLabel(style)} ${upscales ? 'sharpens' : animates ? 'animates' : 'edits'} a picture rather than drawing one — pick one first`
     job.endedAt = Date.now()
     console.warn(`[image] refused ${job.id}: edit style with no source`)
     push(job, 'failed',
@@ -1675,7 +1698,7 @@ async function run(job: ImageJob): Promise<void> {
   // "it drew what I typed" and "it silently couldn't reach the model" look
   // identical from the outside otherwise.
   let improveNote = ''
-  const edits = styleEdits(job.model) || styleUpscales(job.model)
+  const edits = styleEdits(job.model) || styleUpscales(job.model) || styleAnimates(job.model)
   // ── A redraw needs a description of the whole picture, and usually hasn't one ──
   //
   // img2img repaints the source's layout from the PROMPT, and the prompt is
@@ -1953,12 +1976,26 @@ async function run(job: ImageJob): Promise<void> {
     const promptId = await queuePrompt(graph)
     console.log(`[image] ${job.id} → comfy prompt ${promptId}`)
 
-    const output = await awaitOutput(promptId, job)
+    const outputs = await awaitOutput(promptId, job)
+    const output = outputs.find(o => /\.png$/i.test(o.filename)) ?? outputs[0]!
     push(job, 'saving',
       'The GPU is done. Fetching the finished picture back and writing it to the ' +
       'dashboard, which is where the gallery reads it from.')
 
     bytes = await downloadOutput(output)
+    // A clip: the mp4 beside the poster. Written first so a picture entry can
+    // never point at a video that is not there.
+    if (styleAnimates(job.model)) {
+      const clip = outputs.find(o => /\.(mp4|webm)$/i.test(o.filename))
+      if (!clip) throw new Error('ComfyUI finished but saved no video')
+      const vbytes = await downloadOutput(clip)
+      const vfile = `${job.id}.${clip.filename.toLowerCase().endsWith('.webm') ? 'webm' : 'mp4'}`
+      const vdest = path.join(imagesDir(), vfile)
+      const vtmp = `${vdest}.tmp-${process.pid}`
+      fs.writeFileSync(vtmp, vbytes)
+      fs.renameSync(vtmp, vdest)
+      job.video = vfile
+    }
     // The size the picture actually came back at wins over the one computed at
     // queue time. They agree for a fresh render; for an edit or a resized
     // redraw the graph's own scaling node had the final say, and the number
@@ -2009,7 +2046,7 @@ async function run(job: ImageJob): Promise<void> {
     // beyond the reach of pruning.
     changed = null
     try {
-    if (job.source && job.sourceFile) {
+    if (job.source && job.sourceFile && !job.video) {
       try { changed = imageDifference(job.sourceFile, file) } catch { changed = null }
       if (changed !== null) {
         const edit = styleEdits(job.model)
@@ -2068,6 +2105,7 @@ async function run(job: ImageJob): Promise<void> {
 
     remember({
       id: job.id, prompt: job.prompt, file,
+      ...(job.video ? { video: job.video } : {}),
       width: job.width, height: job.height, seed: job.seed,
       ...(job.model ? { model: job.model } : {}),
       // Recorded from the graph that was sent, not from the job's overrides —
@@ -2328,6 +2366,115 @@ function upscaleGraph(modelName: string): ComfyGraph {
   }
 }
 
+// ── Animate: a picture in, a short clip out ──────────────────────────────────
+
+/** Wan 2.2 is trained at 16 frames a second; a clip is `seconds × 16 + 1` frames. */
+const VIDEO_FPS = 16
+const DEFAULT_SECONDS = 3
+const VIDEO_TIMEOUT_MS = Number(process.env['COMFYUI_VIDEO_TIMEOUT_MS'] ?? 40 * 60_000)
+
+/** 1-5 seconds: five is the card's own length and the most Wan 2.2 holds together. */
+function clampSeconds(n: unknown): number {
+  const v = typeof n === 'number' && Number.isFinite(n) ? Math.round(n) : DEFAULT_SECONDS
+  return Math.max(1, Math.min(5, v))
+}
+
+/**
+ * The clip's size: the source's shape at the card's 832×480 area, snapped to
+ * 16 (the Wan VAE's 8 × its 2×2 patch). 480p rather than 720p because 720p is
+ * about twice the time on a 4090 and the model card's own example runs at 480.
+ */
+export function animateSize(w: number, h: number): { width: number; height: number } {
+  const area = 832 * 480
+  const aspect = w > 0 && h > 0 ? w / h : 832 / 480
+  const snap = (n: number) => Math.max(256, Math.round(n / 16) * 16)
+  return { width: snap(Math.sqrt(area * aspect)), height: snap(Math.sqrt(area / aspect)) }
+}
+
+/**
+ * AnimeGen-I2V (AIdeaLab): an anime fine-tune of Wan 2.2 I2V A14B — two 14B
+ * experts, the high-noise one laying out the motion and the low-noise one
+ * finishing the frames, handed over half-way.
+ *
+ * Transcribed from ComfyUI's own `video_wan2_2_14B_i2v` template with its
+ * switch nodes flattened onto the 4-step path, because that is what the model
+ * card runs: the lightx2v Lightning LoRA on both experts, 4 steps at cfg 1,
+ * flow shift 3 (the card's scheduler; the template says 5 for the base model).
+ * The weights are AIdeaLab's bf16 files cast to fp8 on the GPU box (28.6 GB →
+ * ~14 GB each), so each expert fits the 4090 on its own; ComfyUI swaps them.
+ * The text encoder and VAE are Wan's own, from Comfy-Org's repackage.
+ *
+ * Two outputs: SaveVideo for the clip, and the first frame through SaveImage
+ * as the gallery's poster.
+ */
+function animeGenGraph(): ComfyGraph {
+  return {
+    '1':  { class_type: 'LoadImage', inputs: { image: '' } },
+    '2':  { class_type: 'UNETLoader', inputs: { unet_name: 'animegen_i2v_high_noise_fp8_e4m3fn.safetensors', weight_dtype: 'default' } },
+    '3':  { class_type: 'UNETLoader', inputs: { unet_name: 'animegen_i2v_low_noise_fp8_e4m3fn.safetensors', weight_dtype: 'default' } },
+    '4':  { class_type: 'LoraLoaderModelOnly', inputs: { model: ['2', 0], lora_name: 'wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors', strength_model: 1 } },
+    '5':  { class_type: 'LoraLoaderModelOnly', inputs: { model: ['3', 0], lora_name: 'wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors', strength_model: 1 } },
+    '6':  { class_type: 'ModelSamplingSD3', inputs: { model: ['4', 0], shift: 3 } },
+    '7':  { class_type: 'ModelSamplingSD3', inputs: { model: ['5', 0], shift: 3 } },
+    '8':  { class_type: 'CLIPLoader', inputs: { clip_name: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors', type: 'wan', device: 'default' } },
+    '9':  { class_type: 'VAELoader', inputs: { vae_name: 'wan_2.1_vae.safetensors' } },
+    '10': { class_type: 'CLIPTextEncode', inputs: { clip: ['8', 0], text: '' } },
+    '11': { class_type: 'CLIPTextEncode', inputs: { clip: ['8', 0], text: '' } },
+    '12': { class_type: 'WanImageToVideo', inputs: {
+      positive: ['10', 0], negative: ['11', 0], vae: ['9', 0], start_image: ['1', 0],
+      width: 832, height: 480, length: DEFAULT_SECONDS * VIDEO_FPS + 1, batch_size: 1,
+    } },
+    // The high-noise expert: steps 0-2, handing its leftover noise on.
+    '13': { class_type: 'KSamplerAdvanced', inputs: {
+      model: ['6', 0], add_noise: 'enable', noise_seed: 0, steps: 4, cfg: 1,
+      sampler_name: 'euler', scheduler: 'simple',
+      positive: ['12', 0], negative: ['12', 1], latent_image: ['12', 2],
+      start_at_step: 0, end_at_step: 2, return_with_leftover_noise: 'enable',
+    } },
+    // The low-noise expert: steps 2-4 over the same schedule, adding no noise.
+    '14': { class_type: 'KSamplerAdvanced', inputs: {
+      model: ['7', 0], add_noise: 'disable', noise_seed: 0, steps: 4, cfg: 1,
+      sampler_name: 'euler', scheduler: 'simple',
+      positive: ['12', 0], negative: ['12', 1], latent_image: ['13', 0],
+      start_at_step: 2, end_at_step: 10000, return_with_leftover_noise: 'disable',
+    } },
+    '15': { class_type: 'VAEDecode', inputs: { samples: ['14', 0], vae: ['9', 0] } },
+    '16': { class_type: 'CreateVideo', inputs: { images: ['15', 0], fps: VIDEO_FPS } },
+    '17': { class_type: 'SaveVideo', inputs: { video: ['16', 0], filename_prefix: 'touchsphere/clip', format: 'mp4', codec: 'h264' } },
+    '18': { class_type: 'ImageFromBatch', inputs: { image: ['15', 0], batch_index: 0, length: 1 } },
+    '19': { class_type: 'SaveImage', inputs: { images: ['18', 0], filename_prefix: 'touchsphere/clip-poster' } },
+  }
+}
+
+/**
+ * MOSS-Image SFT (OpenMOSS, 5B, Apache 2.0), transcribed from ComfyUI's own
+ * `image_moss_image_t2i` template with its prompt-upsampler branch and the
+ * optional skip-layer guidance switch dropped (the template ships the switch
+ * off). Comfy-Org's repackage: the int8 transformer, the w4a8 Qwen3.5 9B
+ * encoder (the smallest, 7.3 GB, which is what lets it load beside the
+ * transformer in the GPU box's 16 GB of RAM) and FLUX.2's small VAE. 25 steps
+ * at cfg 2.5 with er_sde are the template's numbers (the card's are 50 / 3).
+ */
+function mossImageGraph(): ComfyGraph {
+  return {
+    '1': { class_type: 'UNETLoader', inputs: { unet_name: 'moss_image_sft_int8_convrot.safetensors', weight_dtype: 'default' } },
+    '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen3.5_9b_w4a8_gptq.safetensors', type: 'moss_image', device: 'default' } },
+    '3': { class_type: 'VAELoader', inputs: { vae_name: 'flux2-vae_small.safetensors' } },
+    '4': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
+    '5': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
+    '6': { class_type: 'EmptyFlux2LatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
+    '7': {
+      class_type: 'KSampler',
+      inputs: {
+        seed: 0, steps: 25, cfg: 2.5, sampler_name: 'er_sde', scheduler: 'simple', denoise: 1,
+        model: ['1', 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0],
+      },
+    },
+    '8': { class_type: 'VAEDecode', inputs: { samples: ['7', 0], vae: ['3', 0] } },
+    '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'touchsphere', images: ['8', 0] } },
+  }
+}
+
 /**
  * Qwen-Image-Edit 2511 — the second EDITOR, and the one to reach for on anime.
  *
@@ -2536,7 +2683,7 @@ function qwenImage21Graph(): ComfyGraph {
 /**
  * Qwen-Image 2.1 with the FUSAL anime LoRA (MicksHF/Qwen-Image-2.1-Anime-Fusal,
  * the original-Base "v2 Exact R80" file, which replaced R56 upstream). Card: load it on the Base
- * model through "Load LoRA (Model Only)" at 1.0, 30–40 steps, cfg 1, and prepend
+ * model through "Load LoRA (Model Only)" at 1.0 (0.6 here, see below), 30–40 steps, cfg 1, and prepend
  * "fusal style." to the prompt. The LoRA sits between the loader and the cache
  * node, so the cache holds the patched model. The card recommends its own
  * bf16 "Heretic" Qwen3-VL encoder (16.3 GB) over the stock one, but says the
@@ -2547,7 +2694,11 @@ function qwenImage21FusalGraph(): ComfyGraph {
   const g = qwenImage21Graph()
   g['10'] = {
     class_type: 'LoraLoaderModelOnly',
-    inputs: { model: ['1', 0], lora_name: 'fusal-qwen-image-2.1-v2-exact-r80.safetensors', strength_model: 1 },
+    // 0.6, not the card's 1.0. Measured on the GPU box (same prompt and seed):
+    // at 1.0 the picture came back crunchy and over-sharpened with garbled fake
+    // text in the corners, on the int8 AND the bf16 base alike; at 0.6 the text
+    // is gone and the edges are clean, with the FUSAL look kept.
+    inputs: { model: ['1', 0], lora_name: 'fusal-qwen-image-2.1-v2-exact-r80.safetensors', strength_model: 0.6 },
   }
   g['4']!.inputs['model'] = ['10', 0]
   g['7']!.inputs['steps'] = 36
@@ -3001,6 +3152,12 @@ const QWEN_IMAGE_IMPROVER_GUIDE =
   'Describe the picture as if you were looking at it. Any words that should appear in the picture go in ' +
   'double quotes.\n' + PROSE_CHARACTER_RULES
 
+const MOSS_IMAGE_IMPROVER_GUIDE =
+  'THIS MODEL: MOSS-Image (OpenMOSS, 5B) reads its prompt with Qwen3.5 9B, a language model, and was ' +
+  'trained mostly on English captions; it takes natural language, tag sequences or both, so write plain ' +
+  'English sentences and keep any booru tags the user typed. Describe the finished picture concretely, ' +
+  'medium and style first. Any words that should appear in the picture go in double quotes.\n' + PROSE_CHARACTER_RULES
+
 const FUSAL_IMPROVER_GUIDE =
   'THIS MODEL: Qwen-Image 2.1 with the FUSAL anime style LoRA. It was trained on prompts written in labelled ' +
   'sections, and it follows them best. Write the prompt in exactly this shape: the first line ' +
@@ -3144,6 +3301,14 @@ const BUILTIN_WORKFLOWS: Record<string, {
    * with only the source's filename filled in, the way it does for an editor.
    */
   upscales?: boolean
+  /**
+   * True for a style that ANIMATES a picture: the source goes in as the first
+   * frame and a short silent clip comes out, with the prompt describing the
+   * MOTION ("she blinks and smiles"). Treated as an editor by every gate — it
+   * needs a source, and takes no strength, mask, pose hold or prompt rewrite —
+   * and its result is an mp4 stored beside a PNG poster (the first frame).
+   */
+  animates?: boolean
   /**
    * A ControlNet-LLLite inpainting patch trained for this model, by filename
    * under ComfyUI/models/model_patches. Spliced onto the model for a masked
@@ -3293,6 +3458,52 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'diffusion_models/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_comfyui_4steps_v1.0.safetensors',
       'text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors',
       'vae/qwen_image_vae.safetensors',
+    ],
+  },
+  'moss-image-sft': {
+    label: 'MOSS-Image',
+    graph: mossImageGraph(),
+    promptStyle: 'prose',
+    improverGuide: MOSS_IMAGE_IMPROVER_GUIDE,
+    promptGuide:
+      'Write plain English sentences describing the finished picture: medium and style first, then the ' +
+      'subject and what it is doing, the setting, the light and the framing. Tags are understood too, so ' +
+      'keep any the user typed. Named characters go by full name and series. Words that should appear in ' +
+      'the picture go in double quotes.',
+    // The template's suggested negative; the card's own default is empty.
+    negative: 'nsfw, worst quality, bad anatomy, watermark, jpeg artifact',
+    // Comfy-Org/MOSS-Image, Apache 2.0.
+    needs: [
+      'diffusion_models/moss_image_sft_int8_convrot.safetensors',
+      'text_encoders/qwen3.5_9b_w4a8_gptq.safetensors',
+      'vae/flux2-vae_small.safetensors',
+    ],
+  },
+  'animegen-i2v': {
+    label: 'AnimeGen (animate)',
+    graph: animeGenGraph(),
+    animates: true,
+    // 4 distilled steps at cfg 1: nothing for the quality row to move.
+    ignoresQuality: true,
+    promptStyle: 'prose',
+    promptGuide:
+      'This animates a picture: the prompt describes the MOTION, in English, in one or two short ' +
+      'sentences ("she blinks and smiles", "her hair moves in the wind as the camera slowly pushes in"). ' +
+      'The picture already says what everything looks like, so do not describe it again.',
+    // The model card's code puts this in front of every prompt, and its
+    // negative is these five words — "stop" and "wait" keep the clip moving.
+    prefixes: { positive: 'Japanese anime style,', negative: '' },
+    negative: '3d, cg, photo, stop, wait',
+    // aidealab/AnimeGen-I2V, Apache 2.0, cast to fp8 on the GPU box; the rest
+    // from Comfy-Org/Wan_2.1_ComfyUI_repackaged (encoder) and
+    // Comfy-Org/Wan_2.2_ComfyUI_Repackaged (VAE, Lightning LoRAs).
+    needs: [
+      'diffusion_models/animegen_i2v_high_noise_fp8_e4m3fn.safetensors',
+      'diffusion_models/animegen_i2v_low_noise_fp8_e4m3fn.safetensors',
+      'loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors',
+      'loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors',
+      'text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors',
+      'vae/wan_2.1_vae.safetensors',
     ],
   },
   'ultrasharp-v2': {
@@ -3754,6 +3965,12 @@ export function styleInpaintPatch(style: string): string {
   return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.inpaintPatch ?? ''
 }
 
+/** True for a style that turns a picture into a short clip: see `animates`. */
+export function styleAnimates(style: string): boolean {
+  if (!style.startsWith(WORKFLOW_PREFIX)) return false
+  return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.animates === true
+}
+
 /** True for a style that upscales a picture: source in, no prompt, ×4 out. */
 export function styleUpscales(style: string): boolean {
   if (!style.startsWith(WORKFLOW_PREFIX)) return false
@@ -3980,6 +4197,32 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
     ? workflowGraph(job.model.slice(WORKFLOW_PREFIX.length))
     : baseGraph()
   if (!graph) throw new Error(`the "${job.model}" style is not installed on this server`)
+
+  // A clip: the picture is the first frame, the prompt is the motion, and the
+  // size, length and seed go to the nodes that own them. Patched here and
+  // returned, because nothing below (prefix/booster joins aside) applies.
+  if (styleAnimates(job.model)) {
+    if (!sourceName) throw new Error('animating needs a picture to start from')
+    const loadId = findNode(graph, ['LoadImage'])
+    const i2v = findNode(graph, ['WanImageToVideo'])
+    if (!loadId || !i2v) throw new Error("this animating style's workflow has no LoadImage or WanImageToVideo node")
+    graph[loadId]!.inputs['image'] = sourceName
+    const wan = graph[i2v]!.inputs
+    wan['width'] = job.width
+    wan['height'] = job.height
+    wan['length'] = Math.round((job.seconds ?? DEFAULT_SECONDS) * VIDEO_FPS) + 1
+    const posId = conditioningText(graph, [i2v, 0])
+    const negId = conditioningText(graph, [i2v, 1])
+    if (posId) graph[posId]!.inputs['text'] = joinPrefix(job.prefix, joinPrompt(job.prompt || 'gentle natural motion', job.optimizations))
+    if (negId && negId !== posId) graph[negId]!.inputs['text'] = joinPrefix(job.negativePrefix, job.negative)
+    const samplerId = findNode(graph, ['KSamplerAdvanced', 'KSampler'])
+    if (samplerId) {
+      const inp = graph[samplerId]!.inputs
+      if ('noise_seed' in inp) inp['noise_seed'] = job.seed
+      if ('seed' in inp) inp['seed'] = job.seed
+    }
+    return graph
+  }
 
   // An upscaler: two nodes and a save. No sampler to seed, no text to write,
   // no size to set — the only patch is the picture going in.
@@ -4504,6 +4747,7 @@ function renderedWith(job: ImageJob, graph: ComfyGraph, changed?: number | null)
         ? { inpaintPatchSkipped: job.inpaintPatchOff ? 'off' as const : 'missing' as const }
         : {}),
     ...(typeof changed === 'number' ? { changed } : {}),
+    ...(job.seconds ? { seconds: job.seconds } : {}),
     ...(job.retriedWith ? { retriedWith: job.retriedWith } : {}),
     ...(job.retryFailed ? { retryFailed: job.retryFailed } : {}),
     ...(job.maskFile ? { maskFile: job.maskFile } : {}),
@@ -5379,7 +5623,7 @@ async function dropFromQueue(promptId: string): Promise<void> {
   }
 }
 
-async function awaitOutput(promptId: string, job: ImageJob): Promise<OutputRef> {
+async function awaitOutput(promptId: string, job: ImageJob): Promise<OutputRef[]> {
   // The deadline covers RENDERING, not queueing.
   //
   // ComfyUI is a shared box: its queue can hold work from another client, from
@@ -5390,7 +5634,10 @@ async function awaitOutput(promptId: string, job: ImageJob): Promise<OutputRef> 
   // every attempt. So the clock only advances while our prompt is not sitting
   // in the pending list, and a separate, far more generous budget bounds the
   // total so a genuinely stuck box still gives up eventually.
-  let deadline = Date.now() + TIMEOUT_MS
+  // A clip is two 14B models, each read from disk on a box whose RAM cannot
+  // hold both, so its render budget is far longer than a picture's.
+  const budget = job.seconds ? Math.max(TIMEOUT_MS, VIDEO_TIMEOUT_MS) : TIMEOUT_MS
+  let deadline = Date.now() + budget
   const hardStop = Date.now() + QUEUE_WAIT_MS
   let announcedRunning = false
   let announcedQueued = false
@@ -5403,7 +5650,7 @@ async function awaitOutput(promptId: string, job: ImageJob): Promise<OutputRef> 
     // never consume the budget meant for drawing it.
     const queued = await stillQueued(promptId)
     if (queued === true) {
-      deadline = Date.now() + TIMEOUT_MS
+      deadline = Date.now() + budget
       if (!announcedQueued) {
         announcedQueued = true
         push(job, 'waiting for the GPU',
@@ -5418,7 +5665,7 @@ async function awaitOutput(promptId: string, job: ImageJob): Promise<OutputRef> 
     if (!res.ok) continue                   // transient; keep waiting
     const hist = await res.json() as Record<string, {
       status?: { status_str?: string; completed?: boolean; messages?: unknown[] }
-      outputs?: Record<string, { images?: OutputRef[] }>
+      outputs?: Record<string, Record<string, unknown>>
     }>
     const entry = hist[promptId]
     if (!entry) {
@@ -5454,11 +5701,22 @@ async function awaitOutput(promptId: string, job: ImageJob): Promise<OutputRef> 
       const msg = JSON.stringify(entry.status.messages ?? []).slice(0, 400)
       throw new Error(`ComfyUI errored while rendering: ${msg}`)
     }
+    // Every saved file across every output node. SaveVideo reports its clip
+    // under `images` too (with `animated: [true]`), but newer builds have used
+    // other keys, so any array of {filename} counts.
+    const found: OutputRef[] = []
     for (const out of Object.values(entry.outputs ?? {})) {
-      const img = out.images?.[0]
-      // `temp` is a PreviewImage — it exists but gets swept, so it isn't a result.
-      if (img?.filename && img.type !== 'temp') return img
+      for (const list of Object.values(out ?? {})) {
+        if (!Array.isArray(list)) continue
+        for (const ref of list as Partial<OutputRef>[]) {
+          // `temp` is a PreviewImage — it exists but gets swept, so it isn't a result.
+          if (ref && typeof ref.filename === 'string' && ref.type !== 'temp') {
+            found.push({ filename: ref.filename, subfolder: ref.subfolder ?? '', type: ref.type ?? 'output' })
+          }
+        }
+      }
     }
+    if (found.length) return found
     if (entry.status?.completed) {
       throw new Error('ComfyUI finished but produced no saved image')
     }
@@ -5470,7 +5728,7 @@ async function awaitOutput(promptId: string, job: ImageJob): Promise<OutputRef> 
   throw new Error(
     Date.now() >= hardStop
       ? `gave up after ${humanMs(QUEUE_WAIT_MS)} waiting for the image server`
-      : `render did not finish within ${(TIMEOUT_MS / 1000).toFixed(0)}s`,
+      : `render did not finish within ${(budget / 1000).toFixed(0)}s`,
   )
 }
 
