@@ -2535,7 +2535,7 @@ function qwenImage21Graph(): ComfyGraph {
 
 /**
  * Qwen-Image 2.1 with the FUSAL anime LoRA (MicksHF/Qwen-Image-2.1-Anime-Fusal,
- * the original-Base "Style + Hires Exact R56" file). Card: load it on the Base
+ * the original-Base "v2 Exact R80" file, which replaced R56 upstream). Card: load it on the Base
  * model through "Load LoRA (Model Only)" at 1.0, 30–40 steps, cfg 1, and prepend
  * "fusal style." to the prompt. The LoRA sits between the loader and the cache
  * node, so the cache holds the patched model. The card recommends its own
@@ -2547,7 +2547,7 @@ function qwenImage21FusalGraph(): ComfyGraph {
   const g = qwenImage21Graph()
   g['10'] = {
     class_type: 'LoraLoaderModelOnly',
-    inputs: { model: ['1', 0], lora_name: 'fusal-qwen-image-2.1-style-hires-exact-r56.safetensors', strength_model: 1 },
+    inputs: { model: ['1', 0], lora_name: 'fusal-qwen-image-2.1-v2-exact-r80.safetensors', strength_model: 1 },
   }
   g['4']!.inputs['model'] = ['10', 0]
   g['7']!.inputs['steps'] = 36
@@ -3221,7 +3221,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'diffusion_models/qwen_image_2.1_int8_convrot.safetensors',
       'text_encoders/qwen3vl_8b_int8_convrot.safetensors',
       'vae/qwen_image_2.1_vae_bf16.safetensors',
-      'loras/fusal-qwen-image-2.1-style-hires-exact-r56.safetensors',
+      'loras/fusal-qwen-image-2.1-v2-exact-r80.safetensors',
     ],
   },
   'qwen-image-2.1-edit': {
