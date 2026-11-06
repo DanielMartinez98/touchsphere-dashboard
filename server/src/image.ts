@@ -887,8 +887,6 @@ export interface ImageJob {
   inpaintPatch: string
   /** The upscaler that enlarges a render drawn at the style's native size ('' = plain resize). See `nativePixels`. */
   nativeUpscaler: string
-  /** The upscaler a clip's frames are enlarged 2× with before encoding ('' = not installed, the clip stays at its render size). */
-  clipUpscaler: string
   /**
    * The user switched the patch OFF — for this style (Draw → Advanced) or for
    * everything (Settings → Drawing) — so run() does not even look for the
@@ -1552,7 +1550,6 @@ export function startImage(req: ImageRequest): ImageJob {
     controlnet: '',
     inpaintPatch: '',
     nativeUpscaler: '',
-    clipUpscaler: '',
     // Per request first, then the saved setting. The Draw panel sends these
     // so one picture can be tried a different way without changing the
     // default everything else uses.
@@ -1871,11 +1868,6 @@ async function run(job: ImageJob): Promise<void> {
       const have = await loaderOptions('UpscaleModelLoader', 'model_name').catch(() => [] as string[])
       job.nativeUpscaler = have.find(f => f.split(/[\\/]/).pop() === NATIVE_UPSCALER) ?? ''
     }
-    if (styleAnimates(job.model)) {
-      const have = await loaderOptions('UpscaleModelLoader', 'model_name').catch(() => [] as string[])
-      job.clipUpscaler = have.find(f => f.split(/[\\/]/).pop() === CLIP_UPSCALER) ?? ''
-      if (!job.clipUpscaler) console.log(`[image] ${job.id} ${CLIP_UPSCALER} is not in upscale_models — the clip stays at its render size (${job.width}×${job.height})`)
-    }
     if (job.source && (job.maskFile || job.region) && !edits) {
       const want = styleInpaintPatch(job.model)
       if (want && job.inpaintPatchOff) {
@@ -1988,10 +1980,14 @@ async function run(job: ImageJob): Promise<void> {
       job.plannedSteps = realSteps
       refreshEstimate(job)
     }
-    const promptId = await queuePrompt(graph)
-    console.log(`[image] ${job.id} → comfy prompt ${promptId}`)
-
-    const outputs = await awaitOutput(promptId, job)
+    let outputs: OutputRef[]
+    if (styleAnimates(job.model)) {
+      outputs = await renderClip(job, graph)
+    } else {
+      const promptId = await queuePrompt(graph)
+      console.log(`[image] ${job.id} → comfy prompt ${promptId}`)
+      outputs = await awaitOutput(promptId, job)
+    }
     const output = outputs.find(o => /\.png$/i.test(o.filename)) ?? outputs[0]!
     push(job, 'saving',
       'The GPU is done. Fetching the finished picture back and writing it to the ' +
@@ -2386,13 +2382,13 @@ function upscaleGraph(modelName: string): ComfyGraph {
 /** Wan 2.2 is trained at 16 frames a second; a clip is `seconds × 16 + 1` frames. */
 const VIDEO_FPS = 16
 const DEFAULT_SECONDS = 3
-// Two hours: a 20 s chain on plain Wan 2.2 (about 10 minutes per 5 s shot at 480p) must fit.
+// Per pass. A 5 s shot at 768x1152 is about 20-35 minutes over its two passes (slower when Windows apps share the card).
 const VIDEO_TIMEOUT_MS = Number(process.env['COMFYUI_VIDEO_TIMEOUT_MS'] ?? 120 * 60_000)
 
 /**
  * Wan 2.2 holds a shot together for about 81 frames (5 s), so a longer clip is
  * a chain of segments of at most this length, each starting from the last
- * frame of the one before (`chainSegments`).
+ * frame of the one before (`renderClip`).
  */
 const SEGMENT_SECONDS = 5
 const MAX_SECONDS = Number(process.env['ANIMATE_MAX_SECONDS'] ?? 20)
@@ -2415,128 +2411,142 @@ function segmentPlan(total: number): number[] {
   return Array.from({ length: n }, () => base)
 }
 
-/**
- * Turn a one-segment animate graph into a chain. Everything between the
- * WanImageToVideo node and the VAEDecode (the samplers, any model patch fed by
- * them) is cloned per segment; segment k's start image is the last decoded
- * frame of segment k-1, and the frames are joined with that duplicated first
- * frame dropped, into the one CreateVideo the graph already has. The poster
- * stays segment 0's first frame. Each segment gets its own seed so the noise
- * does not repeat.
- */
-function chainSegments(graph: ComfyGraph, i2v: string, seconds: number[], seed: number): number {
-  const decodeId = Object.keys(graph).find(id => graph[id]!.class_type === 'VAEDecode')
-  const videoId = Object.keys(graph).find(id => graph[id]!.class_type === 'CreateVideo')
-  if (!decodeId || !videoId) throw new Error("this animating style's workflow has no VAEDecode or CreateVideo node")
-  // Wan's latent packs four frames per step after the first, so a length is 4k + 1.
-  const frames = (sec: number) => Math.max(1, Math.round(sec * VIDEO_FPS / 4)) * 4 + 1
-  graph[i2v]!.inputs['length'] = frames(seconds[0]!)
-  const total = seconds.reduce((n, sec, k) => n + frames(sec) - (k ? 1 : 0), 0)
-  if (seconds.length === 1) return total
+/** Wan's latent packs four frames per step after the first, so a length is 4k + 1. */
+function clipFrames(sec: number): number {
+  return Math.max(1, Math.round(sec * VIDEO_FPS / 4)) * 4 + 1
+}
 
-  // The segment: i2v, the decode, and every node on a path between them.
-  const refs = (node: ComfyNode) => Object.values(node.inputs)
-    .filter((v): v is [string, number] => Array.isArray(v) && typeof v[0] === 'string').map(v => v[0])
-  const dependsOnI2v = new Map<string, boolean>()
-  const dep = (id: string, depth = 0): boolean => {
-    if (id === i2v) return true
-    if (dependsOnI2v.has(id)) return dependsOnI2v.get(id)!
-    dependsOnI2v.set(id, false)
-    const node = graph[id]
-    const r = !!node && depth < 64 && refs(node).some(x => dep(x, depth + 1))
-    dependsOnI2v.set(id, r)
-    return r
-  }
-  const segment = new Set<string>([i2v])
-  const walk = (id: string) => {
-    if (segment.has(id) || !dep(id)) return
-    segment.add(id)
-    for (const r of refs(graph[id]!)) walk(r)
-  }
-  walk(decodeId)
-
-  const ids = Object.keys(graph).map(Number).filter(Number.isFinite)
-  let next = Math.max(0, ...ids) + 1
-  const fresh = () => String(next++)
-  let prevDecode = decodeId
-  let joined: [string, number] = [decodeId, 0]
-  seconds.slice(1).forEach((sec, k) => {
-    const map = new Map<string, string>()
-    for (const id of segment) map.set(id, fresh())
-    const lastFrame = fresh()
-    graph[lastFrame] = { class_type: 'ImageFromBatch', inputs: { image: [prevDecode, 0], batch_index: 4095, length: 1 } }
-    for (const id of segment) {
-      const src = graph[id]!
-      const inputs: Record<string, unknown> = {}
-      for (const [key, v] of Object.entries(src.inputs)) {
-        inputs[key] = Array.isArray(v) && typeof v[0] === 'string' && map.has(v[0]) ? [map.get(v[0]), v[1]] : v
-      }
-      if (id === i2v) { inputs['start_image'] = [lastFrame, 0]; inputs['length'] = frames(sec) }
-      if ('noise_seed' in inputs) inputs['noise_seed'] = seed + k + 1
-      if ('seed' in inputs) inputs['seed'] = seed + k + 1
-      graph[map.get(id)!] = { class_type: src.class_type, inputs }
+/** The nodes `roots` depend on, and nothing else: one pass's prompt out of the whole graph. */
+function reachable(graph: ComfyGraph, roots: string[]): ComfyGraph {
+  const out: ComfyGraph = {}
+  const visit = (id: string, depth = 0) => {
+    if (out[id] || !graph[id] || depth > 256) return
+    out[id] = graph[id]!
+    for (const v of Object.values(graph[id]!.inputs)) {
+      if (Array.isArray(v) && typeof v[0] === 'string') visit(v[0], depth + 1)
     }
-    const newDecode = map.get(decodeId)!
-    // ImageFromBatch clamps batch_index to the batch, so 4095 is "the last frame".
-    const rest = fresh()
-    graph[rest] = { class_type: 'ImageFromBatch', inputs: { image: [newDecode, 0], batch_index: 1, length: frames(sec) - 1 } }
-    const batch = fresh()
-    graph[batch] = { class_type: 'ImageBatch', inputs: { image1: joined, image2: [rest, 0] } }
-    joined = [batch, 0]
-    prevDecode = newDecode
-  })
-  graph[videoId]!.inputs['images'] = joined
-  return total
+  }
+  for (const r of roots) visit(r)
+  return out
 }
 
 /**
- * The upscaler a clip is sharpened with. realesr-animevideov3 rather than
- * UltraSharp: it is a small VGG-style net made for video frames, so a 5 s clip
- * costs about 20 s more where the DAT model would cost minutes. Measured on
- * the 4090: calm frames come out visibly crisper at 2×; fast motion stays
- * soft, because that softness is the model's motion blur, not the size.
+ * Unload every model and give the memory back. Between the two experts this is
+ * what lets a 768×1152 clip fit: each 14B expert is ~14 GB against the GPU
+ * box's 15.5 GB of WSL RAM, and with both resident the swap from one to the
+ * other hung. Measured: 13.5 GB in use before, 3.1 GB after.
  */
-const CLIP_UPSCALER = 'realesr-animevideov3.pth'
-/** Frames upscaled per pass — keeps the upscaler's VRAM bounded on a 20 s clip. */
-const CLIP_UPSCALE_CHUNK = 9
+async function freeComfy(): Promise<void> {
+  await comfyFetch('/free', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ unload_models: true, free_memory: true }),
+  }).catch(() => undefined)
+  await new Promise(r => setTimeout(r, 8000))
+}
+
+async function runPass(job: ImageJob, prompt: ComfyGraph, what: string): Promise<OutputRef[]> {
+  const promptId = await queuePrompt(prompt)
+  console.log(`[image] ${job.id} ${what} → comfy prompt ${promptId}`)
+  return awaitOutput(promptId, job, false)
+}
+
+/** Download a file one pass saved and put it in ComfyUI's input directory for the next pass. */
+async function carryOver(refs: OutputRef[], ext: RegExp, name: string): Promise<string> {
+  const ref = refs.find(o => ext.test(o.filename))
+  if (!ref) throw new Error(`a pass of the clip finished without saving its ${name.split('.').pop()} file`)
+  return uploadInput(name, await downloadOutput(ref), 'clip pass file')
+}
 
 /**
- * Enlarges every frame of the clip to twice the render size before it is
- * encoded: CreateVideo's images go through the upscaler in chunks of
- * CLIP_UPSCALE_CHUNK (ImageFromBatch → ImageUpscaleWithModel → lanczos
- * ImageScale to exactly 2×, since the model's own factor is 4×) and are joined
- * back with ImageBatch. The poster is taken from the enlarged frames, so the
- * PNG read back after the render reports the clip's real size.
+ * Render a clip from the one-segment Wan graph `base` as separate prompts, so
+ * only ONE 14B expert is ever in memory. For every shot of up to 5 s: the
+ * high-noise half (saved as a latent), a /free, the low-noise half from that
+ * latent (with the conditioning rebuilt from the same start picture, since the
+ * low expert needs WanImageToVideo's image latent and mask too), another /free.
+ * Then one cheap prompt decodes every shot's latent, drops each later shot's
+ * duplicated first frame, and saves the video and the poster.
+ *
+ * This is what makes 768×1152 possible on the GPU box. At 480p both experts
+ * fitted in one prompt, but 480p is well below what Wan 2.2 14B was trained at,
+ * and in a blind test of five ways to run it (2026-11-06: the current 480p,
+ * bf16 compute, 30 steps at shift 8, the 5B model at 720p, and this) this was
+ * the clear pick; nothing else at 480p came close. A shot after the first
+ * starts from the last frame of the one before, carried as a PNG, with its own
+ * seed so the noise does not repeat.
  */
-function upscaleClip(graph: ComfyGraph, model: string, totalFrames: number, width: number, height: number): void {
-  const videoId = Object.keys(graph).find(id => graph[id]!.class_type === 'CreateVideo')
-  if (!videoId) return
-  const frames = graph[videoId]!.inputs['images'] as [string, number]
-  const ids = Object.keys(graph).map(Number).filter(Number.isFinite)
-  let next = Math.max(0, ...ids) + 1
-  const fresh = () => String(next++)
-  const loader = fresh()
-  graph[loader] = { class_type: 'UpscaleModelLoader', inputs: { model_name: model } }
+async function renderClip(job: ImageJob, base: ComfyGraph): Promise<OutputRef[]> {
+  const byClass = (c: string) => Object.keys(base).filter(id => base[id]!.class_type === c)
+  const loadId = byClass('LoadImage')[0]
+  const i2v = byClass('WanImageToVideo')[0]
+  const samplers = byClass('KSamplerAdvanced')
+  const high = samplers.find(id => base[id]!.inputs['start_at_step'] === 0)
+  const low = samplers.find(id => id !== high)
+  const decodeId = byClass('VAEDecode')[0]
+  const videoId = byClass('CreateVideo')[0]
+  const saveVideo = byClass('SaveVideo')[0]
+  const savePoster = byClass('SaveImage')[0]
+  if (!loadId || !i2v || !high || !low || !decodeId || !videoId || !saveVideo || !savePoster) {
+    throw new Error("this animating style's workflow is not a two-expert Wan graph")
+  }
+  const vaeLink = base[decodeId]!.inputs['vae'] as [string, number]
+  const plan = segmentPlan(job.seconds ?? DEFAULT_SECONDS)
+  const n = plan.length
+  const tag = (k: number, half: string) => `touchsphere-wan-${job.id}-${k}-${half}`
+  const lowLatents: string[] = []
+  let start = String(base[loadId]!.inputs['image'])
+
+  for (let k = 0; k < n; k++) {
+    const g: ComfyGraph = JSON.parse(JSON.stringify(base))
+    g[loadId]!.inputs['image'] = start
+    g[i2v]!.inputs['length'] = clipFrames(plan[k]!)
+    for (const id of [high, low]) g[id]!.inputs['noise_seed'] = job.seed + k
+    const shot = n > 1 ? `shot ${k + 1} of ${n}, ` : ''
+
+    push(job, 'animating', `Animating ${shot}first half: the high-noise expert lays out the motion at ${job.width}×${job.height}.`)
+    g['th_save'] = { class_type: 'SaveLatent', inputs: { samples: [high, 0], filename_prefix: `latents/${tag(k, 'h')}` } }
+    const h = await runPass(job, reachable(g, ['th_save']), `${shot}high-noise pass`)
+    const hName = await carryOver(h, /\.latent$/i, `${tag(k, 'h')}.latent`)
+    await freeComfy()
+
+    push(job, 'animating', `Animating ${shot}second half: the low-noise expert draws the detail.`)
+    g['tl_load'] = { class_type: 'LoadLatent', inputs: { latent: hName } }
+    g[low]!.inputs['latent_image'] = ['tl_load', 0]
+    g['tl_save'] = { class_type: 'SaveLatent', inputs: { samples: [low, 0], filename_prefix: `latents/${tag(k, 'l')}` } }
+    const roots = ['tl_save']
+    if (k < n - 1) {
+      // ImageFromBatch clamps batch_index to the batch, so 4095 is "the last frame".
+      g['tl_last'] = { class_type: 'ImageFromBatch', inputs: { image: [decodeId, 0], batch_index: 4095, length: 1 } }
+      g['tl_png'] = { class_type: 'SaveImage', inputs: { images: ['tl_last', 0], filename_prefix: `touchsphere/${tag(k, 'last')}` } }
+      roots.push('tl_png')
+    }
+    const l = await runPass(job, reachable(g, roots), `${shot}low-noise pass`)
+    lowLatents.push(await carryOver(l, /\.latent$/i, `${tag(k, 'l')}.latent`))
+    if (k < n - 1) start = await carryOver(l, /\.png$/i, `${tag(k, 'last')}.png`)
+    await freeComfy()
+  }
+
+  push(job, 'saving', 'Both halves are drawn. Decoding the frames and writing the video.')
+  const f: ComfyGraph = reachable(base, [vaeLink[0]])
   let joined: [string, number] | null = null
-  for (let start = 0; start < totalFrames; start += CLIP_UPSCALE_CHUNK) {
-    const pick = fresh(), up = fresh(), scale = fresh()
-    graph[pick] = { class_type: 'ImageFromBatch', inputs: { image: frames, batch_index: start, length: Math.min(CLIP_UPSCALE_CHUNK, totalFrames - start) } }
-    graph[up] = { class_type: 'ImageUpscaleWithModel', inputs: { upscale_model: [loader, 0], image: [pick, 0] } }
-    graph[scale] = { class_type: 'ImageScale', inputs: { image: [up, 0], upscale_method: 'lanczos', width: width * 2, height: height * 2, crop: 'disabled' } }
-    if (!joined) { joined = [scale, 0]; continue }
-    const batch = fresh()
-    graph[batch] = { class_type: 'ImageBatch', inputs: { image1: joined, image2: [scale, 0] } }
-    joined = [batch, 0]
-  }
-  if (!joined) return
-  graph[videoId]!.inputs['images'] = joined
-  // The poster: SaveImage ← ImageFromBatch(index 0) — point it at the enlarged frames.
-  for (const node of Object.values(graph)) {
-    if (node.class_type !== 'SaveImage') continue
-    const src = node.inputs['images'] as [string, number] | undefined
-    const pick = src && graph[src[0]]
-    if (pick?.class_type === 'ImageFromBatch' && pick.inputs['batch_index'] === 0) pick.inputs['image'] = joined
-  }
+  lowLatents.forEach((name, k) => {
+    f[`f_ll${k}`] = { class_type: 'LoadLatent', inputs: { latent: name } }
+    f[`f_d${k}`] = { class_type: 'VAEDecode', inputs: { samples: [`f_ll${k}`, 0], vae: vaeLink } }
+    let part: [string, number] = [`f_d${k}`, 0]
+    if (k > 0) {
+      f[`f_t${k}`] = { class_type: 'ImageFromBatch', inputs: { image: part, batch_index: 1, length: clipFrames(plan[k]!) - 1 } }
+      part = [`f_t${k}`, 0]
+    }
+    if (!joined) { joined = part; return }
+    f[`f_j${k}`] = { class_type: 'ImageBatch', inputs: { image1: joined, image2: part } }
+    joined = [`f_j${k}`, 0]
+  })
+  if (!joined) throw new Error('the clip has no shots to decode')
+  f['f_video'] = { class_type: 'CreateVideo', inputs: { ...base[videoId]!.inputs, images: joined } }
+  f['f_save'] = { class_type: 'SaveVideo', inputs: { ...base[saveVideo]!.inputs, video: ['f_video', 0] } }
+  f['f_first'] = { class_type: 'ImageFromBatch', inputs: { image: joined, batch_index: 0, length: 1 } }
+  f['f_poster'] = { class_type: 'SaveImage', inputs: { ...base[savePoster]!.inputs, images: ['f_first', 0] } }
+  return runPass(job, f, 'decode and save')
 }
 
 /**
@@ -2545,7 +2555,7 @@ function upscaleClip(graph: ComfyGraph, model: string, totalFrames: number, widt
  * about twice the time on a 4090 and the model card's own example runs at 480.
  */
 export function animateSize(w: number, h: number): { width: number; height: number } {
-  const area = 832 * 480
+  const area = 768 * 1152
   const aspect = w > 0 && h > 0 ? w / h : 832 / 480
   const snap = (n: number) => Math.max(256, Math.round(n / 16) * 16)
   return { width: snap(Math.sqrt(area * aspect)), height: snap(Math.sqrt(area / aspect)) }
@@ -2558,7 +2568,7 @@ export function animateSize(w: number, h: number): { width: number; height: numb
  * and the template's own negative. Measured on the GPU box against AnimeGen
  * and LTX-2.5 on the same picture and jump prompt: the only one that moved
  * from the first frame and jumped, crouched and landed with the character
- * staying on-model. About 8.5 minutes per 5 s at 480p (512x768); AnimeGen was
+ * staying on-model. About 20-35 minutes per 5 s at 768x1152 in two passes (renderClip); it was 8.5 at 480p; AnimeGen was
  * removed on request after these tests.
  */
 const WAN22_NEGATIVE =
@@ -4392,8 +4402,8 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
       if ('noise_seed' in node.inputs) node.inputs['noise_seed'] = job.seed
       if ('seed' in node.inputs) node.inputs['seed'] = job.seed
     }
-    const total = chainSegments(graph, i2v, segmentPlan(job.seconds ?? DEFAULT_SECONDS), job.seed)
-    if (job.clipUpscaler) upscaleClip(graph, job.clipUpscaler, total, job.width, job.height)
+    // One segment's graph; renderClip() splits it into its passes and segments.
+    wan['length'] = clipFrames(segmentPlan(job.seconds ?? DEFAULT_SECONDS)[0]!)
     return graph
   }
 
@@ -5838,7 +5848,7 @@ async function dropFromQueue(promptId: string): Promise<void> {
   }
 }
 
-async function awaitOutput(promptId: string, job: ImageJob): Promise<OutputRef[]> {
+async function awaitOutput(promptId: string, job: ImageJob, announce = true): Promise<OutputRef[]> {
   // The deadline covers RENDERING, not queueing.
   //
   // ComfyUI is a shared box: its queue can hold work from another client, from
@@ -5854,8 +5864,11 @@ async function awaitOutput(promptId: string, job: ImageJob): Promise<OutputRef[]
   const budget = job.seconds ? Math.max(TIMEOUT_MS, VIDEO_TIMEOUT_MS) : TIMEOUT_MS
   let deadline = Date.now() + budget
   const hardStop = Date.now() + QUEUE_WAIT_MS
-  let announcedRunning = false
+  // A clip's passes announce themselves (renderClip says which half is drawing).
+  let announcedRunning = !announce
   let announcedQueued = false
+  // A pass that waited behind other work puts its own words back once it starts.
+  const resume = announce ? null : { phase: job.phase, detail: job.detail }
 
   while (Date.now() < deadline && Date.now() < hardStop) {
     await new Promise(r => setTimeout(r, POLL_MS))
@@ -5874,6 +5887,10 @@ async function awaitOutput(promptId: string, job: ImageJob): Promise<OutputRef[]
           'against it, and the picture will begin as soon as the card is free.')
       }
       continue
+    }
+    if (announcedQueued && resume) {
+      push(job, resume.phase, resume.detail)
+      announcedQueued = false
     }
 
     const res = await comfyFetch(`/history/${encodeURIComponent(promptId)}`)
