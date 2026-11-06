@@ -20,7 +20,6 @@ diffusion_models|anima-aesthetic-v1.1.safetensors|circlestone-labs/Anima/split_f
 diffusion_models|anima-turbo-v1.1.safetensors|circlestone-labs/Anima/split_files/diffusion_models/anima-turbo-v1.1.safetensors
 model_patches|anima-lllite-inpainting-v2.safetensors|Comfy-Org/Anima-LLLite/model_patches/anima-lllite-inpainting-v2.safetensors
 upscale_models|4x-UltraSharpV2.safetensors|Kim2091/UltraSharpV2/4x-UltraSharpV2.safetensors
-upscale_models|realesr-animevideov3.pth|https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth
 controlnet|controlnet-union-sdxl-1.0-promax.safetensors|xinsir/controlnet-union-sdxl-1.0/diffusion_pytorch_model_promax.safetensors
 diffusion_models|flux3-image-klein-int8-convrot.safetensors|black-forest-labs/flux-3-image-klein-comfy/diffusion_models/flux3-image-klein-int8-convrot.safetensors
 text_encoders|qwen3vl_4b_int8_convrot.safetensors|black-forest-labs/flux-3-image-klein-comfy/text_encoders/qwen3vl_4b_int8_convrot.safetensors
