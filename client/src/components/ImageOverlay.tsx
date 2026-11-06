@@ -528,7 +528,7 @@ function PromptActions({
             </button>
           </div>
           <div className="text-[12px] text-white/45">
-            About 20 to 35 minutes per 5 seconds. Silent, 768×1152, 16 frames a second; longer clips are 5-second shots chained. Big movements (jumping, running) need the whole body in the picture: a close-up has no legs to move.
+            About 12 to 20 minutes per 3 seconds. Silent, 768×1152, 16 frames a second; longer clips are 3-second shots chained. Big movements (jumping, running) need the whole body in the picture: a close-up has no legs to move.
           </div>
           {animError && <div className="text-[13px] text-amber-300">{animError}</div>}
         </div>

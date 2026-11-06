@@ -2382,19 +2382,25 @@ function upscaleGraph(modelName: string): ComfyGraph {
 /** Wan 2.2 is trained at 16 frames a second; a clip is `seconds × 16 + 1` frames. */
 const VIDEO_FPS = 16
 const DEFAULT_SECONDS = 3
-// Per pass. A 5 s shot at 768x1152 is about 20-35 minutes over its two passes (slower when Windows apps share the card).
-const VIDEO_TIMEOUT_MS = Number(process.env['COMFYUI_VIDEO_TIMEOUT_MS'] ?? 120 * 60_000)
+// Per pass, and a stuck-pass watchdog as much as a budget. A healthy pass of a
+// 3 s shot at 768x1152 measured 9-10 minutes with Windows apps sharing the card.
+// A pass that has run out of memory never finishes its first step (it re-reads
+// the model from swap forever), so a budget at about 3x the healthy time fails
+// it in half an hour instead of two.
+const VIDEO_TIMEOUT_MS = Number(process.env['COMFYUI_VIDEO_TIMEOUT_MS'] ?? 30 * 60_000)
 
 /**
- * Wan 2.2 holds a shot together for about 81 frames (5 s), so a longer clip is
- * a chain of segments of at most this length, each starting from the last
- * frame of the one before (`renderClip`).
+ * A longer clip is a chain of shots of at most this length, each starting from
+ * the last frame of the one before (`renderClip`). 3 s, not the 5 s Wan can
+ * hold together, because of memory at 768x1152: a 3 s shot (49 frames) peaked
+ * at 20.5 GB of VRAM and 13.5 of the box's 15.5 GB of WSL RAM, and a 5 s shot
+ * (81 frames) filled RAM and swap and never finished its first step.
  */
-const SEGMENT_SECONDS = 5
+const SEGMENT_SECONDS = 3
 const MAX_SECONDS = Number(process.env['ANIMATE_MAX_SECONDS'] ?? 20)
 
 /**
- * 1 to MAX_SECONDS (20 by default); anything past 5 s is drawn in segments.
+ * 1 to MAX_SECONDS (20 by default); anything past 3 s is drawn in segments.
  * 20 because a 15 s chain peaked at 14.0 of the GPU box's 15.5 GB of WSL RAM
  * (each extra segment's frames add ~0.25 GB), and because the character drifts
  * a little more with every segment, since each one only sees the last frame.
@@ -2404,7 +2410,7 @@ function clampSeconds(n: unknown): number {
   return Math.max(1, Math.min(MAX_SECONDS, v))
 }
 
-/** Seconds per segment for a clip of `total` seconds: as even as possible, none over 5. */
+/** Seconds per segment for a clip of `total` seconds: as even as possible, none over SEGMENT_SECONDS. */
 function segmentPlan(total: number): number[] {
   const n = Math.max(1, Math.ceil(total / SEGMENT_SECONDS))
   const base = total / n
@@ -2460,7 +2466,7 @@ async function carryOver(refs: OutputRef[], ext: RegExp, name: string): Promise<
 
 /**
  * Render a clip from the one-segment Wan graph `base` as separate prompts, so
- * only ONE 14B expert is ever in memory. For every shot of up to 5 s: the
+ * only ONE 14B expert is ever in memory. For every shot of up to 3 s: the
  * high-noise half (saved as a latent), a /free, the low-noise half from that
  * latent (with the conditioning rebuilt from the same start picture, since the
  * low expert needs WanImageToVideo's image latent and mask too), another /free.
@@ -2568,7 +2574,7 @@ export function animateSize(w: number, h: number): { width: number; height: numb
  * and the template's own negative. Measured on the GPU box against AnimeGen
  * and LTX-2.5 on the same picture and jump prompt: the only one that moved
  * from the first frame and jumped, crouched and landed with the character
- * staying on-model. About 20-35 minutes per 5 s at 768x1152 in two passes (renderClip); it was 8.5 at 480p; AnimeGen was
+ * staying on-model. About 12-20 minutes per 3 s shot at 768x1152 in two passes (renderClip); it was 8.5 at 480p; AnimeGen was
  * removed on request after these tests.
  */
 const WAN22_NEGATIVE =
@@ -5807,6 +5813,47 @@ interface OutputRef { filename: string; subfolder: string; type: string }
  * treats as "assume it is running": erring towards timing out is safer than
  * erring towards waiting forever.
  */
+type QueueItem = { id: string; prompt: ComfyGraph }
+
+/** ComfyUI's queue as two lists of {id, prompt}; null when it can't be asked. */
+async function comfyQueue(): Promise<{ running: QueueItem[]; pending: QueueItem[] } | null> {
+  try {
+    const res = await comfyFetch('/queue', undefined, 10_000)
+    if (!res.ok) return null
+    const q = await res.json() as { queue_pending?: unknown[][]; queue_running?: unknown[][] }
+    const item = (it: unknown[]): QueueItem => ({
+      id: typeof it[1] === 'string' ? it[1] : '',
+      prompt: (it[2] && typeof it[2] === 'object' ? it[2] : {}) as ComfyGraph,
+    })
+    return { running: (q.queue_running ?? []).map(item), pending: (q.queue_pending ?? []).map(item) }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * At boot this server knows no jobs, so any prompt of ours still on the GPU box
+ * is one nobody will collect: a restart mid-render left a stuck clip pass
+ * holding the card and all of the box's RAM for over an hour. Ours is any
+ * prompt that saves under a `touchsphere` prefix. Best effort, a few tries,
+ * since the GPU box may come up after this server does.
+ */
+export async function dropOrphanPrompts(): Promise<void> {
+  if (!imagesEnabled()) return
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const q = await comfyQueue()
+    if (q) {
+      const ours = (it: QueueItem) => Object.values(it.prompt).some(n =>
+        /^(latents\/)?touchsphere/.test(String(n?.inputs?.['filename_prefix'] ?? '')))
+      const orphans = [...q.running, ...q.pending].filter(ours)
+      for (const it of orphans) await dropFromQueue(it.id)
+      if (orphans.length) console.log(`[startup] dropped ${orphans.length} prompt(s) an earlier run left on ComfyUI`)
+      return
+    }
+    await new Promise(r => setTimeout(r, 60_000))
+  }
+}
+
 async function stillQueued(promptId: string): Promise<boolean | null> {
   try {
     const res = await comfyFetch('/queue', undefined, 10_000)
@@ -5835,6 +5882,18 @@ async function stillQueued(promptId: string): Promise<boolean | null> {
  */
 async function dropFromQueue(promptId: string): Promise<void> {
   try {
+    // A prompt already on the GPU is not in the pending list, so deleting it
+    // does nothing: a stuck clip pass kept the card and all the RAM for over an
+    // hour after we had given up on it. /interrupt stops whatever is running,
+    // so only send it when that is ours.
+    if ((await comfyQueue())?.running.some(it => it.id === promptId)) {
+      await comfyFetch('/interrupt', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt_id: promptId }),
+      }, 10_000)
+      console.log(`[image] interrupted abandoned prompt ${promptId} on the GPU`)
+    }
     await comfyFetch('/queue', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
