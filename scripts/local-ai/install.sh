@@ -355,13 +355,13 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
     "text_encoders/qwen3.5_9b_w4a8_gptq.safetensors|https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/text_encoders/qwen3.5_9b_w4a8_gptq.safetensors|7.3"
     "vae/flux2-vae_small.safetensors|https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/vae/flux2-vae_small.safetensors|0.25"
   )
-  # Animate a picture: Wan 2.2 I2V A14B (two fp8 experts, encoder, VAE).
+  # Animate a picture: AniSora V3.2 (Wan 2.2 I2V A14B tuned on anime; two fp8 experts, Wan's encoder and VAE).
   WAN_FILES=(
     "text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors|https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors|6.7"
     "vae/wan_2.1_vae.safetensors|https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors|0.25"
-    # Wan 2.2 itself, the "Best motion" animator (no LoRA, 20 steps)
-    "diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors|https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors|14.3"
-    "diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors|https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors|14.3"
+    # Kijai's fp8_scaled conversion of IndexTeam/Index-anisora V3.2 (Apache 2.0)
+    "diffusion_models/Wan2_2-I2V_AniSoraV3_2_HIGH_14B_fp8_e4m3fn_scaled_KJ.safetensors|https://huggingface.co/Kijai/WanVideo_comfy_fp8_scaled/resolve/main/I2V/AniSora/Wan2_2-I2V_AniSoraV3_2_HIGH_14B_fp8_e4m3fn_scaled_KJ.safetensors|15.0"
+    "diffusion_models/Wan2_2-I2V_AniSoraV3_2_LOW_14B_fp8_e4m3fn_scaled_KJ.safetensors|https://huggingface.co/Kijai/WanVideo_comfy_fp8_scaled/resolve/main/I2V/AniSora/Wan2_2-I2V_AniSoraV3_2_LOW_14B_fp8_e4m3fn_scaled_KJ.safetensors|15.0"
   )
 
   WANT=()

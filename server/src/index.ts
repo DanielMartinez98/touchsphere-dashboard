@@ -107,8 +107,9 @@ console.log('[startup] ============================================')
 // nothing points at. Adopt those back rather than leaking them on the volume.
 void (async () => {
   try {
-    const { adoptOrphanImages } = await import('./image')
+    const { adoptOrphanImages, dropOrphanPrompts } = await import('./image')
     adoptOrphanImages()
+    void dropOrphanPrompts().catch(() => undefined)
   } catch (err) {
     console.warn('[startup] could not check for orphaned pictures:', err instanceof Error ? err.message : err)
   }

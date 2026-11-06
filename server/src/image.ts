@@ -2382,13 +2382,20 @@ function upscaleGraph(modelName: string): ComfyGraph {
 /** Wan 2.2 is trained at 16 frames a second; a clip is `seconds × 16 + 1` frames. */
 const VIDEO_FPS = 16
 const DEFAULT_SECONDS = 3
-// Per pass. A 5 s shot at 768x1152 is about 20-35 minutes over its two passes (slower when Windows apps share the card).
-const VIDEO_TIMEOUT_MS = Number(process.env['COMFYUI_VIDEO_TIMEOUT_MS'] ?? 120 * 60_000)
+// Per shot, and a stuck-shot watchdog as much as a budget. A healthy 5 s shot
+// of AniSora at 768x1152 measured about 10 minutes with Windows apps sharing
+// the card. A shot that has run out of memory never finishes its first step
+// (it re-reads the model from swap forever), so a budget at about 3x the
+// healthy time fails it in half an hour instead of hours.
+const VIDEO_TIMEOUT_MS = Number(process.env['COMFYUI_VIDEO_TIMEOUT_MS'] ?? 30 * 60_000)
 
 /**
- * Wan 2.2 holds a shot together for about 81 frames (5 s), so a longer clip is
- * a chain of segments of at most this length, each starting from the last
- * frame of the one before (`renderClip`).
+ * A longer clip is a chain of shots of at most this length, each starting from
+ * the last frame of the one before (`renderClip`). 5 s is what the model holds
+ * together, and at cfg 1 a 5 s shot (81 frames) at 768x1152 fits with both
+ * experts in one prompt: 23.5 GB of VRAM and 14.3 of the box's 15.5 GB of WSL
+ * RAM at the peak, measured over nine clips. (Plain Wan 2.2 at cfg 3.5 runs a
+ * second, negative batch and did not fit: a 5 s shot filled RAM and swap.)
  */
 const SEGMENT_SECONDS = 5
 const MAX_SECONDS = Number(process.env['ANIMATE_MAX_SECONDS'] ?? 20)
@@ -2404,7 +2411,7 @@ function clampSeconds(n: unknown): number {
   return Math.max(1, Math.min(MAX_SECONDS, v))
 }
 
-/** Seconds per segment for a clip of `total` seconds: as even as possible, none over 5. */
+/** Seconds per segment for a clip of `total` seconds: as even as possible, none over SEGMENT_SECONDS. */
 function segmentPlan(total: number): number[] {
   const n = Math.max(1, Math.ceil(total / SEGMENT_SECONDS))
   const base = total / n
@@ -2431,10 +2438,12 @@ function reachable(graph: ComfyGraph, roots: string[]): ComfyGraph {
 }
 
 /**
- * Unload every model and give the memory back. Between the two experts this is
- * what lets a 768×1152 clip fit: each 14B expert is ~14 GB against the GPU
- * box's 15.5 GB of WSL RAM, and with both resident the swap from one to the
- * other hung. Measured: 13.5 GB in use before, 3.1 GB after.
+ * Unload every model and give the memory back, before and after every shot.
+ * Each 14B expert is ~14 GB against the GPU box's 15.5 GB of WSL RAM, and
+ * ComfyUI keeps the last prompt's models cached: two AniSora clips queued back
+ * to back with no /free between them got ComfyUI killed by the kernel's OOM
+ * killer (12.8 GB resident) while the second loaded. Measured: 13.5 GB in use
+ * before, 3.1 GB after.
  */
 async function freeComfy(): Promise<void> {
   await comfyFetch('/free', {
@@ -2459,77 +2468,69 @@ async function carryOver(refs: OutputRef[], ext: RegExp, name: string): Promise<
 }
 
 /**
- * Render a clip from the one-segment Wan graph `base` as separate prompts, so
- * only ONE 14B expert is ever in memory. For every shot of up to 5 s: the
- * high-noise half (saved as a latent), a /free, the low-noise half from that
- * latent (with the conditioning rebuilt from the same start picture, since the
- * low expert needs WanImageToVideo's image latent and mask too), another /free.
+ * Render a clip from the one-shot two-expert graph `base`. Every shot of up to
+ * 5 s is its own prompt with BOTH experts (high-noise lays out the motion,
+ * low-noise draws the detail), saved as a latent, with a /free before and
+ * after it so no shot ever starts with the last one's models still in RAM.
  * Then one cheap prompt decodes every shot's latent, drops each later shot's
- * duplicated first frame, and saves the video and the poster.
+ * duplicated first frame, and saves the video and the poster. A shot after the
+ * first starts from the last frame of the one before, carried as a PNG, with
+ * its own seed so the noise does not repeat.
  *
- * This is what makes 768×1152 possible on the GPU box. At 480p both experts
- * fitted in one prompt, but 480p is well below what Wan 2.2 14B was trained at,
- * and in a blind test of five ways to run it (2026-11-06: the current 480p,
- * bf16 compute, 30 steps at shift 8, the 5B model at 720p, and this) this was
- * the clear pick; nothing else at 480p came close. A shot after the first
- * starts from the last frame of the one before, carried as a PNG, with its own
- * seed so the noise does not repeat.
+ * One prompt per shot rather than one per expert: with plain Wan 2.2 at
+ * cfg 3.5 both experts did not fit at 768×1152 and each half ran as its own
+ * prompt, which made a 5 s clip hang for an hour and a half. AniSora runs at
+ * cfg 1 (no negative batch), and the same 5 s clip took 579 s in one prompt
+ * against 594 s split in two, with identical output.
  */
 async function renderClip(job: ImageJob, base: ComfyGraph): Promise<OutputRef[]> {
   const byClass = (c: string) => Object.keys(base).filter(id => base[id]!.class_type === c)
   const loadId = byClass('LoadImage')[0]
   const i2v = byClass('WanImageToVideo')[0]
   const samplers = byClass('KSamplerAdvanced')
-  const high = samplers.find(id => base[id]!.inputs['start_at_step'] === 0)
-  const low = samplers.find(id => id !== high)
   const decodeId = byClass('VAEDecode')[0]
   const videoId = byClass('CreateVideo')[0]
   const saveVideo = byClass('SaveVideo')[0]
   const savePoster = byClass('SaveImage')[0]
-  if (!loadId || !i2v || !high || !low || !decodeId || !videoId || !saveVideo || !savePoster) {
-    throw new Error("this animating style's workflow is not a two-expert Wan graph")
+  // The last sampler is the one the decoder reads.
+  const last = decodeId ? (base[decodeId]!.inputs['samples'] as [string, number])[0] : undefined
+  if (!loadId || !i2v || !samplers.length || !last || !decodeId || !videoId || !saveVideo || !savePoster) {
+    throw new Error("this animating style's workflow is not a Wan image-to-video graph")
   }
   const vaeLink = base[decodeId]!.inputs['vae'] as [string, number]
   const plan = segmentPlan(job.seconds ?? DEFAULT_SECONDS)
   const n = plan.length
-  const tag = (k: number, half: string) => `touchsphere-wan-${job.id}-${k}-${half}`
-  const lowLatents: string[] = []
+  const tag = (k: number, what: string) => `touchsphere-clip-${job.id}-${k}-${what}`
+  const latents: string[] = []
   let start = String(base[loadId]!.inputs['image'])
 
+  await freeComfy()
   for (let k = 0; k < n; k++) {
     const g: ComfyGraph = JSON.parse(JSON.stringify(base))
     g[loadId]!.inputs['image'] = start
     g[i2v]!.inputs['length'] = clipFrames(plan[k]!)
-    for (const id of [high, low]) g[id]!.inputs['noise_seed'] = job.seed + k
-    const shot = n > 1 ? `shot ${k + 1} of ${n}, ` : ''
+    for (const id of samplers) g[id]!.inputs['noise_seed'] = job.seed + k
+    const shot = n > 1 ? ` shot ${k + 1} of ${n}` : ''
 
-    push(job, 'animating', `Animating ${shot}first half: the high-noise expert lays out the motion at ${job.width}×${job.height}.`)
-    g['th_save'] = { class_type: 'SaveLatent', inputs: { samples: [high, 0], filename_prefix: `latents/${tag(k, 'h')}` } }
-    const h = await runPass(job, reachable(g, ['th_save']), `${shot}high-noise pass`)
-    const hName = await carryOver(h, /\.latent$/i, `${tag(k, 'h')}.latent`)
-    await freeComfy()
-
-    push(job, 'animating', `Animating ${shot}second half: the low-noise expert draws the detail.`)
-    g['tl_load'] = { class_type: 'LoadLatent', inputs: { latent: hName } }
-    g[low]!.inputs['latent_image'] = ['tl_load', 0]
-    g['tl_save'] = { class_type: 'SaveLatent', inputs: { samples: [low, 0], filename_prefix: `latents/${tag(k, 'l')}` } }
-    const roots = ['tl_save']
+    push(job, 'animating', `Animating${shot} at ${job.width}×${job.height}: about 10 minutes per 5 seconds.`)
+    g['t_save'] = { class_type: 'SaveLatent', inputs: { samples: [last, 0], filename_prefix: `latents/${tag(k, 'l')}` } }
+    const roots = ['t_save']
     if (k < n - 1) {
       // ImageFromBatch clamps batch_index to the batch, so 4095 is "the last frame".
-      g['tl_last'] = { class_type: 'ImageFromBatch', inputs: { image: [decodeId, 0], batch_index: 4095, length: 1 } }
-      g['tl_png'] = { class_type: 'SaveImage', inputs: { images: ['tl_last', 0], filename_prefix: `touchsphere/${tag(k, 'last')}` } }
-      roots.push('tl_png')
+      g['t_last'] = { class_type: 'ImageFromBatch', inputs: { image: [decodeId, 0], batch_index: 4095, length: 1 } }
+      g['t_png'] = { class_type: 'SaveImage', inputs: { images: ['t_last', 0], filename_prefix: `touchsphere/${tag(k, 'last')}` } }
+      roots.push('t_png')
     }
-    const l = await runPass(job, reachable(g, roots), `${shot}low-noise pass`)
-    lowLatents.push(await carryOver(l, /\.latent$/i, `${tag(k, 'l')}.latent`))
-    if (k < n - 1) start = await carryOver(l, /\.png$/i, `${tag(k, 'last')}.png`)
+    const out = await runPass(job, reachable(g, roots), `clip${shot || ' shot'}`)
+    latents.push(await carryOver(out, /\.latent$/i, `${tag(k, 'l')}.latent`))
+    if (k < n - 1) start = await carryOver(out, /\.png$/i, `${tag(k, 'last')}.png`)
     await freeComfy()
   }
 
-  push(job, 'saving', 'Both halves are drawn. Decoding the frames and writing the video.')
+  push(job, 'saving', 'Every shot is drawn. Decoding the frames and writing the video.')
   const f: ComfyGraph = reachable(base, [vaeLink[0]])
   let joined: [string, number] | null = null
-  lowLatents.forEach((name, k) => {
+  latents.forEach((name, k) => {
     f[`f_ll${k}`] = { class_type: 'LoadLatent', inputs: { latent: name } }
     f[`f_d${k}`] = { class_type: 'VAEDecode', inputs: { samples: [`f_ll${k}`, 0], vae: vaeLink } }
     let part: [string, number] = [`f_d${k}`, 0]
@@ -2562,25 +2563,32 @@ export function animateSize(w: number, h: number): { width: number; height: numb
 }
 
 /**
- * Plain Wan 2.2 I2V A14B, the base model AnimeGen was tuned from, at full
- * quality: ComfyUI's own `video_wan2_2_14B_i2v` template with no speed-up LoRA,
- * 20 steps at cfg 3.5 split 10/10 between the experts, shift 5, euler/simple,
- * and the template's own negative. Measured on the GPU box against AnimeGen
- * and LTX-2.5 on the same picture and jump prompt: the only one that moved
- * from the first frame and jumped, crouched and landed with the character
- * staying on-model. About 20-35 minutes per 5 s at 768x1152 in two passes (renderClip); it was 8.5 at 480p; AnimeGen was
- * removed on request after these tests.
+ * Index-AniSora V3.2 (Bilibili, Apache 2.0): Wan 2.2 I2V A14B fine-tuned on
+ * anime, the same two experts and the same graph as ComfyUI's
+ * `video_wan2_2_14B_i2v` template, run the way its card says: 8 steps at cfg 1,
+ * shift 5, euler/simple, the expert switch after step 3 (the 0.9 boundary at
+ * shift 5). Kijai's fp8_scaled files load with the core UNETLoader. At cfg 1
+ * the negative prompt is never sampled; it is kept only so the graph stays the
+ * template's shape.
+ *
+ * Measured on the GPU box (2026-11-06, nine 5 s clips at 768x1152 / 736x1216):
+ * about 10 minutes per 5 s, sharp and on-model in every clip, no melted faces
+ * or extra limbs. Gestures and expressions (a wave, arms up, a smile) follow
+ * the prompt; big full-body moves (a real jump, walking) and camera moves are
+ * weak. 12 steps cost 42% more time with no visible gain. It replaced plain
+ * Wan 2.2 at 20 steps / cfg 3.5, which at this size took 12-19 minutes per
+ * 3 s and hung on a 5 s clip.
  */
 const WAN22_NEGATIVE =
   '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，' +
   '丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，' +
   '杂乱的背景，三条腿，背景人很多，倒着走'
 
-function wan22I2vGraph(): ComfyGraph {
+function aniSoraGraph(): ComfyGraph {
   return {
     '1':  { class_type: 'LoadImage', inputs: { image: '' } },
-    '2':  { class_type: 'UNETLoader', inputs: { unet_name: 'wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors', weight_dtype: 'default' } },
-    '3':  { class_type: 'UNETLoader', inputs: { unet_name: 'wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors', weight_dtype: 'default' } },
+    '2':  { class_type: 'UNETLoader', inputs: { unet_name: 'Wan2_2-I2V_AniSoraV3_2_HIGH_14B_fp8_e4m3fn_scaled_KJ.safetensors', weight_dtype: 'default' } },
+    '3':  { class_type: 'UNETLoader', inputs: { unet_name: 'Wan2_2-I2V_AniSoraV3_2_LOW_14B_fp8_e4m3fn_scaled_KJ.safetensors', weight_dtype: 'default' } },
     '6':  { class_type: 'ModelSamplingSD3', inputs: { model: ['2', 0], shift: 5 } },
     '7':  { class_type: 'ModelSamplingSD3', inputs: { model: ['3', 0], shift: 5 } },
     '8':  { class_type: 'CLIPLoader', inputs: { clip_name: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors', type: 'wan', device: 'default' } },
@@ -2592,16 +2600,16 @@ function wan22I2vGraph(): ComfyGraph {
       width: 832, height: 480, length: DEFAULT_SECONDS * VIDEO_FPS + 1, batch_size: 1,
     } },
     '13': { class_type: 'KSamplerAdvanced', inputs: {
-      model: ['6', 0], add_noise: 'enable', noise_seed: 0, steps: 20, cfg: 3.5,
+      model: ['6', 0], add_noise: 'enable', noise_seed: 0, steps: 8, cfg: 1,
       sampler_name: 'euler', scheduler: 'simple',
       positive: ['12', 0], negative: ['12', 1], latent_image: ['12', 2],
-      start_at_step: 0, end_at_step: 10, return_with_leftover_noise: 'enable',
+      start_at_step: 0, end_at_step: 3, return_with_leftover_noise: 'enable',
     } },
     '14': { class_type: 'KSamplerAdvanced', inputs: {
-      model: ['7', 0], add_noise: 'disable', noise_seed: 0, steps: 20, cfg: 3.5,
+      model: ['7', 0], add_noise: 'disable', noise_seed: 0, steps: 8, cfg: 1,
       sampler_name: 'euler', scheduler: 'simple',
       positive: ['12', 0], negative: ['12', 1], latent_image: ['13', 0],
-      start_at_step: 10, end_at_step: 10000, return_with_leftover_noise: 'disable',
+      start_at_step: 3, end_at_step: 10000, return_with_leftover_noise: 'disable',
     } },
     '15': { class_type: 'VAEDecode', inputs: { samples: ['14', 0], vae: ['9', 0] } },
     '16': { class_type: 'CreateVideo', inputs: { images: ['15', 0], fps: VIDEO_FPS } },
@@ -3653,23 +3661,24 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'vae/flux2-vae_small.safetensors',
     ],
   },
-  'wan22-i2v': {
-    label: 'Wan 2.2',
-    graph: wan22I2vGraph(),
+  'anisora-v3.2': {
+    label: 'AniSora V3.2',
+    graph: aniSoraGraph(),
     animates: true,
     ignoresQuality: true,
     promptStyle: 'prose',
     promptGuide:
       'This animates a picture: the prompt describes the MOTION, in English, in one or two short ' +
-      'sentences ("she crouches and jumps high, then lands"). The picture already says what everything ' +
-      'looks like, so do not describe it again.',
+      'sentences, as concrete actions in order ("she waves with her right hand, then smiles"). Gestures ' +
+      'and expressions work best; big full-body moves and camera moves are weak. The picture already ' +
+      'says what everything looks like, so do not describe it again.',
     prefixes: { positive: 'Japanese anime style,', negative: '' },
     negative: WAN22_NEGATIVE,
-    // Comfy-Org/Wan_2.2_ComfyUI_Repackaged (experts, VAE) and
-    // Comfy-Org/Wan_2.1_ComfyUI_repackaged (encoder). Apache 2.0.
+    // Kijai/WanVideo_comfy_fp8_scaled (the AniSora experts), Comfy-Org's
+    // Wan repackages (encoder, VAE). Apache 2.0.
     needs: [
-      'diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors',
-      'diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors',
+      'diffusion_models/Wan2_2-I2V_AniSoraV3_2_HIGH_14B_fp8_e4m3fn_scaled_KJ.safetensors',
+      'diffusion_models/Wan2_2-I2V_AniSoraV3_2_LOW_14B_fp8_e4m3fn_scaled_KJ.safetensors',
       'text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors',
       'vae/wan_2.1_vae.safetensors',
     ],
@@ -5807,6 +5816,47 @@ interface OutputRef { filename: string; subfolder: string; type: string }
  * treats as "assume it is running": erring towards timing out is safer than
  * erring towards waiting forever.
  */
+type QueueItem = { id: string; prompt: ComfyGraph }
+
+/** ComfyUI's queue as two lists of {id, prompt}; null when it can't be asked. */
+async function comfyQueue(): Promise<{ running: QueueItem[]; pending: QueueItem[] } | null> {
+  try {
+    const res = await comfyFetch('/queue', undefined, 10_000)
+    if (!res.ok) return null
+    const q = await res.json() as { queue_pending?: unknown[][]; queue_running?: unknown[][] }
+    const item = (it: unknown[]): QueueItem => ({
+      id: typeof it[1] === 'string' ? it[1] : '',
+      prompt: (it[2] && typeof it[2] === 'object' ? it[2] : {}) as ComfyGraph,
+    })
+    return { running: (q.queue_running ?? []).map(item), pending: (q.queue_pending ?? []).map(item) }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * At boot this server knows no jobs, so any prompt of ours still on the GPU box
+ * is one nobody will collect: a restart mid-render left a stuck clip pass
+ * holding the card and all of the box's RAM for over an hour. Ours is any
+ * prompt that saves under a `touchsphere` prefix. Best effort, a few tries,
+ * since the GPU box may come up after this server does.
+ */
+export async function dropOrphanPrompts(): Promise<void> {
+  if (!imagesEnabled()) return
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const q = await comfyQueue()
+    if (q) {
+      const ours = (it: QueueItem) => Object.values(it.prompt).some(n =>
+        /^(latents\/)?touchsphere/.test(String(n?.inputs?.['filename_prefix'] ?? '')))
+      const orphans = [...q.running, ...q.pending].filter(ours)
+      for (const it of orphans) await dropFromQueue(it.id)
+      if (orphans.length) console.log(`[startup] dropped ${orphans.length} prompt(s) an earlier run left on ComfyUI`)
+      return
+    }
+    await new Promise(r => setTimeout(r, 60_000))
+  }
+}
+
 async function stillQueued(promptId: string): Promise<boolean | null> {
   try {
     const res = await comfyFetch('/queue', undefined, 10_000)
@@ -5835,6 +5885,18 @@ async function stillQueued(promptId: string): Promise<boolean | null> {
  */
 async function dropFromQueue(promptId: string): Promise<void> {
   try {
+    // A prompt already on the GPU is not in the pending list, so deleting it
+    // does nothing: a stuck clip pass kept the card and all the RAM for over an
+    // hour after we had given up on it. /interrupt stops whatever is running,
+    // so only send it when that is ours.
+    if ((await comfyQueue())?.running.some(it => it.id === promptId)) {
+      await comfyFetch('/interrupt', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt_id: promptId }),
+      }, 10_000)
+      console.log(`[image] interrupted abandoned prompt ${promptId} on the GPU`)
+    }
     await comfyFetch('/queue', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

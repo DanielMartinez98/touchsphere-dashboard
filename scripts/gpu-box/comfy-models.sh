@@ -32,8 +32,8 @@ text_encoders|qwen3.5_9b_w4a8_gptq.safetensors|Comfy-Org/MOSS-Image/text_encoder
 vae|flux2-vae_small.safetensors|Comfy-Org/MOSS-Image/vae/flux2-vae_small.safetensors
 text_encoders|umt5_xxl_fp8_e4m3fn_scaled.safetensors|Comfy-Org/Wan_2.1_ComfyUI_repackaged/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors
 vae|wan_2.1_vae.safetensors|Comfy-Org/Wan_2.2_ComfyUI_Repackaged/split_files/vae/wan_2.1_vae.safetensors
-diffusion_models|wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors|Comfy-Org/Wan_2.2_ComfyUI_Repackaged/split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
-diffusion_models|wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors|Comfy-Org/Wan_2.2_ComfyUI_Repackaged/split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+diffusion_models|Wan2_2-I2V_AniSoraV3_2_HIGH_14B_fp8_e4m3fn_scaled_KJ.safetensors|Kijai/WanVideo_comfy_fp8_scaled/I2V/AniSora/Wan2_2-I2V_AniSoraV3_2_HIGH_14B_fp8_e4m3fn_scaled_KJ.safetensors
+diffusion_models|Wan2_2-I2V_AniSoraV3_2_LOW_14B_fp8_e4m3fn_scaled_KJ.safetensors|Kijai/WanVideo_comfy_fp8_scaled/I2V/AniSora/Wan2_2-I2V_AniSoraV3_2_LOW_14B_fp8_e4m3fn_scaled_KJ.safetensors
 checkpoints|sd_xl_base_1.0.safetensors|stabilityai/stable-diffusion-xl-base-1.0/sd_xl_base_1.0.safetensors
 EOF
 )

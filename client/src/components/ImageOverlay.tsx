@@ -493,7 +493,7 @@ function PromptActions({
                   className={`h-10 px-3 rounded-full border text-[13px] font-semibold active:scale-95 transition ${
                     animator === id ? 'bg-pink-500/30 border-pink-400/50 text-white' : 'bg-white/10 border-hairline text-white/70'}`}
                 >
-                  {id === 'wf:wan22-i2v' ? 'Best motion' : 'Quick'}
+                  {id === 'wf:anisora-v3.2' ? 'AniSora' : id.replace(/^wf:/, '')}
                 </button>
               ))}
             </div>
@@ -528,7 +528,7 @@ function PromptActions({
             </button>
           </div>
           <div className="text-[12px] text-white/45">
-            About 20 to 35 minutes per 5 seconds. Silent, 768×1152, 16 frames a second; longer clips are 5-second shots chained. Big movements (jumping, running) need the whole body in the picture: a close-up has no legs to move.
+            About 10 minutes per 5 seconds. Silent, 768×1152, 16 frames a second; longer clips are 5-second shots chained. Gestures and expressions (a wave, a smile, arms up) work best; big moves like jumping or walking, and camera moves, come out weak.
           </div>
           {animError && <div className="text-[13px] text-amber-300">{animError}</div>}
         </div>
