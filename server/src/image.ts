@@ -2382,7 +2382,7 @@ function upscaleGraph(modelName: string): ComfyGraph {
 /** Wan 2.2 is trained at 16 frames a second; a clip is `seconds × 16 + 1` frames. */
 const VIDEO_FPS = 16
 const DEFAULT_SECONDS = 3
-// Per pass. A 5 s shot at 768x1152 is about 20-25 minutes over its two passes.
+// Per pass. A 5 s shot at 768x1152 is about 20-35 minutes over its two passes (slower when Windows apps share the card).
 const VIDEO_TIMEOUT_MS = Number(process.env['COMFYUI_VIDEO_TIMEOUT_MS'] ?? 120 * 60_000)
 
 /**
@@ -2568,7 +2568,7 @@ export function animateSize(w: number, h: number): { width: number; height: numb
  * and the template's own negative. Measured on the GPU box against AnimeGen
  * and LTX-2.5 on the same picture and jump prompt: the only one that moved
  * from the first frame and jumped, crouched and landed with the character
- * staying on-model. About 20-25 minutes per 5 s at 768x1152 in two passes (renderClip); it was 8.5 at 480p; AnimeGen was
+ * staying on-model. About 20-35 minutes per 5 s at 768x1152 in two passes (renderClip); it was 8.5 at 480p; AnimeGen was
  * removed on request after these tests.
  */
 const WAN22_NEGATIVE =

@@ -223,7 +223,7 @@ export const IMAGE_TOOLS = [
           },
           seconds: {
             type: 'number',
-            description: 'How long the clip is, 1 to 20 seconds. Default 3. Past 5 seconds it is drawn as chained 5-second shots, each shot taking about 20 to 25 minutes. For a long clip, repeat the character\'s key looks (hair, eyes) in the prompt, since each shot only sees the last frame of the one before.',
+            description: 'How long the clip is, 1 to 20 seconds. Default 3. Past 5 seconds it is drawn as chained 5-second shots, each shot taking about 20 to 35 minutes. For a long clip, repeat the character\'s key looks (hair, eyes) in the prompt, since each shot only sees the last frame of the one before.',
           },
         },
         required: ['prompt'],
