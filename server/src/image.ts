@@ -2448,7 +2448,7 @@ async function freeComfy(): Promise<void> {
 async function runPass(job: ImageJob, prompt: ComfyGraph, what: string): Promise<OutputRef[]> {
   const promptId = await queuePrompt(prompt)
   console.log(`[image] ${job.id} ${what} → comfy prompt ${promptId}`)
-  return awaitOutput(promptId, job)
+  return awaitOutput(promptId, job, false)
 }
 
 /** Download a file one pass saved and put it in ComfyUI's input directory for the next pass. */
@@ -5848,7 +5848,7 @@ async function dropFromQueue(promptId: string): Promise<void> {
   }
 }
 
-async function awaitOutput(promptId: string, job: ImageJob): Promise<OutputRef[]> {
+async function awaitOutput(promptId: string, job: ImageJob, announce = true): Promise<OutputRef[]> {
   // The deadline covers RENDERING, not queueing.
   //
   // ComfyUI is a shared box: its queue can hold work from another client, from
@@ -5864,8 +5864,11 @@ async function awaitOutput(promptId: string, job: ImageJob): Promise<OutputRef[]
   const budget = job.seconds ? Math.max(TIMEOUT_MS, VIDEO_TIMEOUT_MS) : TIMEOUT_MS
   let deadline = Date.now() + budget
   const hardStop = Date.now() + QUEUE_WAIT_MS
-  let announcedRunning = false
+  // A clip's passes announce themselves (renderClip says which half is drawing).
+  let announcedRunning = !announce
   let announcedQueued = false
+  // A pass that waited behind other work puts its own words back once it starts.
+  const resume = announce ? null : { phase: job.phase, detail: job.detail }
 
   while (Date.now() < deadline && Date.now() < hardStop) {
     await new Promise(r => setTimeout(r, POLL_MS))
@@ -5884,6 +5887,10 @@ async function awaitOutput(promptId: string, job: ImageJob): Promise<OutputRef[]
           'against it, and the picture will begin as soon as the card is free.')
       }
       continue
+    }
+    if (announcedQueued && resume) {
+      push(job, resume.phase, resume.detail)
+      announcedQueued = false
     }
 
     const res = await comfyFetch(`/history/${encodeURIComponent(promptId)}`)
