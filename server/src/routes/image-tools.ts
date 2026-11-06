@@ -206,16 +206,17 @@ export const IMAGE_TOOLS = [
         'Turn a picture that is already in the gallery into a short silent anime clip — the picture ' +
         'is the first frame and the clip moves on from it. Use when the user asks to animate, bring to ' +
         'life, or make a video of a picture: "animate that", "make her wave", "make it move". It takes ' +
-        'a few minutes and appears on screen by itself, so say one short sentence and do NOT claim it is done.',
+        'about ten minutes per 5 seconds and appears on screen by itself, so say one short sentence and do NOT claim it is done.',
       parameters: {
         type: 'object',
         properties: {
           prompt: {
             type: 'string',
             description:
-              'The MOTION only, in English, one or two short sentences: "she blinks and smiles", ' +
-              '"his cape blows in the wind as the camera slowly pushes in". Do not describe how ' +
-              'things look — the picture already says that.',
+              'The MOTION only, in English, one or two short sentences of concrete actions in order: ' +
+              '"she waves with her right hand, then smiles", "his cape and hair blow in the wind". ' +
+              'Gestures and expressions work best. Do not describe how things look — the picture ' +
+              'already says that.',
           },
           about: {
             type: 'string',

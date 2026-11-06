@@ -240,7 +240,7 @@ export interface ImageStyle {
   edits?: boolean
   /** True for an upscaler (UltraSharp): a picture in, a sharper ×4 picture out. Never a drawing style. */
   upscales?: boolean
-  /** True for an animator (Wan 2.2): a picture in, a short clip out. Never a drawing style. */
+  /** True for an animator (AniSora): a picture in, a short clip out. Never a drawing style. */
   animates?: boolean
 }
 
