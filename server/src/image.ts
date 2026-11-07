@@ -32,7 +32,7 @@ import { advanceSeed, paramsFor, type ImageParams } from './image-params'
 import { estimateRender, humanMs, recordRender } from './image-timing'
 import { serviceUrl, serviceUrlSettled, onAiServiceChange } from './ai-devices'
 import type { AiExchange } from './image-prompt'
-import { composeKontextInstruction, composeRedrawPrompt, visionModel, improvePrompt, prompterModel, readPrompter, locateBox, resolvePromptOption, ORIGINAL_OPTION, ORIGINAL_NAME } from './image-prompt'
+import { composeAnimatePrompt, composeKontextInstruction, composeRedrawPrompt, visionModel, improvePrompt, prompterModel, readPrompter, locateBox, resolvePromptOption, ORIGINAL_OPTION, ORIGINAL_NAME } from './image-prompt'
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -1597,7 +1597,9 @@ export function startImage(req: ImageRequest): ImageJob {
     improveWhy:     '',
     queuedAt:  Date.now(),
     startedAt: Date.now(),
-    ...(animates ? { seconds: clampSeconds(req.seconds), improve: false } : {}),
+    // Animate's improver is its own (composeAnimatePrompt) and runs only when
+    // asked for explicitly: the Animate sheet sends it, the voice tool does not.
+    ...(animates ? { seconds: clampSeconds(req.seconds), improve: req.improve === true } : {}),
   }
   job.plannedSteps = job.steps > 0 ? job.steps : styleDefaults(style).steps
   refreshEstimate(job)
@@ -1756,6 +1758,36 @@ async function run(job: ImageJob): Promise<void> {
       job.improveWhy = why
       improveNote = ` The prompt was left exactly as you wrote it — ${why}.`
       console.warn(`[image] ${job.id} redraw prompt not composed — ${why}`)
+    }
+  } else if (styleAnimates(job.model) && job.improve) {
+    // Animate: the first frame is SHOWN to the vision model with the motion
+    // typed, and it writes the motion the way the animator follows best.
+    push(job, 'improving',
+      `Showing the first frame to ${visionModel()} so it can write your motion the way ` +
+      `${styleLabel(job.model)} follows best: one clear action, step by step, that fits what is in the picture.`)
+    let bytes: Buffer | null = null
+    try { bytes = fs.readFileSync(path.join(imagesDir(), job.sourceFile)) } catch { bytes = null }
+    const better = bytes
+      ? await composeAnimatePrompt(bytes, job.prompt, { label: styleLabel(job.model), guidance: stylePromptGuide(job.model) })
+      : null
+    job.improveMs += better?.ms ?? 0
+    if (better?.conversation) job.conversation.push(better.conversation)
+    if (better?.changed) {
+      job.promptOriginal = better.original
+      job.improvedBy = better.model
+      job.improverNotes = better.notes ?? ''
+      // The template asks for the anime-style opener itself; the style's own
+      // prefix would say it twice.
+      job.prompt = better.prompt.replace(/^\s*japanese anime style[.,]\s*/i, '')
+      job.improveState = 'rewritten'
+      improveNote = ' Your motion was rewritten from the first frame first.'
+      console.log(`[image] ${job.id} motion improved by ${better.model}: "${job.prompt.slice(0, 100)}"`)
+    } else {
+      const why = better?.why || (bytes ? `${better?.model ?? visionModel()} handed back your words unchanged` : 'the picture could not be read from the gallery')
+      job.improveState = 'failed'
+      job.improveWhy = why
+      improveNote = ` The motion was used exactly as you wrote it — ${why}.`
+      console.warn(`[image] ${job.id} motion not improved — ${why}`)
     }
   } else if (edits) {
     // Nothing to improve: an instruction is the format, and the user's own
@@ -4155,6 +4187,12 @@ const NATIVE_SLACK = 1.15
 function drawsSmallAndEnlarges(job: ImageJob): boolean {
   const native = styleNativePixels(job.model)
   return !!native && !job.source && job.width * job.height > native * NATIVE_SLACK
+}
+
+/** The built-in animating style's id (whether or not its files are installed). */
+export function animatorStyleId(): string {
+  const id = Object.keys(BUILTIN_WORKFLOWS).find(k => BUILTIN_WORKFLOWS[k]?.animates)
+  return id ? WORKFLOW_PREFIX + id : ''
 }
 
 /** True for a style that turns a picture into a short clip: see `animates`. */
