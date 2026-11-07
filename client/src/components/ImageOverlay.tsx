@@ -456,19 +456,30 @@ function PromptActions({
   const [seconds, setSeconds] = useState(3)
   const [animating, setAnimating] = useState(false)
   const [animError, setAnimError] = useState('')
+  // "Improve my prompt" for Animate: on unless turned off on this device,
+  // because the motion that works best is not what anyone types first.
+  const [animImprove, setAnimImprove] = useState(() => {
+    try { return localStorage.getItem('animate.improve') !== '0' } catch { return true }
+  })
+  const toggleAnimImprove = useCallback(() => {
+    setAnimImprove(v => {
+      try { localStorage.setItem('animate.improve', v ? '0' : '1') } catch { /* per-device nicety only */ }
+      return !v
+    })
+  }, [])
   const animate = useCallback(async () => {
     if (!source || !animator || animating) return
     setAnimating(true)
     setAnimError('')
     try {
-      const id = await animateImage(source.id, motion, animator, seconds)
+      const id = await animateImage(source.id, motion, animator, seconds, animImprove)
       setAnimSheet(false)
       setMotion('')
       openImage(id, motion.trim() || 'gentle natural motion')
     } catch (err) {
       setAnimError(err instanceof Error ? err.message : String(err))
     } finally { setAnimating(false) }
-  }, [source, animator, animating, motion, seconds])
+  }, [source, animator, animating, motion, seconds, animImprove])
 
   return (
     <>
@@ -479,10 +490,28 @@ function PromptActions({
           <TouchInput
             value={motion}
             onChange={setMotion}
-            placeholder="she blinks and smiles, hair moving in the wind"
+            placeholder={animImprove ? 'she waves' : 'she raises her right hand and waves it several times, smiling. Static camera.'}
             ariaLabel="The motion"
             className="w-full h-11 px-3 rounded-xl bg-black/30 border border-hairline text-white text-[15px]"
           />
+          <button
+            type="button"
+            onClick={toggleAnimImprove}
+            aria-pressed={animImprove}
+            className="flex items-center gap-3 text-left active:scale-[0.99] transition"
+          >
+            <span className={`relative h-6 w-10 shrink-0 rounded-full transition ${animImprove ? 'bg-pink-500/70' : 'bg-white/15'}`}>
+              <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${animImprove ? 'left-[18px]' : 'left-0.5'}`} />
+            </span>
+            <span className="text-[14px] text-white/80">
+              Improve my prompt
+              <span className="block text-[12px] text-white/45">
+                {animImprove
+                  ? 'Type it simply ("she waves"). It looks at the picture and writes the motion step by step, the way the animator follows best.'
+                  : 'Your words are used exactly as typed.'}
+              </span>
+            </span>
+          </button>
           {animators.length > 1 && (
             <div className="flex flex-wrap items-center gap-2">
               {animators.map(id => (

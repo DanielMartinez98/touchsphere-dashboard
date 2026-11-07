@@ -294,11 +294,11 @@ export function animatorStyles(): Promise<string[]> {
 }
 
 /** Queue a clip made from a gallery picture. Returns the job id. */
-export async function animateImage(sourceId: string, motion: string, style: string, seconds: number): Promise<string> {
+export async function animateImage(sourceId: string, motion: string, style: string, seconds: number, improve = false): Promise<string> {
   const res = await fetch('/api/image/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt: motion.trim() || 'gentle natural motion', source: sourceId, model: style, seconds, improve: false }),
+    body: JSON.stringify({ prompt: motion.trim() || 'gentle natural motion', source: sourceId, model: style, seconds, improve }),
   })
   if (!res.ok) {
     const j = await res.json().catch(() => ({})) as { error?: string }

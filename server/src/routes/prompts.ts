@@ -19,11 +19,11 @@
 import { Router, type Request, type Response } from 'express'
 import { assistantSystemPrompt, DEFAULT_ASSISTANT_TEMPLATE } from './chat'
 import { plannerSystemPrompt, plannerDefaultTemplate } from '../image-plan'
-import { imagesEnabled, selectedModel, styleImproverGuide, styleLabel, stylePromptGuide } from '../image'
+import { animatorStyleId, imagesEnabled, selectedModel, styleImproverGuide, styleLabel, stylePromptGuide } from '../image'
 import {
   buildSystemPrompt, improverSystemPrompt, readPrompter, writePrompter, prompterModel, visionModel, visionUserMessage,
-  editModel, editUserMessage, resolvePromptOption, ORIGINAL_OPTION,
-  DEFAULT_TEMPLATE, DEFAULT_VISION_TEMPLATE, DEFAULT_EDIT_TEMPLATE,
+  editModel, editUserMessage, animateUserMessage, resolvePromptOption, ORIGINAL_OPTION,
+  DEFAULT_TEMPLATE, DEFAULT_VISION_TEMPLATE, DEFAULT_EDIT_TEMPLATE, DEFAULT_ANIMATE_TEMPLATE,
 } from '../image-prompt'
 import { readOverrides, writeOverride } from '../prompt-overrides'
 import { ASSISTANT_PROFILES, getSelectedProfile } from '../config/assistant'
@@ -131,6 +131,24 @@ async function view() {
           text: buildSystemPrompt(prompter.editTemplate, facts),
           followedBy: editUserMessage('<what you typed>'),
         },
+        {
+          id: 'animate',
+          group: 'pictures',
+          label: 'Improve an animation',
+          what: 'Shown the picture you are animating with the motion you typed, and rewrites the ' +
+                'motion the way the animator follows best. Runs when "Improve my prompt" is on in ' +
+                'the Animate sheet.',
+          model: visionModel(),
+          modelFrom: 'OLLAMA_VISION_MODEL',
+          template: prompter.animateTemplate,
+          defaultTemplate: DEFAULT_ANIMATE_TEMPLATE,
+          overridden: prompter.animateTemplate !== DEFAULT_ANIMATE_TEMPLATE,
+          placeholders: STYLE_PLACEHOLDERS,
+          text: buildSystemPrompt(prompter.animateTemplate, {
+            label: styleLabel(animatorStyleId()), guidance: stylePromptGuide(animatorStyleId()),
+          }),
+          followedBy: animateUserMessage('<what you typed>'),
+        },
         ...(planner ? [{
           id: 'planner',
           group: 'pictures',
@@ -175,12 +193,13 @@ router.post('/:id', async (req: Request, res: Response) => {
       else writeOverride('assistant', text)
     } else if (id === 'planner' && text !== undefined) {
       writeOverride('planner', text)
-    } else if (id === 'improver' || id === 'vision' || id === 'edit') {
-      const field = id === 'improver' ? 'template' : id === 'vision' ? 'visionTemplate' : 'editTemplate'
+    } else if (id === 'improver' || id === 'vision' || id === 'edit' || id === 'animate') {
+      const field = id === 'improver' ? 'template' : id === 'vision' ? 'visionTemplate'
+        : id === 'animate' ? 'animateTemplate' : 'editTemplate'
       const patch: Record<string, string> = {}
       // '' is "reset" in the prompter store too.
       if (text !== undefined) patch[field] = text ?? ''
-      if (model !== undefined && id !== 'vision') patch[id === 'improver' ? 'model' : 'editModel'] = model
+      if (model !== undefined && id !== 'vision' && id !== 'animate') patch[id === 'improver' ? 'model' : 'editModel'] = model
       writePrompter(patch)
       broadcast('image-prompter', {})
     } else {

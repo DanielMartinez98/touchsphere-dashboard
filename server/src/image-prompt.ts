@@ -139,6 +139,34 @@ export const DEFAULT_EDIT_TEMPLATE = `You write instructions for an image EDITIN
 - Then ONE short clause naming only what is at risk ("Keep her face and pose."). Never a list of everything to keep — that reads as "change nothing".
 - Two sentences at most. Plain English. No quality words, no style words unless the user asked for a style. Answer with the instruction only.`
 
+/**
+ * The system prompt for Animate's improver: shown the start picture and the
+ * motion typed, it writes the motion the way the animator follows best. The
+ * rules are what nine AniSora V3.2 test clips showed (2026-11-06): one
+ * concrete action in order, gestures and expressions rather than big
+ * locomotion or camera moves, the movement and not the look (the picture
+ * already fixes the look), a static camera unless one was asked for, pacing
+ * words, and nothing a close-up cannot do (a bust has no legs to walk on).
+ * The user's, like the others: Settings → Prompts → "Improve an animation".
+ */
+export const DEFAULT_ANIMATE_TEMPLATE = `You write motion prompts for an image-to-video model ({{style}}). You are shown the first frame of the clip and the motion the user asked for. The picture already fixes how everything looks; your prompt only says how it MOVES.
+
+What this model does well: hand and arm gestures (waving, arms up, an arm over the head, hands on hips), facial expressions (smiling, laughing, singing with the mouth open, blinking, closing the eyes), small head turns and nods, swaying, dancing in place, hair and clothes moving in the wind.
+What it does badly: big full-body moves (jumping clear off the ground, bouncing, walking or running across the frame) and camera moves (zoom, push-in, pan, tracking). When the user asks for one of those, write the closest thing that works instead: "crouches slightly, then springs up onto her toes with both arms thrown up" rather than "jumps high".
+
+Rules:
+- Look at the picture first. If it is a close-up or upper-body shot, use only what is visible: no walking, kicking or jumping, because there are no legs in frame to move.
+- Name the subject briefly as it appears ("the girl", "the boy with the sword") — never describe hair, eyes, clothes or the background.
+- Write ONE action as a short ordered sequence, body part by body part: who moves, which part, which way, then what happens next. Add pacing words ("slowly", "quickly", "several times").
+- Keep everything the user asked for; you may only make it more concrete.
+- Unless the user asked for a camera move, end with "Static camera."
+- Start with "Japanese anime style." Write plain English, one to three short sentences, under 60 words. No quality words, no negative prompt.`
+
+/** The fixed user turn beside the first frame, for Animate's improver. */
+export function animateUserMessage(motion: string): string {
+  return `Motion the user asked for: ${motion}`
+}
+
 /** The fixed user turn that rides beside the picture, so the whole conversation can be judged. */
 export function editUserMessage(request: string): string {
   return `The user wants: ${request}\nThe previous attempt with those exact words changed nothing in the picture. Write the instruction that will.`
@@ -160,6 +188,8 @@ export interface PrompterSettings {
   editTemplate:   string
   /** Overrides the vision model for the instruction rewriter alone. '' follows it. */
   editModel:      string
+  /** The system prompt for Animate's improver. Same rules again. */
+  animateTemplate: string
   /**
    * Draw an edit again, with the instruction rewritten, when it changed less
    * than this fraction of the picture (the peak-cell measure, see
@@ -220,6 +250,7 @@ const DEFAULTS: PrompterSettings = {
   visionTemplate: DEFAULT_VISION_TEMPLATE,
   editTemplate:   DEFAULT_EDIT_TEMPLATE,
   editModel:      '',
+  animateTemplate: DEFAULT_ANIMATE_TEMPLATE,
   retryBelow:     0,
   rewordFreely:   false,
   thinkLong:      true,
@@ -255,6 +286,9 @@ export function readPrompter(): PrompterSettings {
       editTemplate: typeof raw.editTemplate === 'string' && raw.editTemplate.trim()
         ? raw.editTemplate.slice(0, 8000)
         : DEFAULTS.editTemplate,
+      animateTemplate: typeof raw.animateTemplate === 'string' && raw.animateTemplate.trim()
+        ? raw.animateTemplate.slice(0, 8000)
+        : DEFAULTS.animateTemplate,
       editModel: typeof raw.editModel === 'string' ? raw.editModel.trim().slice(0, 120) : '',
       retryBelow: typeof raw.retryBelow === 'number' && Number.isFinite(raw.retryBelow)
         ? Math.min(0.5, Math.max(0, raw.retryBelow)) : 0,
@@ -311,6 +345,9 @@ export function writePrompter(patch: Partial<PrompterSettings>): PrompterSetting
     next.editTemplate = patch.editTemplate.trim() ? patch.editTemplate.slice(0, 8000) : DEFAULTS.editTemplate
   }
   if (typeof patch.editModel === 'string') next.editModel = patch.editModel.trim().slice(0, 120)
+  if (typeof patch.animateTemplate === 'string') {
+    next.animateTemplate = patch.animateTemplate.trim() ? patch.animateTemplate.slice(0, 8000) : DEFAULTS.animateTemplate
+  }
   if (typeof patch.retryBelow === 'number' && Number.isFinite(patch.retryBelow)) {
     next.retryBelow = Math.min(0.5, Math.max(0, patch.retryBelow))
   }
@@ -1064,6 +1101,79 @@ export async function composeKontextInstruction(
     clearTimeout(timer)
   }
 }
+
+/**
+ * Animate's improver: the vision model is shown the clip's first frame and the
+ * motion typed, and writes the motion the way the animator follows best (see
+ * DEFAULT_ANIMATE_TEMPLATE). Same contract as the other rewriters: a fresh
+ * conversation, never throws, and any failure hands back the user's words with
+ * the reason, so a dead model costs a better prompt and never the clip. It
+ * thinks in notes first and answers between <prompt> tags, like the improver.
+ */
+export async function composeAnimatePrompt(image: Buffer, motion: string, style: StyleFacts): Promise<Improvement> {
+  const started = Date.now()
+  const model = visionModel()
+  const system = buildSystemPrompt(readPrompter().animateTemplate, style) + ANSWER_FORMAT_MOTION
+  const user = animateUserMessage(motion)
+  const turns: AiTurn[] = [turn('system', system), turn('user', user, { picture: true })]
+  const give = (changed: boolean, text: string, why: string, notes = ''): Improvement => ({
+    prompt: text, original: motion, changed, model, ms: Date.now() - started, why, notes,
+    conversation: { purpose: 'Looking at the first frame and writing the motion', model, turns },
+  })
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
+  let url = imageModelUrl()
+  try {
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    if (OLLAMA_API_KEY) headers['authorization'] = `Bearer ${OLLAMA_API_KEY}`
+    url = (await ollamaUrlSettled('image')).replace(/\/$/, '')
+    const res = await fetch(`${url}/api/chat`, {
+      method: 'POST',
+      headers,
+      signal: ctrl.signal,
+      body: JSON.stringify({
+        model,
+        stream: false,
+        think: false,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user, images: [image.toString('base64')] },
+        ],
+        // Unloaded at once: the animator needs the whole card and most of the RAM.
+        keep_alive: 0,
+        options: { num_ctx: 8192, temperature: 0.4, num_predict: 900 },
+      }),
+    })
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      turns.push(turn('assistant', `(no answer: HTTP ${res.status}${body ? ` — ${body.slice(0, 300)}` : ''})`))
+      return give(false, motion, `${model} answered HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ''}`)
+    }
+    const json = (await res.json()) as { message?: { content?: string }; response?: string }
+    const raw = json.message?.content ?? json.response ?? ''
+    turns.push(turn('assistant', raw))
+    const { prompt, notes } = splitAnswer(raw)
+    const text = unwrap(prompt).replace(/\s+/g, ' ').trim()
+    if (!text) return give(false, motion, `${model} returned an empty answer`)
+    if (looksLikeRefusal(text)) return give(false, motion, `${model} refused to write this motion`)
+    if (text.length > 600) return give(false, motion, `the motion came back ${text.length} characters long`)
+    if (text.length < 12) return give(false, motion, 'the motion came back too short to be a prompt')
+    return give(text !== motion, text, '', notes)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.warn('[image-prompt] animate error:', msg)
+    return give(false, motion, describeCallError(err, model, url))
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** Animate's answer format: a few notes, then the motion between tags. */
+const ANSWER_FORMAT_MOTION = `
+
+HOW TO ANSWER:
+1. First, a few short notes: how much of the body is in frame, what the user asked for, and whether it is something this model does well or needs turning into the closest thing that works.
+2. Then the finished motion prompt between <prompt> and </prompt>. Only the text between those tags is sent to the video model.`
 
 /** A rectangle in fractions of the picture, 0-1, from the top-left. */
 export interface Box { left: number; top: number; right: number; bottom: number }
