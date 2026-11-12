@@ -239,6 +239,8 @@ async function fake(self: () => string) {
     m = /^\/stats\/v1\/operate\/organizations\/(.+)$/.exec(p)
     if (m) {
       if (m[1] !== 'org-core-1') { json(404, { errors: [{ msg: 'organization not found' }] }); return }
+      // The real service answers a key sent both ways with a bare, empty 400.
+      if (req.headers['authorization'] && u.searchParams.get('apikey')) { res.writeHead(400); res.end(); return }
       if (u.searchParams.get('apikey') !== 'unity-key-1234') { json(400, { errors: [{ msg: 'access token required' }] }); return }
       const start = (u.searchParams.get('start') ?? '').slice(0, 10), end = (u.searchParams.get('end') ?? '').slice(0, 10)
       const lines = ['timestamp,source_game_id,source_name,country,platform,placement,adrequest_count,available_sum,start_count,view_count,revenue_sum']

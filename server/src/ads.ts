@@ -387,9 +387,11 @@ async function unityFetch(orgId: string, apiKey: string, from: string, to: strin
       end: `${nextDay(to)}T00:00:00Z`,
       apikey: apiKey,
     },
-    // The key goes both ways: the docs allow either, and a redirect to another
-    // host (the docs say the data is behind one) drops the header but keeps the query.
-    headers: { Accept: 'text/csv', Authorization: `Token ${apiKey}` },
+    // The key goes in the query ONLY. The docs allow the query or an
+    // `Authorization: Token` header, and Unity answers a request carrying both
+    // with a bare 400 and an empty body, whatever the key (measured 2026-11-12).
+    // The query is the one that survives the redirect the data sits behind.
+    headers: { Accept: 'text/csv' },
     responseType: 'text', transformResponse: x => x as string,
     validateStatus: () => true, timeout: 120_000, maxContentLength: 256 * 1024 * 1024,
   })
