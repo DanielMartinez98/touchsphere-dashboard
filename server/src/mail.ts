@@ -158,6 +158,15 @@ export function clientIdOnly(): string {
   return read().clientId
 }
 
+/**
+ * The registered Google app, for another sign-in on this server that can share
+ * it (AdMob, in ads.ts). Server-side only: the secret never goes on the wire.
+ */
+export function googleClientApp(): { clientId: string; clientSecret: string } | null {
+  const s = read()
+  return s.clientId && s.clientSecret ? { clientId: s.clientId, clientSecret: s.clientSecret } : null
+}
+
 export function setMuted(email: string, muted: boolean): void {
   const s = read()
   const a = s.accounts.find(x => x.email === email)
