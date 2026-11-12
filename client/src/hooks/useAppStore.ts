@@ -21,6 +21,8 @@ export interface UnifiedApp {
   networks:  Network[]
   platforms: string[]
   hidden:    boolean
+  /** Ad apps combined into this one by hand, so each can be split off again. */
+  combined:  { id: string; name: string; network: Network }[]
 }
 
 interface RunNote { at: string; ok: boolean; detail: string }
@@ -165,13 +167,16 @@ export function useAppStore(active = true) {
     setView(v => v && { ...v, apps: v.apps.map(a => (a.id === id ? { ...a, hidden } : a)) })
     return send('POST', `/api/app-store/apps/${encodeURIComponent(id)}/hidden`, { hidden }, 'hide')
   }, [send])
+  /** Count an ad network's app as part of another app; null stands it on its own again. */
+  const setLink = useCallback((id: string, target: string | null) =>
+    send('POST', `/api/app-store/apps/${encodeURIComponent(id)}/link`, { target }, 'hide'), [send])
   const setCurrency = useCallback((currency: string) => send('POST', '/api/app-store/currency', { currency }, 'save'), [send])
   const saveUnity = useCallback((orgId: string, apiKey: string) => send('POST', '/api/app-store/unity', { orgId, apiKey }, 'ads'), [send])
   const forgetUnity = useCallback(() => send('DELETE', '/api/app-store/unity', undefined, 'ads'), [send])
   const saveGoogleApp = useCallback((clientId: string, clientSecret: string) => send('POST', '/api/app-store/admob/app', { clientId, clientSecret }, 'ads'), [send])
   const forgetAdmob = useCallback(() => send('DELETE', '/api/app-store/admob', undefined, 'ads'), [send])
 
-  return { view, error, busy, save, forget, sync, setHidden, setCurrency, saveUnity, forgetUnity, saveGoogleApp, forgetAdmob }
+  return { view, error, busy, save, forget, sync, setHidden, setLink, setCurrency, saveUnity, forgetUnity, saveGoogleApp, forgetAdmob }
 }
 
 export type AppStoreActions = ReturnType<typeof useAppStore>

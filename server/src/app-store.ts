@@ -825,7 +825,12 @@ export function clearAppStoreConfig(): void {
  * not released yet, a test build) and which currency the money is shown in.
  * Its own file, so forgetting the key or re-reading the history never loses it.
  */
-export interface AppPrefs { hidden: string[]; currency: string }
+export interface AppPrefs {
+  hidden: string[]
+  currency: string
+  /** Ad apps the user combined into another app: `ad:<network>:<id>` → the app it belongs to. */
+  links: Record<string, string>
+}
 
 const PREFS_FILE = 'app-store-prefs.json'
 
@@ -835,9 +840,12 @@ export function readPrefs(): AppPrefs {
     return {
       hidden: Array.isArray(raw.hidden) ? raw.hidden.filter((x): x is string => typeof x === 'string').slice(0, 500) : [],
       currency: typeof raw.currency === 'string' && /^[A-Z]{3}$/.test(raw.currency) ? raw.currency : 'USD',
+      links: raw.links && typeof raw.links === 'object'
+        ? Object.fromEntries(Object.entries(raw.links).filter(([k, v]) => k.startsWith('ad:') && typeof v === 'string' && v && v !== k).slice(0, 500))
+        : {},
     }
   } catch {
-    return { hidden: [], currency: 'USD' }
+    return { hidden: [], currency: 'USD', links: {} }
   }
 }
 
@@ -854,6 +862,28 @@ export function setAppHidden(id: string, hidden: boolean): void {
   const set = new Set(p.hidden)
   if (hidden) set.add(id); else set.delete(id)
   writePrefs({ ...p, hidden: [...set] })
+  broadcast('app-store', { prefs: true })
+}
+
+/**
+ * Count an ad network's app as part of another app (its App Store twin under a
+ * different name), or stand it on its own again with `null`. Only an ad app can
+ * be moved: an App Store app is the thing the others are joined to.
+ */
+export function setAppLink(id: string, target: string | null): void {
+  if (!id.startsWith('ad:')) throw new Error('Only an app that comes from an ad network can be combined into another.')
+  const p = readPrefs()
+  const links = { ...p.links }
+  if (target && target !== id) {
+    // Never a loop: following the target must not lead back here.
+    for (let at: string | undefined = target, i = 0; at && i < 8; at = links[at], i++) {
+      if (at === id) throw new Error('Those two are already combined the other way round.')
+    }
+    links[id] = target
+  } else {
+    delete links[id]
+  }
+  writePrefs({ ...p, links })
   broadcast('app-store', { prefs: true })
 }
 

@@ -46,6 +46,8 @@ export function AdsSettings({ view, store }: { view: AppStoreView; store: AppSto
   const [apiKey, setApiKey] = useState('')
   const [editUnity, setEditUnity] = useState(false)
   const [copied, setCopied] = useState(false)
+  /** The ad app whose "which app is this the same as" list is open. */
+  const [combining, setCombining] = useState<string | null>(null)
   // Which button the last refusal belongs to, so its reason is printed beside
   // that button and not only at the top of the tab, a screen and a half away.
   const [failed, setFailed] = useState<'unity' | 'google' | null>(null)
@@ -55,18 +57,47 @@ export function AdsSettings({ view, store }: { view: AppStoreView; store: AppSto
   return (
     <>
       <Section title="Which apps are listed"
-        description="Switch off an app you do not want in the Apps corner — one that is not released yet, a test build. It leaves the list, every total and the assistant’s answers. Its figures are still kept, so switching it back on loses nothing.">
+        description="Switch off an app you do not want in the Apps corner — one that is not released yet, a test build. It leaves the list, every total and the assistant’s answers. Its figures are still kept, so switching it back on loses nothing. An ad network’s app that is really one of your App Store apps under another name can be combined with it.">
         <Card className="p-2 space-y-1">
           {view.apps.length === 0 && <p className="text-[13px] text-white/40 px-2 py-2">No apps have been read yet.</p>}
           {view.apps.map(a => (
-            <div key={a.id} className="flex items-center justify-between gap-3 px-2.5 py-2">
-              <div className="min-w-0">
-                <div className={`text-sm font-medium truncate ${a.hidden ? 'text-white/40' : 'text-white/90'}`}>{a.name}</div>
-                <div className="text-[11.5px] text-white/35 truncate">
-                  {[a.store ? 'App Store' : null, ...a.networks.map(n => NETWORK_NAME[n]), a.bundleId].filter(Boolean).join(' · ')}
+            <div key={a.id} className="px-2.5 py-2 space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className={`text-sm font-medium truncate ${a.hidden ? 'text-white/40' : 'text-white/90'}`}>{a.name}</div>
+                  <div className="text-[11.5px] text-white/35 truncate">
+                    {[a.store ? 'App Store' : null, ...a.networks.map(n => NETWORK_NAME[n]), a.bundleId].filter(Boolean).join(' · ')}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {!a.store && view.apps.length > 1 && (
+                    <button type="button" onClick={() => setCombining(combining === a.id ? null : a.id)}
+                      className={`${BTN} ${combining === a.id ? 'bg-white/20 text-white' : 'bg-white/10 text-white/70'} border border-hairline`}>
+                      {combining === a.id ? 'Cancel' : 'Combine…'}
+                    </button>
+                  )}
+                  <Switch on={!a.hidden} onChange={on => { void store.setHidden(a.id, !on) }} label={`Show ${a.name}`} />
                 </div>
               </div>
-              <Switch on={!a.hidden} onChange={on => { void store.setHidden(a.id, !on) }} label={`Show ${a.name}`} />
+              {a.combined.map(c => (
+                <div key={c.id} className="flex items-center justify-between gap-3 pl-3 border-l-2 border-white/10">
+                  <div className="text-[12px] text-white/50 truncate">Includes <span className="text-white/75">{c.name}</span> · {NETWORK_NAME[c.network]}</div>
+                  <button type="button" onClick={() => { void store.setLink(c.id, null) }} className={`${BTN} bg-white/10 text-white/60 shrink-0`}>Split off</button>
+                </div>
+              ))}
+              {combining === a.id && (
+                <div className="rounded-xl bg-black/25 border border-white/8 p-3 space-y-2">
+                  <Hint>Which app is {a.name} the same as? Its ad figures are added to that app everywhere.</Hint>
+                  <div className="flex flex-wrap gap-2">
+                    {view.apps.filter(o => o.id !== a.id).map(o => (
+                      <button key={o.id} type="button" className={`${BTN} bg-white/10 border border-hairline text-white/85`}
+                        onClick={() => { setCombining(null); void store.setLink(a.id, o.id) }}>
+                        {o.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           ))}
         </Card>

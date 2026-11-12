@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import crypto from 'crypto'
-import { clearAppStoreConfig, setAppHidden, setAppStoreConfig, setDisplayCurrency, syncNow } from '../app-store'
+import { clearAppStoreConfig, setAppHidden, setAppLink, setAppStoreConfig, setDisplayCurrency, syncNow } from '../app-store'
 import { appStoreView, buildReport, type Group } from '../app-report'
 import {
   admobAuthUrl, completeAdmobSignIn, forgetAdmob, forgetUnity, setGoogleApp, setUnityConfig, syncAdsNow,
@@ -86,6 +86,20 @@ router.post('/apps/:id/hidden', (req: Request, res: Response) => {
   if (!id || id.length > 200) { res.status(400).json({ error: 'no such app' }); return }
   setAppHidden(id, (req.body as { hidden?: unknown } | undefined)?.hidden === true)
   res.json(view(req))
+})
+
+// POST /api/app-store/apps/:id/link { target } — count an ad network's app as
+// part of another app (the same game under another name); null splits it off again.
+router.post('/apps/:id/link', (req: Request, res: Response) => {
+  const id = String(req.params['id'] ?? '')
+  const target = (req.body as { target?: unknown } | undefined)?.target
+  if (!id || id.length > 200 || (typeof target === 'string' && target.length > 200)) { res.status(400).json({ error: 'no such app' }); return }
+  try {
+    setAppLink(id, typeof target === 'string' && target ? target : null)
+    res.json(view(req))
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) })
+  }
 })
 
 // POST /api/app-store/currency { currency } — the currency every amount is shown in.
