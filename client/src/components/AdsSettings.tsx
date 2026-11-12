@@ -46,6 +46,9 @@ export function AdsSettings({ view, store }: { view: AppStoreView; store: AppSto
   const [apiKey, setApiKey] = useState('')
   const [editUnity, setEditUnity] = useState(false)
   const [copied, setCopied] = useState(false)
+  // Which button the last refusal belongs to, so its reason is printed beside
+  // that button and not only at the top of the tab, a screen and a half away.
+  const [failed, setFailed] = useState<'unity' | 'google' | null>(null)
   const { admob, unity, googleApp } = view.ads
   const busy = store.busy === 'ads'
 
@@ -117,9 +120,10 @@ export function AdsSettings({ view, store }: { view: AppStoreView; store: AppSto
                 <TouchInput value={clientId} onChange={setClientId} plain placeholder="Client ID — ends in .apps.googleusercontent.com" ariaLabel="Google client ID" className={FIELD} />
                 <TouchInput value={clientSecret} onChange={setClientSecret} plain placeholder="Client secret" ariaLabel="Google client secret" className={FIELD} />
                 <button type="button" disabled={busy || !clientId.trim() || !clientSecret.trim()} className={`${BTN} bg-white/10 border border-hairline text-white/80`}
-                  onClick={() => { void store.saveGoogleApp(clientId, clientSecret).then(ok => { if (ok) { setClientId(''); setClientSecret('') } }) }}>
+                  onClick={() => { setFailed(null); void store.saveGoogleApp(clientId, clientSecret).then(ok => { if (ok) { setClientId(''); setClientSecret('') } else setFailed('google') }) }}>
                   Save the Google app
                 </button>
+                {failed === 'google' && store.error && <p className="text-[13px] text-red-300 rounded-xl bg-red-500/10 border border-red-400/30 px-3 py-2">{store.error}</p>}
               </>
             )}
             <div className="pt-1 border-t border-white/8 space-y-2">
@@ -164,12 +168,13 @@ export function AdsSettings({ view, store }: { view: AppStoreView; store: AppSto
             <div className="flex gap-2">
               <button type="button" disabled={busy || !orgId.trim() || (!apiKey.trim() && !unity.connected)}
                 className={`${BTN} bg-cyan-500/20 border border-cyan-400/30 text-cyan-100 flex items-center gap-2`}
-                onClick={() => { void store.saveUnity(orgId, apiKey).then(ok => { if (ok) { setApiKey(''); setEditUnity(false) } }) }}>
+                onClick={() => { setFailed(null); void store.saveUnity(orgId, apiKey).then(ok => { if (ok) { setApiKey(''); setEditUnity(false) } else setFailed('unity') }) }}>
                 {busy && <RotateCw size={14} className="animate-spin" />}
                 {busy ? 'Checking with Unity…' : 'Connect Unity Ads'}
               </button>
               {editUnity && <button type="button" onClick={() => setEditUnity(false)} className={`${BTN} bg-white/10 text-white/60`}>Cancel</button>}
             </div>
+            {failed === 'unity' && store.error && <p className="text-[13px] text-red-300 rounded-xl bg-red-500/10 border border-red-400/30 px-3 py-2">{store.error}</p>}
           </Card>
         )}
       </Section>
