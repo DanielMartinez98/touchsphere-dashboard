@@ -286,7 +286,7 @@ interface Report {
   from: string; to: string; prevFrom: string; prevTo: string; days: number; currency: string; approx: boolean
   apps: { id: string; name: string; store: boolean; networks: string[] }[]
   totals: M; prev: M; series: (M & { key: string })[]
-  byApp: { id: string; name: string; totals: M }[]
+  byApp: { id: string; name: string; totals: M; series: M[] }[]
   byCountry: { code: string; downloads: number; proceeds: number; impressions: number | null; adRevenue: number }[]
   bySource: { source: string; impressions: number; pageViews: number }[] | null
   ads: { byNetwork: { key: string; revenue: number; impressions: number }[]; byUnit: { key: string; label: string; revenue: number }[]; byFormat: { key: string }[]; byPlatform: { key: string }[] }
@@ -372,6 +372,7 @@ async function main(): Promise<void> {
     check('impressions and product page views add up (other page types left out)', all.totals.impressions === expDownloads() * 40 && all.totals.pageViews === expDownloads() * 6, `${all.totals.impressions} / ${all.totals.pageViews}`)
     check('ad revenue is AdMob (from euros) plus Unity', near(all.totals.adRevenue, expAdmob() + expUnity(), 0.1), `${all.totals.adRevenue} vs ${(expAdmob() + expUnity()).toFixed(2)}`)
     check('the days of the series add up to the total', sum(all.series, s => s.downloads) === all.totals.downloads && near(sum(all.series, s => s.adRevenue), all.totals.adRevenue, 0.1))
+    check('each app carries its own line, and the lines add up to the chart', all.byApp.every(a => a.series.length === all.series.length) && all.series.every((s, i) => sum(all.byApp, a => a.series[i]!.downloads) === s.downloads && near(sum(all.byApp, a => a.series[i]!.adRevenue + a.series[i]!.proceeds), s.adRevenue + s.proceeds, 0.1)))
     check('the stretch before has its own figures', all.prev.downloads > 0 && all.prev.downloads !== all.totals.downloads)
     const sudoku = all.byApp.find(a => a.name === 'Sudoku Zen')
     check('AdMob (by store id) and Unity (by name) both join the App Store app', !!sudoku && near(sudoku.totals.adRevenue, expAdmob([AD_APPS[0]]) + expUnity([UNITY_GAMES[0]!]), 0.1) && sudoku.totals.downloads === expDownloads([APPS[0]!]), JSON.stringify(sudoku?.totals))

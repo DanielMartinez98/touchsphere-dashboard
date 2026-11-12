@@ -87,7 +87,7 @@ export interface Report {
   totals:   Measures
   prev:     Measures
   series:   ({ key: string; from: string; to: string } & Measures)[]
-  byApp:    { id: string; name: string; totals: Measures; prev: Measures; trend: number[] }[]
+  byApp:    { id: string; name: string; totals: Measures; prev: Measures; trend: number[]; series: Measures[] }[]
   byCountry: { code: string; downloads: number; proceeds: number; impressions: number | null; pageViews: number | null; adRevenue: number; adImpressions: number }[]
   bySource: { source: string; impressions: number; pageViews: number; taps: number }[] | null
   ads: { byNetwork: AdSlice[]; byUnit: AdSlice[]; byFormat: AdSlice[]; byPlatform: AdSlice[] }

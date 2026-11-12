@@ -8,6 +8,21 @@ import type { Group, Measures } from '../../../hooks/useAppStore'
 export const SALES_COLOR = '#818cf8'
 export const ADS_COLOR = '#34d399'
 
+/**
+ * The colours apps are told apart by, in a fixed order that keeps neighbours
+ * distinct for colour-blind readers on this dark surface. A colour belongs to
+ * an app, not to its rank: `appColors()` deals them out by app id, so a filter
+ * or a new best seller never repaints the others.
+ */
+export const APP_COLORS = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767']
+export const OTHER_COLOR = '#8b9099'
+
+export function appColors(ids: string[]): Map<string, string> {
+  const out = new Map<string, string>()
+  ;[...ids].sort().forEach((id, i) => { if (i < APP_COLORS.length) out.set(id, APP_COLORS[i]!) })
+  return out
+}
+
 export const compact = (n: number): string =>
   n >= 10_000
     ? new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(n)
