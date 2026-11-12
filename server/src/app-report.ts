@@ -152,7 +152,8 @@ export interface Report {
   totals:   Measures
   prev:     Measures
   series:   ({ key: string; from: string; to: string } & Measures)[]
-  byApp:    { id: string; name: string; totals: Measures; prev: Measures; trend: number[] }[]
+  /** `series` is that app's own figures per bucket, in the order of `series` above: the lines of the chart. */
+  byApp:    { id: string; name: string; totals: Measures; prev: Measures; trend: number[]; series: Measures[] }[]
   byCountry: { code: string; downloads: number; proceeds: number; impressions: number | null; pageViews: number | null; adRevenue: number; adImpressions: number }[]
   /** null when a country filter is set: Apple's file does not cross source with territory here. */
   bySource: { source: string; impressions: number; pageViews: number; taps: number }[] | null
@@ -225,8 +226,13 @@ export function buildReport(q: ReportQuery): Report {
     if (b) b.to = d
     else series.set(key, { key, from: d, to: d, ...zero() })
   }
-  const byApp = new Map<string, { totals: Measures; prev: Measures; trend: Map<string, number> }>()
-  for (const a of apps) byApp.set(a.id, { totals: zero(), prev: zero(), trend: new Map() })
+  const byApp = new Map<string, { totals: Measures; prev: Measures; trend: Map<string, number>; series: Map<string, Measures> }>()
+  for (const a of apps) byApp.set(a.id, { totals: zero(), prev: zero(), trend: new Map(), series: new Map() })
+  const appBucket = (slot: { series: Map<string, Measures> }, key: string): Measures => {
+    let m = slot.series.get(key)
+    if (!m) { m = zero(); slot.series.set(key, m) }
+    return m
+  }
   const byCountry = new Map<string, Report['byCountry'][number]>()
   const country = (code: string) => {
     let c = byCountry.get(code)
@@ -274,7 +280,10 @@ export function buildReport(q: ReportQuery): Report {
       const now = d >= from
       const m = storeDay(day)
       add(now ? slot.totals : slot.prev, m)
-      if (now) slot.trend.set(bucketOf(d, group), (slot.trend.get(bucketOf(d, group)) ?? 0) + (m.downloads ?? 0))
+      if (now) {
+        slot.trend.set(bucketOf(d, group), (slot.trend.get(bucketOf(d, group)) ?? 0) + (m.downloads ?? 0))
+        add(appBucket(slot, bucketOf(d, group)), m)
+      }
       if (!picked) continue
       add(now ? totals : prev, m)
       if (!now) continue
@@ -326,6 +335,7 @@ export function buildReport(q: ReportQuery): Report {
       const m: Partial<Measures> = { adRevenue: rev, adImpressions: r.imp, adClicks: r.clk, adRequests: r.req, adMatched: r.mat }
       if (okNet && okUnit && okCc) {
         add(now ? byApp.get(appId)!.totals : byApp.get(appId)!.prev, m)
+        if (now) add(appBucket(byApp.get(appId)!, bucketOf(d, group)), m)
         if (okApp) {
           add(now ? totals : prev, m)
           if (now) add(series.get(bucketOf(d, group))!, m)
@@ -372,7 +382,7 @@ export function buildReport(q: ReportQuery): Report {
     series: [...series.values()].map(tidy) as Report['series'],
     byApp: apps.map(a => {
       const s = byApp.get(a.id)!
-      return { id: a.id, name: a.name, totals: tidy(s.totals), prev: tidy(s.prev), trend: seriesKeys.map(k => s.trend.get(k) ?? 0) }
+      return { id: a.id, name: a.name, totals: tidy(s.totals), prev: tidy(s.prev), trend: seriesKeys.map(k => s.trend.get(k) ?? 0), series: seriesKeys.map(k => tidy(s.series.get(k) ?? zero())) }
     }).sort((a, b) =>
       (b.totals.proceeds + b.totals.adRevenue) - (a.totals.proceeds + a.totals.adRevenue)
       || b.totals.downloads - a.totals.downloads || a.name.localeCompare(b.name)),
