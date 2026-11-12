@@ -94,7 +94,8 @@ const AD_APPS = [
 ] as const
 const UNITY_GAMES = [
   { id: '5550001', name: 'Sudoku Zen', platform: 'ios', placements: [{ id: 'Rewarded_iOS', ecpm: 11 }, { id: 'Interstitial_iOS', ecpm: 5 }] },
-  { id: '5550003', name: 'Pixel Runner', platform: 'ios', placements: [{ id: 'Rewarded_iOS', ecpm: 8 }] },
+  // Unity names a game after its project, with the project id in brackets: only the bundle id ties this one to its App Store app.
+  { id: '5550003', name: 'Runner (5550003ab)', platform: 'ios', placements: [{ id: 'Rewarded_iOS', ecpm: 8 }] },
 ]
 function adDay(salt: number, share: number, ecpm: number, date: string) {
   if (!inHistory(date)) return null
@@ -419,6 +420,21 @@ async function main(): Promise<void> {
     } else {
       await api('POST', '/api/app-store/apps/1000000003/hidden', { hidden: false })
     }
+
+    console.log('\nCombining apps')
+    const runner = all.byApp.find(a => a.name === 'Pixel Runner')
+    check('a Unity game named after its project joins its App Store app by bundle id', !!runner && near(runner.totals.adRevenue, expUnity([UNITY_GAMES[1]!]), 0.1) && !all.apps.some(a => a.name.startsWith('Runner (')), JSON.stringify(runner?.totals))
+    const linked = await api<{ apps: { id: string; name: string; combined: { id: string; name: string }[] }[]; error?: string }>('POST', `/api/app-store/apps/${encodeURIComponent(android!.id)}/link`, { target: '1000000001' })
+    const joined = await report(`from=${from}&to=${to}`)
+    const sudoku2 = joined.byApp.find(a => a.name === 'Sudoku Zen')
+    check('an ad app combined by hand leaves the list and its figures move to the app it belongs to',
+      linked.status === 200 && !joined.apps.some(a => a.id === android!.id) && linked.data.apps.find(a => a.id === '1000000001')?.combined[0]?.id === android!.id
+      && !!sudoku2 && near(sudoku2.totals.adRevenue, expAdmob([AD_APPS[0], AD_APPS[2]]) + expUnity([UNITY_GAMES[0]!]), 0.1) && near(joined.totals.adRevenue, all.totals.adRevenue, 0.1), JSON.stringify(sudoku2?.totals))
+    const refused = await api<{ error?: string }>('POST', '/api/app-store/apps/1000000001/link', { target: android!.id })
+    check('an App Store app cannot be combined into something else', refused.status === 400 && !!refused.data.error)
+    await api('POST', `/api/app-store/apps/${encodeURIComponent(android!.id)}/link`, { target: null })
+    const split = await report(`from=${from}&to=${to}`)
+    check('splitting it off puts it back', split.apps.some(a => a.id === android!.id) && near(split.byApp.find(a => a.name === 'Sudoku Zen')!.totals.adRevenue, sudoku!.totals.adRevenue, 0.1))
 
     console.log('\nWhat is kept')
     const mode = fs.statSync(path.join(dir, 'ads.json')).mode & 0o777

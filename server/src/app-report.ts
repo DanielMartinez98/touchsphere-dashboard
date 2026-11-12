@@ -43,32 +43,78 @@ export interface UnifiedApp {
   networks:  Network[]
   platforms: string[]
   hidden:    boolean
+  /** Ad apps the user combined into this one by hand (Settings → App Store), so each can be split off again. */
+  combined:  { id: string; name: string; network: Network }[]
 }
 
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '')
 
-function unify(stats: Stats, ads: AdStore, hidden: Set<string>): { apps: UnifiedApp[]; adKeyToApp: Map<string, string> } {
+/**
+ * The names an ad network's app may be found under. Unity names a game after
+ * its project and adds the project id in brackets ("Spring Jump (212fd4f35)"),
+ * so the name is also tried without a trailing bracket.
+ */
+function adNames(name: string): string[] {
+  const bare = name.replace(/\s*[([][^)\]]*[)\]]\s*$/, '')
+  return [...new Set([norm(name), norm(bare)])].filter(Boolean)
+}
+
+/**
+ * One list of apps out of three catalogues. An ad app joins an App Store app
+ * by its store id, else by name, else by the last part of the bundle id
+ * ("Spring Jump" is com.loklogames.springjump, whatever the store calls it) —
+ * and, over all of those, wherever the user said it belongs (`links`).
+ */
+function unify(stats: Stats, ads: AdStore, hidden: Set<string>, links: Record<string, string> = {}): { apps: UnifiedApp[]; adKeyToApp: Map<string, string> } {
   const apps = new Map<string, UnifiedApp>()
   const byName = new Map<string, string>()
+  const byBundle = new Map<string, string>()
   for (const a of Object.values(stats.apps)) {
-    apps.set(a.id, { id: a.id, name: a.name, bundleId: a.bundleId, store: true, networks: [], platforms: ['ios'], hidden: hidden.has(a.id) })
+    apps.set(a.id, { id: a.id, name: a.name, bundleId: a.bundleId, store: true, networks: [], platforms: ['ios'], hidden: hidden.has(a.id), combined: [] })
     if (a.name) byName.set(norm(a.name), a.id)
+    const tail = norm(a.bundleId.split('.').pop() ?? '')
+    // A short tail ("app", "game") is not a name; and two apps sharing one is no match at all.
+    if (tail.length >= 5) byBundle.set(tail, byBundle.has(tail) ? '' : a.id)
   }
   const adKeyToApp = new Map<string, string>()
   // Store-linked apps first, so a name match never beats a real link.
   const adApps = Object.entries(ads.apps).sort((a, b) => Number(!!b[1].storeId) - Number(!!a[1].storeId))
   for (const [key, a] of adApps) {
-    let id = a.storeId && apps.has(a.storeId) ? a.storeId : byName.get(norm(a.name))
+    const names = adNames(a.name)
+    let id = a.storeId && apps.has(a.storeId) ? a.storeId
+      : names.map(n => byName.get(n)).find(Boolean) ?? names.map(n => byBundle.get(n)).find(Boolean)
     if (!id) {
       id = `ad:${key}`
-      apps.set(id, { id, name: a.name, bundleId: '', store: false, networks: [], platforms: [], hidden: hidden.has(id) })
+      apps.set(id, { id, name: a.name, bundleId: '', store: false, networks: [], platforms: [], hidden: hidden.has(id), combined: [] })
       if (a.name) byName.set(norm(a.name), id)
     }
-    const app = apps.get(id)!
-    if (!app.networks.includes(a.network)) app.networks.push(a.network)
-    if (a.platform && !app.platforms.includes(a.platform)) app.platforms.push(a.platform)
     adKeyToApp.set(key, id)
   }
+  // The user's own word comes last and wins. A link is followed to its end
+  // (bounded: it is user-made data and may loop), and one pointing at an app
+  // that is no longer there is ignored rather than losing the figures.
+  const resolve = (id: string): string => {
+    let at = id
+    for (let i = 0; i < 8; i++) {
+      const next = links[at]
+      if (!next || next === id || !apps.has(next)) break
+      at = next
+    }
+    return at
+  }
+  for (const [key, a] of adApps) {
+    const from = adKeyToApp.get(key)!
+    const to = from.startsWith('ad:') ? resolve(from) : from
+    if (to !== from) {
+      adKeyToApp.set(key, to)
+      apps.get(to)!.combined.push({ id: from, name: a.name, network: a.network })
+    }
+    const app = apps.get(to)!
+    if (!app.networks.includes(a.network)) app.networks.push(a.network)
+    if (a.platform && !app.platforms.includes(a.platform)) app.platforms.push(a.platform)
+  }
+  const used = new Set(adKeyToApp.values())
+  for (const id of [...apps.keys()]) if (id.startsWith('ad:') && !used.has(id)) apps.delete(id)
   return { apps: [...apps.values()], adKeyToApp }
 }
 
@@ -183,7 +229,7 @@ export function buildReport(q: ReportQuery): Report {
   const prefs = readPrefs()
   const currency = prefs.currency
   const hidden = new Set(prefs.hidden)
-  const { apps: allApps, adKeyToApp } = unify(stats, ads, hidden)
+  const { apps: allApps, adKeyToApp } = unify(stats, ads, hidden, prefs.links)
   const apps = allApps.filter(a => !a.hidden)
   const shown = new Set(apps.map(a => a.id))
 
@@ -427,7 +473,7 @@ export function appStoreView(): AppStoreView {
   const prefs = readPrefs()
   const asOf = latestDay()
   const r = buildReport({ from: asOf, to: asOf })
-  const { apps } = unify(stats, readAds(), new Set(prefs.hidden))
+  const { apps } = unify(stats, readAds(), new Set(prefs.hidden), prefs.links)
   apps.sort((a, b) => Number(a.hidden) - Number(b.hidden) || a.name.localeCompare(b.name))
   return {
     configured: !!(cfg.issuerId && cfg.keyId && cfg.vendorNumber && cfg.privateKey),
