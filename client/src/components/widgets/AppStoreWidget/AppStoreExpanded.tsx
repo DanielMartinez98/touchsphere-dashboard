@@ -556,7 +556,7 @@ export default function AppStoreExpanded({ store }: { store: AppStoreActions }) 
 
       {(error || reportError) && <p className="text-[13px] text-red-300 rounded-xl bg-red-500/10 border border-red-400/30 px-3 py-2">{error || reportError}</p>}
 
-      <div className={`flex-1 min-h-0 overflow-y-auto scroll-fade-y pb-8 space-y-3 transition-opacity ${loading && r ? 'opacity-60' : ''}`}>
+      <div className={`flex-1 min-h-0 overflow-y-auto scroll-fade-y -mt-3 pt-6 pb-8 space-y-3 transition-opacity ${loading && r ? 'opacity-60' : ''}`}>
         {/* When. On a computer the dates and the presets share a row. */}
         <div className="flex flex-col lg:flex-row lg:items-center gap-2">
           <div className="flex items-center gap-2 lg:w-[420px] shrink-0">
