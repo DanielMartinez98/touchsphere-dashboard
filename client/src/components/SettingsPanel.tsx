@@ -440,7 +440,7 @@ export function SettingsPanel({ hideButton = false }: { hideButton?: boolean } =
     { id: 'schedule',  group: 'This screen', label: 'Schedule', icon: Clock,        about: 'The work/rest timer under the sphere, when the screen switches between work and rest by itself, and the bedtime alert.' },
     { id: 'mail',      group: 'Corners', label: 'Mail',      icon: Mail,            about: 'The Gmail accounts the Mail corner reads.' },
     { id: 'notion',    group: 'Corners', label: 'Notion',    icon: ListChecks,      about: 'Who you are, which workspaces and boards feed the Tasks corner, and what each board is for.' },
-    { id: 'apps',      group: 'Corners', label: 'App Store', icon: BarChart3,       about: 'The App Store Connect key behind the App Store corner, and how far its numbers are read.' },
+    { id: 'apps',      group: 'Corners', label: 'App Store', icon: BarChart3,       about: 'The App Store, AdMob and Unity Ads connections behind the Apps corner, and which apps it lists.' },
     { id: 'drawing',   group: 'Corners', label: 'Drawing',   icon: Palette,         about: 'How the Draw corner and the drawing tools behave. What they tell each model is under Prompts.' },
     { id: 'guides',    group: 'Corners', label: 'Guides',    icon: BookOpen,        about: 'What the game-guide researcher is doing right now, and every guide on disk.' },
     { id: 'system',    group: 'Machines', label: 'System',    icon: Cpu,             about: 'The machine the dashboard server runs on (temperature, memory, load), and restarting the app on every screen.' },

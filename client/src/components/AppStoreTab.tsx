@@ -1,9 +1,10 @@
-// Settings → App Store: the App Store Connect key, and nothing else.
+// Settings → App Store: the keys behind the Apps corner, and which apps it lists.
 //
 // The numbers live in the Apps corner (bottom-left while the screen is set to
-// work; the Apps tab on the phone) — this tab is the chore done once: an API
+// work; the Apps tab on the phone) — this tab is the chores done once: an API
 // key from App Store Connect, the vendor number from the payments page, the
-// .p8 file. The key file can be picked from the phone's Files or pasted whole,
+// .p8 file; then, in AdsSettings below it, the apps to leave out, the currency,
+// and the AdMob and Unity Ads connections. The key file can be picked from the phone's Files or pasted whole,
 // and it is proven against Apple before it is saved. Afterwards the whole thing
 // folds away behind a "Connected" line with the read status.
 
@@ -12,9 +13,11 @@ import { RotateCw } from 'lucide-react'
 import { useAppStore } from '../hooks/useAppStore'
 import { TouchInput } from './TouchInput'
 import { ago, inMinutes, prettyDay } from './widgets/AppStoreWidget/format'
+import { AdsSettings } from './AdsSettings'
 
 export function AppStoreTab() {
-  const { view, error, busy, save, forget, sync } = useAppStore()
+  const store = useAppStore()
+  const { view, error, busy, save, forget, sync } = store
   const [editing, setEditing] = useState(false)
   const [issuerId, setIssuerId] = useState({ v: '', seeded: false })
   const [keyId, setKeyId] = useState({ v: '', seeded: false })
@@ -57,10 +60,10 @@ export function AppStoreTab() {
           Your apps on the App Store
         </span>
         <p className="text-[12px] text-white/45 leading-relaxed">
-          Downloads, what each app earned, and how often it was seen — read from App Store Connect
-          with a key you make once. The numbers are in the <span className="text-white/70">Apps corner</span> while
+          Downloads, what each app earned from sales and from ads, and how often it was seen — read from
+          App Store Connect, AdMob and Unity Ads with keys you set up once. The numbers are in the <span className="text-white/70">Apps corner</span> while
           the screen is set to work (and the Apps tab on the phone), and the assistant answers “how are
-          my apps doing”. This tab only holds the key.
+          my apps doing”. This tab holds the keys and the list of apps.
         </p>
       </div>
 
@@ -119,8 +122,8 @@ export function AppStoreTab() {
           {view.lastRun?.ok && <p className="text-white/30 text-[11px] leading-snug">{view.lastRun.detail}</p>}
           <p className="text-white/45 text-[12px] leading-snug pt-1 border-t border-white/8">
             {view.apps.length === 0
-              ? (view.syncing || !view.lastRun ? 'Reading the first three months from Apple — a minute or two.' : 'Apple lists no apps for this key yet.')
-              : `${view.apps.map(a => a.name).join(', ')} · figures up to ${prettyDay(view.asOf)}. Open the Apps corner for the detail.`}
+              ? (view.syncing || !view.lastRun ? 'Reading the last year from Apple — a few minutes.' : 'Apple lists no apps for this key yet.')
+              : `${view.apps.filter(a => !a.hidden && a.store).map(a => a.name).join(', ')} · figures up to ${prettyDay(view.asOf)}. Open the Apps corner for the detail.`}
           </p>
         </div>
       )}
@@ -208,6 +211,8 @@ export function AppStoreTab() {
           </div>
         </div>
       )}
+
+      <AdsSettings view={view} store={store} />
     </div>
   )
 }

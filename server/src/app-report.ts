@@ -342,7 +342,7 @@ export function buildReport(q: ReportQuery): Report {
       if (okNet) {
         const unit = ads.units[unitKey]
         const label = unit?.name || (r.unit ? r.unit : 'No ad unit named')
-        const sub = [appName.get(appId), NETWORK_NAME[r.n], unit?.format || r.fmt, r.plat].filter(Boolean).join(' · ')
+        const sub = [appName.get(appId), NETWORK_NAME[r.n], unit?.format || r.fmt, r.plat === 'ios' ? 'iOS' : r.plat === 'android' ? 'Android' : r.plat].filter(Boolean).join(' · ')
         slice(slices.byUnit, `${unitKey}`, label, sub, r, rev)
       }
       if (okNet && okUnit) {
