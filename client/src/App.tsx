@@ -442,7 +442,7 @@ function App() {
           isOpen={open === 'apps'}
           onToggle={() => toggle('apps')}
           collapsed={<AppStoreCollapsed view={appStore.view} error={appStore.error} />}
-          expanded={<AppStoreExpanded view={appStore.view} error={appStore.error} busy={appStore.busy === 'sync'} onSync={() => { void appStore.sync() }} />}
+          expanded={<AppStoreExpanded store={appStore} />}
         />
       ) : (
         <Widget

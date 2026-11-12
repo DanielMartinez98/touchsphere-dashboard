@@ -35,17 +35,26 @@ import crypto from 'crypto'
 import zlib from 'zlib'
 import axios from 'axios'
 import { broadcast } from './routes/system'
+import { refreshFx } from './fx'
 
-const API = 'https://api.appstoreconnect.apple.com'
+/** ASC_API exists for tests only. */
+const API = (process.env['ASC_API'] ?? '').trim() || 'https://api.appstoreconnect.apple.com'
+const TEST_FAST = !!process.env['ASC_API']
 const CONFIG_FILE = 'app-store.json'
 const STATS_FILE  = 'app-store-stats.json'
 /** How far back the first run reads daily sales reports. Apple keeps a year; a card needs a season. */
-const BACKFILL_DAYS = 90
+const BACKFILL_DAYS = 364
+/**
+ * The shape of the stored days. 2 added the per-country ledger and the
+ * analytics sources and territories; a store written before it has its "read"
+ * marks cleared once so every day Apple still has is read again into the finer
+ * shape. What is already stored stays until the re-read replaces it.
+ */
+const STATS_VERSION = 2
 const SYNC_EVERY_MS = 60 * 60_000
 const FIRST_SYNC_DELAY_MS = 20_000
 /** Analytics files processed per run — a standing request left for months has one waiting per day. */
-const MAX_INSTANCES_PER_RUN = 40
-const SERIES_DAYS = 30
+const MAX_INSTANCES_PER_RUN = 150
 const SEEN_CAP = 5000
 /** Apple's reporting day is Pacific time: "yesterday" is yesterday in Cupertino. */
 const PT = 'America/Los_Angeles'
@@ -235,7 +244,7 @@ async function listAll(cfg: AppStoreConfig, route: string, params?: Record<strin
   return out
 }
 
-const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, TEST_FAST ? 0 : ms))
 
 // ── Apps ─────────────────────────────────────────────────────────────────────
 
@@ -364,6 +373,8 @@ export interface DayStats {
   proceeds:    Record<string, number>
   /** First-time downloads by App Store country. */
   countries:   Record<string, number>
+  /** The whole ledger by App Store country, so a report can be narrowed to one. Absent on a day read before version 2. */
+  byCountry?:  Record<string, CountryDay>
   // From App Analytics, absent until the first report file lands.
   impressions?: number
   pageViews?:   number
@@ -371,9 +382,18 @@ export interface DayStats {
   sessions?:    number
   activeDevices?: number
   crashes?:     number
+  /** Impressions, product page views and taps by where the app was seen (search, browse, a web referrer…). */
+  sources?:     Record<string, SeenCounts>
+  /** The same by territory, as Apple's file names it (a country code). */
+  territories?: Record<string, SeenCounts>
 }
 
-interface Stats {
+/** One country's share of a day's ledger. Short keys: there is one of these per app, day and country. */
+export interface CountryDay { d: number; r: number; u: number; i: number; f: number; p: Record<string, number> }
+export interface SeenCounts { im: number; pv: number; tp: number }
+
+export interface Stats {
+  version:   number
   apps:      Record<string, AppInfo>
   /** appId → date → that day. A date absent under a fetched day is a day with nothing to report. */
   days:      Record<string, Record<string, DayStats>>
@@ -389,7 +409,7 @@ interface Stats {
 }
 
 function blankStats(): Stats {
-  return { apps: {}, days: {}, salesDays: {}, requests: {}, seen: [], headers: {}, lastRun: null }
+  return { version: STATS_VERSION, apps: {}, days: {}, salesDays: {}, requests: {}, seen: [], headers: {}, lastRun: null }
 }
 
 function blankDay(): DayStats {
@@ -398,7 +418,18 @@ function blankDay(): DayStats {
 
 function statsPath(): string { return path.join(cacheDir(), STATS_FILE) }
 
-function readStats(): Stats {
+// The file is parsed once and kept: this process is its only writer, and a
+// year of days by country is too much to re-parse on every report request.
+let statsCache: { dir: string; stats: Stats } | null = null
+
+export function readStats(): Stats {
+  if (statsCache && statsCache.dir === cacheDir()) return statsCache.stats
+  const stats = loadStats()
+  statsCache = { dir: cacheDir(), stats }
+  return stats
+}
+
+function loadStats(): Stats {
   try {
     const raw = JSON.parse(fs.readFileSync(statsPath(), 'utf8')) as Partial<Stats>
     const s = blankStats()
@@ -409,6 +440,12 @@ function readStats(): Stats {
     if (Array.isArray(raw.seen)) s.seen = raw.seen.filter((x): x is string => typeof x === 'string')
     if (raw.headers && typeof raw.headers === 'object') s.headers = raw.headers
     if (raw.lastRun && typeof raw.lastRun === 'object') s.lastRun = raw.lastRun
+    if ((raw.version ?? 1) < STATS_VERSION) {
+      // Read every day again into the finer shape; the totals already here stay until then.
+      s.salesDays = {}
+      s.seen = []
+      console.log('[app-store] stored days predate the per-country shape; they will be read again')
+    }
     return s
   } catch {
     return blankStats()
@@ -416,6 +453,7 @@ function readStats(): Stats {
 }
 
 function writeStats(s: Stats): void {
+  statsCache = { dir: cacheDir(), stats: s }
   const p = statsPath()
   const tmp = `${p}.tmp-${process.pid}`
   try {
@@ -451,16 +489,21 @@ export function applySales(s: Stats, date: string, rows: Record<string, string>[
     const perUnit = num(row['developer proceeds'])
     const currency = (row['currency of proceeds'] || 'USD').toUpperCase()
     const kind = transactionKind(row['product type identifier'] ?? '')
-    if (units < 0) d.refunds += -units
+    const cc = (row['country code'] ?? '').toUpperCase() || '??'
+    const by = d.byCountry ?? (d.byCountry = {})
+    const c = by[cc] ?? (by[cc] = { d: 0, r: 0, u: 0, i: 0, f: 0, p: {} })
+    if (units < 0) { d.refunds += -units; c.f += -units }
     else if (kind === 'download') {
-      d.downloads += units
-      const cc = (row['country code'] ?? '').toUpperCase()
-      if (cc) d.countries[cc] = (d.countries[cc] ?? 0) + units
-    } else if (kind === 'redownload') d.redownloads += units
-    else if (kind === 'update') d.updates += units
-    else if (kind === 'iap') d.iap += units
+      d.downloads += units; c.d += units
+      if (cc !== '??') d.countries[cc] = (d.countries[cc] ?? 0) + units
+    } else if (kind === 'redownload') { d.redownloads += units; c.r += units }
+    else if (kind === 'update') { d.updates += units; c.u += units }
+    else if (kind === 'iap') { d.iap += units; c.i += units }
     const money = units * perUnit
-    if (money) d.proceeds[currency] = round2((d.proceeds[currency] ?? 0) + money)
+    if (money) {
+      d.proceeds[currency] = round2((d.proceeds[currency] ?? 0) + money)
+      c.p[currency] = round2((c.p[currency] ?? 0) + money)
+    }
     // An app the apps list does not have (removed, or sold under another team) still gets a name.
     if (!s.apps[appId] && !parentSku) s.apps[appId] = { id: appId, name: row['title'] || appId, sku: row['sku'] ?? '', bundleId: '' }
   }
@@ -468,6 +511,7 @@ export function applySales(s: Stats, date: string, rows: Record<string, string>[
     const stored = dayOf(s, appId, date)
     stored.downloads = d.downloads; stored.redownloads = d.redownloads; stored.updates = d.updates
     stored.iap = d.iap; stored.refunds = d.refunds; stored.proceeds = d.proceeds; stored.countries = d.countries
+    stored.byCountry = d.byCountry ?? {}
   }
 }
 
@@ -485,13 +529,25 @@ const REPORTS: ReportSpec[] = [
     // Impressions are the app seen in a list (search, charts, a tab); a page
     // view is its product page opened; a tap is either acted on.
     name: 'App Store Discovery and Engagement',
-    fields: ['impressions', 'pageViews', 'taps'],
+    fields: ['impressions', 'pageViews', 'taps', 'sources', 'territories'],
     apply: (d, row) => {
       const event = (row['event'] ?? '').toLowerCase()
       const n = num(row['counts'])
-      if (event === 'impression') d.impressions = (d.impressions ?? 0) + n
-      else if (event === 'page view') { if (/product/i.test(row['page type'] ?? '')) d.pageViews = (d.pageViews ?? 0) + n }
-      else if (event === 'tap') d.taps = (d.taps ?? 0) + n
+      const which: keyof SeenCounts | null =
+        event === 'impression' ? 'im'
+        : event === 'page view' ? (/product/i.test(row['page type'] ?? '') ? 'pv' : null)
+        : event === 'tap' ? 'tp' : null
+      if (!which) return
+      if (which === 'im') d.impressions = (d.impressions ?? 0) + n
+      else if (which === 'pv') d.pageViews = (d.pageViews ?? 0) + n
+      else d.taps = (d.taps ?? 0) + n
+      const bump = (into: Record<string, SeenCounts>, key: string) => {
+        const c = into[key] ?? (into[key] = { im: 0, pv: 0, tp: 0 })
+        c[which] += n
+      }
+      bump(d.sources ?? (d.sources = {}), row['source type'] || 'Unknown')
+      const territory = (row['territory'] ?? '').toUpperCase()
+      if (territory) bump(d.territories ?? (d.territories = {}), territory)
     },
   },
   {
@@ -606,7 +662,7 @@ async function syncAnalytics(cfg: AppStoreConfig, s: Stats, app: AppInfo, budget
           const stored = dayOf(s, appId, date)
           for (const f of spec.fields) {
             const v = d[f]
-            if (typeof v === 'number') (stored as unknown as Record<string, number>)[f] = v
+            if (v !== undefined) (stored as unknown as Record<string, unknown>)[f] = v
           }
         }
         markSeen(s, inst.id)
@@ -647,6 +703,7 @@ async function run(): Promise<void> {
   const s = readStats()
   const started = Date.now()
   const log: string[] = []
+  await refreshFx()
   try {
     const apps = await listApps(cfg)
     for (const a of apps) s.apps[a.id] = a
@@ -654,11 +711,22 @@ async function run(): Promise<void> {
     for (const a of Object.values(s.apps)) if (a.sku) skuToApp[a.sku] = a.id
 
     // The ledger: every day in the window this dashboard has not read yet, newest first.
-    let read = 0, empty = 0
+    let read = 0, empty = 0, failedInARow = 0
     for (let n = 1; n <= BACKFILL_DAYS; n++) {
       const date = ptDate(n)
       if (s.salesDays[date]) continue
-      const day = await fetchSalesDay(cfg, date)
+      let day: SalesDay
+      try {
+        day = await fetchSalesDay(cfg, date)
+        failedInARow = 0
+      } catch (err) {
+        // The recent days are the feature: a failure there fails the run. Deeper
+        // in the history it is skipped until the next run, and three in a row
+        // (a rate limit, an outage) ends the backfill for this hour.
+        if (n <= 30) throw err
+        if (++failedInARow >= 3) { log.push(`history paused at ${date}: ${err instanceof Error ? err.message : err}`); break }
+        continue
+      }
       if (day.kind === 'not-yet') continue
       if (day.kind === 'none') {
         // Yesterday's file lands by about 8 am Pacific; "no sales" before then may just mean "no file yet".
@@ -673,9 +741,17 @@ async function run(): Promise<void> {
       await pause(150)
     }
 
+    // One app's analytics failing (an app not released yet has none to give)
+    // must not cost the others theirs; a hidden app is not asked about at all.
+    const hidden = new Set(readPrefs().hidden)
     const budget = { left: MAX_INSTANCES_PER_RUN }
     for (const a of apps) {
-      await syncAnalytics(cfg, s, a, budget, log)
+      if (hidden.has(a.id)) continue
+      try {
+        await syncAnalytics(cfg, s, a, budget, log)
+      } catch (err) {
+        log.push(`analytics for ${a.name} failed: ${err instanceof Error ? err.message : err}`)
+      }
       if (budget.left <= 0) { log.push('more analytics files wait for the next run'); break }
     }
     const files = MAX_INSTANCES_PER_RUN - budget.left
@@ -742,157 +818,65 @@ export function clearAppStoreConfig(): void {
   console.log('[app-store] key forgotten')
 }
 
-// ── The view ─────────────────────────────────────────────────────────────────
+// ── Preferences ──────────────────────────────────────────────────────────────
 
-export interface PeriodTotals {
-  from:        string
-  to:          string
-  downloads:   number
-  redownloads: number
-  updates:     number
-  iap:         number
-  refunds:     number
-  proceeds:    Record<string, number>
-  /** null when no day in the range has that report yet. */
-  impressions: number | null
-  pageViews:   number | null
-  taps:        number | null
-  sessions:    number | null
-  crashes:     number | null
+/**
+ * What the user decided about the list: which apps are left out of it (an app
+ * not released yet, a test build) and which currency the money is shown in.
+ * Its own file, so forgetting the key or re-reading the history never loses it.
+ */
+export interface AppPrefs { hidden: string[]; currency: string }
+
+const PREFS_FILE = 'app-store-prefs.json'
+
+export function readPrefs(): AppPrefs {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(cacheDir(), PREFS_FILE), 'utf8')) as Partial<AppPrefs>
+    return {
+      hidden: Array.isArray(raw.hidden) ? raw.hidden.filter((x): x is string => typeof x === 'string').slice(0, 500) : [],
+      currency: typeof raw.currency === 'string' && /^[A-Z]{3}$/.test(raw.currency) ? raw.currency : 'USD',
+    }
+  } catch {
+    return { hidden: [], currency: 'USD' }
+  }
 }
 
-export interface AppView {
-  id:       string
-  name:     string
-  sku:      string
-  bundleId: string
-  /** The most recent day with a sales file, and the most recent with analytics. */
-  latestSalesDay:     string | null
-  latestAnalyticsDay: string | null
-  periods: { yesterday: PeriodTotals; week: PeriodTotals; prevWeek: PeriodTotals; month: PeriodTotals; prevMonth: PeriodTotals }
-  /** The last SERIES_DAYS days, oldest first, for the sparkline. */
-  series: {
-    date: string; downloads: number; redownloads: number; updates: number; iap: number; refunds: number
-    proceeds: number; impressions: number | null; pageViews: number | null; taps: number | null
-    sessions: number | null; crashes: number | null
-  }[]
-  /** First-time downloads by country over the month, most first. */
-  countries: { code: string; downloads: number }[]
+function writePrefs(p: AppPrefs): void {
+  const file = path.join(cacheDir(), PREFS_FILE)
+  const tmp = `${file}.tmp-${process.pid}`
+  fs.writeFileSync(tmp, JSON.stringify(p, null, 2), 'utf8')
+  fs.renameSync(tmp, file)
 }
 
-export interface AppStoreView {
-  configured:   boolean
-  source:       'settings' | 'env' | 'none'
-  keyId:        string
-  issuerId:     string
-  vendorNumber: string
-  lastRun:      Stats['lastRun']
-  nextRunAt:    string | null
-  syncing:      boolean
-  /** Which payout currency the headline money is in: the one that earned most over the month. */
-  currency:     string | null
-  /** The day the sales window ends on (yesterday, Pacific time). */
-  asOf:         string
-  /** Sales days read so far, for the "first sync" message. */
-  salesDaysRead: number
-  apps:         AppView[]
+/** Leave an app out of the list, the totals and the assistant's answers — or put it back. */
+export function setAppHidden(id: string, hidden: boolean): void {
+  const p = readPrefs()
+  const set = new Set(p.hidden)
+  if (hidden) set.add(id); else set.delete(id)
+  writePrefs({ ...p, hidden: [...set] })
+  broadcast('app-store', { prefs: true })
 }
 
-function addDays(date: string, n: number): string {
+export function setDisplayCurrency(currency: string): void {
+  const c = currency.trim().toUpperCase()
+  if (!/^[A-Z]{3}$/.test(c)) throw new Error('A currency is three letters, like USD or EUR.')
+  writePrefs({ ...readPrefs(), currency: c })
+  broadcast('app-store', { prefs: true })
+}
+
+// ── For the report ───────────────────────────────────────────────────────────
+
+export function addDays(date: string, n: number): string {
   const d = new Date(`${date}T00:00:00Z`)
   d.setUTCDate(d.getUTCDate() + n)
   return d.toISOString().slice(0, 10)
 }
 
-function totals(days: Record<string, DayStats>, from: string, to: string): PeriodTotals {
-  const t: PeriodTotals = { from, to, downloads: 0, redownloads: 0, updates: 0, iap: 0, refunds: 0, proceeds: {}, impressions: null, pageViews: null, taps: null, sessions: null, crashes: null }
-  const add = (k: 'impressions' | 'pageViews' | 'taps' | 'sessions' | 'crashes', v: number | undefined) => {
-    if (typeof v === 'number') t[k] = (t[k] ?? 0) + v
-  }
-  for (let d = from; d <= to; d = addDays(d, 1)) {
-    const day = days[d]
-    if (!day) continue
-    t.downloads += day.downloads; t.redownloads += day.redownloads; t.updates += day.updates
-    t.iap += day.iap; t.refunds += day.refunds
-    for (const [cur, amount] of Object.entries(day.proceeds)) t.proceeds[cur] = round2((t.proceeds[cur] ?? 0) + amount)
-    add('impressions', day.impressions); add('pageViews', day.pageViews); add('taps', day.taps)
-    add('sessions', day.sessions); add('crashes', day.crashes)
-  }
-  return t
-}
+/** The newest day Apple can have published: yesterday, Pacific time. */
+export function latestDay(): string { return ptDate(1) }
 
-export function appStoreView(): AppStoreView {
-  const cfg = readConfig()
-  const s = readStats()
-  const asOf = ptDate(1)
-  const apps: AppView[] = []
-  const currencyTotals: Record<string, number> = {}
-
-  for (const app of Object.values(s.apps)) {
-    const days = s.days[app.id] ?? {}
-    const dates = Object.keys(days).sort()
-    const latestSalesDay = [...dates].reverse().find(d => s.salesDays[d] === 'ok' || days[d]!.downloads > 0) ?? null
-    const latestAnalyticsDay = [...dates].reverse().find(d => typeof days[d]!.impressions === 'number') ?? null
-    const month = totals(days, addDays(asOf, -29), asOf)
-    for (const [cur, amount] of Object.entries(month.proceeds)) currencyTotals[cur] = (currencyTotals[cur] ?? 0) + Math.abs(amount)
-    const countries: Record<string, number> = {}
-    for (let d = addDays(asOf, -29); d <= asOf; d = addDays(d, 1)) {
-      for (const [cc, n] of Object.entries(days[d]?.countries ?? {})) countries[cc] = (countries[cc] ?? 0) + n
-    }
-    apps.push({
-      id: app.id, name: app.name, sku: app.sku, bundleId: app.bundleId,
-      latestSalesDay, latestAnalyticsDay,
-      periods: {
-        yesterday: totals(days, asOf, asOf),
-        week:      totals(days, addDays(asOf, -6), asOf),
-        prevWeek:  totals(days, addDays(asOf, -13), addDays(asOf, -7)),
-        month,
-        prevMonth: totals(days, addDays(asOf, -59), addDays(asOf, -30)),
-      },
-      series: [],
-      countries: Object.entries(countries).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([code, downloads]) => ({ code, downloads })),
-    })
-  }
-
-  const currency = Object.entries(currencyTotals).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
-  for (const view of apps) {
-    const days = s.days[view.id] ?? {}
-    for (let i = SERIES_DAYS - 1; i >= 0; i--) {
-      const date = addDays(asOf, -i)
-      const day = days[date]
-      const n = (v: number | undefined) => (typeof v === 'number' ? v : null)
-      view.series.push({
-        date,
-        downloads:   day?.downloads ?? 0,
-        redownloads: day?.redownloads ?? 0,
-        updates:     day?.updates ?? 0,
-        iap:         day?.iap ?? 0,
-        refunds:     day?.refunds ?? 0,
-        proceeds:    currency ? (day?.proceeds[currency] ?? 0) : 0,
-        impressions: n(day?.impressions),
-        pageViews:   n(day?.pageViews),
-        taps:        n(day?.taps),
-        sessions:    n(day?.sessions),
-        crashes:     n(day?.crashes),
-      })
-    }
-  }
-  apps.sort((a, b) => b.periods.month.downloads - a.periods.month.downloads || a.name.localeCompare(b.name))
-
-  return {
-    configured: complete(cfg),
-    source: configSource(),
-    keyId: cfg.keyId,
-    issuerId: cfg.issuerId,
-    vendorNumber: cfg.vendorNumber,
-    lastRun: s.lastRun,
-    nextRunAt,
-    syncing: syncing(),
-    currency,
-    asOf,
-    salesDaysRead: Object.keys(s.salesDays).length,
-    apps,
-  }
+export function syncState(): { nextRunAt: string | null; syncing: boolean } {
+  return { nextRunAt, syncing: syncing() }
 }
 
 /** The money in a totals block as words: the main currency first, any other after it. */

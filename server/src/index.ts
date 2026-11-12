@@ -39,6 +39,7 @@ import { sweepInterrupted } from './guides'
 import { startPlexWatch } from './plex-watch'
 import { startAiBoxProbe } from './ai-box'
 import { startAppStoreSync } from './app-store'
+import { startAdsSync } from './ads'
 import { SEARCH_PROVIDERS } from './research'
 
 dotenv.config()
@@ -126,6 +127,7 @@ startPlexWatch()
 startAiBoxProbe()
 // App Store Connect, hourly: a no-op until a key is saved in Settings → App Store.
 startAppStoreSync()
+startAdsSync()
 
 // Fail fast if the required API key is missing
 if (!process.env['OPENWEATHER_API_KEY']) {
@@ -260,7 +262,9 @@ app.use('/api/ai-devices', dataLimiter, aiDevicesRouter)
 // Settings → App Store: the user's own apps on the App Store (see app-store.ts).
 // Always mounted — the key is pasted into the tab, so there is no env var to
 // gate on; it answers `configured: false` until then.
-app.use('/api/app-store', dataLimiter, appStoreRouter)
+// On the looser limiter: the report is answered from memory and asked again on
+// every filter tap, and 60 a minute is a few seconds of tapping through chips.
+app.use('/api/app-store', tileLimiter, appStoreRouter)
 // Generated images: the gallery pulls a file per thumbnail, so this sits behind
 // the generous tile limiter rather than the 60/min data one, same as artwork.
 app.use('/api/image', tileLimiter, imageRouter)
