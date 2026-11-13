@@ -3820,6 +3820,36 @@ const BUILTIN_WORKFLOWS: Record<string, {
    */
 }
 
+// ── Full-quality twins ───────────────────────────────────────────────────────
+// The same graphs with the bf16 weights and full encoders in place of the int8 /
+// 4-bit ones. Only a box with the RAM to load a 17–19 GB encoder runs them
+// (lokloComputer: 24 GB VRAM, 28 GB WSL RAM since 2026-11-09); every other box
+// has none of these files, so `needs` greys the twins out there.
+const FULL_QUALITY_SWAP: Record<string, string> = {
+  'qwen_image_2.1_int8_convrot.safetensors': 'qwen_image_2.1_bf16.safetensors',
+  'qwen3vl_8b_int8_convrot.safetensors': 'qwen3vl_8b_bf16.safetensors',
+  'moss_image_sft_int8_convrot.safetensors': 'moss_image_sft_bf16.safetensors',
+  'qwen3.5_9b_w4a8_gptq.safetensors': 'qwen3.5_9b_bf16.safetensors',
+  'flux3-image-klein-int8-convrot.safetensors': 'flux3-image-klein-bf16.safetensors',
+}
+for (const id of ['qwen-image-2.1', 'qwen-image-2.1-fusal', 'qwen-image-2.1-edit', 'moss-image-sft', 'flux3-image-klein', 'flux3-image-klein-edit']) {
+  const base = BUILTIN_WORKFLOWS[id]
+  if (!base) continue
+  const graph: ComfyGraph = structuredClone(base.graph)
+  for (const node of Object.values(graph)) {
+    for (const key of ['unet_name', 'clip_name']) {
+      const file = node.inputs[key]
+      if (typeof file === 'string' && FULL_QUALITY_SWAP[file]) node.inputs[key] = FULL_QUALITY_SWAP[file]
+    }
+  }
+  const needs = base.needs.map(n => {
+    const slash = n.indexOf('/')
+    const swapped = FULL_QUALITY_SWAP[n.slice(slash + 1)]
+    return swapped ? `${n.slice(0, slash + 1)}${swapped}` : n
+  })
+  BUILTIN_WORKFLOWS[`${id}-full`] = { ...base, label: `${base.label} (full quality)`, graph, needs, supersedes: undefined }
+}
+
 export const WORKFLOW_PREFIX = 'wf:'
 
 /** A style's prompt prefixes, or empty strings for one that needs none. */
