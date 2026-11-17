@@ -52,6 +52,26 @@ export interface ImageParams {
   /** The seed itself, for 'fixed' and as the running value for 'increment'. */
   seed:         number
   /**
+   * ANIMATE only (an `animates` style, AniSora). Every 0 / '' means "what the
+   * graph says", so an untouched style renders exactly as before these existed.
+   *
+   * `shift` is the ModelSamplingSD3 shift on both experts (5 in the graph):
+   * higher spends more of the schedule on the big shapes, i.e. the motion.
+   * `highSteps` is how many of the steps the high-noise expert takes before
+   * the low-noise one draws the detail (3 of 8 in the graph; auto keeps that
+   * share at any step count). `videoRes` is the clip's size as the short side
+   * of a 2:3 frame (768 → 768×1152, the same area at any other shape).
+   * `shotSeconds` is the longest piece a clip is drawn in before the next
+   * piece starts from its last frame (5). `sampler` / `scheduler` replace
+   * euler / simple on both experts.
+   */
+  shift:        number
+  highSteps:    number
+  videoRes:     number
+  shotSeconds:  number
+  sampler:      string
+  scheduler:    string
+  /**
    * The four pieces of text this app adds to a render on the user's behalf, all
    * of them overridable per style.
    *
@@ -99,6 +119,12 @@ export const DEFAULT_PARAMS: ImageParams = {
   inpaintPatch: true,
   seedMode:     'random',
   seed:         0,
+  shift:        0,
+  highSteps:    0,
+  videoRes:     0,
+  shotSeconds:  0,
+  sampler:      '',
+  scheduler:    '',
   // null, not '': nothing is overridden until somebody overrides it.
   prefix:         null,
   optimizations:  null,
@@ -139,6 +165,11 @@ export const MAX_STEPS = 150
 export const MAX_CFG   = 30
 export const MAX_LORA  = 2
 export const MAX_SEED = 2 ** 31 - 1
+export const MAX_SHIFT = 20
+export const MIN_VIDEO_RES = 384
+/** 1024 (1024×1536) is past what measured as fitting a 24 GB card at 5 s; it is allowed, with a warning on screen. */
+export const MAX_VIDEO_RES = 1024
+export const MAX_SHOT_SECONDS = 5
 
 /**
  * Cap on the two free-text fields. Long enough for the longest published
@@ -164,6 +195,16 @@ export function normalizeParams(raw: unknown, base: ImageParams = DEFAULT_PARAMS
   const strength = num(o['loraStrength'])
   const seed     = num(o['seed'])
   const mode     = o['seedMode']
+  const shift    = num(o['shift'])
+  const high     = num(o['highSteps'])
+  const res      = num(o['videoRes'])
+  const shot     = num(o['shotSeconds'])
+  // A sampler or scheduler name is a ComfyUI option string; ensureSamplers()
+  // swaps one the box lacks for euler at queue time, so only the shape is checked.
+  const word = (k: string, fallback: string) => {
+    const v = o[k]
+    return typeof v === 'string' && /^[a-z0-9_]{0,40}$/i.test(v.trim()) ? v.trim() : fallback
+  }
 
   return {
     // 0 is a real value here ("off"), so it can't be filtered out by truthiness.
@@ -191,6 +232,13 @@ export function normalizeParams(raw: unknown, base: ImageParams = DEFAULT_PARAMS
       ? mode
       : base.seedMode,
     seed:         seed === null ? base.seed : clamp(Math.round(seed), 0, MAX_SEED),
+    shift:        shift === null ? base.shift : (shift <= 0 ? 0 : clamp(Math.round(shift * 10) / 10, 0.5, MAX_SHIFT)),
+    highSteps:    high === null ? base.highSteps : clamp(Math.round(high), 0, MAX_STEPS),
+    // Snapped to 16: the Wan VAE is 8px and its patch 2×2.
+    videoRes:     res === null ? base.videoRes : (res <= 0 ? 0 : clamp(Math.round(res / 16) * 16, MIN_VIDEO_RES, MAX_VIDEO_RES)),
+    shotSeconds:  shot === null ? base.shotSeconds : clamp(Math.round(shot), 0, MAX_SHOT_SECONDS),
+    sampler:      word('sampler', base.sampler),
+    scheduler:    word('scheduler', base.scheduler),
     // Free text. `text()` below is where the three-state rule lives.
     prefix:         text(o, 'prefix', base.prefix),
     optimizations:  text(o, 'optimizations', base.optimizations),

@@ -66,7 +66,7 @@ import {
   styleNegativePrefixFor,
   supersededCheckpoints,
   WORKFLOW_PREFIX,
-  clearImages, styleUpscales, styleAnimates,
+  clearImages, styleUpscales, styleAnimates, animDefaults, samplerChoices,
 } from '../image'
 import { cancelPlan, createPlan, getPlan, runPlan } from '../image-plan'
 import { findAndFetch } from '../image-web'
@@ -350,6 +350,12 @@ router.get('/params', async (req: Request, res: Response) => {
     autoLora: pickLora(loras, []),
     inpaintPatch,
     choices: { megapixels: MEGAPIXEL_CHOICES, multipleOf: MULTIPLE_CHOICES },
+    // An animating style's sampling knobs: what Auto means for each, and the
+    // sampler and scheduler names this ComfyUI accepts (empty when it cannot
+    // be asked, and the sheet then offers the defaults only).
+    ...(styleAnimates(style)
+      ? { anim: { defaults: animDefaults(style), ...(imagesEnabled() ? await samplerChoices() : { samplers: [], schedulers: [] }) } }
+      : {}),
     quality: selectedQuality(),
     qualitySteps: QUALITY_STEPS[selectedQuality()] ?? 0,
   })

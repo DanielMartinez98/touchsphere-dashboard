@@ -420,6 +420,19 @@ export interface ImageParams {
   negativePrefix: string | null
   /** What the prompt improver is told about this model. Same null/'' contract. Optional: an older server omits it. */
   improverGuide?: string | null
+  /** ANIMATE only: 0 / '' = the graph's own. Optional: an older server omits them. */
+  shift?:       number
+  highSteps?:   number
+  videoRes?:    number
+  shotSeconds?: number
+  sampler?:     string
+  scheduler?:   string
+}
+
+/** What an animating style's own graph says (server's AnimSettings). */
+export interface AnimDefaults {
+  steps: number; highSteps: number; cfg: number; shift: number
+  sampler: string; scheduler: string; res: number; shotSeconds: number
 }
 
 /** What the selected style's own graph specifies, so "Auto" can name a number. */
@@ -441,6 +454,7 @@ export const DEFAULT_PARAMS: ImageParams = {
   prefix: null, optimizations: null, negative: null, negativePrefix: null, improverGuide: null,
   turbo: false, lora: '', loraStrength: 1, inpaintPatch: true,
   seedMode: 'random', seed: 0,
+  shift: 0, highSteps: 0, videoRes: 0, shotSeconds: 0, sampler: '', scheduler: '',
 }
 
 // Mirrors MEGAPIXEL_CHOICES / MULTIPLE_CHOICES in server/src/image-params.ts.
@@ -519,6 +533,8 @@ export interface ParamsResponse {
   autoLora?:   string
   /** Null (or absent, on an older server) for a style without a patch. */
   inpaintPatch?: InpaintPatchInfo | null
+  /** An animating style's defaults and the sampler/scheduler names the box accepts. */
+  anim?: { defaults: AnimDefaults; samplers: string[]; schedulers: string[] }
 }
 
 /**

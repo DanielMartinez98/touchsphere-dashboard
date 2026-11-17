@@ -68,7 +68,7 @@ const LABEL = 'text-xs uppercase tracking-widest text-white/35 font-semibold fle
  * something else decides and you should be able to see what. In the field it is
  * the placeholder, so clearing the pad and tapping Done hands the knob back.
  */
-function NumberField({
+export function NumberField({
   value, onChange, min, max, step, decimals = 0, auto, ariaLabel,
 }: {
   value:    number
