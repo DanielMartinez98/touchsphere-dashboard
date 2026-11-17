@@ -70,7 +70,7 @@ usage() {
 Options:
   --data DIR             where the models and caches go (default: the largest non-system disk)
   --models SET[,SET…]    picture models to download: anime (default: Anima + WAI),
-                         edit (Qwen-Image 2.1 Edit), moss, wan (AniSora, for Animate), all, none
+                         edit (Qwen-Image 2.1, painter + editor), moss, wan (AniSora, for Animate), all, none
   --llm MODEL            Ollama chat model (default: OLLAMA_MODEL from .env, else qwen3:8b)
   --vision MODEL         Ollama vision model for the picture tools (default: OLLAMA_VISION_MODEL, else gemma4)
   --whisper-model ID     Whisper model to warm (default: WHISPER_MODEL from .env, else Systran/faster-whisper-small)
@@ -324,7 +324,7 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
     "controlnet/controlnet-union-sdxl-1.0-promax.safetensors|https://huggingface.co/xinsir/controlnet-union-sdxl-1.0/resolve/main/diffusion_pytorch_model_promax.safetensors|2.5"
     "upscale_models/4x-UltraSharpV2.safetensors|https://huggingface.co/Kim2091/UltraSharpV2/resolve/main/4x-UltraSharpV2.safetensors|0.1"
   )
-  # The editor: Qwen-Image 2.1 Edit (the only editing style kept since 2026-11-17).
+  # Qwen-Image 2.1: one set of files serves both the painter and the editor.
   EDIT_FILES=(
     "diffusion_models/qwen_image_2.1_int8_convrot.safetensors|https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/diffusion_models/qwen_image_2.1_int8_convrot.safetensors|6.8"
     "text_encoders/qwen3vl_8b_int8_convrot.safetensors|https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/text_encoders/qwen3vl_8b_int8_convrot.safetensors|8.7"

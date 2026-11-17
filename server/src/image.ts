@@ -3637,6 +3637,29 @@ const BUILTIN_WORKFLOWS: Record<string, {
    */
   nativePixels?: number
 }> = {
+  'qwen-image-2.1': {
+    label: 'Qwen-Image 2.1',
+    graph: qwenImage21Graph(),
+    // Read by Qwen3-VL 8B, a language model: sentences, not tags.
+    promptStyle: 'prose',
+    improverGuide: QWEN_IMAGE_IMPROVER_GUIDE,
+    promptGuide:
+      'Write one long, specific paragraph of plain English (or Chinese), never a tag list. ' +
+      'This model reads its prompt with the Qwen3-VL language model and was trained on long ' +
+      'descriptions of the finished picture: describe it as if you were looking at it — the ' +
+      'subject and what it is doing, the setting, the lighting, the composition and camera ' +
+      'angle, the mood, and the art style (photograph, anime illustration, watercolour…). It ' +
+      'renders legible text very well, so put any words that should appear in the picture in ' +
+      'double quotes. Named characters and series may be used by name. There is no negative ' +
+      'prompt at its recommended settings, so only ever describe what you want.',
+    // cfg 1 is the card's official path, where the negative is computed and unused.
+    negative: '',
+    needs: [
+      'diffusion_models/qwen_image_2.1_int8_convrot.safetensors',
+      'text_encoders/qwen3vl_8b_int8_convrot.safetensors',
+      'vae/qwen_image_2.1_vae_bf16.safetensors',
+    ],
+  },
   'qwen-image-2.1-edit': {
     label: 'Qwen-Image 2.1 (edit)',
     graph: qwenImage21EditGraph(),
@@ -3651,6 +3674,7 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'sign". It knows anime and named characters. Keep it to one or two sentences, do not ' +
       'describe what is not changing, and put any text to add in double quotes.',
     negative: '',
+    // Shares all three files with the Qwen-Image 2.1 painter.
     needs: [
       'diffusion_models/qwen_image_2.1_int8_convrot.safetensors',
       'text_encoders/qwen3vl_8b_int8_convrot.safetensors',
@@ -3814,7 +3838,7 @@ const FULL_QUALITY_SWAP: Record<string, string> = {
   'moss_image_sft_int8_convrot.safetensors': 'moss_image_sft_bf16.safetensors',
   'qwen3.5_9b_w4a8_gptq.safetensors': 'qwen3.5_9b_bf16.safetensors',
 }
-for (const id of ['qwen-image-2.1-edit', 'moss-image-sft']) {
+for (const id of ['qwen-image-2.1', 'qwen-image-2.1-edit', 'moss-image-sft']) {
   const base = BUILTIN_WORKFLOWS[id]
   if (!base) continue
   const graph: ComfyGraph = structuredClone(base.graph)
