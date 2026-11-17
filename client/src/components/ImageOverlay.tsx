@@ -484,9 +484,16 @@ function PromptActions({
 
   return (
     <>
+    {/* The sheet may shrink and its upper part scrolls: with Settings open it
+        is over a thousand pixels of knobs, taller than any screen this runs
+        on, and the frame clips what does not fit. As a fixed-height block
+        (which it was) everything below the first few knobs, the Animate
+        button included, was cut off with no way to reach it. The length chips
+        and Cancel / Animate stay pinned under the scrolling part. */}
     {animSheet && source && animator && (
-      <div className="px-4 pb-3 shrink-0" data-keyboard-keep>
-        <div className="rounded-2xl bg-white/5 border border-hairline p-3 flex flex-col gap-2">
+      <div className="px-4 pb-3 min-h-0 flex flex-col" data-keyboard-keep>
+        <div className="min-h-0 rounded-2xl bg-white/5 border border-hairline p-3 flex flex-col gap-2">
+          <div className="kb-room min-h-0 overflow-y-auto overscroll-contain space-y-2 -mr-1 pr-1">
           <div className="text-[14px] text-white/80">What should move? The picture is the first frame.</div>
           <TouchInput
             value={motion}
@@ -529,7 +536,11 @@ function PromptActions({
             </div>
           )}
           <AnimateSettings style={animator} seconds={seconds} />
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="text-[12px] text-white/45">
+            Silent, 16 frames a second; longer clips are shots chained (time and size are under Settings). Gestures and expressions (a wave, a smile, arms up) work best; big moves like jumping or walking, and camera moves, come out weak.
+          </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
             {[3, 5, 10, 15, 20].map(n => (
               <button
                 key={n}
@@ -558,17 +569,17 @@ function PromptActions({
               {animating ? 'Queuing…' : 'Animate'}
             </button>
           </div>
-          <div className="text-[12px] text-white/45">
-            Silent, 16 frames a second; longer clips are shots chained (time and size are under Settings). Gestures and expressions (a wave, a smile, arms up) work best; big moves like jumping or walking, and camera moves, come out weak.
-          </div>
-          {animError && <div className="text-[13px] text-amber-300">{animError}</div>}
+          {animError && <div className="shrink-0 text-[13px] text-amber-300">{animError}</div>}
         </div>
       </div>
     )}
-    // Wraps rather than scrolls: on a 390px phone three pills and a counter do
-    // not fit on one line, and a row that has to be scrolled sideways to reach
-    // its last button is a button nobody finds.
-    <div className="flex flex-wrap items-center gap-2 px-4 pb-3 shrink-0">
+    {/* Wraps rather than scrolls: on a 390px phone three pills and a counter do
+        not fit on one line, and a row that has to be scrolled sideways to reach
+        its last button is a button nobody finds. (This was a "//" comment, which
+        inside JSX is text: it took a line of the frame's height, unseen.)
+        Hidden while the Animate sheet is up: on a phone these are three rows,
+        which left its Settings a window two knobs tall. Cancel brings them back. */}
+    <div className={`flex-wrap items-center gap-2 px-4 pb-3 shrink-0 ${animSheet && source && animator ? 'hidden' : 'flex'}`}>
       {source && (
         <button
           type="button"
