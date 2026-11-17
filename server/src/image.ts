@@ -3529,80 +3529,6 @@ const BUILTIN_WORKFLOWS: Record<string, {
    */
   nativePixels?: number
 }> = {
-  'flux3-image-klein': {
-    label: 'FLUX 3 Klein',
-    graph: flux3KleinGraph(),
-    // Distilled: 16 steps at cfg 1 are the model.
-    ignoresQuality: true,
-    // Read by Qwen3-VL 4B, a language model.
-    promptStyle: 'prose',
-    // Condensed from the template's own prompt-upsampler instructions, which are
-    // BFL's description of the caption this model was trained to receive.
-    improverGuide: FLUX3_KLEIN_IMPROVER_GUIDE,
-    promptGuide:
-      'Write one continuous paragraph of plain English, never a tag list, 100 to 300 words. Lead ' +
-      'with the medium and style (photograph, anime illustration, oil painting…), then the scene, ' +
-      'lighting and camera, then each subject with concrete colours, materials and state. Make the ' +
-      'layout reconstructable from words: say where each thing is in the frame (on the left, in ' +
-      'the foreground, upper right) and how things relate (holds, faces, behind). Be definite — ' +
-      'no hedging, no quality words, no closing sentence about mood; turn moods into what can be ' +
-      'seen. Any text in the picture goes verbatim in double quotes with its colour and placement. ' +
-      'There is NO negative prompt, so only ever describe what you want.',
-    needs: [
-      'diffusion_models/flux3-image-klein-int8-convrot.safetensors',
-      'text_encoders/qwen3vl_4b_int8_convrot.safetensors',
-      'vae/flux2-vae.safetensors',
-    ],
-  },
-  'qwen-image-2.1': {
-    label: 'Qwen-Image 2.1',
-    graph: qwenImage21Graph(),
-    // Read by Qwen3-VL 8B, a language model: sentences, not tags.
-    promptStyle: 'prose',
-    improverGuide: QWEN_IMAGE_IMPROVER_GUIDE,
-    promptGuide:
-      'Write one long, specific paragraph of plain English (or Chinese), never a tag list. ' +
-      'This model reads its prompt with the Qwen3-VL language model and was trained on long ' +
-      'descriptions of the finished picture: describe it as if you were looking at it — the ' +
-      'subject and what it is doing, the setting, the lighting, the composition and camera ' +
-      'angle, the mood, and the art style (photograph, anime illustration, watercolour…). It ' +
-      'renders legible text very well, so put any words that should appear in the picture in ' +
-      'double quotes. Named characters and series may be used by name. There is no negative ' +
-      'prompt at its recommended settings, so only ever describe what you want.',
-    // cfg 1 is the card's official path, where the negative is computed and unused.
-    negative: '',
-    needs: [
-      'diffusion_models/qwen_image_2.1_int8_convrot.safetensors',
-      'text_encoders/qwen3vl_8b_int8_convrot.safetensors',
-      'vae/qwen_image_2.1_vae_bf16.safetensors',
-    ],
-  },
-  'qwen-image-2.1-fusal': {
-    label: 'Qwen-Image 2.1 Anime (FUSAL)',
-    graph: qwenImage21FusalGraph(),
-    // Measured: clean at 1 MP, grainy from 1.5 MP up, so bigger asks are drawn at 1 MP and enlarged.
-    nativePixels: 1024 * 1024,
-    // Read by Qwen3-VL 8B: sentences in the card's labelled sections.
-    promptStyle: 'prose',
-    improverGuide: FUSAL_IMPROVER_GUIDE,
-    // The card's one required lead-in. It ends in a full stop, so joinPrefix
-    // puts a space after it rather than a comma.
-    prefixes: { positive: 'fusal style.', negative: '' },
-    promptGuide:
-      'Write plain English sentences, never a tag list, ideally in labelled sections: ' +
-      '"[TASK: TEXT_TO_IMAGE]" then [Subject], [Appearance], [Pose], [Expression], [Composition], ' +
-      '[Environment], [Lighting] and [Style], each on its own line. Name a character and their ' +
-      'series in [Subject]. Put words that should appear in the picture in double quotes. There is ' +
-      'no negative prompt at its recommended settings, so only describe what you want.',
-    // cfg 1, the card's setting: the negative is computed and unused.
-    negative: '',
-    needs: [
-      'diffusion_models/qwen_image_2.1_int8_convrot.safetensors',
-      'text_encoders/qwen3vl_8b_int8_convrot.safetensors',
-      'vae/qwen_image_2.1_vae_bf16.safetensors',
-      'loras/fusal-qwen-image-2.1-v2-exact-r80.safetensors',
-    ],
-  },
   'qwen-image-2.1-edit': {
     label: 'Qwen-Image 2.1 (edit)',
     graph: qwenImage21EditGraph(),
@@ -3617,61 +3543,10 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'sign". It knows anime and named characters. Keep it to one or two sentences, do not ' +
       'describe what is not changing, and put any text to add in double quotes.',
     negative: '',
-    // Shares all three files with the Qwen-Image 2.1 painter.
     needs: [
       'diffusion_models/qwen_image_2.1_int8_convrot.safetensors',
       'text_encoders/qwen3vl_8b_int8_convrot.safetensors',
       'vae/qwen_image_2.1_vae_bf16.safetensors',
-    ],
-  },
-  'flux3-image-klein-edit': {
-    label: 'FLUX 3 Klein (edit)',
-    graph: flux3KleinEditGraph(),
-    edits: true,
-    ignoresQuality: true,
-    promptStyle: 'prose',
-    // The template's editing upsampler, condensed: an imperative instruction on
-    // the picture, the referent named by how it looks, the end state concrete,
-    // one closing clause on what stays.
-    promptGuide:
-      'This model EDITS the picture it is shown, so the prompt is an instruction, not a ' +
-      'description of a scene. Name each subject by how it actually looks ("the woman with ' +
-      'orange hair on the left"), never "her" or "it", and state the end state concretely — ' +
-      'which colour, which pose, which material: "Change her striped top to an open pink zip-up ' +
-      'jacket worn over a white tank top." Mention the knock-on effects (shadows, reflections, ' +
-      'what fills a removed area). For a whole-picture change open with the scope ("Convert the ' +
-      'entire image into…"). Close with ONE short clause on what stays unchanged; never list ' +
-      'everything. Text to add goes verbatim in double quotes. 50 to 150 words.',
-    // Shares all three files with the FLUX 3 Klein painter.
-    needs: [
-      'diffusion_models/flux3-image-klein-int8-convrot.safetensors',
-      'text_encoders/qwen3vl_4b_int8_convrot.safetensors',
-      'vae/flux2-vae.safetensors',
-    ],
-  },
-  'qwen-image-edit': {
-    label: 'Qwen Image Edit (edit)',
-    graph: qwenEditGraph(),
-    edits: true,
-    // Lightning-fused: 4 steps at cfg 1 are the model, not a preference.
-    ignoresQuality: true,
-    promptStyle: 'prose',
-    promptGuide:
-      'This model EDITS the picture it is shown, so the prompt is an instruction, not a ' +
-      'description of a scene. Its text encoder is a vision-language model that looks at the ' +
-      'picture while reading the instruction, so name the subject as it appears ("the girl with ' +
-      'pink hair", "the man on the left") and say the change concretely: "change her jacket to ' +
-      'red leather", "make it night with rain", "give him sunglasses". It knows anime and its ' +
-      'characters: a named character or series may be used as-is ("draw her in Sakura Haruno\'s ' +
-      'outfit"). Keep it to one or two sentences. Do not describe what is not changing and never ' +
-      'write a full scene description. Text to add goes in quotes.',
-    // No negative worth writing: the Lightning distillation runs at cfg 1,
-    // where the negative encode is computed and ignored.
-    negative: '',
-    needs: [
-      'diffusion_models/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_comfyui_4steps_v1.0.safetensors',
-      'text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors',
-      'vae/qwen_image_vae.safetensors',
     ],
   },
   'moss-image-sft': {
@@ -3830,9 +3705,8 @@ const FULL_QUALITY_SWAP: Record<string, string> = {
   'qwen3vl_8b_int8_convrot.safetensors': 'qwen3vl_8b_bf16.safetensors',
   'moss_image_sft_int8_convrot.safetensors': 'moss_image_sft_bf16.safetensors',
   'qwen3.5_9b_w4a8_gptq.safetensors': 'qwen3.5_9b_bf16.safetensors',
-  'flux3-image-klein-int8-convrot.safetensors': 'flux3-image-klein-bf16.safetensors',
 }
-for (const id of ['qwen-image-2.1', 'qwen-image-2.1-fusal', 'qwen-image-2.1-edit', 'moss-image-sft', 'flux3-image-klein', 'flux3-image-klein-edit']) {
+for (const id of ['qwen-image-2.1-edit', 'moss-image-sft']) {
   const base = BUILTIN_WORKFLOWS[id]
   if (!base) continue
   const graph: ComfyGraph = structuredClone(base.graph)
