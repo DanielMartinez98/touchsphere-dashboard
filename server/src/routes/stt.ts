@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import multer from 'multer'
 import { serviceDown, serviceUrl, serviceUrlSettled, onAiServiceChange } from '../ai-devices'
+import { sttPrompt, isPromptEcho } from '../stt-vocab'
 
 // POST /api/stt   ── multipart/form-data, field "audio"
 //
@@ -145,7 +146,7 @@ function isWhisperPhantom(text: string): boolean {
 // ── Whisper (local, OpenAI-compatible) ───────────────────────────────────────
 interface Clip { buffer: Buffer; mimetype: string; name: string }
 
-async function transcribeWhisper(clip: Clip, lang: string, timeoutMs = WHISPER_TIMEOUT_MS): Promise<{ text: string; language: string | null }> {
+async function transcribeWhisper(clip: Clip, lang: string, timeoutMs = WHISPER_TIMEOUT_MS, prompt = ''): Promise<{ text: string; language: string | null }> {
   const fd = new FormData()
   // Web FormData (Node 22) accepts Blob — wrap the buffer.
   const blob = new Blob([new Uint8Array(clip.buffer)], { type: clip.mimetype })
@@ -156,6 +157,9 @@ async function transcribeWhisper(clip: Clip, lang: string, timeoutMs = WHISPER_T
   fd.append('response_format', 'json')
   fd.append('temperature', '0')
   if (lang) fd.append('language', lang)
+  // The names this dashboard expects (stt-vocab.ts). OpenAI's API, speaches and
+  // vLLM all take `prompt`; whisper.cpp's server ignores a field it doesn't know.
+  if (prompt) fd.append('prompt', prompt)
 
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
@@ -256,12 +260,17 @@ router.post('/', upload.single('audio'), async (req, res) => {
     const t0 = Date.now()
     try {
       console.log(`[stt][${provider}] transcribing ${clip.buffer.length} bytes (${clip.mimetype})`)
+      const prompt = provider === 'whisper' ? sttPrompt() : ''
       const out = provider === 'whisper'
-        ? await transcribeWhisper(clip, langOk)
+        ? await transcribeWhisper(clip, langOk, WHISPER_TIMEOUT_MS, prompt)
         : await transcribeElevenLabs(clip, langOk)
       let text = cleanTranscript(out.text)
       if (provider === 'whisper' && isWhisperPhantom(text)) {
         if (text) console.log(`[stt][whisper] dropped a silence hallucination: "${text}"`)
+        text = ''
+      }
+      if (provider === 'whisper' && isPromptEcho(text, prompt)) {
+        console.log(`[stt][whisper] dropped an echo of the names list: "${text.slice(0, 80)}"`)
         text = ''
       }
       console.log(`[stt][${provider}] OK in ${Date.now() - t0}ms lang=${out.language ?? '?'} chars=${text.length} → "${text.slice(0, 80)}${text.length > 80 ? '…' : ''}"`)
