@@ -69,8 +69,8 @@ usage() {
 
 Options:
   --data DIR             where the models and caches go (default: the largest non-system disk)
-  --models SET[,SET…]    picture models to download: anime (default), edit,
-                         flux (FLUX 3 Klein; set HF_TOKEN if gated), qwen21, fusal, all, none
+  --models SET[,SET…]    picture models to download: anime (default: Anima + WAI),
+                         edit (Qwen-Image 2.1 Edit), moss, wan (AniSora, for Animate), all, none
   --llm MODEL            Ollama chat model (default: OLLAMA_MODEL from .env, else qwen3:8b)
   --vision MODEL         Ollama vision model for the picture tools (default: OLLAMA_VISION_MODEL, else gemma4)
   --whisper-model ID     Whisper model to warm (default: WHISPER_MODEL from .env, else Systran/faster-whisper-small)
@@ -324,31 +324,12 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
     "controlnet/controlnet-union-sdxl-1.0-promax.safetensors|https://huggingface.co/xinsir/controlnet-union-sdxl-1.0/resolve/main/diffusion_pytorch_model_promax.safetensors|2.5"
     "upscale_models/4x-UltraSharpV2.safetensors|https://huggingface.co/Kim2091/UltraSharpV2/resolve/main/4x-UltraSharpV2.safetensors|0.1"
   )
+  # The editor: Qwen-Image 2.1 Edit (the only editing style kept since 2026-11-17).
   EDIT_FILES=(
-    "diffusion_models/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_comfyui_4steps_v1.0.safetensors|https://huggingface.co/Comfy-Org/Qwen-Image-Edit_ComfyUI/resolve/main/split_files/diffusion_models/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_comfyui_4steps_v1.0.safetensors|20.4"
-    "text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors|https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors|9.4"
-    "vae/qwen_image_vae.safetensors|https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors|0.3"
-  )
-  # FLUX 3 Image Klein, painter and editor from one set. Black Forest Labs'
-  # own repo, which is GATED: accept the licence on huggingface.co once with
-  # the account whose token is in HF_TOKEN.
-  FLUX_FILES=(
-    "diffusion_models/flux3-image-klein-int8-convrot.safetensors|https://huggingface.co/black-forest-labs/flux-3-image-klein-comfy/resolve/main/diffusion_models/flux3-image-klein-int8-convrot.safetensors|6.0"
-    "text_encoders/qwen3vl_4b_int8_convrot.safetensors|https://huggingface.co/black-forest-labs/flux-3-image-klein-comfy/resolve/main/text_encoders/qwen3vl_4b_int8_convrot.safetensors|4.5"
-    "vae/flux2-vae.safetensors|https://huggingface.co/black-forest-labs/flux-3-image-klein-comfy/resolve/main/vae/flux2-vae.safetensors|0.35"
-  )
-
-  # Qwen-Image 2.1: one set of files serves both the painter and the editor.
-  QWEN21_FILES=(
     "diffusion_models/qwen_image_2.1_int8_convrot.safetensors|https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/diffusion_models/qwen_image_2.1_int8_convrot.safetensors|6.8"
     "text_encoders/qwen3vl_8b_int8_convrot.safetensors|https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/text_encoders/qwen3vl_8b_int8_convrot.safetensors|8.7"
     "vae/qwen_image_2.1_vae_bf16.safetensors|https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors|0.65"
   )
-  # FUSAL: an anime style LoRA for Qwen-Image 2.1 Base, so the qwen21 files come with it.
-  FUSAL_FILES=(
-    "loras/fusal-qwen-image-2.1-v2-exact-r80.safetensors|https://huggingface.co/MicksHF/Qwen-Image-2.1-Anime-Fusal/resolve/main/loras/fusal-qwen-image-2.1-v2-exact-r80.safetensors|0.42"
-  )
-
   # MOSS-Image SFT (OpenMOSS, Apache 2.0) from Comfy-Org's repackage.
   MOSS_FILES=(
     "diffusion_models/moss_image_sft_int8_convrot.safetensors|https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/diffusion_models/moss_image_sft_int8_convrot.safetensors|5.4"
@@ -368,15 +349,12 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
   for set in ${MODELS//,/ }; do
     case "$set" in
       anime) WANT+=("${ANIME_FILES[@]}") ;;
-      edit)  WANT+=("${EDIT_FILES[@]}") ;;
-      flux)  WANT+=("${FLUX_FILES[@]}") ;;
-      qwen21) WANT+=("${QWEN21_FILES[@]}") ;;
-      fusal)  WANT+=("${QWEN21_FILES[@]}" "${FUSAL_FILES[@]}") ;;
+      edit|qwen21) WANT+=("${EDIT_FILES[@]}") ;;
       moss)   WANT+=("${MOSS_FILES[@]}") ;;
       wan)    WANT+=("${WAN_FILES[@]}") ;;
-      all)   WANT+=("${ANIME_FILES[@]}" "${EDIT_FILES[@]}" "${FLUX_FILES[@]}" "${QWEN21_FILES[@]}" "${FUSAL_FILES[@]}" "${MOSS_FILES[@]}" "${WAN_FILES[@]}") ;;
+      all)   WANT+=("${ANIME_FILES[@]}" "${EDIT_FILES[@]}" "${MOSS_FILES[@]}" "${WAN_FILES[@]}") ;;
       none)  ;;
-      *) die "unknown model set '$set' (anime, edit, flux, qwen21, fusal, moss, wan, all, none)" ;;
+      *) die "unknown model set '$set' (anime, edit, moss, wan, all, none)" ;;
     esac
   done
 
@@ -415,7 +393,7 @@ for m in json.load(sys.stdin).get("models", []): print(m["name"])' 2>/dev/null |
         echo "   downloading $rel…"
         # Resumable, with retries; the .part is renamed only when complete, so a
         # cut download can never be mistaken for a model by ComfyUI.
-        # HF_TOKEN reaches a gated repo (FLUX 3 Klein); harmless on the open ones.
+        # HF_TOKEN reaches a gated repo, should one be added; harmless on the open ones.
         auth=()
         case "$url" in https://huggingface.co/*) [ -n "${HF_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $HF_TOKEN") ;; esac
         if curl -fL --retry 5 --retry-delay 5 -C - "${auth[@]}" -o "$dest.part" "$url"; then
