@@ -41,6 +41,7 @@ import { animateImage, animatorStyles, enhanceImage, upscalerStyle } from '../ho
 import { TouchInput } from './TouchInput'
 import { onServerEvent } from '../hooks/useServerEvents'
 import type { ImproverOutcome, StoredImage } from '../hooks/useImages'
+import AnimateSettings from './widgets/ImageWidget/AnimateSettings'
 
 /**
  * The gallery entry, whole.
@@ -527,6 +528,7 @@ function PromptActions({
               ))}
             </div>
           )}
+          <AnimateSettings style={animator} seconds={seconds} />
           <div className="flex flex-wrap items-center gap-2">
             {[3, 5, 10, 15, 20].map(n => (
               <button
@@ -557,7 +559,7 @@ function PromptActions({
             </button>
           </div>
           <div className="text-[12px] text-white/45">
-            About 10 minutes per 5 seconds. Silent, 768×1152, 16 frames a second; longer clips are 5-second shots chained. Gestures and expressions (a wave, a smile, arms up) work best; big moves like jumping or walking, and camera moves, come out weak.
+            Silent, 16 frames a second; longer clips are shots chained (time and size are under Settings). Gestures and expressions (a wave, a smile, arms up) work best; big moves like jumping or walking, and camera moves, come out weak.
           </div>
           {animError && <div className="text-[13px] text-amber-300">{animError}</div>}
         </div>

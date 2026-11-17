@@ -535,6 +535,8 @@ export interface ImageSettings {
   hiresFrom?:      string
   /** A clip: how many seconds of motion were asked for. */
   seconds?:        number
+  /** A clip: the settings it was animated with (see AnimSettings). */
+  anim?:           AnimSettings
   /** Booster text appended to the prompt for this style, when there was any. */
   optimizations?:  string
   /**
@@ -994,6 +996,8 @@ export interface ImageJob {
   /** ANIMATE: the clip's length in seconds, and its mp4 once it exists. */
   seconds?: number
   video?:   string
+  /** ANIMATE: the sampling settings, resolved to real numbers at queue time. */
+  anim?:    AnimSettings
   error?:   string
   startedAt: number
   endedAt?:  number
@@ -1463,7 +1467,7 @@ export function startImage(req: ImageRequest): ImageJob {
     ? upscales
       ? { width: source.width * 4, height: source.height * 4 }
       : animates
-      ? animateSize(source.width, source.height)
+      ? animateSize(source.width, source.height, p.videoRes)
       : edits
       ? editSize(style, source.width, source.height)
       : sizeForMegapixels(source.width, source.height, p.megapixels > 0 ? p.megapixels : 1, p.multipleOf)
@@ -1599,7 +1603,7 @@ export function startImage(req: ImageRequest): ImageJob {
     startedAt: Date.now(),
     // Animate's improver is its own (composeAnimatePrompt) and runs only when
     // asked for explicitly: the Animate sheet sends it, the voice tool does not.
-    ...(animates ? { seconds: clampSeconds(req.seconds), improve: req.improve === true } : {}),
+    ...(animates ? { seconds: clampSeconds(req.seconds), improve: req.improve === true, anim: animSettings(style, p) } : {}),
   }
   job.plannedSteps = job.steps > 0 ? job.steps : styleDefaults(style).steps
   refreshEstimate(job)
@@ -2443,9 +2447,112 @@ function clampSeconds(n: unknown): number {
   return Math.max(1, Math.min(MAX_SECONDS, v))
 }
 
+/** The short side of a 2:3 clip at the default size: 768×1152, measured to fit a 5 s shot. */
+const DEFAULT_VIDEO_RES = 768
+
+/**
+ * How a clip is sampled, resolved to real numbers when it is queued (so a
+ * clip waiting in the line keeps the settings it was asked with) and recorded
+ * on the finished clip. Saved per style in image-params.json and edited in the
+ * Animate sheet's Settings; every knob left on Auto takes the graph's number.
+ */
+export interface AnimSettings {
+  /** Total sampling steps, shared by the two experts. */
+  steps:       number
+  /** Of those, how many the high-noise expert (the motion) takes. */
+  highSteps:   number
+  cfg:         number
+  shift:       number
+  sampler:     string
+  scheduler:   string
+  /** The short side of the frame (768 → 768×1152 at 2:3). */
+  res:         number
+  /** The longest piece the clip is drawn in. */
+  shotSeconds: number
+}
+
+/** What an animating style's own graph says, for "Auto" to name a number. */
+export function animDefaults(style: string): AnimSettings {
+  const graph = style.startsWith(WORKFLOW_PREFIX) ? workflowGraph(style.slice(WORKFLOW_PREFIX.length)) : null
+  const nodes = graph ? Object.values(graph) : []
+  const samplers = nodes.filter(n => n.class_type === 'KSamplerAdvanced')
+  const high = samplers.find(n => n.inputs['add_noise'] === 'enable') ?? samplers[0]
+  const shiftNode = nodes.find(n => n.class_type === 'ModelSamplingSD3')
+  const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d)
+  const steps = num(high?.inputs['steps'], 8)
+  return {
+    steps,
+    highSteps:   Math.min(steps - 1, num(high?.inputs['end_at_step'], Math.round(steps * 3 / 8))),
+    cfg:         num(high?.inputs['cfg'], 1),
+    shift:       num(shiftNode?.inputs['shift'], 5),
+    sampler:     typeof high?.inputs['sampler_name'] === 'string' ? String(high.inputs['sampler_name']) : 'euler',
+    scheduler:   typeof high?.inputs['scheduler'] === 'string' ? String(high.inputs['scheduler']) : 'simple',
+    res:         DEFAULT_VIDEO_RES,
+    shotSeconds: SEGMENT_SECONDS,
+  }
+}
+
+/**
+ * The saved knobs over the graph's defaults. The expert switch on Auto keeps
+ * the graph's SHARE (3 of 8) at any step count, since what it marks is a point
+ * in the noise schedule rather than a step number; a typed switch is kept
+ * inside the run so both experts always take at least one step.
+ */
+function animSettings(style: string, p: ImageParams): AnimSettings {
+  const d = animDefaults(style)
+  const steps = p.steps > 0 ? Math.max(2, p.steps) : d.steps
+  const autoHigh = Math.round(steps * d.highSteps / Math.max(1, d.steps))
+  const highSteps = Math.max(1, Math.min(steps - 1, p.highSteps > 0 ? p.highSteps : autoHigh))
+  return {
+    steps,
+    highSteps,
+    cfg:         p.cfg > 0 ? p.cfg : d.cfg,
+    shift:       p.shift > 0 ? p.shift : d.shift,
+    sampler:     p.sampler || d.sampler,
+    scheduler:   p.scheduler || d.scheduler,
+    res:         p.videoRes > 0 ? p.videoRes : d.res,
+    shotSeconds: p.shotSeconds > 0 ? Math.min(SEGMENT_SECONDS, p.shotSeconds) : d.shotSeconds,
+  }
+}
+
+/** Write a clip's settings into the two-expert Wan graph. */
+function applyAnimSettings(graph: ComfyGraph, a: AnimSettings): void {
+  for (const node of Object.values(graph)) {
+    if (node.class_type === 'ModelSamplingSD3') node.inputs['shift'] = a.shift
+    if (node.class_type !== 'KSamplerAdvanced') continue
+    node.inputs['steps'] = a.steps
+    node.inputs['cfg'] = a.cfg
+    node.inputs['sampler_name'] = a.sampler
+    node.inputs['scheduler'] = a.scheduler
+    // The high-noise expert adds the noise and stops at the switch; the
+    // low-noise one picks up there and runs to the end.
+    if (node.inputs['add_noise'] === 'enable') node.inputs['end_at_step'] = a.highSteps
+    else node.inputs['start_at_step'] = a.highSteps
+  }
+}
+
+/**
+ * How much heavier a clip's settings are than the measured default (8 steps,
+ * cfg 1, 768×1152): steps scale it linearly, pixels roughly linearly, and cfg
+ * above 1 samples the negative too, which doubles each step.
+ */
+function animCost(job: ImageJob): number {
+  const a = job.anim
+  if (!a) return 1
+  const pixels = (job.width * job.height) / (768 * 1152)
+  return (a.steps / 8) * pixels * (a.cfg > 1 ? 2 : 1)
+}
+
+/** "about 10 minutes per 5 seconds", scaled by animCost and said for this shot. */
+function animEtaText(job: ImageJob, seconds: number): string {
+  const min = Math.max(1, Math.round(10 * animCost(job) * seconds / 5))
+  return `about ${min} minute${min === 1 ? '' : 's'} for this ${Math.round(seconds * 10) / 10}-second shot`
+}
+
 /** Seconds per segment for a clip of `total` seconds: as even as possible, none over SEGMENT_SECONDS. */
-function segmentPlan(total: number): number[] {
-  const n = Math.max(1, Math.ceil(total / SEGMENT_SECONDS))
+function segmentPlan(total: number, shot = SEGMENT_SECONDS): number[] {
+  const len = shot > 0 ? Math.min(SEGMENT_SECONDS, shot) : SEGMENT_SECONDS
+  const n = Math.max(1, Math.ceil(total / len))
   const base = total / n
   return Array.from({ length: n }, () => base)
 }
@@ -2530,7 +2637,7 @@ async function renderClip(job: ImageJob, base: ComfyGraph): Promise<OutputRef[]>
     throw new Error("this animating style's workflow is not a Wan image-to-video graph")
   }
   const vaeLink = base[decodeId]!.inputs['vae'] as [string, number]
-  const plan = segmentPlan(job.seconds ?? DEFAULT_SECONDS)
+  const plan = segmentPlan(job.seconds ?? DEFAULT_SECONDS, job.anim?.shotSeconds)
   const n = plan.length
   const tag = (k: number, what: string) => `touchsphere-clip-${job.id}-${k}-${what}`
   const latents: string[] = []
@@ -2544,7 +2651,7 @@ async function renderClip(job: ImageJob, base: ComfyGraph): Promise<OutputRef[]>
     for (const id of samplers) g[id]!.inputs['noise_seed'] = job.seed + k
     const shot = n > 1 ? ` shot ${k + 1} of ${n}` : ''
 
-    push(job, 'animating', `Animating${shot} at ${job.width}×${job.height}: about 10 minutes per 5 seconds.`)
+    push(job, 'animating', `Animating${shot} at ${job.width}×${job.height}${job.anim ? `, ${job.anim.steps} steps at cfg ${job.anim.cfg}` : ''}: ${animEtaText(job, plan[k]!)}.`)
     g['t_save'] = { class_type: 'SaveLatent', inputs: { samples: [last, 0], filename_prefix: `latents/${tag(k, 'l')}` } }
     const roots = ['t_save']
     if (k < n - 1) {
@@ -2587,8 +2694,9 @@ async function renderClip(job: ImageJob, base: ComfyGraph): Promise<OutputRef[]>
  * 16 (the Wan VAE's 8 × its 2×2 patch). 480p rather than 720p because 720p is
  * about twice the time on a 4090 and the model card's own example runs at 480.
  */
-export function animateSize(w: number, h: number): { width: number; height: number } {
-  const area = 768 * 1152
+export function animateSize(w: number, h: number, res = 0): { width: number; height: number } {
+  const short = res > 0 ? res : DEFAULT_VIDEO_RES
+  const area = short * short * 1.5
   const aspect = w > 0 && h > 0 ? w / h : 832 / 480
   const snap = (n: number) => Math.max(256, Math.round(n / 16) * 16)
   return { width: snap(Math.sqrt(area * aspect)), height: snap(Math.sqrt(area / aspect)) }
@@ -4305,6 +4413,14 @@ function conditioningText(graph: ComfyGraph, start: unknown): string | null {
  * honest outcome when nothing can be checked).
  */
 let knownSamplers: Set<string> | null = null
+let knownSchedulers: Set<string> | null = null
+
+/** The sampler and scheduler names this ComfyUI accepts, for the Animate settings' pickers. Empty when it cannot be asked. */
+export async function samplerChoices(): Promise<{ samplers: string[]; schedulers: string[] }> {
+  const ask = (k: string) => loaderOptions('KSampler', k).catch(() => [] as string[])
+  const [samplers, schedulers] = await Promise.all([ask('sampler_name'), ask('scheduler')])
+  return { samplers, schedulers }
+}
 async function ensureSamplers(graph: ComfyGraph, job: ImageJob): Promise<void> {
   if (!knownSamplers) {
     try {
@@ -4312,9 +4428,21 @@ async function ensureSamplers(graph: ComfyGraph, job: ImageJob): Promise<void> {
       if (list.length > 0) knownSamplers = new Set(list)
     } catch { /* checked next time */ }
   }
-  if (!knownSamplers) return
+  if (!knownSchedulers) {
+    try {
+      const list = await loaderOptions('KSampler', 'scheduler')
+      if (list.length > 0) knownSchedulers = new Set(list)
+    } catch { /* checked next time */ }
+  }
   for (const node of Object.values(graph)) {
     if (node.class_type !== 'KSampler' && node.class_type !== 'KSamplerAdvanced') continue
+    const sched = node.inputs['scheduler']
+    if (knownSchedulers && typeof sched === 'string' && !knownSchedulers.has(sched)) {
+      console.warn(`[image] scheduler "${sched}" is not on this ComfyUI — using simple for job ${job.id}`)
+      node.inputs['scheduler'] = 'simple'
+      job.detail = `${job.detail ? job.detail + ' ' : ''}(This ComfyUI has no "${sched}" scheduler, so simple was used.)`
+    }
+    if (!knownSamplers) continue
     const want = node.inputs['sampler_name']
     if (typeof want !== 'string' || knownSamplers.has(want)) continue
     console.warn(`[image] sampler "${want}" is not on this ComfyUI — using euler for job ${job.id}`)
@@ -4353,8 +4481,9 @@ function buildGraph(job: ImageJob, sourceName = '', maskName = ''): ComfyGraph {
       if ('noise_seed' in node.inputs) node.inputs['noise_seed'] = job.seed
       if ('seed' in node.inputs) node.inputs['seed'] = job.seed
     }
+    if (job.anim) applyAnimSettings(graph, job.anim)
     // One segment's graph; renderClip() splits it into its passes and segments.
-    wan['length'] = clipFrames(segmentPlan(job.seconds ?? DEFAULT_SECONDS)[0]!)
+    wan['length'] = clipFrames(segmentPlan(job.seconds ?? DEFAULT_SECONDS, job.anim?.shotSeconds)[0]!)
     return graph
   }
 
@@ -4924,6 +5053,7 @@ function renderedWith(job: ImageJob, graph: ComfyGraph, changed?: number | null)
         : {}),
     ...(typeof changed === 'number' ? { changed } : {}),
     ...(job.seconds ? { seconds: job.seconds } : {}),
+    ...(job.anim ? { anim: job.anim } : {}),
     ...(job.retriedWith ? { retriedWith: job.retriedWith } : {}),
     ...(job.retryFailed ? { retryFailed: job.retryFailed } : {}),
     ...(job.maskFile ? { maskFile: job.maskFile } : {}),
@@ -5865,7 +5995,7 @@ async function awaitOutput(promptId: string, job: ImageJob, announce = true): Pr
   // total so a genuinely stuck box still gives up eventually.
   // A clip is two 14B models, each read from disk on a box whose RAM cannot
   // hold both, so its render budget is far longer than a picture's.
-  const budget = job.seconds ? Math.max(TIMEOUT_MS, VIDEO_TIMEOUT_MS) : TIMEOUT_MS
+  const budget = job.seconds ? Math.max(TIMEOUT_MS, VIDEO_TIMEOUT_MS * Math.max(1, animCost(job))) : TIMEOUT_MS
   let deadline = Date.now() + budget
   const hardStop = Date.now() + QUEUE_WAIT_MS
   // A clip's passes announce themselves (renderClip says which half is drawing).

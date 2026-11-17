@@ -62,7 +62,7 @@ const OLLAMA_API_KEY = process.env['OLLAMA_API_KEY'] ?? ''
 // same model family with no limit at all, so a 429 or a 5xx from the primary
 // is retried there — same messages, same tools — and the log says so.
 //   OLLAMA_FALLBACK_URL=http://<gpu-box>:11434
-//   OLLAMA_FALLBACK_MODEL=qwen3:8b
+//   OLLAMA_FALLBACK_MODEL=qwen3.5:9b   (picked the right tool 35/36 times where qwen3:8b got 30/36, 2026-11-17)
 const OLLAMA_FALLBACK_URL   = process.env['OLLAMA_FALLBACK_URL']   ?? ''
 const OLLAMA_FALLBACK_MODEL = process.env['OLLAMA_FALLBACK_MODEL'] ?? process.env['OLLAMA_MODEL'] ?? ''
 const TIMEOUT_MS     = Number(process.env['OLLAMA_TIMEOUT_MS'] ?? 30_000)
