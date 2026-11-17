@@ -10,7 +10,8 @@
     "research": "ts-node --transpile-only scripts/research-dry-run.ts",
     "test:local-ai": "ts-node --transpile-only scripts/local-ai-test.ts",
     "test:prompt-options": "ts-node --transpile-only scripts/prompt-options-test.ts",
-    "test:apps": "ts-node --transpile-only scripts/app-report-test.ts"
+    "test:apps": "ts-node --transpile-only scripts/app-report-test.ts",
+    "test:animate": "ts-node --transpile-only scripts/animate-settings-test.ts"
   },
   "keywords": [],
   "author": "",
