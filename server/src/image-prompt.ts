@@ -469,6 +469,66 @@ export function prompterModel(): string {
   return readPrompter().model || ENV_MODEL || OLLAMA_MODEL
 }
 
+/**
+ * How long a prompt a model reads well (promptLength in image.ts): the range
+ * to aim for and the most it may be handed, in words for a model read by a
+ * language model and in tags for one read by CLIP.
+ */
+export interface PromptLength { unit: 'words' | 'tags'; target: [number, number]; max: number }
+
+/** Words or tags in a prompt, as the improver is told to count them. */
+export function countUnits(text: string, unit: PromptLength['unit']): number {
+  return unit === 'tags'
+    ? text.split(',').map(t => t.trim()).filter(Boolean).length
+    : text.split(/\s+/).filter(Boolean).length
+}
+
+/**
+ * The length rule appended after the model's best practices. A rule of its
+ * own rather than a line in each page, because the number is the one the
+ * answer is checked against below, and the two must never disagree.
+ */
+export function lengthRule(len?: PromptLength): string {
+  if (!len) return ''
+  const u = len.unit
+  return `\n\nLENGTH FOR THIS MODEL (added by the app; a hard limit): the finished prompt should be ` +
+    `${len.target[0]} to ${len.target[1]} ${u} long and must NEVER be more than ${len.max} ${u}. Use the ` +
+    `short end for one simple subject and the long end for a busy scene, several characters or a fight. ` +
+    `Count the ${u} of your draft before you answer; a prompt over ${len.max} ${u} is sent back to be shortened.`
+}
+
+/**
+ * Cut a prompt to fit: at the last whole sentence (or tag) inside the limit,
+ * so what reaches the sampler is the front of the prompt — subject, characters,
+ * action — and never half a word. The last resort after the model was asked
+ * to shorten it and could not; the old answer to a long rewrite was to throw
+ * all of it away and draw the user's three words instead.
+ */
+export function fitLength(text: string, len: PromptLength | undefined, maxChars: number): string {
+  let out = text.trim()
+  if (len?.unit === 'tags') {
+    const tags = out.split(',').map(t => t.trim()).filter(Boolean)
+    out = tags.slice(0, len.max).join(', ')
+  } else if (len) {
+    const sentences = out.split(/(?<=[.!?])\s+/)
+    let kept: string[] = []
+    let n = 0
+    for (const sen of sentences) {
+      const w = countUnits(sen, 'words')
+      if (n + w > len.max) break
+      kept.push(sen); n += w
+    }
+    if (!kept.length) kept = [out.split(/\s+/).slice(0, len.max).join(' ')]
+    out = kept.join(' ')
+  }
+  if (out.length > maxChars) {
+    const cut = out.slice(0, maxChars)
+    const at = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf(', '))
+    out = (at > maxChars / 2 ? cut.slice(0, at + 1) : cut.replace(/\s+\S*$/, '')).trim()
+  }
+  return out
+}
+
 /** What a style is called and how it wants to be prompted. Supplied by image.ts. */
 export interface StyleFacts {
   /** Human label, e.g. "FLUX.1 dev". */
@@ -488,6 +548,8 @@ export interface StyleFacts {
    * much as it wants.
    */
   maxChars?: number
+  /** How long a prompt this model reads well; told to the model and enforced. */
+  length?: PromptLength
 }
 
 /**
@@ -519,15 +581,19 @@ export function buildSystemPrompt(template: string, style: StyleFacts): string {
  */
 export const ANSWER_FORMAT = `
 
-HOW TO ANSWER (this replaces any earlier instruction about replying with the prompt alone):
-1. First think it through as plain notes, as long as you need. Decide everything the picture must show: who and what is in it, where each is in the frame, and what each is doing at this exact instant. For a fight or any action: who attacks and who defends, the single frozen moment shown (wind-up, impact, dodge, aftermath), each body's pose and facing, what hits what and where, and the motion and effects around it (speed lines, debris, sparks, dust). Check that every word of the request is accounted for.
-2. Then write the finished prompt for the image model between <prompt> and </prompt>, following the instructions above. Only the text between those tags is sent to the image model and everything else is thrown away, so the prompt must stand on its own and must not mention your notes.`
+HOW TO ANSWER (this replaces any earlier instruction about replying with the prompt alone). Work slowly and step by step in plain notes before you write anything final:
+1. Restate the request in your own words, then list every item the user actually asked for: each subject, named character and their series, action, object, colour, clothing, place, time of day, style and mood. These are fixed: the picture must show exactly these, and nothing may replace them.
+2. Note what the user did NOT specify. Those details are yours to choose, but only in ways that support the request and never contradict it. Where something could be read two ways, take the most literal, ordinary reading of the user's words and say why.
+3. Plan the picture: who and what is in it, where each is in the frame, and what each is doing at this exact instant. For a fight or any action: who attacks and who defends, the single frozen moment shown (wind-up, impact, dodge, aftermath), each body's pose and facing, what hits what and where, and the motion and effects around it (speed lines, debris, sparks, dust). State the exact number of every kind of person and animal (one woman, two cats) so no one extra appears. Turn every outcome or relationship the user named (who is winning or losing, who is bigger, who is afraid) into something the picture visibly shows, such as a pile of captured pieces beside the winner, a shattered shield, a cowering pose.
+4. Write a draft of the prompt in your notes, following the instructions and the best practices for this model above.
+5. Check the draft against your list from step 1, item by item: is every item there, unchanged and clearly stated? Did you add a person, object, outfit, colour or style the user did not ask for and the picture does not need? Would someone reading only the draft picture what the user asked for? Is it inside the length limit for this model? Fix the draft and check again until every answer is right.
+6. Then write the finished prompt for the image model between <prompt> and </prompt>. Only the text between those tags is sent to the image model and everything else is thrown away, so the prompt must stand on its own and must not mention your notes.`
 
 /** The last line, from Settings → Drawing → "Take as long as it takes". */
 export function thinkingLine(long: boolean): string {
   return long
-    ? '\n3. Take as long as it takes. There is no limit on your notes: work through every part of the picture until nothing is left undecided, then write the prompt.'
-    : '\n3. Think fast: a few short notes on the essentials only, then the prompt.'
+    ? '\n7. Take as long as it takes. There is no limit on your notes: work through every step above and every part of the picture until nothing is left undecided and the draft passes every check, then write the prompt.'
+    : '\n7. Think fast: short notes on each step, but never skip the check in step 5, then the prompt.'
 }
 
 /**
@@ -553,7 +619,7 @@ export function improverSystemPrompt(template: string, style: StyleFacts, long =
   // (Anima's two are one text) does not need it twice.
   const page = style.bestPractices?.trim()
   const block = page && built.includes(page) ? '' : bestPracticesBlock(style)
-  return built + block + ANSWER_FORMAT + thinkingLine(long)
+  return built + block + lengthRule(style.length) + ANSWER_FORMAT + thinkingLine(long)
 }
 
 /**
@@ -745,7 +811,7 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
         // so a long think is not truncated from the front, where the rules are.
         options: {
           num_ctx: settings.thinkLong ? 16384 : 8192, temperature,
-          num_predict: settings.thinkLong || !Number.isFinite(maxChars) ? -1 : 1000,
+          num_predict: settings.thinkLong || !Number.isFinite(maxChars) ? -1 : style.length ? 2500 : 1000,
         },
         }),
       })
@@ -771,11 +837,36 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
     }
     if (!text) return give(false, prompt, `${model} returned an empty answer`)
     if (looksLikeRefusal(text)) return give(false, prompt, `${model} refused to rewrite this prompt`)
-    // A rewrite that came back enormous is a model that started explaining
-    // itself. The sampler would spend its whole context on the explanation.
-    // Not checked for Anima (maxChars is Infinity), whose encoder reads it all.
-    if (text.length > maxChars) {
-      return give(false, prompt, `the rewrite came back ${text.length} characters long`)
+    // TOO LONG IS SENT BACK, THEN CUT — NEVER THROWN AWAY. It used to be
+    // thrown away whole, and the user's three words drawn instead: on
+    // Qwen-Image, whose own enhancer writes 400–500 words, that was most
+    // rewrites, and it read as "it drew something else". The model is told
+    // the limit (lengthRule), asked once to shorten an answer over it, and
+    // an answer still over it is cut at the last whole sentence or tag.
+    // Not checked for Anima (maxChars is Infinity, no length), whose encoder reads it all.
+    const len = style.length
+    const tooLong = (t: string) => t.length > maxChars || (len ? countUnits(t, len.unit) > len.max : false)
+    if (tooLong(text)) {
+      const have = len ? `${countUnits(text, len.unit)} ${len.unit}` : `${text.length} characters`
+      const limit = len ? `${len.max} ${len.unit} (aim for ${len.target[0]} to ${len.target[1]})` : `${maxChars} characters`
+      let fixed = ''
+      try {
+        const again = await ask(
+          `\n\nYOUR PREVIOUS PROMPT WAS ${have.toUpperCase()} LONG; THE LIMIT FOR THIS MODEL IS ${limit}. ` +
+          `This was it:\n${text}\n\nShorten it to fit. Keep every word of the user's request, the named ` +
+          `characters and their series, the main action and the composition; drop the least important ` +
+          `detail first. Put the shortened prompt between <prompt> and </prompt>.`,
+          0.3,
+        )
+        if (again.prompt && !tooLong(again.prompt)) fixed = again.prompt
+      } catch { /* cut below */ }
+      if (fixed) {
+        notes += `${notes ? '\n\n' : ''}[The first prompt was ${have} long, over this model's limit of ${limit}; it was asked to shorten it.]`
+        text = fixed
+      } else {
+        text = fitLength(text, len, maxChars)
+        notes += `${notes ? '\n\n' : ''}[The prompt was ${have} long, over this model's limit of ${limit}, and could not be shortened by the model; it was cut at the last whole ${len?.unit === 'tags' ? 'tag' : 'sentence'} that fits.]`
+      }
     }
     // A model that refuses, or answers the question instead of rewriting it,
     // usually comes back SHORTER than the request. Keeping the user's own words
@@ -807,7 +898,7 @@ export async function improvePrompt(prompt: string, style: StyleFacts, optionId?
           `Danbooru spells that name. Put the corrected prompt between <prompt> and </prompt>.`,
           0.3,
         )
-        if (again.prompt && again.prompt.length <= maxChars && missingWords(prompt, again.prompt).length === 0) {
+        if (again.prompt && !tooLong(again.prompt) && missingWords(prompt, again.prompt).length === 0) {
           text = again.prompt
           if (again.notes) notes = again.notes
           lost = []
@@ -961,7 +1052,7 @@ export async function composeRedrawPrompt(
   const model = visionModel()
   // The user's own template (Settings → Drawing), read per call for the same
   // reason the improver's is: an edit has to reach the NEXT redraw.
-  const system = buildSystemPrompt(readPrompter().visionTemplate, style)
+  const system = buildSystemPrompt(readPrompter().visionTemplate, style) + lengthRule(style.length)
   const turns: AiTurn[] = [turn('system', system), turn('user', visionUserMessage(change), { picture: true })]
   const give = (changed: boolean, text: string, why: string): Improvement => ({
     prompt: text, original: change, changed, model, ms: Date.now() - started, why,
@@ -998,7 +1089,7 @@ export async function composeRedrawPrompt(
         // runs in paged mode — a 53 s edit took 6 minutes that way.
         keep_alive: 0,
         // Uncapped for Anima, as in improvePrompt().
-        options: { num_ctx: 8192, temperature: 0.4, num_predict: Number.isFinite(maxChars) ? 500 : -1 },
+        options: { num_ctx: 8192, temperature: 0.4, num_predict: Number.isFinite(maxChars) ? (style.length ? 1200 : 500) : -1 },
       }),
     })
 
@@ -1011,11 +1102,12 @@ export async function composeRedrawPrompt(
     const json = (await res.json()) as { message?: { content?: string }; response?: string }
     const raw = json.message?.content ?? json.response ?? ''
     turns.push(turn('assistant', raw))
-    const text = unwrap(raw)
+    let text = unwrap(raw)
     if (!text) return give(false, change, `${model} returned an empty answer`)
     if (looksLikeRefusal(text)) return give(false, change, `${model} refused to describe this picture`)
-    if (text.length > maxChars) {
-      return give(false, change, `the description came back ${text.length} characters long`)
+    // Cut to fit rather than thrown away, as in improvePrompt().
+    if (text.length > maxChars || (style.length && countUnits(text, style.length.unit) > style.length.max)) {
+      text = fitLength(text, style.length, maxChars)
     }
     // A description of a whole picture is never shorter than the change asked
     // for. One that is has refused, or answered a question nobody asked.
