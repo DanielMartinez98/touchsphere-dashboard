@@ -1,0 +1,46 @@
+REQUEST: goku kicking vegeta in the face in a desert, dragon ball z
+NOTE: 
+WORDS: 233 CHARS: 1292
+
+PROMPT SENT:
+The image is a wide anime illustration in the official style of Dragon Ball Z of Goku from Dragon Ball Z kicking Vegeta from Dragon Ball Z in the face, set in a vast desert under a bright sun. In the center of the frame, Goku from Dragon Ball Z lunges forward from the left, his body angled sharply as he delivers a powerful flying kick. He wears his signature orange martial arts gi with a blue undershirt and blue wristbands. His face is set in a determined expression. On the right side of the frame, Vegeta from Dragon Ball Z is captured at the exact moment of impact, his head snapping back from the force of the kick. Vegeta wears his blue bodysuit and white combat armor. His eyes are wide with the shock of the blow. At the point where Goku's boot meets Vegeta's jaw, bright yellow impact sparks and white flashes erupt. Thick clouds of orange desert dust rise from the ground beneath them. Sharp, black speed lines radiate from the point of contact to emphasize the velocity of the movement. The background consists of endless sand dunes and a clear, pale blue sky. The lighting is harsh and direct, casting sharp shadows on the ground. The composition is dynamic and diagonal, using a palette of bright orange, deep blue, and sandy yellows to create an intense and high-energy mood.
+
+---- RAW IMPROVER ANSWER ----
+Step 1: Restate the request.
+- Subject 1: Goku from Dragon Ball Z.
+- Subject 2: Vegeta from Dragon Ball Z.
+- Action: Goku is kicking Vegeta in the face.
+- Setting: A desert.
+- Style: Dragon Ball Z official anime style.
+- Mood: Intense/Action.
+
+Step 2: Note what was NOT specified.
+- Aspect ratio: I will choose wide to capture the action.
+- Time of day: Bright daylight to emphasize the desert.
+- Clothing: Signature outfits (Goku in orange gi, Vegeta in blue bodysuit/white armor).
+- Camera angle: A dynamic, low-angle side view to emphasize the impact of the kick.
+- Effects: Impact sparks, dust clouds, and speed lines to convey the power of the hit.
+
+Step 3: Plan the picture.
+- Composition: Goku is on the left, lunging right. Vegeta is on the right, being knocked backward by the impact.
+- Action: A single frozen moment of impact where Goku's boot connects with Vegeta's jaw.
+- Details: Goku's leg is fully extended; Vegeta's head is snapped back; dust rises from the ground; yellow impact flashes surround the point of contact.
+
+Step 4: Draft the prompt.
+The image is a wide anime illustration in the official style of Dragon Ball Z of Goku from Dragon Ball Z kicking Vegeta from Dragon Ball Z in the face, set in a vast desert under a bright sun. In the center of the frame, Goku from Dragon Ball Z lunges forward from the left, his body angled sharply as he delivers a powerful flying kick. He wears his signature orange martial arts gi with a blue undershirt and blue wristbands. His face is set in a determined expression. On the right side of the frame, Vegeta from Dragon Ball Z is captured at the exact moment of impact, his head snapping back from the force of the kick. Vegeta wears his blue bodysuit and white combat armor. His eyes are wide with the shock of the blow. At the point where Goku's boot meets Vegeta's jaw, bright yellow impact sparks and white flashes erupt. Thick clouds of orange desert dust rise from the ground beneath them. Sharp, black speed lines radiate from the point of contact to emphasize the velocity of the movement. The background consists of endless sand dunes and a clear, pale blue sky. The lighting is harsh and direct, casting sharp shadows on the ground. The composition is dynamic and diagonal, using a palette of bright orange, deep blue, and sandy yellows to create an intense and high-energy mood.
+
+Step 5: Check against list.
+- Goku from Dragon Ball Z? Yes.
+- Vegeta from Dragon Ball Z? Yes.
+- Kicking in the face? Yes.
+- Desert? Yes.
+- Dragon Ball Z style? Yes.
+- No extra people? Yes.
+- No quality words? Yes.
+- Length check: ~260 words. Perfect.
+
+Step 6: Final Prompt.
+
+<prompt>
+The image is a wide anime illustration in the official style of Dragon Ball Z of Goku from Dragon Ball Z kicking Vegeta from Dragon Ball Z in the face, set in a vast desert under a bright sun. In the center of the frame, Goku from Dragon Ball Z lunges forward from the left, his body angled sharply as he delivers a powerful flying kick. He wears his signature orange martial arts gi with a blue undershirt and blue wristbands. His face is set in a determined expression. On the right side of the frame, Vegeta from Dragon Ball Z is captured at the exact moment of impact, his head snapping back from the force of the kick. Vegeta wears his blue bodysuit and white combat armor. His eyes are wide with the shock of the blow. At the point where Goku's boot meets Vegeta's jaw, bright yellow impact sparks and white flashes erupt. Thick clouds of orange desert dust rise from the ground beneath them. Sharp, black speed lines radiate from the point of contact to emphasize the velocity of the movement. The background consists of endless sand dunes and a clear, pale blue sky. The lighting is harsh and direct, casting sharp shadows on the ground. The composition is dynamic and diagonal, using a palette of bright orange, deep blue, and sandy yellows to create an intense and high-energy mood.
+</prompt>

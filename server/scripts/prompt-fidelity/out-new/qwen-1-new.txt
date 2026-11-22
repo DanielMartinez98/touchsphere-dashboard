@@ -1,0 +1,46 @@
+REQUEST: sakura haruno from naruto eating ramen at ichiraku with naruto uzumaki, night
+NOTE: 
+WORDS: 194 CHARS: 1103
+
+PROMPT SENT:
+The image is a wide anime illustration in the official style of Naruto of Sakura Haruno from Naruto and Naruto Uzumaki from Naruto eating ramen at Ichiraku Ramen at night. In the center of the frame, a wooden counter holds two large ceramic bowls of steaming miso ramen topped with sliced pork and green onions. On the left of the frame, Sakura Haruno from Naruto sits on a wooden stool, wearing her red sleeveless top, lifting noodles with her chopsticks toward her mouth. On the right of the frame, Naruto Uzumaki from Naruto sits on a stool, wearing his orange and black jumpsuit, with his cheeks puffed out as he eats from his bowl. Between them, thick white steam rises in swirls from the hot broth. The background shows the warm, wooden interior of the Ichiraku Ramen stall with orange paper lanterns hanging from the ceiling. Beyond the stall, the dark, navy blue night of the Hidden Leaf Village is visible. The lighting is warm and golden from the lanterns, casting soft, bright light on the characters and the food. The composition is a balanced medium shot with a warm, cozy, and lively mood.
+
+---- RAW IMPROVER ANSWER ----
+1. **Restate the request**:
+- Subject 1: Sakura Haruno from Naruto.
+- Subject 2: Naruto Uzumaki from Naruto.
+- Action: Eating ramen.
+- Setting: Ichiraku Ramen.
+- Time of day: Night.
+- Style: Official Naruto anime style.
+
+2. **Unspecified details**:
+- Clothing: I will use their classic Shippuden era outfits (Sakura in red top/pink hair, Naruto in orange jumpsuit) as they are the most iconic.
+- Composition: A medium shot showing them sitting at the wooden counter of the ramen stall.
+- Lighting: Warm, yellow light from the lanterns of the stall contrasting with the dark night background.
+- Details: Steam rising from the bowls, chopsticks in hand, bowls of miso pork ramen on the counter.
+
+3. **Plan the picture**:
+- Frame: Medium shot, eye-level.
+- Foreground: The wooden counter of Ichiraku Ramen with two steaming bowls of ramen.
+- Midground: Sakura Haruno on the left, Naruto Uzumaki on the right, both seated on stools.
+- Background: The interior of the ramen stall with hanging noren curtains and the dark street of Konoha visible behind the stall.
+- Action: Sakura is lifting noodles with her chopsticks; Naruto is mid-bite with a large piece of narutomaki in his mouth.
+
+4. **Drafting the prompt**:
+The image is a wide anime illustration in the official style of Naruto of Sakura Haruno from Naruto and Naruto Uzumaki from Naruto eating ramen at Ichiraku Ramen at night. In the center of the frame, a wooden counter holds two large ceramic bowls of steaming miso ramen. On the left of the frame, Sakura Haruno from Naruto sits on a wooden stool, wearing her red sleeveless top, holding chopsticks to a bowl of noodles. On the right of the frame, Naruto Uzumaki from Naruto sits on a stool, wearing his orange and black jumpsuit, with his cheeks puffed out as he eats. Between them, steam rises in thick white swirls from the hot broth. The background shows the warm, wooden interior of the Ichiraku Ramen stall with orange paper lanterns hanging from the ceiling. Beyond the stall, the dark, navy blue night of the Hidden Leaf Village is visible. The lighting is warm and golden from the lanterns, casting soft shadows on the characters' faces. The composition is a balanced medium shot with a warm, cozy, and hungry mood.
+
+5. **Check against requirements**:
+- Sakura Haruno from Naruto? Yes.
+- Naruto Uzumaki from Naruto? Yes.
+- Eating ramen? Yes.
+- Ichiraku? Yes.
+- Night? Yes.
+- Official style? Yes.
+- No extra people? Yes.
+- No quality words? Yes.
+- Length? ~180 words. Perfect.
+
+<prompt>
+The image is a wide anime illustration in the official style of Naruto of Sakura Haruno from Naruto and Naruto Uzumaki from Naruto eating ramen at Ichiraku Ramen at night. In the center of the frame, a wooden counter holds two large ceramic bowls of steaming miso ramen topped with sliced pork and green onions. On the left of the frame, Sakura Haruno from Naruto sits on a wooden stool, wearing her red sleeveless top, lifting noodles with her chopsticks toward her mouth. On the right of the frame, Naruto Uzumaki from Naruto sits on a stool, wearing his orange and black jumpsuit, with his cheeks puffed out as he eats from his bowl. Between them, thick white steam rises in swirls from the hot broth. The background shows the warm, wooden interior of the Ichiraku Ramen stall with orange paper lanterns hanging from the ceiling. Beyond the stall, the dark, navy blue night of the Hidden Leaf Village is visible. The lighting is warm and golden from the lanterns, casting soft, bright light on the characters and the food. The composition is a balanced medium shot with a warm, cozy, and lively mood.
+</prompt>

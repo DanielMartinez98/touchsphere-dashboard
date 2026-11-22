@@ -1,0 +1,46 @@
+REQUEST: a woman in a yellow raincoat holding a sign that says "OPEN 24 HOURS" in front of a diner at night
+NOTE: 
+WORDS: 195 CHARS: 1110
+
+PROMPT SENT:
+The image is a wide cinematic photograph of a woman in a yellow raincoat holding a sign that says "OPEN 24 HOURS", in front of a diner at night. In the mid-ground, a woman stands facing the camera, wearing a bright yellow raincoat. She holds a rectangular wooden sign with the words "OPEN 24 HOURS" written in large, clear, black capital letters. Behind her, a retro-style diner occupies the background, featuring large glass windows that reveal a warm, amber-lit interior. A neon sign on the diner's facade glows with soft blue and pink hues. The ground consists of dark, wet asphalt that reflects the glowing neon lights and the bright yellow of the woman's coat. The scene is set during a dark night. The lighting is a mix of warm interior light and cool, colorful neon reflections. The camera is at eye level, capturing the woman from the waist up. The composition is balanced with the woman positioned in the right side of the frame and the diner receding into the background. The palette is a contrast of deep blues, warm golds, and the striking yellow of the raincoat. The mood is quiet and atmospheric.
+
+---- RAW IMPROVER ANSWER ----
+1. **Restate the request**:
+- Subject: A woman.
+- Clothing: A yellow raincoat.
+- Action: Holding a sign.
+- Text on sign: "OPEN 24 HOURS".
+- Setting: In front of a diner at night.
+- Style/Mood: Not specified (I will choose a cinematic, realistic photograph style).
+
+2. **Missing details**:
+- Appearance of the woman (age, hair, pose).
+- Appearance of the diner (architecture, neon lights, colors).
+- Lighting (street lamps, neon glow, shadows).
+- Composition (camera angle, framing).
+- Weather (rain or wet pavement to complement the raincoat).
+- I will assume it is a slightly rainy night to make the yellow raincoat and the diner's reflections more visually interesting.
+
+3. **Plan the picture**:
+- **Subject**: A woman in her late 20s, standing slightly off-center. She is wearing a bright yellow raincoat with the hood down. She holds a rectangular wooden sign with the text "OPEN 24 HOURS" written in bold, black, sans-serif lettering.
+- **Setting**: A classic American-style diner at night. The diner has large glass windows and a neon sign. The ground is dark, wet asphalt reflecting the lights.
+- **Framing**: A wide shot. The woman is in the mid-ground. The diner is in the background.
+- **Lighting**: The primary light comes from the warm, golden glow of the diner's interior and the cool, blue-toned neon lights of the diner's exterior sign. The woman's yellow raincoat catches these highlights.
+- **Composition**: The woman is positioned in the lower right third of the frame. The diner stretches across the background.
+
+4. **Draft the prompt**:
+The image is a wide cinematic photograph of a woman in a yellow raincoat holding a sign that says "OPEN 24 HOURS", in front of a diner at night. In the mid-ground, a woman stands facing the camera, wearing a bright yellow raincoat. She holds a rectangular wooden sign with the words "OPEN 24 HOURS" written in large, clear, black capital letters. Behind her, a retro-style diner occupies the background, featuring large glass windows that reveal a warm, amber-lit interior. A neon sign on the diner's facade glows with soft blue and pink hues. The ground consists of dark, wet asphalt that reflects the glowing neon lights and the yellow of the woman's coat. The scene is set during a dark night under a heavy sky. The lighting is a mix of warm interior light and cool, colorful neon reflections. The camera is at eye level, capturing the woman from the waist up. The composition is balanced with the woman on the right and the diner receding into the distance on the left. The palette is a contrast of deep blues, warm golds, and the striking yellow of the raincoat. The mood is quiet and atmospheric.
+
+5. **Check against requirements**:
+- Woman in yellow raincoat? Yes.
+- Holding sign "OPEN 24 HOURS"? Yes.
+- In front of diner at night? Yes.
+- No quality words? Checked.
+- No negative prompts? Checked.
+- Correct opening sentence? Yes.
+- Word count check: ~220 words. Perfect.
+
+<prompt>
+The image is a wide cinematic photograph of a woman in a yellow raincoat holding a sign that says "OPEN 24 HOURS", in front of a diner at night. In the mid-ground, a woman stands facing the camera, wearing a bright yellow raincoat. She holds a rectangular wooden sign with the words "OPEN 24 HOURS" written in large, clear, black capital letters. Behind her, a retro-style diner occupies the background, featuring large glass windows that reveal a warm, amber-lit interior. A neon sign on the diner's facade glows with soft blue and pink hues. The ground consists of dark, wet asphalt that reflects the glowing neon lights and the bright yellow of the woman's coat. The scene is set during a dark night. The lighting is a mix of warm interior light and cool, colorful neon reflections. The camera is at eye level, capturing the woman from the waist up. The composition is balanced with the woman positioned in the right side of the frame and the diner receding into the background. The palette is a contrast of deep blues, warm golds, and the striking yellow of the raincoat. The mood is quiet and atmospheric.
+</prompt>
