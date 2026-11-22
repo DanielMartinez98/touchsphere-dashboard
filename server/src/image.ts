@@ -3450,6 +3450,8 @@ const PROSE_CHARACTER_RULES =
   'sentence on what passes between them.\n' +
   'ACTION AND FIGHTS: one frozen instant, said definitely — who strikes, with what, where it lands, how ' +
   'the other reacts — then the motion around it (speed lines, impact flash, debris, dust).\n' +
+  'COUNTS AND OUTCOMES: say the exact number of every kind of person and animal; when the user says who is ' +
+  'winning, losing or stronger, show it with something visible, not a word like "winning".\n' +
   'NEVER: tag lists, quality words (masterpiece, 8k, best quality), hedging, a closing sentence about ' +
   'mood, or anything about what you do NOT want (there is no negative prompt).'
 
@@ -3497,6 +3499,10 @@ const QWEN_IMAGE_IMPROVER_GUIDE =
   'and invent no details of it.\n' +
   'TWO OR MORE CHARACTERS: one sentence per character, each with their name, series and place in the frame, ' +
   'then a sentence on what passes between them (faces, holds, strikes).\n' +
+  'COUNTS AND OUTCOMES: say the exact number of every kind of person and animal early ("a single woman, ' +
+  'alone in the frame", "two cats"), because the model adds figures to a scene that does not count them. When ' +
+  'the user says who is winning, losing or stronger, show it with something visible in the first two ' +
+  'sentences: the captured pieces piled beside the winner, the loser knocked to one knee.\n' +
   'ACTION AND FIGHTS: one frozen instant, said definitely — who strikes, with what, where it lands, how the ' +
   'other reacts — then the motion around it (speed lines, impact flash, debris, dust).\n' +
   'TEXT IN THE PICTURE: only when the user asked for it, the exact words in straight double quotes, with ' +
