@@ -31,7 +31,7 @@ import { broadcast } from './routes/system'
 import { advanceSeed, paramsFor, type ImageParams } from './image-params'
 import { estimateRender, humanMs, recordRender } from './image-timing'
 import { serviceUrl, serviceUrlSettled, onAiServiceChange } from './ai-devices'
-import type { AiExchange } from './image-prompt'
+import type { AiExchange, PromptLength } from './image-prompt'
 import { composeAnimatePrompt, composeKontextInstruction, composeRedrawPrompt, visionModel, improvePrompt, prompterModel, readPrompter, locateBox, resolvePromptOption, ORIGINAL_OPTION, ORIGINAL_NAME } from './image-prompt'
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -1744,7 +1744,7 @@ async function run(job: ImageJob): Promise<void> {
     try { bytes = fs.readFileSync(path.join(imagesDir(), job.sourceFile)) } catch { bytes = null }
     const seen = bytes
       ? await composeRedrawPrompt(bytes, job.prompt, {
-          label: styleLabel(job.model), guidance: stylePromptGuide(job.model), maxChars: promptLimit(job.model),
+          label: styleLabel(job.model), guidance: stylePromptGuide(job.model), maxChars: promptLimit(job.model), length: stylePromptLength(job.model),
         })
       : null
     job.improveMs += seen?.ms ?? 0
@@ -1814,6 +1814,7 @@ async function run(job: ImageJob): Promise<void> {
       guidance: stylePromptGuide(job.model),
       bestPractices: styleImproverGuide(job.model),
       maxChars: promptLimit(job.model),
+      length:   stylePromptLength(job.model),
     }, job.promptOption)
     job.improveMs += better.ms
     if (better.conversation) job.conversation.push(better.conversation)
@@ -3459,17 +3460,70 @@ const FLUX3_KLEIN_IMPROVER_GUIDE =
   '"2D anime illustration, cel shading, clean line art" explicitly for anything from an anime, or it drifts ' +
   'towards a painterly, semi-real look.\n' + PROSE_CHARACTER_RULES
 
+/**
+ * Qwen-Image 2.1. Structure from Qwen's own prompt enhancer
+ * (Qwen/Qwen-Image-2.1-PE-T2I, system_prompt.txt): an opening sentence naming
+ * the medium and the subject, then the frame walked region by region with
+ * positional phrases, lighting in its own sentence, exactly one closing
+ * sentence, observed rather than instructed, enumerated rather than summed up,
+ * no quality boosters. The never-write-"no" rule is the prompt book's (a
+ * "no laptop" draws a laptop: at cfg 1 there is no negative to carry it). The
+ * character rules are the ones every page here carries.
+ */
 const QWEN_IMAGE_IMPROVER_GUIDE =
-  'THIS MODEL: Qwen-Image 2.1 reads long, specific English (or Chinese) through Qwen3-VL 8B and was ' +
-  'trained on long descriptions of finished pictures; it knows many anime characters and series by name. ' +
-  'Describe the picture as if you were looking at it. Any words that should appear in the picture go in ' +
-  'double quotes.\n' + PROSE_CHARACTER_RULES
+  'THIS MODEL: Qwen-Image 2.1 reads English through Qwen3-VL 8B and was trained on long, observational ' +
+  'descriptions of finished pictures; its own prompt enhancer writes one paragraph of about twenty ' +
+  'sentences. It draws what the words literally say, in the order they say it, so what the user asked for ' +
+  'must be unmistakable in the first two sentences and must never be crowded out by the detail after them.\n' +
+  'GOAL: a named character must look exactly as they do in their own series. Everything else bends to that.\n' +
+  'OPENING SENTENCE (about twenty words): "The image is a <vertical / wide / square> <style> <medium> of ' +
+  '<subject doing the main action>, <setting and palette>." Never leave out the medium (illustration, ' +
+  'photograph, painting, 3D render). For a named character the subject is their full name and their series, ' +
+  'and the style is the series\' own look: "The image is a vertical anime illustration in the official style ' +
+  'of <series> of <character> from <series>, <doing what>, <where>."\n' +
+  'THEN WALK THE FRAME: the background, then each figure — placement and pose, head and face, body and ' +
+  'clothes, what they hold — then the edges of the frame. Open about a third of the sentences with where the ' +
+  'thing is ("On the left of the frame, …", "In the foreground, …"). The lighting gets a sentence of its own.\n' +
+  'OBSERVE, DO NOT INSTRUCT: present tense, third person, describing what is in the picture. Never "create", ' +
+  '"make sure", "you" or "should".\n' +
+  'BE DEFINITE: enumerate rather than summarise ("three paper lanterns", not "some decorations"); give ' +
+  'colours a modifier (deep crimson, pale mint); one decided version of every detail, no "or" and no "maybe".\n' +
+  'NAMED CHARACTERS: the name together with the series is what reaches the character the model knows; never ' +
+  'replace it with a description, never invent a surname, never add a character the user did not name, and ' +
+  'if you do not know the character keep the name exactly as typed. Defining features (hair colour and ' +
+  'style, eye colour, signature marks) ONLY when you are certain: a wrong colour overrides the name and draws ' +
+  'a stranger, so when unsure write none.\n' +
+  'CLOTHES: the signature outfit unless the scene calls for something else; then say plainly what they wear ' +
+  'and invent no details of it.\n' +
+  'TWO OR MORE CHARACTERS: one sentence per character, each with their name, series and place in the frame, ' +
+  'then a sentence on what passes between them (faces, holds, strikes).\n' +
+  'ACTION AND FIGHTS: one frozen instant, said definitely — who strikes, with what, where it lands, how the ' +
+  'other reacts — then the motion around it (speed lines, impact flash, debris, dust).\n' +
+  'TEXT IN THE PICTURE: only when the user asked for it, the exact words in straight double quotes, with ' +
+  'where they sit, their size, weight and colour; a second line is described as a second line.\n' +
+  'CLOSING: exactly one sentence on the overall composition, palette, style and mood, and nothing after it.\n' +
+  'NEVER: tag lists or (word:1.2) weights (ignored by this model), quality words (masterpiece, 8k, best ' +
+  'quality, highly detailed), an aspect ratio, resolution or pixel count, or a negation — writing "no ' +
+  'laptop" draws a laptop. Describe the state you want instead ("a clean, empty desk").'
 
+/**
+ * MOSS-Image. From its card and its own prompt-enhancer skill
+ * (OpenMOSS/MOSS-Image, skills/moss-image-prompt-enhancer): cohesive prose
+ * captions built from subject and action, appearance, setting, camera, medium,
+ * lighting, materials, palette and mood; tags allowed in the card's order; no
+ * redundant quality tags; visible text verbatim with real line breaks.
+ */
 const MOSS_IMAGE_IMPROVER_GUIDE =
   'THIS MODEL: MOSS-Image (OpenMOSS, 5B) reads its prompt with Qwen3.5 9B, a language model, and was ' +
-  'trained mostly on English captions; it takes natural language, tag sequences or both, so write plain ' +
-  'English sentences and keep any booru tags the user typed. Describe the finished picture concretely, ' +
-  'medium and style first. Any words that should appear in the picture go in double quotes.\n' + PROSE_CHARACTER_RULES
+  'trained mostly on English captions written short, medium and detailed. Its own prompt enhancer writes one ' +
+  'cohesive prose caption, so write one detailed paragraph of plain English sentences that covers, in this ' +
+  'order: the subject and what they are doing, their appearance, the setting, the camera and framing, the ' +
+  'medium and style, the lighting, materials, palette and mood. It also understands booru tags: keep any tags ' +
+  'the user typed, near the front, in the order count, character, series, artist, then the rest. It follows ' +
+  'literal words, so say each thing once and definitely, with no "or" and no "maybe", and never write a ' +
+  'negation ("no hat" draws a hat) — describe what is there instead. Text that should appear in the picture ' +
+  'goes in double quotes exactly as it should read, with its role (title, sign, caption); put each line of it ' +
+  'on its own line.\n' + PROSE_CHARACTER_RULES
 
 const FUSAL_IMPROVER_GUIDE =
   'THIS MODEL: Qwen-Image 2.1 with the FUSAL anime style LoRA. It was trained on prompts written in labelled ' +
@@ -3636,6 +3690,15 @@ const BUILTIN_WORKFLOWS: Record<string, {
    * 1 MP was clean while 1.5 MP grained, 2 MP blotched and 3 MP was worst.
    */
   nativePixels?: number
+  /**
+   * How long a prompt this model reads well, from its own card or prompt
+   * book: the range to aim for and the most it may be handed. Told to the
+   * prompt improver (and the redraw composer) as a hard rule after the
+   * chosen way of asking, and enforced on the answer — one too long is sent
+   * back once to be shortened, then cut at the last whole sentence (or tag)
+   * that fits rather than thrown away. Absent: MAX_PROMPT characters.
+   */
+  promptLength?: PromptLength
 }> = {
   'qwen-image-2.1': {
     label: 'Qwen-Image 2.1',
@@ -3643,15 +3706,22 @@ const BUILTIN_WORKFLOWS: Record<string, {
     // Read by Qwen3-VL 8B, a language model: sentences, not tags.
     promptStyle: 'prose',
     improverGuide: QWEN_IMAGE_IMPROVER_GUIDE,
+    // Qwen's own prompt enhancer (Qwen-Image-2.1-PE-T2I) writes "about twenty
+    // sentences and four to five hundred words", the length the model was
+    // trained on; the prompt book keeps 1–3 sentences for a single simple
+    // subject. 900 characters (~150 words) was a CLIP cap: every rewrite that
+    // followed this model's own advice came back too long and was thrown away.
+    promptLength: { unit: 'words', target: [150, 400], max: 500 },
     promptGuide:
-      'Write one long, specific paragraph of plain English (or Chinese), never a tag list. ' +
+      'Write one specific paragraph of plain English, never a tag list or (word:1.2) weights. ' +
       'This model reads its prompt with the Qwen3-VL language model and was trained on long ' +
-      'descriptions of the finished picture: describe it as if you were looking at it — the ' +
-      'subject and what it is doing, the setting, the lighting, the composition and camera ' +
-      'angle, the mood, and the art style (photograph, anime illustration, watercolour…). It ' +
-      'renders legible text very well, so put any words that should appear in the picture in ' +
-      'double quotes. Named characters and series may be used by name. There is no negative ' +
-      'prompt at its recommended settings, so only ever describe what you want.',
+      'descriptions of the finished picture: open with "The image is a <style> <medium> of ' +
+      '<subject doing what>, <where>", then describe it as if you were looking at it — where each ' +
+      'thing is in the frame, the lighting, the camera angle — and end with one sentence on ' +
+      'composition, palette and mood. Present tense, definite, no quality words. It renders ' +
+      'legible text very well, so put any words that should appear in the picture in double ' +
+      'quotes. Named characters go by full name and series. There is no negative prompt at its ' +
+      'recommended settings and "no X" draws X, so only ever describe what you want.',
     // cfg 1 is the card's official path, where the negative is computed and unused.
     negative: '',
     needs: [
@@ -3669,10 +3739,14 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'This model EDITS the picture it is shown, so the prompt is an instruction, not a ' +
       'description of a scene. Its text encoder is Qwen3-VL, a vision-language model that ' +
       'looks at the picture while reading the instruction, so name the subject as it appears ' +
-      '("the girl with pink hair", "the man on the left") and say the change concretely: ' +
-      '"change her jacket to red leather", "make it night with rain", "remove the text on the ' +
-      'sign". It knows anime and named characters. Keep it to one or two sentences, do not ' +
-      'describe what is not changing, and put any text to add in double quotes.',
+      '("the girl with pink hair", "the man on the left") and say the change as a short, ' +
+      'decided imperative: "Change her jacket to red leather.", "Make it night with rain.", ' +
+      '"Replace the sign text with \"OPEN\"." Name only what changes, never re-describe what ' +
+      'stays, and end with one short affirmative clause such as "Keep everything else ' +
+      'unchanged." — a keep clause locks the rest without weakening the edit. One paragraph, ' +
+      'no "or" or "maybe", one or two changes at a time (several unrelated changes are better ' +
+      'done as separate edits), and it keeps the picture\'s medium (an anime frame stays ' +
+      'anime) unless told otherwise. Only text to be drawn goes in double quotes.',
     negative: '',
     // Shares all three files with the Qwen-Image 2.1 painter.
     needs: [
@@ -3686,6 +3760,10 @@ const BUILTIN_WORKFLOWS: Record<string, {
     graph: mossImageGraph(),
     promptStyle: 'prose',
     improverGuide: MOSS_IMAGE_IMPROVER_GUIDE,
+    // The encoder takes 4096 tokens; training captions came short, medium and
+    // detailed, and the card's cfg 3 is "generally sufficient for long
+    // prompts". A detailed paragraph, not an essay.
+    promptLength: { unit: 'words', target: [80, 250], max: 350 },
     promptGuide:
       'Write plain English sentences describing the finished picture: medium and style first, then the ' +
       'subject and what it is doing, the setting, the light and the framing. Tags are understood too, so ' +
@@ -3758,6 +3836,9 @@ const BUILTIN_WORKFLOWS: Record<string, {
       'conjoined, fused bodies, deformed, mutated, disfigured, ' +
       'multiple views, comic, split screen, collage, 4koma, panels',
     promptStyle: 'tags',
+    // CLIP reads 77 tokens at a time and the Illustrious guides find the
+    // tail past roughly 60 tags diluted.
+    promptLength: { unit: 'tags', target: [20, 45], max: 60 },
     improverGuide: ILLUSTRIOUS_IMPROVER_GUIDE,
     promptGuide:
       'Write lowercase Danbooru tags separated by commas, never sentences. Lead with the ' +
@@ -4267,7 +4348,19 @@ export function styleIsAnima(style: string): boolean {
  * long rewrite for Anima is kept rather than refused for its length.
  */
 export function promptLimit(style: string): number {
-  return styleIsAnima(style) ? Infinity : MAX_PROMPT
+  if (styleIsAnima(style)) return Infinity
+  // A model with a word budget is cut by words in the improver; the character
+  // cap only has to stay out of the way of a prompt that fits it (a long
+  // English word is ~8 characters with its space).
+  const len = stylePromptLength(style)
+  if (len?.unit === 'words') return Math.max(MAX_PROMPT, len.max * 9)
+  return MAX_PROMPT
+}
+
+/** How long a prompt a style reads well, or undefined for "MAX_PROMPT characters". */
+export function stylePromptLength(style: string): PromptLength | undefined {
+  if (!style.startsWith(WORKFLOW_PREFIX)) return undefined
+  return BUILTIN_WORKFLOWS[style.slice(WORKFLOW_PREFIX.length)]?.promptLength
 }
 
 /** True for a style that edits an existing picture rather than drawing one. */

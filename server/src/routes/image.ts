@@ -58,6 +58,7 @@ import {
   styleLabel,
   stylePromptGuide,
   styleImproverGuide,
+  stylePromptLength,
   styleImproverGuideDefault,
   styleOptimizations,
   styleNegativeFor,
@@ -584,6 +585,7 @@ function prompterView() {
       label:    styleLabel(style),
       guidance: stylePromptGuide(style),
       bestPractices: styleImproverGuide(style),
+      length:   stylePromptLength(style),
     }),
     // The look-at-the-picture half of a redraw: its template, the default
     // for "reset", what it expands to for this style, the fixed user turn it
