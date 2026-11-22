@@ -5872,6 +5872,27 @@ async function uploadSource(job: ImageJob): Promise<string> {
   return ref
 }
 
+/**
+ * The model inputs ComfyUI rejected because their choice list was empty
+ * (`unet_name: 'x' not in []`), as the input names — e.g. ["unet_name"].
+ * Exported for the test script.
+ */
+export function emptyModelFolders(nodeErrors: unknown): string[] {
+  const out = new Set<string>()
+  if (!nodeErrors || typeof nodeErrors !== 'object') return []
+  for (const node of Object.values(nodeErrors as Record<string, { errors?: unknown }>)) {
+    const errors = Array.isArray(node?.errors) ? node.errors : []
+    for (const e of errors as { type?: string; extra_info?: { input_name?: string; input_config?: unknown } }[]) {
+      const cfg = e?.extra_info?.input_config
+      const choices = Array.isArray(cfg) ? cfg[0] : undefined
+      if (e?.type === 'value_not_in_list' && Array.isArray(choices) && choices.length === 0 && e.extra_info?.input_name) {
+        out.add(e.extra_info.input_name)
+      }
+    }
+  }
+  return [...out]
+}
+
 async function queuePrompt(graph: ComfyGraph): Promise<string> {
   const res = await comfyFetch('/prompt', {
     method: 'POST',
@@ -5885,13 +5906,24 @@ async function queuePrompt(graph: ComfyGraph): Promise<string> {
     // ComfyUI reports a bad graph as a structured node_errors blob. The useful
     // part is buried; surface it rather than "HTTP 400".
     let detail = body.slice(0, 400)
+    let missing: string[] = []
     try {
       const j = JSON.parse(body) as { error?: { message?: string }; node_errors?: unknown }
+      // A loader whose choice list is EMPTY means the machine has no models of
+      // that kind at all — a box whose downloads never ran — not a bad pick.
+      // Say that, rather than "'x.safetensors' not in []".
+      missing = emptyModelFolders(j.node_errors)
       if (j.error?.message) detail = j.error.message
       if (j.node_errors && Object.keys(j.node_errors as object).length > 0) {
         detail += ` — ${JSON.stringify(j.node_errors).slice(0, 300)}`
       }
     } catch { /* non-JSON body */ }
+    if (missing.length > 0) {
+      let where = comfyUrl()
+      try { where = new URL(where).hostname } catch { /* keep the raw URL */ }
+      throw new Error(`the picture machine (${where}) has no ${missing.join(' / ')} models installed — ` +
+        'its model download has not been run there; download them on that machine or pick another one under Settings → AI box')
+    }
     throw new Error(`ComfyUI rejected the workflow (${res.status}): ${detail}`)
   }
   const json = await res.json() as { prompt_id?: string }
