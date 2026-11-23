@@ -103,6 +103,24 @@ function adDay(salt: number, share: number, ecpm: number, date: string) {
   return { impressions, requests: Math.round(impressions * 1.4), matched: Math.round(impressions * 1.2), clicks: Math.round(impressions / 50), revenue: Math.round(impressions * ecpm) / 1000 }
 }
 
+// Apple Ads: two campaigns, each promoting an App Store app, in two countries.
+// The account's currency is EUR, so spend has to be converted like AdMob's.
+const PROMO = [
+  { id: 901, name: 'Sudoku – US search', app: '1000000001', appName: 'Sudoku Zen', ccs: ['US', 'MX'], cpt: 0.5,
+    keywords: [{ id: 9011, text: 'sudoku', matchType: 'EXACT' }, { id: 9012, text: 'puzzle game', matchType: 'BROAD' }] },
+  { id: 902, name: 'Words – discovery', app: '1000000002', appName: 'Word Garden', ccs: ['US'], cpt: 0.8,
+    keywords: [{ id: 9021, text: 'word game', matchType: 'BROAD' }] },
+]
+function promoDay(campaign: number, cc: string, date: string) {
+  if (!inHistory(date)) return null
+  const impressions = 300 + wobble(date, campaign + cc.charCodeAt(0), 200)
+  const taps = Math.round(impressions / 20)
+  const installs = Math.round(taps / 3)
+  const c = PROMO.find(x => x.id === campaign)!
+  return { impressions, taps, installs, newDownloads: installs - 1, redownloads: 1, spend: Math.round(taps * c.cpt * 100) / 100 }
+}
+let applePublicKey = ''
+
 // ── The fake: Apple, Google, AdMob, Unity and the rate feed on one port ──────
 
 async function listen(handler: http.RequestListener): Promise<{ url: string; close(): Promise<void> }> {
@@ -236,6 +254,55 @@ async function fake(self: () => string) {
       }
     }
 
+    // ── Apple Ads ──
+    if (p === '/apple-token') {
+      const form = new URLSearchParams(text)
+      const jwt = (form.get('client_secret') ?? '').split('.')
+      let good = false
+      try {
+        const claims = JSON.parse(Buffer.from(jwt[1] ?? '', 'base64url').toString()) as { sub?: string; iss?: string; aud?: string }
+        const header = JSON.parse(Buffer.from(jwt[0] ?? '', 'base64url').toString()) as { alg?: string; kid?: string }
+        good = header.alg === 'ES256' && header.kid === 'KEY-1' && claims.sub === 'SEARCHADS.client-1' && claims.iss === 'SEARCHADS.team-1' && claims.aud === 'https://appleid.apple.com'
+          && form.get('grant_type') === 'client_credentials' && form.get('scope') === 'searchadsorg' && form.get('client_id') === 'SEARCHADS.client-1'
+          && crypto.verify('sha256', Buffer.from(`${jwt[0]}.${jwt[1]}`), { key: applePublicKey, dsaEncoding: 'ieee-p1363' }, Buffer.from(jwt[2] ?? '', 'base64url'))
+      } catch { good = false }
+      if (!good) { json(400, { error: 'invalid_client' }); return }
+      json(200, { access_token: 'apple-access', token_type: 'Bearer', expires_in: 3600 }); return
+    }
+    if (p === '/v1/acls' || p.startsWith('/v1/ad-accounts') || p.startsWith('/v1/reports/apps/')) {
+      if (req.headers.authorization !== 'Bearer apple-access') { json(401, { error: { errors: [{ message: 'unauthorized' }] } }); return }
+      if (p === '/v1/acls') { json(200, { result: { acls: [{ adAccount: { id: 777, name: 'Loklo Games', orgId: 1 }, roles: ['API Account Read Only'] }] } }); return }
+      if (req.headers['x-ap-context'] !== 'adAccountId=777') { json(400, { error: { errors: [{ message: 'missing X-AP-Context' }] } }); return }
+      if (p === '/v1/ad-accounts/777') { json(200, { result: { id: 777, name: 'Loklo Games', currency: 'EUR', timezone: 'America/Chicago' } }); return }
+      const b = JSON.parse(text) as { timeRange: { start: string; end: string; granularity: string }; groupBy?: string[]; filters?: { field: string; value: string }[]; pagination: { offset: number; pageSize: number } }
+      const days: string[] = []
+      for (let d = b.timeRange.start; d <= b.timeRange.end; d = new Date(Date.parse(`${d}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10)) days.push(d)
+      const money = (v: number) => ({ amount: v.toFixed(2), currency: 'EUR' })
+      if (p === '/v1/reports/apps/campaigns/query') {
+        const rows = PROMO.map(c => ({
+          metadata: { id: c.id, name: c.name, promotedObjectType: 'APPSTORE_APP', promotedObjectId: c.app, promotedObject: { name: c.appName }, displayStatus: 'RUNNING' },
+          granularMetrics: days.flatMap(d => c.ccs.map(cc => {
+            const x = promoDay(c.id, cc, d)
+            return x ? { date: d, countryOrRegion: cc, localSpend: money(x.spend * RATES['EUR']!), impressions: x.impressions, taps: x.taps, totalInstalls: x.installs, totalNewDownloads: x.newDownloads, totalRedownloads: x.redownloads } : null
+          }).filter(Boolean)),
+        }))
+        // One campaign a page, so the paging is exercised.
+        const page = rows.slice(b.pagination.offset, b.pagination.offset + 1)
+        json(200, { result: { rows: page }, pagination: { totalCount: rows.length, offset: b.pagination.offset, pageSize: 1 } }); return
+      }
+      if (p === '/v1/reports/apps/keywords/query') {
+        const c = PROMO.find(x => String(x.id) === b.filters?.find(f => f.field === 'campaignId')?.value)
+        if (!c) { json(400, { error: { errors: [{ message: 'campaignId filter is required' }] } }); return }
+        const rows = c.keywords.map((k, ki) => ({
+          metadata: { id: k.id, text: k.text, matchType: k.matchType, campaignId: c.id, adGroupId: 1 },
+          granularMetrics: days.map(d => {
+            const x = promoDay(c.id, 'US', d)
+            return x ? { date: d, localSpend: money(x.spend * RATES['EUR']! / (ki + 2)), impressions: x.impressions, taps: x.taps, totalInstalls: x.installs } : null
+          }).filter(Boolean),
+        }))
+        json(200, { result: { rows }, pagination: { totalCount: rows.length, offset: 0, pageSize: 1000 } }); return
+      }
+    }
     // ── Unity Ads ──
     m = /^\/stats\/v1\/operate\/organizations\/(.+)$/.exec(p)
     if (m) {
@@ -284,13 +351,14 @@ async function boot(env: Record<string, string>, port: number): Promise<ChildPro
   throw new Error(`the server did not come up:\n${lines.join('').slice(-2000)}`)
 }
 
-interface M { downloads: number; iap: number; proceeds: number; impressions: number | null; pageViews: number | null; adRevenue: number; adImpressions: number; adRequests: number }
+interface M { downloads: number; iap: number; proceeds: number; impressions: number | null; pageViews: number | null; adRevenue: number; adImpressions: number; adRequests: number; asSpend: number; asImpressions: number; asTaps: number; asInstalls: number }
 interface Report {
   from: string; to: string; prevFrom: string; prevTo: string; days: number; currency: string; approx: boolean
-  apps: { id: string; name: string; store: boolean; networks: string[] }[]
+  apps: { id: string; name: string; store: boolean; networks: string[]; appleAds: boolean }[]
   totals: M; prev: M; series: (M & { key: string })[]
   byApp: { id: string; name: string; totals: M; series: M[] }[]
-  byCountry: { code: string; downloads: number; proceeds: number; impressions: number | null; adRevenue: number }[]
+  byCountry: { code: string; downloads: number; proceeds: number; impressions: number | null; adRevenue: number; asSpend: number }[]
+  appleAds: { byCampaign: { key: string; label: string; spend: number }[]; byKeyword: { key: string; label: string; sub?: string; spend: number }[] | null }
   bySource: { source: string; impressions: number; pageViews: number }[] | null
   ads: { byNetwork: { key: string; revenue: number; impressions: number }[]; byUnit: { key: string; label: string; revenue: number }[]; byFormat: { key: string }[]; byPlatform: { key: string }[] }
 }
@@ -303,7 +371,7 @@ async function main(): Promise<void> {
   const port = SERVE ? 3001 : await freePort()
   const base = `http://127.0.0.1:${port}`
   const server = await boot({
-    CACHE_DIR: dir, ASC_API: f.url, ADMOB_API: f.url, UNITY_ADS_API: f.url, GOOGLE_TOKEN_URL: `${f.url}/token`, FX_API: `${f.url}/fx`,
+    CACHE_DIR: dir, ASC_API: f.url, ADMOB_API: f.url, UNITY_ADS_API: f.url, GOOGLE_TOKEN_URL: `${f.url}/token`, FX_API: `${f.url}/fx`, APPLE_ADS_API: f.url, APPLE_ADS_TOKEN_URL: `${f.url}/apple-token`,
     OPENWEATHER_API_KEY: 'x', OLLAMA_URL: 'http://127.0.0.1:9',
   }, port)
 
@@ -343,19 +411,28 @@ async function main(): Promise<void> {
     const back = await api<string>('GET', `/api/app-store/admob/oauth/callback?code=good-code&state=${loc.searchParams.get('state')}`)
     check('the real callback connects the AdMob account', back.status === 200 && /pub-1/.test(String(back.data)), String(back.data).slice(0, 200))
 
+    const key = await api<{ appleAds: { publicKey: string; connected: boolean } }>('POST', '/api/app-store/apple-ads/key')
+    applePublicKey = key.data.appleAds.publicKey
+    check('a key pair for Apple Ads is made here, and only the public half is shown', /BEGIN PUBLIC KEY/.test(applePublicKey) && !JSON.stringify(key.data).includes('PRIVATE') && !key.data.appleAds.connected)
+    const badApple = await api<{ error?: string }>('POST', '/api/app-store/apple-ads', { clientId: 'SEARCHADS.client-1', teamId: 'SEARCHADS.team-1', keyId: 'WRONG' })
+    check('wrong Apple Ads ids are refused with a sentence', badApple.status === 400 && /did not accept/i.test(badApple.data.error ?? ''), JSON.stringify(badApple.data))
+    const apple = await api<{ appleAds: { connected: boolean; adAccountName: string; currency: string } }>('POST', '/api/app-store/apple-ads', { clientId: 'SEARCHADS.client-1', teamId: 'SEARCHADS.team-1', keyId: 'KEY-1' })
+    check('the right ids connect Apple Ads, to the account the key can see', apple.status === 200 && apple.data.appleAds.connected && apple.data.appleAds.adAccountName === 'Loklo Games' && apple.data.appleAds.currency === 'EUR', JSON.stringify(apple.data).slice(0, 300))
+
     console.log('\nReading')
     await api('POST', '/api/app-store/sync')
-    interface View { syncing: boolean; lastRun: { ok: boolean; detail: string } | null; salesDaysRead: number; apps: { id: string; name: string; hidden: boolean }[]; yesterday: { downloads: number; apps: number }; ads: { syncing: boolean; admob: { lastRun: { ok: boolean; detail: string } | null }; unity: { lastRun: { ok: boolean; detail: string } | null } } }
+    interface View { syncing: boolean; lastRun: { ok: boolean; detail: string } | null; salesDaysRead: number; apps: { id: string; name: string; hidden: boolean }[]; yesterday: { downloads: number; apps: number }; ads: { syncing: boolean; admob: { lastRun: { ok: boolean; detail: string } | null }; unity: { lastRun: { ok: boolean; detail: string } | null } }; appleAds: { syncing: boolean; lastRun: { ok: boolean; detail: string } | null } }
     let view!: View
     await waitFor('the first read', async () => {
       view = (await api<View>('GET', '/api/app-store')).data
       if (!view?.ads) return false                                  // the rate limiter answered
-      return !view.syncing && !view.ads.syncing && !!view.lastRun && view.salesDaysRead > 300 && !!view.ads.admob.lastRun && !!view.ads.unity.lastRun
+      return !view.syncing && !view.ads.syncing && !!view.lastRun && view.salesDaysRead > 300 && !!view.ads.admob.lastRun && !!view.ads.unity.lastRun && !view.appleAds.syncing && !!view.appleAds.lastRun
     })
     check('the App Store read succeeds', view.lastRun?.ok === true, view.lastRun?.detail)
     check('an app that refuses analytics is named, and costs the others nothing', /analytics for Focus Flow failed/.test(view.lastRun?.detail ?? ''), view.lastRun?.detail)
     check('AdMob read succeeds', view.ads.admob.lastRun?.ok === true, view.ads.admob.lastRun?.detail)
     check('Unity Ads read succeeds', view.ads.unity.lastRun?.ok === true, view.ads.unity.lastRun?.detail)
+    check('Apple Ads read succeeds, keywords included', view.appleAds.lastRun?.ok === true && /keyword rows/.test(view.appleAds.lastRun.detail) && !/failed/.test(view.appleAds.lastRun.detail), view.appleAds.lastRun?.detail)
 
     console.log('\nThe report')
     const to = ptDaysAgo(3), from = ptDaysAgo(9)                       // seven days, all with every source
@@ -384,6 +461,17 @@ async function main(): Promise<void> {
     check('where it was seen is split by source', all.bySource?.length === 2 && all.bySource[0]!.source === 'App Store search' && sum(all.bySource, s => s.impressions) === all.totals.impressions, JSON.stringify(all.bySource))
     check('countries are listed with downloads, sales and ads', all.byCountry[0]?.code === 'US' && all.byCountry.length === 4 && sum(all.byCountry, c => c.downloads) === all.totals.downloads && near(sum(all.byCountry, c => c.adRevenue), all.totals.adRevenue, 0.1))
     check('ads are split by network, unit, format and platform', all.ads.byNetwork.length === 2 && all.ads.byUnit.length === 7 && all.ads.byFormat.length >= 3 && all.ads.byPlatform.length === 2, `${all.ads.byNetwork.length}/${all.ads.byUnit.length}/${all.ads.byFormat.length}/${all.ads.byPlatform.length}`)
+
+    const expSpend = (camps = PROMO, ccs?: string[]) => sum(dates, d => sum(camps, c => sum(c.ccs.filter(cc => !ccs || ccs.includes(cc)), cc => promoDay(c.id, cc, d)!.spend)))
+    const expPromo = (f: 'taps' | 'installs' | 'impressions', camps = PROMO, ccs?: string[]) => sum(dates, d => sum(camps, c => sum(c.ccs.filter(cc => !ccs || ccs.includes(cc)), cc => promoDay(c.id, cc, d)![f])))
+    check('Apple Ads spend (from euros), taps and installs add up', near(all.totals.asSpend, expSpend(), 0.1) && all.totals.asTaps === expPromo('taps') && all.totals.asInstalls === expPromo('installs') && all.totals.asImpressions === expPromo('impressions'), `${all.totals.asSpend} vs ${expSpend().toFixed(2)}`)
+    check('…per campaign, joined to its App Store app by Apple id', all.appleAds.byCampaign.length === 2 && near(all.appleAds.byCampaign.find(c => c.key === '901')!.spend, expSpend([PROMO[0]!]), 0.1) && near(all.byApp.find(a => a.name === 'Word Garden')!.totals.asSpend, expSpend([PROMO[1]!]), 0.1) && all.apps.find(a => a.name === 'Sudoku Zen')?.appleAds === true)
+    check('…per keyword', all.appleAds.byKeyword?.length === 3 && all.appleAds.byKeyword.some(k => k.label === 'sudoku' && /Exact match/.test(k.sub ?? '')), JSON.stringify(all.appleAds.byKeyword?.slice(0, 2)))
+    check('…per country, and the days add up', near(sum(all.byCountry, c => c.asSpend), all.totals.asSpend, 0.1) && near(sum(all.series, s => s.asSpend), all.totals.asSpend, 0.1))
+    const oneCamp = await report(`from=${from}&to=${to}&campaigns=902`)
+    check('one campaign', near(oneCamp.totals.asSpend, expSpend([PROMO[1]!]), 0.05) && oneCamp.appleAds.byCampaign.length === 2 && oneCamp.appleAds.byKeyword?.length === 1 && oneCamp.totals.downloads === all.totals.downloads)
+    const mxPromo = await report(`from=${from}&to=${to}&countries=MX`)
+    check('one country narrows spend, and keywords step aside', near(mxPromo.totals.asSpend, expSpend(PROMO, ['MX']), 0.05) && mxPromo.appleAds.byKeyword === null && mxPromo.totals.asTaps === expPromo('taps', PROMO, ['MX']))
 
     console.log('\nNarrowing it')
     const one = await report(`from=${from}&to=${to}&apps=1000000002`)
@@ -438,7 +526,10 @@ async function main(): Promise<void> {
 
     console.log('\nWhat is kept')
     const mode = fs.statSync(path.join(dir, 'ads.json')).mode & 0o777
-    check('the ad keys are on the volume, readable by the server only', mode === 0o600, mode.toString(8))
+    const appleMode = fs.statSync(path.join(dir, 'apple-ads.json')).mode & 0o777
+    check('the ad keys are on the volume, readable by the server only', mode === 0o600 && appleMode === 0o600, `${mode.toString(8)} ${appleMode.toString(8)}`)
+    const viewText = JSON.stringify((await api('GET', '/api/app-store')).data)
+    check('the Apple Ads private key never reaches the browser', !viewText.includes('PRIVATE KEY'))
     const cur = await api<{ currency: string }>('POST', '/api/app-store/currency', { currency: 'eur' })
     const eur = await report(`from=${from}&to=${to}`)
     check('the display currency can be changed', cur.data.currency === 'EUR' && eur.currency === 'EUR' && near(eur.totals.proceeds, expProceeds() * RATES['EUR']!, 0.05), `${eur.totals.proceeds}`)

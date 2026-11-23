@@ -40,6 +40,7 @@ import { startPlexWatch } from './plex-watch'
 import { startAiBoxProbe } from './ai-box'
 import { startAppStoreSync } from './app-store'
 import { startAdsSync } from './ads'
+import { startAppleAdsSync } from './apple-ads'
 import { SEARCH_PROVIDERS } from './research'
 
 dotenv.config()
@@ -128,6 +129,7 @@ startAiBoxProbe()
 // App Store Connect, hourly: a no-op until a key is saved in Settings → App Store.
 startAppStoreSync()
 startAdsSync()
+startAppleAdsSync()
 
 // Fail fast if the required API key is missing
 if (!process.env['OPENWEATHER_API_KEY']) {

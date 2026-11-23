@@ -8,6 +8,7 @@
 
 import { addDays, appStoreConfigured, latestDay } from '../app-store'
 import { adsConfigured } from '../ads'
+import { appleAdsConfigured } from '../apple-ads'
 import { buildReport, type Measures } from '../app-report'
 
 export const APP_STORE_TOOLS = [
@@ -17,7 +18,9 @@ export const APP_STORE_TOOLS = [
       name: 'app_store_stats',
       description:
         "How the user's own apps are doing: App Store downloads, money earned from sales, what the " +
-        'ads in them earned (AdMob, Unity Ads), impressions and product page views. Use for "how is Sudoku doing", ' +
+        'ads in them earned (AdMob, Unity Ads), impressions and product page views, and what the Apple Ads campaigns ' +
+        'cost and bought (spend, taps, installs, cost per tap and per install). Use for "how is Sudoku doing", ' +
+        '"how are my Apple Ads doing", "what did I spend on ads", ' +
         '"how many downloads did my apps get this week", "what did my apps earn this month", ' +
         '"how many people saw my app". The numbers run a day behind — Apple publishes each day the ' +
         'next morning — so "today" means yesterday.',
@@ -53,6 +56,11 @@ function describe(name: string, t: Measures, prev: Measures | null, period: Peri
   if (t.iap) parts.push(`${n(t.iap)} in-app purchases`)
   parts.push(`earned ${cash(t.proceeds)} from sales`)
   if (t.adRevenue || t.adImpressions) parts.push(`${cash(t.adRevenue)} from ads (${n(t.adImpressions)} ad impressions)`)
+  if (t.asSpend || t.asTaps) {
+    const cpt = t.asTaps ? ` (${cash(t.asSpend / t.asTaps)} a tap)` : ''
+    const cpa = t.asInstalls ? `, ${cash(t.asSpend / t.asInstalls)} an install` : ''
+    parts.push(`spent ${cash(t.asSpend)} on Apple Ads for ${n(t.asImpressions)} ad impressions, ${n(t.asTaps)} taps${cpt} and ${n(t.asInstalls)} installs${cpa}`)
+  }
   if (t.impressions !== null) parts.push(`${n(t.impressions)} App Store impressions`)
   if (t.pageViews !== null) parts.push(`${n(t.pageViews)} product page views`)
   if (t.sessions !== null) parts.push(`${n(t.sessions)} sessions`)
@@ -63,7 +71,7 @@ function describe(name: string, t: Measures, prev: Measures | null, period: Peri
 /** Text for the model, or null when the tool is not ours. */
 export function runAppStoreTool(name: string, args: Record<string, unknown>): string | null {
   if (name !== 'app_store_stats') return null
-  if (!appStoreConfigured() && !adsConfigured()) {
+  if (!appStoreConfigured() && !adsConfigured() && !appleAdsConfigured()) {
     return 'App Store Connect is not set up yet. The key goes in Settings → App Store on the dashboard; until then there are no figures.'
   }
   const wanted = typeof args['app'] === 'string' ? args['app'].trim().toLowerCase() : ''

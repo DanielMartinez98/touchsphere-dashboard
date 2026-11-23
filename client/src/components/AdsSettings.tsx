@@ -8,6 +8,10 @@
 // keyboard. When Mail already registered a Google app, that one is shared and
 // only the redirect address and the AdMob API need adding to it. Unity Ads is
 // two pasted values, proven with a one-day read before they are saved.
+//
+// Apple Ads is a key pair this server makes (so nobody needs openssl): its
+// public half is pasted into Apple Ads → Account Settings → API, and the three
+// IDs Apple shows for it are pasted back here and proven before they are kept.
 
 import { useState } from 'react'
 import { RotateCw } from 'lucide-react'
@@ -19,7 +23,7 @@ import { ago } from './widgets/AppStoreWidget/format'
 const FIELD = 'w-full bg-white/10 text-white rounded-xl px-4 py-3 text-[13px] placeholder:text-white/30 border border-hairline'
 const BTN = 'h-11 px-4 rounded-xl text-[13px] font-semibold active:scale-95 disabled:opacity-40'
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'MXN', 'CAD', 'AUD', 'JPY', 'BRL']
-const NETWORK_NAME: Record<string, string> = { admob: 'AdMob', unity: 'Unity Ads' }
+const NETWORK_NAME: Record<string, string> = { admob: 'AdMob', unity: 'Unity Ads', appleads: 'Apple Ads' }
 
 function RunLine({ run, syncing }: { run: { at: string; ok: boolean; detail: string } | null; syncing: boolean }) {
   if (syncing && !run) return <Hint>Reading for the first time — about a minute.</Hint>
@@ -66,7 +70,7 @@ export function AdsSettings({ view, store }: { view: AppStoreView; store: AppSto
                 <div className="min-w-0">
                   <div className={`text-sm font-medium truncate ${a.hidden ? 'text-white/40' : 'text-white/90'}`}>{a.name}</div>
                   <div className="text-[11.5px] text-white/35 truncate">
-                    {[a.store ? 'App Store' : null, ...a.networks.map(n => NETWORK_NAME[n]), a.bundleId].filter(Boolean).join(' · ')}
+                    {[a.store ? 'App Store' : null, ...a.networks.map(n => NETWORK_NAME[n]), a.appleAds ? 'Apple Ads' : null, a.bundleId].filter(Boolean).join(' · ')}
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -209,6 +213,122 @@ export function AdsSettings({ view, store }: { view: AppStoreView; store: AppSto
           </Card>
         )}
       </Section>
+
+      <AppleAdsSettings view={view} store={store} />
     </>
+  )
+}
+
+/** Apple Ads: make a key here, paste its public half into Apple Ads, paste the three IDs back. */
+function AppleAdsSettings({ view, store }: { view: AppStoreView; store: AppStoreActions }) {
+  const a = view.appleAds
+  const [clientId, setClientId] = useState('')
+  const [teamId, setTeamId] = useState('')
+  const [keyId, setKeyId] = useState('')
+  const [ownKey, setOwnKey] = useState('')
+  const [pasteKey, setPasteKey] = useState(false)
+  const [edit, setEdit] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const [sureNewKey, setSureNewKey] = useState(false)
+  const busy = store.busy === 'ads'
+  const open = () => { setClientId(a.clientId); setTeamId(a.teamId); setKeyId(a.keyId); setEdit(true) }
+  const connect = (adAccountId?: string) => {
+    setFailed(false)
+    void store.saveAppleAds({ clientId, teamId, keyId, privateKey: pasteKey && ownKey.trim() ? ownKey : undefined, adAccountId })
+      .then(ok => { if (ok) { setEdit(false); setOwnKey(''); setPasteKey(false) } else setFailed(true) })
+  }
+
+  return (
+    <Section title="Apple Ads" description="What the Apple Ads campaigns cost and what they bought: spend, impressions, taps, installs, cost per tap and per install, by campaign, keyword and country. Read-only — the key can see reports and nothing else when its user has the “API Account Read Only” role.">
+      {a.connected && !edit ? (
+        <Card className="p-4 space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-white text-sm font-semibold">Connected <span className="text-emerald-300 font-normal">· {a.adAccountName}</span></div>
+              <div className="text-white/40 text-[11.5px] truncate">account {a.adAccountId} · spend in {a.currency} · key {a.keyId}</div>
+            </div>
+            <div className="flex gap-2 shrink-0">
+              <button type="button" onClick={open} className={`${BTN} bg-white/10 border border-hairline text-white/70`}>Change</button>
+              <Forget label="Disconnect Apple Ads" onForget={() => { void store.forgetAppleAds() }} />
+            </div>
+          </div>
+          {a.accounts.length > 1 && (
+            <div className="space-y-1.5">
+              <Hint>This key can see {a.accounts.length} ad accounts. The one read:</Hint>
+              <div className="flex flex-wrap gap-2">
+                {a.accounts.map(acc => (
+                  <button key={acc.id} type="button" disabled={busy}
+                    onClick={() => { if (acc.id !== a.adAccountId) void store.saveAppleAds({ clientId: a.clientId, teamId: a.teamId, keyId: a.keyId, adAccountId: acc.id }) }}
+                    className={`h-11 px-4 rounded-xl text-[13px] font-semibold border ${acc.id === a.adAccountId ? 'bg-cyan-500/20 border-cyan-400/40 text-cyan-100' : 'bg-white/5 border-hairline text-white/55'}`}>
+                    {acc.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <RunLine run={a.lastRun} syncing={a.syncing} />
+        </Card>
+      ) : (
+        <Card className="p-4 space-y-3">
+          <ol className="text-[12.5px] text-white/50 leading-relaxed space-y-1.5 list-decimal pl-4">
+            <li>At <span className="text-white/75">ads.apple.com</span>, Account Settings → User Management → <span className="text-white/75">Invite users</span>, with the role <span className="text-white/75">API Account Read Only</span>. Accept the invitation and sign in as that user (an Apple ID of its own).</li>
+            <li>Make a key here, then copy its public key.</li>
+            <li>As the API user, Account Settings → <span className="text-white/75">API</span> → paste the public key → Save.</li>
+            <li>Apple then shows a <span className="text-white/75">client ID</span>, <span className="text-white/75">team ID</span> and <span className="text-white/75">key ID</span>. Paste all three below.</li>
+          </ol>
+
+          {a.publicKey ? (
+            <div className="space-y-2">
+              <code className="block text-[11px] leading-snug text-cyan-100/90 bg-black/30 rounded-lg px-3 py-2.5 break-all whitespace-pre-wrap selectable-text">{a.publicKey.trim()}</code>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" className={`${BTN} bg-white/10 text-white/75`}
+                  onClick={() => { navigator.clipboard?.writeText(a.publicKey).then(() => setCopied(true)).catch(() => {}) }}>
+                  {copied ? 'Copied' : 'Copy the public key'}
+                </button>
+                {sureNewKey ? (
+                  <>
+                    <button type="button" onClick={() => setSureNewKey(false)} className={`${BTN} bg-white/10 text-white/60`}>Keep this key</button>
+                    <button type="button" disabled={busy} onClick={() => { setSureNewKey(false); setCopied(false); void store.makeAppleAdsKey() }} className={`${BTN} bg-red-500 text-white`}>Make a new key</button>
+                  </>
+                ) : (
+                  <button type="button" onClick={() => setSureNewKey(true)} className={`${BTN} bg-white/5 border border-hairline text-white/55`}>New key…</button>
+                )}
+              </div>
+              {sureNewKey && <Hint tone="warn">A new key stops the old one working: its public half has to be pasted into Apple Ads again.</Hint>}
+            </div>
+          ) : (
+            <button type="button" disabled={busy} onClick={() => { void store.makeAppleAdsKey() }} className={`${BTN} bg-white/10 border border-hairline text-white/85`}>
+              Make a key
+            </button>
+          )}
+
+          <TouchInput value={clientId} onChange={setClientId} plain placeholder="Client ID — SEARCHADS.…" ariaLabel="Apple Ads client ID" className={FIELD} />
+          <TouchInput value={teamId} onChange={setTeamId} plain placeholder="Team ID — SEARCHADS.…" ariaLabel="Apple Ads team ID" className={FIELD} />
+          <TouchInput value={keyId} onChange={setKeyId} plain placeholder="Key ID" ariaLabel="Apple Ads key ID" className={FIELD} />
+
+          {pasteKey ? (
+            <>
+              <TouchInput value={ownKey} onChange={setOwnKey} plain multiline rows={4} placeholder="-----BEGIN EC PRIVATE KEY----- … (the private key whose public half is already in Apple Ads)" ariaLabel="Apple Ads private key" className={FIELD} />
+              <Hint>Only for a key made elsewhere, for example with openssl. It replaces the one made here.</Hint>
+            </>
+          ) : (
+            <button type="button" onClick={() => setPasteKey(true)} className="text-[12px] text-white/45 underline underline-offset-2 text-left">I already have a key for Apple Ads</button>
+          )}
+
+          <div className="flex gap-2">
+            <button type="button" disabled={busy || !clientId.trim() || !teamId.trim() || !keyId.trim() || (!a.publicKey && !ownKey.trim())}
+              className={`${BTN} bg-cyan-500/20 border border-cyan-400/30 text-cyan-100 flex items-center gap-2`}
+              onClick={() => connect()}>
+              {busy && <RotateCw size={14} className="animate-spin" />}
+              {busy ? 'Checking with Apple…' : 'Connect Apple Ads'}
+            </button>
+            {edit && <button type="button" onClick={() => setEdit(false)} className={`${BTN} bg-white/10 text-white/60`}>Cancel</button>}
+          </div>
+          <Hint>The IDs are tried against Apple before they are saved. The private key never leaves this server.</Hint>
+          {failed && store.error && <p className="text-[13px] text-red-300 rounded-xl bg-red-500/10 border border-red-400/30 px-3 py-2">{store.error}</p>}
+        </Card>
+      )}
+    </Section>
   )
 }

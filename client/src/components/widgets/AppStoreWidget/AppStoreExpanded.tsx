@@ -27,27 +27,30 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight, RotateCw, CalendarRange, Globe2, Download } from 'lucide-react'
 import {
-  useAppReport, type AppStoreActions, type AdSlice, type Group, type Measures, type Report, type ReportQuery,
+  useAppReport, type AppStoreActions, type AdSlice, type Group, type Measures, type PromoSlice, type Report, type ReportQuery,
 } from '../../../hooks/useAppStore'
 import { keyboardMode } from '../../../hooks/useKeyboardMode'
 import { Chip, LineChart, SectionCard, ShareBar, Sheet, Spark, Tile, type ChartLine } from './parts'
 import { RangePicker } from './RangePicker'
 import {
-  ADS_COLOR, METRICS, OTHER_COLOR, appColors, PRESETS, SALES_COLOR, addDays, ago, bucketLabel, cell, change, compact, countryName, daysBetween,
+  ADS_COLOR, METRICS, OTHER_COLOR, PROMO_COLOR, appColors, PRESETS, SALES_COLOR, addDays, ago, bucketLabel, cell, change, compact, countryName, daysBetween,
   ecpmOf, inMinutes, money, naturalGroup, percent, presetRange, prettyDay, rangeText, revenueOf, shortDay,
   type MetricId, type PresetId,
 } from './format'
 
-type Tab = 'days' | 'apps' | 'countries' | 'ads' | 'found'
+type Tab = 'days' | 'apps' | 'countries' | 'ads' | 'promo' | 'found'
 const TABS: { id: Tab; label: string }[] = [
   { id: 'days', label: 'Day by day' },
   { id: 'apps', label: 'By app' },
   { id: 'countries', label: 'By country' },
   { id: 'ads', label: 'Ads' },
+  { id: 'promo', label: 'Apple Ads' },
   { id: 'found', label: 'How it was found' },
 ]
 const TILES: MetricId[] = ['revenue', 'downloads', 'adRevenue', 'proceeds', 'impressions', 'adImpressions']
-const NETWORK_NAME: Record<string, string> = { admob: 'AdMob', unity: 'Unity Ads' }
+const NETWORK_NAME: Record<string, string> = { admob: 'AdMob', unity: 'Unity Ads', appleads: 'Apple Ads' }
+/** Figures that are a ratio: never added across lines. */
+const RATIOS: MetricId[] = ['ecpm', 'asCpt', 'asCpa']
 
 function remembered(): { preset: PresetId; from?: string; to?: string } {
   try {
@@ -344,6 +347,131 @@ function AdsTab({ r, connected, networks, units, onNetwork, onUnit }: {
   )
 }
 
+function PromoRows({ rows, currency, picked, onPick }: { rows: PromoSlice[]; currency: string; picked?: string[]; onPick?: (key: string) => void }) {
+  const [all, setAll] = useState(false)
+  const max = Math.max(...rows.map(x => x.spend), 0)
+  const shown = all ? rows : rows.slice(0, 12)
+  return (
+    <div className="space-y-1.5">
+      {shown.map(s => {
+        const on = picked?.includes(s.key)
+        const body = (
+          <>
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-[15px] font-semibold text-white truncate">{s.label}</span>
+              <span className="text-[15px] font-semibold text-white tabular-nums shrink-0">{money(s.spend, currency)}</span>
+            </div>
+            {s.sub && <div className="text-[12px] text-white/40 truncate">{s.sub}</div>}
+            <div className="mt-1.5"><ShareBar value={s.spend} max={max} color={PROMO_COLOR} /></div>
+            <div className="grid grid-cols-4 gap-2 text-[12px] text-white/55 tabular-nums mt-1.5">
+              <span><span className="text-white/80">{compact(s.taps)}</span> taps</span>
+              <span><span className="text-white/80">{compact(s.installs)}</span> installs</span>
+              <span><span className="text-white/80">{s.taps ? money(s.spend / s.taps, currency) : '—'}</span> / tap</span>
+              <span><span className="text-white/80">{s.installs ? money(s.spend / s.installs, currency) : '—'}</span> / install</span>
+            </div>
+          </>
+        )
+        const cls = `w-full text-left rounded-xl border px-3.5 py-2.5 ${on ? 'bg-purple-500/15 border-purple-400/50' : 'bg-white/[0.04] border-white/8'}`
+        return onPick
+          ? <button key={s.key} type="button" onClick={() => onPick(s.key)} className={`${cls} active:bg-white/10`}>{body}</button>
+          : <div key={s.key} className={cls}>{body}</div>
+      })}
+      {rows.length > 12 && (
+        <button type="button" onClick={() => setAll(!all)}
+          className="w-full h-11 rounded-xl bg-white/[0.07] text-white/70 text-[13px] font-semibold active:scale-[0.99]">
+          {all ? 'Show the top 12' : `Show all ${rows.length}`}
+        </button>
+      )}
+    </div>
+  )
+}
+
+const PROMO_TILES: { id: MetricId; downIsGood?: boolean }[] = [
+  { id: 'asSpend' }, { id: 'asInstalls' }, { id: 'asCpa', downIsGood: true },
+  { id: 'asTaps' }, { id: 'asCpt', downIsGood: true }, { id: 'asImpressions' },
+]
+
+function PromoTab({ r, connected, metric, onMetric, campaigns, onCampaign }: {
+  r: Report; connected: boolean
+  metric: MetricId; onMetric: (m: MetricId) => void
+  campaigns: string[]; onCampaign: (key: string) => void
+}) {
+  const t = r.totals
+  if (!connected && r.appleAds.byCampaign.length === 0) {
+    return (
+      <SectionCard title="Apple Ads">
+        <p className="text-[14px] text-white/55 leading-relaxed">
+          Apple Ads is not connected yet. Settings → App Store makes a key for it: paste the key into Apple Ads, copy back the three IDs
+          Apple shows, and what the campaigns cost and bought (spend, taps, installs, cost per tap and per install) appears here.
+        </p>
+      </SectionCard>
+    )
+  }
+  const value = (id: MetricId, m: Measures) => {
+    const v = METRICS[id].value(m)
+    return v === null ? '—' : METRICS[id].money ? money(v, r.currency, !RATIOS.includes(id) && r.approx) : compact(v)
+  }
+  const earned = revenueOf(t)
+  const share = t.downloads > 0 ? t.asInstalls / t.downloads : null
+  return (
+    <>
+      <SectionCard title="What the campaigns did" note="Tap a figure to draw it in the chart above. Installs are the ones Apple credits to an ad: after a tap on it, or within a day of seeing it.">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          {PROMO_TILES.map(x => (
+            <Tile key={x.id} label={METRICS[x.id].label} value={value(x.id, t)} now={METRICS[x.id].value(t)} before={METRICS[x.id].value(r.prev)}
+              selected={metric === x.id} onSelect={() => onMetric(x.id)} downIsGood={x.downIsGood} />
+          ))}
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-[13px] text-white/60 tabular-nums">
+          <span>Tapped <span className="text-white/85">{percent(t.asTaps, t.asImpressions)}</span> of the time shown</span>
+          <span><span className="text-white/85">{percent(t.asInstalls, t.asTaps)}</span> of taps installed</span>
+          <span><span className="text-white/85">{compact(t.asNewDownloads)}</span> new, {compact(t.asRedownloads)} re-downloads</span>
+          <span>{share === null ? '' : <><span className="text-white/85">{percent(t.asInstalls, t.downloads)}</span> of all downloads came from ads</>}</span>
+        </div>
+      </SectionCard>
+      <SectionCard title="Earned against spent" note="Sales and ads earned by the same apps over the same days, against what Apple Ads cost. Earnings are not only from ad installs, so this is the whole picture, not the return on the ads alone.">
+        <div className="grid grid-cols-3 gap-2">
+          {[
+            { k: 'Earned', v: money(earned, r.currency, r.approx) },
+            { k: 'Spent', v: money(t.asSpend, r.currency, r.approx) },
+            { k: 'Left over', v: money(earned - t.asSpend, r.currency, r.approx), tone: earned - t.asSpend < 0 ? 'text-red-300' : 'text-emerald-300' },
+          ].map(x => (
+            <button key={x.k} type="button" onClick={() => onMetric(x.k === 'Spent' ? 'asSpend' : x.k === 'Earned' ? 'revenue' : 'net')}
+              className="text-left rounded-xl bg-white/[0.05] px-3 py-2.5 active:bg-white/10">
+              <div className="text-[12px] text-white/45">{x.k}</div>
+              <div className={`text-[19px] font-semibold tabular-nums truncate ${x.tone ?? 'text-white'}`}>{x.v}</div>
+            </button>
+          ))}
+        </div>
+      </SectionCard>
+      <SectionCard title="By campaign" note="Tap one to count only that campaign’s spend on this page.">
+        {r.appleAds.byCampaign.length === 0
+          ? <p className="text-[14px] text-white/45">No campaign ran in this range.</p>
+          : <PromoRows rows={r.appleAds.byCampaign} currency={r.currency} picked={campaigns} onPick={onCampaign} />}
+      </SectionCard>
+      <SectionCard title="By keyword" note={r.appleAds.byKeyword === null ? 'Apple’s keyword figures are for every country together — clear the country filter to see them.' : 'The search terms bid on, most spent first. Search Match campaigns have none.'}>
+        {r.appleAds.byKeyword && r.appleAds.byKeyword.length === 0 && <p className="text-[14px] text-white/45">No keyword spent anything in this range.</p>}
+        {r.appleAds.byKeyword && r.appleAds.byKeyword.length > 0 && <PromoRows rows={r.appleAds.byKeyword} currency={r.currency} />}
+      </SectionCard>
+      {r.byCountry.some(c => c.asSpend > 0) && (
+        <SectionCard title="By country">
+          <div className="space-y-2">
+            {r.byCountry.filter(c => c.asSpend > 0).sort((a, b) => b.asSpend - a.asSpend).map((c, _, list) => (
+              <div key={c.code}>
+                <div className="flex items-baseline justify-between gap-3 text-[14px]">
+                  <span className="text-white/85 truncate">{countryName(c.code)}</span>
+                  <span className="text-white tabular-nums shrink-0">{money(c.asSpend, r.currency)} <span className="text-white/40 text-[12px]">· {compact(c.asInstalls)} installs · {c.asInstalls ? money(c.asSpend / c.asInstalls, r.currency) : '—'} each</span></span>
+                </div>
+                <div className="mt-1"><ShareBar value={c.asSpend} max={list[0]!.asSpend} color={PROMO_COLOR} /></div>
+              </div>
+            ))}
+          </div>
+        </SectionCard>
+      )}
+    </>
+  )
+}
+
 function FoundTab({ r }: { r: Report }) {
   const t = r.totals
   const steps = [
@@ -425,6 +553,7 @@ export default function AppStoreExpanded({ store }: { store: AppStoreActions }) 
   const [countries, setCountries] = useState<string[]>([])
   const [networks, setNetworks] = useState<string[]>([])
   const [units, setUnits] = useState<string[]>([])
+  const [campaigns, setCampaigns] = useState<string[]>([])
   const [metric, setMetric] = useState<MetricId>('revenue')
   const [split, setSplit] = useState<Split>('apps')
   const [tab, setTab] = useState<Tab>('apps')
@@ -440,8 +569,8 @@ export default function AppStoreExpanded({ store }: { store: AppStoreActions }) 
   }, [range, asOf])
   const days = from ? daysBetween(from, to) + 1 : 0
   const group = groupPick ?? naturalGroup(days)
-  const ready = !!view && (view.configured || view.ads.admob.connected || view.ads.unity.connected || view.apps.length > 0)
-  const query: ReportQuery | null = ready && from ? { from, to, group, apps, countries, networks, units } : null
+  const ready = !!view && (view.configured || view.ads.admob.connected || view.ads.unity.connected || view.appleAds.connected || view.apps.length > 0)
+  const query: ReportQuery | null = ready && from ? { from, to, group, apps, countries, networks, units, campaigns } : null
   const { report: r, loading, error: reportError } = useAppReport(query)
   const colors = useMemo(() => appColors((view?.apps ?? []).map(a => a.id)), [view?.apps])
 
@@ -466,20 +595,21 @@ export default function AppStoreExpanded({ store }: { store: AppStoreActions }) 
 
   const step = (dir: -1 | 1) => setRange({ preset: 'custom', from: addDays(from, dir * days), to: addDays(to, dir * days) })
   const canForward = to < asOf
-  const filtered = apps.length + countries.length + networks.length + units.length > 0
-  const clear = () => { setApps([]); setCountries([]); setNetworks([]); setUnits([]) }
-  const busy = view.syncing || view.ads.syncing || store.busy === 'sync'
-  const failed = [view.lastRun, view.ads.admob.lastRun, view.ads.unity.lastRun].find(x => x && !x.ok)
+  const filtered = apps.length + countries.length + networks.length + units.length + campaigns.length > 0
+  const clear = () => { setApps([]); setCountries([]); setNetworks([]); setUnits([]); setCampaigns([]) }
+  const busy = view.syncing || view.ads.syncing || view.appleAds.syncing || store.busy === 'sync'
+  const failed = [view.lastRun, view.ads.admob.lastRun, view.ads.unity.lastRun, view.appleAds.lastRun].find(x => x && !x.ok)
   const status = busy ? 'Reading…' : failed ? `A read failed ${ago(failed.at)}: ${failed.detail}` : view.lastRun ? `Read ${ago(view.lastRun.at)}` : 'Not read yet'
   const appName = (id: string) => view.apps.find(a => a.id === id)?.name ?? id
   const unitName = (key: string) => r?.ads.byUnit.find(u => u.key === key)?.label ?? key
+  const campaignName = (key: string) => r?.appleAds.byCampaign.find(c => c.key === key)?.label ?? key
 
   const m = METRICS[metric]
   const cash = (v: number) => money(v, r?.currency ?? view.currency)
   const fmt = (v: number) => (m.money ? cash(v) : compact(v))
   const tileValue = (id: MetricId, t: Measures) => {
     const v = METRICS[id].value(t)
-    return v === null ? '—' : METRICS[id].money ? money(v, r?.currency ?? view.currency, id !== 'ecpm' && !!r?.approx) : compact(v)
+    return v === null ? '—' : METRICS[id].money ? money(v, r?.currency ?? view.currency, !RATIOS.includes(id) && !!r?.approx) : compact(v)
   }
 
   // The lines. One per app while there are several to compare (the picked ones
@@ -509,7 +639,7 @@ export default function AppStoreExpanded({ store }: { store: AppStoreActions }) 
       ]
       : [{
         key: metric, label: charted.length === 1 ? charted[0]!.name : apps.length === 1 ? appName(apps[0]!) : 'All apps',
-        color: charted.length === 1 ? colors.get(charted[0]!.id) ?? SALES_COLOR : metric === 'adRevenue' || metric === 'adImpressions' ? ADS_COLOR : SALES_COLOR,
+        color: charted.length === 1 ? colors.get(charted[0]!.id) ?? SALES_COLOR : metric === 'adRevenue' || metric === 'adImpressions' ? ADS_COLOR : metric.startsWith('as') ? PROMO_COLOR : SALES_COLOR,
         values: r.series.map(s => m.value(s)),
       }]
   }
@@ -518,6 +648,7 @@ export default function AppStoreExpanded({ store }: { store: AppStoreActions }) 
     r.coverage.analytics ? `store views to ${shortDay(r.coverage.analytics)}` : null,
     r.coverage.admob ? `AdMob to ${shortDay(r.coverage.admob)}` : null,
     r.coverage.unity ? `Unity to ${shortDay(r.coverage.unity)}` : null,
+    r.coverage.appleAds ? `Apple Ads to ${shortDay(r.coverage.appleAds)}` : null,
   ].filter(Boolean).join(' · ') : ''
 
   const seg = 'h-9 px-3 rounded-[10px] text-[13px] font-semibold disabled:opacity-25'
@@ -534,6 +665,10 @@ export default function AppStoreExpanded({ store }: { store: AppStoreActions }) 
       {shownTab === 'ads' && (
         <AdsTab r={r} connected={view.ads.admob.connected || view.ads.unity.connected} networks={networks} units={units}
           onNetwork={k => setNetworks(toggle(networks, k))} onUnit={k => setUnits(toggle(units, k))} />
+      )}
+      {shownTab === 'promo' && (
+        <PromoTab r={r} connected={view.appleAds.connected} metric={metric} onMetric={setMetric}
+          campaigns={campaigns} onCampaign={k => setCampaigns(toggle(campaigns, k))} />
       )}
       {shownTab === 'found' && <FoundTab r={r} />}
     </>
@@ -601,6 +736,7 @@ export default function AppStoreExpanded({ store }: { store: AppStoreActions }) 
               Showing only {[
                 ...apps.map(appName), ...countries.map(countryName),
                 ...networks.map(n => `${NETWORK_NAME[n] ?? n} ads`), ...units.map(u => `the “${unitName(u)}” ad unit`),
+                ...campaigns.map(c => `the “${campaignName(c)}” campaign`),
               ].join(' · ')}
             </span>
             <button type="button" onClick={clear} className="h-9 px-3 rounded-lg bg-white/10 text-white/80 text-[12px] font-semibold shrink-0 active:scale-95">Show everything</button>
@@ -645,7 +781,7 @@ export default function AppStoreExpanded({ store }: { store: AppStoreActions }) 
                   </div>
                 </div>
                 <LineChart points={points} lines={lines} format={fmt} unit={r.group}
-                  total={lines.length > 1 && metric !== 'ecpm' ? i => m.value(r.series[i]!) : undefined} />
+                  total={lines.length > 1 && !RATIOS.includes(metric) ? i => m.value(r.series[i]!) : undefined} />
               </SectionCard>
               {r.approx && (
                 <p className="text-[12px] text-white/40 leading-snug px-1">

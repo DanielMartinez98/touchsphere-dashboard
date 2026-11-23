@@ -142,6 +142,7 @@ export function naturalGroup(days: number): Group {
 export type MetricId =
   | 'revenue' | 'downloads' | 'adRevenue' | 'proceeds' | 'impressions' | 'pageViews'
   | 'adImpressions' | 'ecpm' | 'updates' | 'iap'
+  | 'asSpend' | 'asInstalls' | 'asTaps' | 'asImpressions' | 'asCpt' | 'asCpa' | 'net'
 
 export interface Metric {
   id:     MetricId
@@ -153,6 +154,9 @@ export interface Metric {
 }
 
 export const revenueOf = (m: Measures) => m.proceeds + m.adRevenue
+/** Apple Ads' purple, so spend never reads as one of the two ways of earning. */
+export const PROMO_COLOR = '#c084fc'
+const per = (a: number, b: number) => (b > 0 ? a / b : null)
 export const ecpmOf = (revenue: number, impressions: number) => (impressions > 0 ? (revenue / impressions) * 1000 : null)
 
 export const METRICS: Record<MetricId, Metric> = {
@@ -166,6 +170,13 @@ export const METRICS: Record<MetricId, Metric> = {
   ecpm:          { id: 'ecpm',          label: 'Per 1,000 ads',    money: true, about: 'What a thousand shown ads earned (eCPM). Higher means each ad is worth more.', value: m => ecpmOf(m.adRevenue, m.adImpressions) },
   updates:       { id: 'updates',       label: 'Updates',          about: 'Existing users who installed a new version.',                                     value: m => m.updates },
   iap:           { id: 'iap',           label: 'In-app purchases', about: 'Purchases made inside the apps, counted in units.',                               value: m => m.iap },
+  asSpend:       { id: 'asSpend',       label: 'Spent on Apple Ads', money: true, about: 'What the Apple Ads campaigns cost.',                                        value: m => m.asSpend },
+  asInstalls:    { id: 'asInstalls',    label: 'Installs from ads', about: 'Downloads Apple Ads credits to a campaign: after a tap on the ad, or within a day of seeing it.', value: m => m.asInstalls },
+  asTaps:        { id: 'asTaps',        label: 'Taps on ads',      about: 'Times someone tapped an Apple Ads ad for the app.',                               value: m => m.asTaps },
+  asImpressions: { id: 'asImpressions', label: 'Ad impressions',   about: 'Times an Apple Ads ad for the app was shown on the App Store.',                   value: m => m.asImpressions },
+  asCpt:         { id: 'asCpt',         label: 'Cost per tap',     money: true, about: 'Spend divided by taps (CPT). Lower is better.',                          value: m => per(m.asSpend, m.asTaps) },
+  asCpa:         { id: 'asCpa',         label: 'Cost per install', money: true, about: 'Spend divided by installs (CPA). Lower is better.',                      value: m => per(m.asSpend, m.asInstalls) },
+  net:           { id: 'net',           label: 'Earned less ad spend', money: true, about: 'Sales plus ads earned, minus what Apple Ads cost.',                  value: m => revenueOf(m) - m.asSpend },
 }
 
 export function countryName(code: string): string {
