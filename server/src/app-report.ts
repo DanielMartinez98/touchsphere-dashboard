@@ -30,6 +30,7 @@ import {
   type DayStats, type Stats,
 } from './app-store'
 import { adsStatus, readAds, type AdRow, type AdStore, type AdsStatus, type Network } from './ads'
+import { appleAdsStatus, readAppleAds, type AppleAdsStatus, type AppleAdsStore } from './apple-ads'
 import { convert, fxAsOf } from './fx'
 
 // ── The joined app list ──────────────────────────────────────────────────────
@@ -41,10 +42,12 @@ export interface UnifiedApp {
   bundleId:  string
   store:     boolean
   networks:  Network[]
+  /** Whether an Apple Ads campaign promotes it. */
+  appleAds:  boolean
   platforms: string[]
   hidden:    boolean
   /** Ad apps the user combined into this one by hand (Settings → App Store), so each can be split off again. */
-  combined:  { id: string; name: string; network: Network }[]
+  combined:  { id: string; name: string; network: Network | 'appleads' }[]
 }
 
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '')
@@ -65,12 +68,12 @@ function adNames(name: string): string[] {
  * ("Spring Jump" is com.loklogames.springjump, whatever the store calls it) —
  * and, over all of those, wherever the user said it belongs (`links`).
  */
-function unify(stats: Stats, ads: AdStore, hidden: Set<string>, links: Record<string, string> = {}): { apps: UnifiedApp[]; adKeyToApp: Map<string, string> } {
+function unify(stats: Stats, ads: AdStore, hidden: Set<string>, links: Record<string, string> = {}, as: AppleAdsStore = readAppleAds()): { apps: UnifiedApp[]; adKeyToApp: Map<string, string>; asToApp: Map<string, string> } {
   const apps = new Map<string, UnifiedApp>()
   const byName = new Map<string, string>()
   const byBundle = new Map<string, string>()
   for (const a of Object.values(stats.apps)) {
-    apps.set(a.id, { id: a.id, name: a.name, bundleId: a.bundleId, store: true, networks: [], platforms: ['ios'], hidden: hidden.has(a.id), combined: [] })
+    apps.set(a.id, { id: a.id, name: a.name, bundleId: a.bundleId, store: true, networks: [], appleAds: false, platforms: ['ios'], hidden: hidden.has(a.id), combined: [] })
     if (a.name) byName.set(norm(a.name), a.id)
     const tail = norm(a.bundleId.split('.').pop() ?? '')
     // A short tail ("app", "game") is not a name; and two apps sharing one is no match at all.
@@ -85,10 +88,25 @@ function unify(stats: Stats, ads: AdStore, hidden: Set<string>, links: Record<st
       : names.map(n => byName.get(n)).find(Boolean) ?? names.map(n => byBundle.get(n)).find(Boolean)
     if (!id) {
       id = `ad:${key}`
-      apps.set(id, { id, name: a.name, bundleId: '', store: false, networks: [], platforms: [], hidden: hidden.has(id), combined: [] })
+      apps.set(id, { id, name: a.name, bundleId: '', store: false, networks: [], appleAds: false, platforms: [], hidden: hidden.has(id), combined: [] })
       if (a.name) byName.set(norm(a.name), id)
     }
     adKeyToApp.set(key, id)
+  }
+  // Apple Ads promotes an App Store app by its Apple id, the key the store
+  // apps already have — so this join is exact. An app Apple Ads knows and the
+  // sales ledger does not (no key yet, nothing sold) stands on its own.
+  const asApps = new Map<string, string>()
+  for (const c of Object.values(as.campaigns)) if (c.app && !asApps.has(c.app)) asApps.set(c.app, c.appName)
+  const asToApp = new Map<string, string>()
+  for (const [adamId, appName] of asApps) {
+    let id = apps.has(adamId) ? adamId : (appName ? byName.get(norm(appName)) : undefined)
+    if (!id) {
+      id = `ad:appleads:${adamId}`
+      apps.set(id, { id, name: appName || `App ${adamId}`, bundleId: '', store: false, networks: [], appleAds: false, platforms: ['ios'], hidden: hidden.has(id), combined: [] })
+      if (appName) byName.set(norm(appName), id)
+    }
+    asToApp.set(adamId, id)
   }
   // The user's own word comes last and wins. A link is followed to its end
   // (bounded: it is user-made data and may loop), and one pointing at an app
@@ -113,9 +131,17 @@ function unify(stats: Stats, ads: AdStore, hidden: Set<string>, links: Record<st
     if (!app.networks.includes(a.network)) app.networks.push(a.network)
     if (a.platform && !app.platforms.includes(a.platform)) app.platforms.push(a.platform)
   }
-  const used = new Set(adKeyToApp.values())
+  for (const [adamId, from] of asToApp) {
+    const to = from.startsWith('ad:') ? resolve(from) : from
+    if (to !== from) {
+      asToApp.set(adamId, to)
+      apps.get(to)!.combined.push({ id: from, name: apps.get(from)?.name ?? adamId, network: 'appleads' })
+    }
+    apps.get(to)!.appleAds = true
+  }
+  const used = new Set([...adKeyToApp.values(), ...asToApp.values()])
   for (const id of [...apps.keys()]) if (id.startsWith('ad:') && !used.has(id)) apps.delete(id)
-  return { apps: [...apps.values()], adKeyToApp }
+  return { apps: [...apps.values()], adKeyToApp, asToApp }
 }
 
 // ── Measures ─────────────────────────────────────────────────────────────────
@@ -139,6 +165,13 @@ export interface Measures {
   adClicks:      number
   adRequests:    number
   adMatched:     number
+  /** Apple Ads: what the campaigns cost (display currency) and what it bought. */
+  asSpend:        number
+  asImpressions:  number
+  asTaps:         number
+  asInstalls:     number
+  asNewDownloads: number
+  asRedownloads:  number
 }
 
 function zero(): Measures {
@@ -146,11 +179,12 @@ function zero(): Measures {
     downloads: 0, redownloads: 0, updates: 0, iap: 0, refunds: 0, proceeds: 0,
     impressions: null, pageViews: null, taps: null, sessions: null, crashes: null,
     adRevenue: 0, adImpressions: 0, adClicks: 0, adRequests: 0, adMatched: 0,
+    asSpend: 0, asImpressions: 0, asTaps: 0, asInstalls: 0, asNewDownloads: 0, asRedownloads: 0,
   }
 }
 
 const NULLABLE = ['impressions', 'pageViews', 'taps', 'sessions', 'crashes'] as const
-const PLAIN = ['downloads', 'redownloads', 'updates', 'iap', 'refunds', 'proceeds', 'adRevenue', 'adImpressions', 'adClicks', 'adRequests', 'adMatched'] as const
+const PLAIN = ['downloads', 'redownloads', 'updates', 'iap', 'refunds', 'proceeds', 'adRevenue', 'adImpressions', 'adClicks', 'adRequests', 'adMatched', 'asSpend', 'asImpressions', 'asTaps', 'asInstalls', 'asNewDownloads', 'asRedownloads'] as const
 
 function add(into: Measures, m: Partial<Measures>): void {
   for (const k of PLAIN) if (m[k]) into[k] += m[k]!
@@ -160,6 +194,7 @@ function add(into: Measures, m: Partial<Measures>): void {
 function tidy(m: Measures): Measures {
   m.proceeds = Math.round(m.proceeds * 100) / 100
   m.adRevenue = Math.round(m.adRevenue * 100) / 100
+  m.asSpend = Math.round(m.asSpend * 100) / 100
   return m
 }
 
@@ -176,6 +211,14 @@ export interface ReportQuery {
   networks?:  string[]
   /** `<network>:<unit id>`, as `ads.byUnit[].key` gives them. */
   units?:     string[]
+  /** Apple Ads campaign ids. */
+  campaigns?: string[]
+}
+
+/** An Apple Ads campaign or keyword over the range. Spend in the display currency. */
+export interface PromoSlice {
+  key: string; label: string; sub?: string
+  spend: number; impressions: number; taps: number; installs: number; newDownloads: number; redownloads: number
 }
 
 export interface AdSlice {
@@ -193,17 +236,19 @@ export interface Report {
   unconverted: string[]
   fxAsOf:   string | null
   /** The newest day each source has: sales, analytics, and each ad network. */
-  coverage: { sales: string | null; analytics: string | null; admob: string | null; unity: string | null }
+  coverage: { sales: string | null; analytics: string | null; admob: string | null; unity: string | null; appleAds: string | null }
   apps:     UnifiedApp[]
   totals:   Measures
   prev:     Measures
   series:   ({ key: string; from: string; to: string } & Measures)[]
   /** `series` is that app's own figures per bucket, in the order of `series` above: the lines of the chart. */
   byApp:    { id: string; name: string; totals: Measures; prev: Measures; trend: number[]; series: Measures[] }[]
-  byCountry: { code: string; downloads: number; proceeds: number; impressions: number | null; pageViews: number | null; adRevenue: number; adImpressions: number }[]
+  byCountry: { code: string; downloads: number; proceeds: number; impressions: number | null; pageViews: number | null; adRevenue: number; adImpressions: number; asSpend: number; asInstalls: number }[]
   /** null when a country filter is set: Apple's file does not cross source with territory here. */
   bySource: { source: string; impressions: number; pageViews: number; taps: number }[] | null
   ads: { byNetwork: AdSlice[]; byUnit: AdSlice[]; byFormat: AdSlice[]; byPlatform: AdSlice[] }
+  /** Apple Ads. `byKeyword` is null under a country filter: Apple's keyword figures are read for every country together. */
+  appleAds: { byCampaign: PromoSlice[]; byKeyword: PromoSlice[] | null }
 }
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/
@@ -229,7 +274,8 @@ export function buildReport(q: ReportQuery): Report {
   const prefs = readPrefs()
   const currency = prefs.currency
   const hidden = new Set(prefs.hidden)
-  const { apps: allApps, adKeyToApp } = unify(stats, ads, hidden, prefs.links)
+  const as = readAppleAds()
+  const { apps: allApps, adKeyToApp, asToApp } = unify(stats, ads, hidden, prefs.links, as)
   const apps = allApps.filter(a => !a.hidden)
   const shown = new Set(apps.map(a => a.id))
 
@@ -247,6 +293,7 @@ export function buildReport(q: ReportQuery): Report {
   const ccFilter = set(q.countries?.map(c => c.toUpperCase()))
   const netFilter = set(q.networks)
   const unitFilter = set(q.units)
+  const campaignFilter = set(q.campaigns)
 
   let approx = false
   const unconverted = new Set<string>()
@@ -282,7 +329,7 @@ export function buildReport(q: ReportQuery): Report {
   const byCountry = new Map<string, Report['byCountry'][number]>()
   const country = (code: string) => {
     let c = byCountry.get(code)
-    if (!c) { c = { code, downloads: 0, proceeds: 0, impressions: null, pageViews: null, adRevenue: 0, adImpressions: 0 }; byCountry.set(code, c) }
+    if (!c) { c = { code, downloads: 0, proceeds: 0, impressions: null, pageViews: null, adRevenue: 0, adImpressions: 0, asSpend: 0, asInstalls: 0 }; byCountry.set(code, c) }
     return c
   }
   const bySource = new Map<string, { source: string; impressions: number; pageViews: number; taps: number }>()
@@ -408,6 +455,62 @@ export function buildReport(q: ReportQuery): Report {
     }
   }
 
+  // ── Apple Ads: what the campaigns cost and bought ──
+  const byCampaign = new Map<string, PromoSlice>()
+  const byKeyword = new Map<string, PromoSlice>()
+  const promo = (into: Map<string, PromoSlice>, key: string, label: string, sub: string | undefined, sp: number, im: number, tp: number, inst: number, nd = 0, rd = 0) => {
+    let s = into.get(key)
+    if (!s) { s = { key, label, ...(sub ? { sub } : {}), spend: 0, impressions: 0, taps: 0, installs: 0, newDownloads: 0, redownloads: 0 }; into.set(key, s) }
+    s.spend += sp; s.impressions += im; s.taps += tp; s.installs += inst; s.newDownloads += nd; s.redownloads += rd
+  }
+  let asLatest: string | null = null
+  for (let d = prevFrom; d <= to; d = addDays(d, 1)) {
+    const rows = as.days[d]
+    if (!rows) continue
+    const now = d >= from
+    for (const r of rows) {
+      const appId = asToApp.get(r.app)
+      if (!appId || !shown.has(appId)) continue
+      if (!asLatest || d > asLatest) asLatest = d
+      const okApp = !appFilter || appFilter.has(appId)
+      const okCc = !ccFilter || ccFilter.has(r.cc)
+      const okCamp = !campaignFilter || campaignFilter.has(r.c)
+      const sp = money(r.sp, as.currency)
+      const m: Partial<Measures> = { asSpend: sp, asImpressions: r.im, asTaps: r.tp, asInstalls: r.in, asNewDownloads: r.nd, asRedownloads: r.rd }
+      if (okCc && okCamp) {
+        const slot = byApp.get(appId)!
+        add(now ? slot.totals : slot.prev, m)
+        if (now) add(appBucket(slot, bucketOf(d, group)), m)
+        if (okApp) {
+          add(now ? totals : prev, m)
+          if (now) add(series.get(bucketOf(d, group))!, m)
+        }
+      }
+      if (!now || !okApp) continue
+      if (okCamp) { const c = country(r.cc); c.asSpend += sp; c.asInstalls += r.in }
+      if (okCc) {
+        const camp = as.campaigns[r.c]
+        promo(byCampaign, r.c, camp?.name ?? r.c, [appName.get(appId), camp?.status ? camp.status.toLowerCase().replace(/_/g, ' ') : ''].filter(Boolean).join(' · '), sp, r.im, r.tp, r.in, r.nd, r.rd)
+      }
+    }
+  }
+  if (!ccFilter) {
+    for (let d = from; d <= to; d = addDays(d, 1)) {
+      for (const r of as.kwDays[d] ?? []) {
+        const camp = as.campaigns[r.c]
+        const appId = camp ? asToApp.get(camp.app) : undefined
+        if (!appId || !shown.has(appId)) continue
+        if (appFilter && !appFilter.has(appId)) continue
+        if (campaignFilter && !campaignFilter.has(r.c)) continue
+        const kw = as.keywords[r.k]
+        const match = kw?.matchType ? kw.matchType.charAt(0) + kw.matchType.slice(1).toLowerCase() : ''
+        promo(byKeyword, r.k, kw?.text ?? r.k, [camp?.name, match ? `${match} match` : ''].filter(Boolean).join(' · '), money(r.sp, as.currency), r.im, r.tp, r.in)
+      }
+    }
+  }
+  const sortPromo = (m: Map<string, PromoSlice>) =>
+    [...m.values()].map(s => ({ ...s, spend: Math.round(s.spend * 100) / 100 })).sort((a, b) => b.spend - a.spend || b.installs - a.installs || b.taps - a.taps)
+
   const salesDays = Object.keys(stats.salesDays).filter(d => stats.salesDays[d] === 'ok').sort()
   const sortSlices = (m: Map<string, AdSlice>) =>
     [...m.values()].map(s => ({ ...s, revenue: Math.round(s.revenue * 100) / 100 })).sort((a, b) => b.revenue - a.revenue || b.impressions - a.impressions)
@@ -421,6 +524,7 @@ export function buildReport(q: ReportQuery): Report {
       analytics: latestAnalytics,
       admob: adLatest['admob'] ?? null,
       unity: adLatest['unity'] ?? null,
+      appleAds: asLatest,
     },
     apps,
     totals: tidy(totals),
@@ -433,14 +537,15 @@ export function buildReport(q: ReportQuery): Report {
       (b.totals.proceeds + b.totals.adRevenue) - (a.totals.proceeds + a.totals.adRevenue)
       || b.totals.downloads - a.totals.downloads || a.name.localeCompare(b.name)),
     byCountry: [...byCountry.values()]
-      .map(c => ({ ...c, proceeds: Math.round(c.proceeds * 100) / 100, adRevenue: Math.round(c.adRevenue * 100) / 100 }))
-      .filter(c => c.downloads || c.proceeds || c.impressions || c.adRevenue || c.adImpressions)
+      .map(c => ({ ...c, proceeds: Math.round(c.proceeds * 100) / 100, adRevenue: Math.round(c.adRevenue * 100) / 100, asSpend: Math.round(c.asSpend * 100) / 100 }))
+      .filter(c => c.downloads || c.proceeds || c.impressions || c.adRevenue || c.adImpressions || c.asSpend || c.asInstalls)
       .sort((a, b) => b.downloads - a.downloads || (b.proceeds + b.adRevenue) - (a.proceeds + a.adRevenue) || (b.impressions ?? 0) - (a.impressions ?? 0)),
     bySource: ccFilter ? null : [...bySource.values()].sort((a, b) => b.impressions - a.impressions),
     ads: {
       byNetwork: sortSlices(slices.byNetwork), byUnit: sortSlices(slices.byUnit),
       byFormat: sortSlices(slices.byFormat), byPlatform: sortSlices(slices.byPlatform),
     },
+    appleAds: { byCampaign: sortPromo(byCampaign), byKeyword: ccFilter ? null : sortPromo(byKeyword) },
   }
 }
 
@@ -463,8 +568,9 @@ export interface AppStoreView {
   /** Every app known, hidden ones included — the list Settings and "Choose apps" edit. */
   apps:         UnifiedApp[]
   /** The newest published day across the apps that are shown. */
-  yesterday:    { downloads: number; proceeds: number; adRevenue: number; impressions: number | null; approx: boolean; apps: number }
+  yesterday:    { downloads: number; proceeds: number; adRevenue: number; impressions: number | null; asSpend: number; asInstalls: number; approx: boolean; apps: number }
   ads:          AdsStatus
+  appleAds:     AppleAdsStatus
 }
 
 export function appStoreView(): AppStoreView {
@@ -489,8 +595,9 @@ export function appStoreView(): AppStoreView {
     apps,
     yesterday: {
       downloads: r.totals.downloads, proceeds: r.totals.proceeds, adRevenue: r.totals.adRevenue,
-      impressions: r.totals.impressions, approx: r.approx, apps: r.apps.length,
+      impressions: r.totals.impressions, asSpend: r.totals.asSpend, asInstalls: r.totals.asInstalls, approx: r.approx, apps: r.apps.length,
     },
     ads: adsStatus(),
+    appleAds: appleAdsStatus(),
   }
 }

@@ -5,6 +5,7 @@ import { appStoreView, buildReport, type Group } from '../app-report'
 import {
   admobAuthUrl, completeAdmobSignIn, forgetAdmob, forgetUnity, setGoogleApp, setUnityConfig, syncAdsNow,
 } from '../ads'
+import { forgetAppleAds, newAppleAdsKey, setAppleAdsConfig, syncAppleAdsNow } from '../apple-ads'
 
 // The Apps corner and Settings → App Store: the user's own apps on the App
 // Store (app-store.ts), what their ads earned on AdMob and Unity Ads (ads.ts),
@@ -47,7 +48,7 @@ router.get('/report', (req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-store')
   res.json(buildReport({
     from: q['from'] ?? '', to: q['to'] ?? '', group: q['group'] as Group | undefined,
-    apps: list('apps'), countries: list('countries'), networks: list('networks'), units: list('units'),
+    apps: list('apps'), countries: list('countries'), networks: list('networks'), units: list('units'), campaigns: list('campaigns'),
   }))
 })
 
@@ -76,6 +77,7 @@ router.delete('/config', (req: Request, res: Response) => {
 router.post('/sync', (req: Request, res: Response) => {
   void syncNow()
   void syncAdsNow()
+  void syncAppleAdsNow()
   res.json(view(req))
 })
 
@@ -196,6 +198,32 @@ router.post('/unity', async (req: Request, res: Response) => {
 
 router.delete('/unity', (req: Request, res: Response) => {
   forgetUnity()
+  res.json(view(req))
+})
+
+// ── Apple Ads: a key pair, and the three ids Apple shows for its public half ──
+
+// POST /api/app-store/apple-ads/key — make a fresh key pair here. The answer's
+// `appleAds.publicKey` is what gets pasted into Apple Ads → Account Settings → API.
+router.post('/apple-ads/key', (req: Request, res: Response) => {
+  newAppleAdsKey()
+  res.json(view(req))
+})
+
+// POST /api/app-store/apple-ads { clientId, teamId, keyId, privateKey?, adAccountId? }
+// Proven with a token and the account list before it is saved.
+router.post('/apple-ads', async (req: Request, res: Response) => {
+  const b = (req.body ?? {}) as Record<string, unknown>
+  const s = (k: string) => (typeof b[k] === 'string' ? (b[k] as string) : '')
+  try {
+    await setAppleAdsConfig({ clientId: s('clientId'), teamId: s('teamId'), keyId: s('keyId'), privateKey: s('privateKey') || undefined, adAccountId: s('adAccountId') || undefined })
+  } catch (err) { fail(res, err); return }
+  res.json(view(req))
+})
+
+// DELETE /api/app-store/apple-ads — forget the key and ids. The figures already read stay.
+router.delete('/apple-ads', (req: Request, res: Response) => {
+  forgetAppleAds()
   res.json(view(req))
 })
 

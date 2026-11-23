@@ -15,7 +15,7 @@ interface Props {
 
 export function AppStoreCollapsed({ view, error }: Props) {
   const y = view?.yesterday
-  const connected = !!view && (view.configured || view.ads.admob.connected || view.ads.unity.connected)
+  const connected = !!view && (view.configured || view.ads.admob.connected || view.ads.unity.connected || view.appleAds.connected)
   const earned = y ? y.proceeds + y.adRevenue : 0
 
   return (
@@ -40,7 +40,7 @@ export function AppStoreCollapsed({ view, error }: Props) {
             {compact(y.downloads)} download{y.downloads === 1 ? '' : 's'}{y.adRevenue > 0 ? ` · ${money(y.adRevenue, view.currency)} ads` : y.impressions !== null ? ` · ${compact(y.impressions)} seen` : ''}
           </span>
           <span className="text-[11px] text-white/40 leading-tight">
-            {shortDay(view.asOf)} · {y.apps} app{y.apps === 1 ? '' : 's'}
+            {shortDay(view.asOf)} · {y.apps} app{y.apps === 1 ? '' : 's'}{y.asSpend > 0 ? ` · ${money(y.asSpend, view.currency)} on Apple Ads` : ''}
           </span>
         </>
       )}

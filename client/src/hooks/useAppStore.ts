@@ -19,10 +19,12 @@ export interface UnifiedApp {
   bundleId:  string
   store:     boolean
   networks:  Network[]
+  /** Whether an Apple Ads campaign promotes it. */
+  appleAds:  boolean
   platforms: string[]
   hidden:    boolean
   /** Ad apps combined into this one by hand, so each can be split off again. */
-  combined:  { id: string; name: string; network: Network }[]
+  combined:  { id: string; name: string; network: Network | 'appleads' }[]
 }
 
 interface RunNote { at: string; ok: boolean; detail: string }
@@ -40,12 +42,27 @@ export interface AppStoreView {
   asOf:          string
   salesDaysRead: number
   apps:          UnifiedApp[]
-  yesterday:     { downloads: number; proceeds: number; adRevenue: number; impressions: number | null; approx: boolean; apps: number }
+  yesterday:     { downloads: number; proceeds: number; adRevenue: number; impressions: number | null; asSpend: number; asInstalls: number; approx: boolean; apps: number }
   ads: {
     syncing:   boolean
     googleApp: 'ads' | 'mail' | null
     admob: { connected: boolean; publisherId: string; currency: string; lastRun: RunNote | null }
     unity: { connected: boolean; orgId: string; keyTail: string; lastRun: RunNote | null }
+  }
+  appleAds: {
+    connected:   boolean
+    syncing:     boolean
+    /** The public half of the key, to paste into Apple Ads. Empty with no key. */
+    publicKey:   string
+    keyMadeHere: boolean
+    clientId:    string
+    teamId:      string
+    keyId:       string
+    adAccountId:   string
+    adAccountName: string
+    accounts:    { id: string; name: string }[]
+    currency:    string
+    lastRun:     RunNote | null
   }
   /** Where Google must be told to send the browser back, ready to paste into the Cloud console. */
   admobRedirectUri: string
@@ -68,11 +85,23 @@ export interface Measures {
   adClicks:      number
   adRequests:    number
   adMatched:     number
+  asSpend:        number
+  asImpressions:  number
+  asTaps:         number
+  asInstalls:     number
+  asNewDownloads: number
+  asRedownloads:  number
 }
 
 export interface AdSlice {
   key: string; label: string; sub?: string
   revenue: number; impressions: number; clicks: number; requests: number; matched: number
+}
+
+/** An Apple Ads campaign or keyword over the range. Spend in the display currency. */
+export interface PromoSlice {
+  key: string; label: string; sub?: string
+  spend: number; impressions: number; taps: number; installs: number; newDownloads: number; redownloads: number
 }
 
 export type Group = 'day' | 'week' | 'month'
@@ -84,15 +113,17 @@ export interface Report {
   approx:   boolean
   unconverted: string[]
   fxAsOf:   string | null
-  coverage: { sales: string | null; analytics: string | null; admob: string | null; unity: string | null }
+  coverage: { sales: string | null; analytics: string | null; admob: string | null; unity: string | null; appleAds: string | null }
   apps:     UnifiedApp[]
   totals:   Measures
   prev:     Measures
   series:   ({ key: string; from: string; to: string } & Measures)[]
   byApp:    { id: string; name: string; totals: Measures; prev: Measures; trend: number[]; series: Measures[] }[]
-  byCountry: { code: string; downloads: number; proceeds: number; impressions: number | null; pageViews: number | null; adRevenue: number; adImpressions: number }[]
+  byCountry: { code: string; downloads: number; proceeds: number; impressions: number | null; pageViews: number | null; adRevenue: number; adImpressions: number; asSpend: number; asInstalls: number }[]
   bySource: { source: string; impressions: number; pageViews: number; taps: number }[] | null
   ads: { byNetwork: AdSlice[]; byUnit: AdSlice[]; byFormat: AdSlice[]; byPlatform: AdSlice[] }
+  /** byKeyword is null under a country filter: Apple's keyword figures are for every country together. */
+  appleAds: { byCampaign: PromoSlice[]; byKeyword: PromoSlice[] | null }
 }
 
 export interface ReportQuery {
@@ -103,6 +134,7 @@ export interface ReportQuery {
   countries: string[]
   networks:  string[]
   units:     string[]
+  campaigns: string[]
 }
 
 async function fetchView(): Promise<AppStoreView> {
@@ -175,8 +207,13 @@ export function useAppStore(active = true) {
   const forgetUnity = useCallback(() => send('DELETE', '/api/app-store/unity', undefined, 'ads'), [send])
   const saveGoogleApp = useCallback((clientId: string, clientSecret: string) => send('POST', '/api/app-store/admob/app', { clientId, clientSecret }, 'ads'), [send])
   const forgetAdmob = useCallback(() => send('DELETE', '/api/app-store/admob', undefined, 'ads'), [send])
+  /** Make a key pair on the server; its public half comes back in `view.appleAds.publicKey`. */
+  const makeAppleAdsKey = useCallback(() => send('POST', '/api/app-store/apple-ads/key', {}, 'ads'), [send])
+  const saveAppleAds = useCallback((c: { clientId: string; teamId: string; keyId: string; privateKey?: string; adAccountId?: string }) =>
+    send('POST', '/api/app-store/apple-ads', c, 'ads'), [send])
+  const forgetAppleAds = useCallback(() => send('DELETE', '/api/app-store/apple-ads', undefined, 'ads'), [send])
 
-  return { view, error, busy, save, forget, sync, setHidden, setLink, setCurrency, saveUnity, forgetUnity, saveGoogleApp, forgetAdmob }
+  return { view, error, busy, save, forget, sync, setHidden, setLink, setCurrency, saveUnity, forgetUnity, saveGoogleApp, forgetAdmob, makeAppleAdsKey, saveAppleAds, forgetAppleAds }
 }
 
 export type AppStoreActions = ReturnType<typeof useAppStore>
@@ -208,6 +245,7 @@ export function useAppReport(query: ReportQuery | null) {
     if (q.countries.length) qs.set('countries', q.countries.join(','))
     if (q.networks.length) qs.set('networks', q.networks.join(','))
     if (q.units.length) qs.set('units', q.units.join(','))
+    if (q.campaigns.length) qs.set('campaigns', q.campaigns.join(','))
     fetch(`/api/app-store/report?${qs}`, { cache: 'no-store' })
       .then(async res => {
         if (!res.ok) throw new Error(res.status === 429 ? 'Too many requests at once — wait a moment.' : `HTTP ${res.status}`)
