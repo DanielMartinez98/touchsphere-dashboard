@@ -214,6 +214,12 @@ services:
       # manager included — and the failure looks like ComfyUI simply forgetting
       # its own nodes. Install custom nodes inside the container, or add the
       # mount only once you have a directory whose contents you actually want.
+    environment:
+      # Extra ComfyUI flags, from COMFY_CLI_ARGS in a .env beside this file.
+      # loklo-pc sets --disable-pinned-memory: its weights sit on a Docker
+      # Desktop bind mount of D:, where reads into pinned RAM fail
+      # ("HostBuffer.read_file_slice failed") on the bf16 full-quality models.
+      CLI_ARGS: ${COMFY_CLI_ARGS:-}
     deploy:
       resources:
         reservations:

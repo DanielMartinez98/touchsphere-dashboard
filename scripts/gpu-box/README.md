@@ -133,6 +133,42 @@ the distro):
 exited. The start-up line names the mode it read from `agent.json`. Turning on
 from cold takes a minute or two: Docker Desktop first, then the containers.
 
+### loklo-pc as it stands (refreshed 2026-11-24)
+
+- The checkout is on Windows (`C:\Users\mmdan\OneDrive\Documents\GitHub\touchsphere-dashboard`),
+  so the agent runs `-Containers compose`. Its `.env` sets
+  `COMFY_MODELS_DIR=D:/touchsphere/comfy/models`, keeping the weights off the
+  OneDrive system drive.
+- Models: the ai-fleet **full** tier, which is everything in `comfy-models.sh`
+  plus the bf16 full-quality twins of Qwen-Image 2.1 and MOSS, realesr-animevideov3,
+  and gemma4:26b in Ollama. It runs as the fleet's `ai-models.sh` in the Ubuntu
+  distro, with `/etc/touchsphere-device.env` set to `TIER=full`,
+  `COMFY_MODELS_DIR=/mnt/d/touchsphere/comfy/models`, `HOST_DRIVE=/mnt/d` and
+  `OLLAMA_URL=` (empty, because Ollama is the Windows app and is pulled from there).
+- `%USERPROFILE%\.wslconfig` gives WSL `memory=28GB` (and 16 GB of swap), the
+  same as lokloComputer, so the twins' 17–19 GB encoders fit.
+- `.env` sets `COMFY_CLI_ARGS=--disable-pinned-memory`. With pinned memory on,
+  the bf16 twins fail over the D: bind mount with "HostBuffer.read_file_slice
+  failed", while the int8 models work either way. Both MOSS variants render with
+  the flag (tested 2026-11-24).
+- ComfyUI is v0.46.3, the first that loads MOSS-Image. `/root` is a volume and
+  pulling the image doesn't update it, so the update is `git checkout v0.46.3`
+  inside the container. Install its requirements with
+  `pip install --user --break-system-packages -r requirements.txt`: a plain
+  `pip install` goes into the container layer and is lost on the next recreate,
+  and ComfyUI then crash-loops on `comfy_aimdo.storage`.
+  `comfyui_controlnet_aux` is in its `custom_nodes`.
+- The TouchSphere AI panel (from ai-fleet) is in `C:\Users\mmdan\TouchSphereAI`,
+  with its Start and Stop scripts rewritten for this layout to go through the
+  agent. It has a "TouchSphere AI" shortcut on the desktop. If ComfyUI comes up
+  with no models, Start recreates it once.
+- **Sign-in mount check.** Docker Desktop can restart `touchsphere-comfyui` before
+  the D: bind mount shows its files, and ComfyUI then lists no models.
+  [`comfy-mount-check.ps1`](comfy-mount-check.ps1), copied to `C:\ai\agent`
+  and run by the scheduled task "TouchSphere ComfyUI mount check" (at sign-in
+  plus 1 min), waits for the engine and restarts the container while it sees no
+  checkpoints that D: has. It logs to `C:\ai\agent\comfy-mount-check.log`.
+
 ## lokloComputer (Windows, a distro of its own)
 
 Paths assume the box keeps everything in `E:\ai`.
