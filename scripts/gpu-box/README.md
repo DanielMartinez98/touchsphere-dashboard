@@ -133,6 +133,29 @@ the distro):
 exited. The start-up line names the mode it read from `agent.json`. Turning on
 from cold takes a minute or two: Docker Desktop first, then the containers.
 
+### loklo-pc as it stands (refreshed 2026-11-24)
+
+- The checkout is on Windows (`C:\Users\mmdan\OneDrive\Documents\GitHub\touchsphere-dashboard`),
+  so the agent runs `-Containers compose`. Its `.env` sets
+  `COMFY_MODELS_DIR=D:/touchsphere/comfy/models`, keeping the weights off the
+  OneDrive system drive.
+- Models: the normal tier from `comfy-models.sh` (WAI, Anima, Qwen-Image 2.1,
+  MOSS-Image, AniSora, ControlNet Union, UltraSharp), with no full-quality
+  twins, because 31 GB of RAM can't give WSL the 28 GB their encoders need. To
+  re-run it against D: from the Ubuntu distro, use a copy of the script with
+  `MODELS=/mnt/d/touchsphere/comfy/models` and `STAGE=/mnt/d/touchsphere/comfy/incoming`
+  (`D:\touchsphere\comfy\comfy-models-loklo-pc.sh`).
+- ComfyUI is v0.46.3, the first that loads MOSS-Image. The update is
+  `git checkout v0.46.3 && pip install -r requirements.txt` inside the container,
+  because `/root` is a volume and pulling the image doesn't update it.
+  `comfyui_controlnet_aux` is in its `custom_nodes`.
+- **Sign-in mount check.** Docker Desktop can restart `touchsphere-comfyui` before
+  the D: bind mount shows its files, and ComfyUI then lists no models.
+  [`comfy-mount-check.ps1`](comfy-mount-check.ps1), copied to `C:\ai\agent`
+  and run by the scheduled task "TouchSphere ComfyUI mount check" (at sign-in
+  plus 1 min), waits for the engine and restarts the container while it sees no
+  checkpoints that D: has. It logs to `C:\ai\agent\comfy-mount-check.log`.
+
 ## lokloComputer (Windows, a distro of its own)
 
 Paths assume the box keeps everything in `E:\ai`.
